@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func TestVerify(t *testing.T) {
@@ -16,9 +17,9 @@ func TestVerify(t *testing.T) {
 	want := hex.EncodeToString(mac.Sum(nil))
 
 	cases := []struct {
-		name   string
-		header string
-		ok     bool
+		name	string
+		header	string
+		ok	bool
 	}{
 		{"github-style", "sha256=" + want, true},
 		{"bare-hex", want, true},
@@ -33,9 +34,9 @@ func TestVerify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Verify(body, tc.header, secret); got != tc.ok {
-				t.Fatalf("Verify(%q) = %v, want %v", tc.header, got, tc.ok)
-			}
+			got := Verify(body, tc.header, secret)
+			require.Equal(t, tc.ok, got)
+
 		})
 	}
 }

@@ -68,7 +68,7 @@ func (c *Client) PostStart(ctx context.Context, hook *hooks.Hook, run *runs.Run,
 	repo, sha := ParseRepoSHA(payload)
 	if repo == "" || sha == "" {
 		c.log.Debug("github_status: missing repo/sha, skipping",
-			"hook", hook.ID, "run", run.ID)
+			"hook", hook.ID, "run", run.ID())
 		return
 	}
 	desc := fmt.Sprintf("Hook %s started", hook.ID)
@@ -86,7 +86,7 @@ func (c *Client) PostFinish(ctx context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	state := StateSuccess
-	switch run.Status {
+	switch run.Status() {
 	case runs.StatusSuccess:
 		state = StateSuccess
 	case runs.StatusFailure:
@@ -149,13 +149,13 @@ func (c *Client) post(ctx context.Context, hook *hooks.Hook, run *runs.Run, repo
 		return
 	}
 	c.log.Info("github_status posted",
-		"hook", hook.ID, "run", run.ID,
+		"hook", hook.ID, "run", run.ID(),
 		"repo", repo, "sha", sha, "state", state)
 }
 
 func buildDescription(hookID string, run *runs.Run) string {
 	tail := strings.Join(run.LastLines(3), " | ")
-	switch run.Status {
+	switch run.Status() {
 	case runs.StatusSuccess:
 		if tail == "" {
 			return fmt.Sprintf("%s succeeded", hookID)
@@ -164,11 +164,11 @@ func buildDescription(hookID string, run *runs.Run) string {
 	case runs.StatusTimeout:
 		return fmt.Sprintf("%s timed out: %s", hookID, tail)
 	case runs.StatusFailure:
-		return fmt.Sprintf("%s exit %d: %s", hookID, run.ExitCode, tail)
+		return fmt.Sprintf("%s exit %d: %s", hookID, run.ExitCode(), tail)
 	case runs.StatusError:
-		return fmt.Sprintf("%s error: %s", hookID, firstNonEmpty(run.Error, tail))
+		return fmt.Sprintf("%s error: %s", hookID, firstNonEmpty(run.Error(), tail))
 	}
-	return fmt.Sprintf("%s %s", hookID, run.Status)
+	return fmt.Sprintf("%s %s", hookID, run.Status())
 }
 
 func renderTargetURL(hook *hooks.Hook, run *runs.Run) string {
@@ -182,7 +182,7 @@ func renderTargetURL(hook *hooks.Hook, run *runs.Run) string {
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, struct {
 		HookID, RunID string
-	}{HookID: hook.ID, RunID: run.ID}); err != nil {
+	}{HookID: hook.ID, RunID: run.ID()}); err != nil {
 		return ""
 	}
 	return buf.String()

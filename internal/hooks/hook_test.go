@@ -1,9 +1,13 @@
 package hooks
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func TestParseValid(t *testing.T) {
@@ -17,36 +21,33 @@ func TestParseValid(t *testing.T) {
 		"github_status": { "enabled": true, "context": "ci/deploy" }
 	}`)
 	h, err := Parse("deploy-frontend", "/some/path/hook.json", doc)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if h.ID != "deploy-frontend" {
-		t.Errorf("ID = %q", h.ID)
-	}
-	if got := h.Timeout(); got != 30*time.Second {
-		t.Errorf("Timeout = %v", got)
-	}
-	if h.SigHeader() != DefaultSignatureHeader {
-		t.Errorf("SigHeader = %q", h.SigHeader())
-	}
+	require.Nil(t, err)
+
+	assert.Equal(t, "deploy-frontend", h.ID)
+
+	got := h.Timeout()
+	assert.Equal(t, 30*time.Second, got)
+
+	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
+
 }
 
 func TestParseRejectsMissingFields(t *testing.T) {
 	cases := map[string]string{
-		"missing image":       `{"command":["x"]}`,
-		"missing command":     `{"image":"alpine"}`,
-		"empty command":       `{"image":"alpine","command":[]}`,
-		"reserved env":        `{"image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"bad timeout":         `{"image":"alpine","command":["x"],"timeout":"banana"}`,
-		"negative timeout":    `{"image":"alpine","command":["x"],"timeout":"-1s"}`,
-		"github_status nocontext": `{"image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
-		"unknown field":       `{"image":"alpine","command":["x"],"frobnicate":true}`,
+		"missing image":		`{"command":["x"]}`,
+		"missing command":		`{"image":"alpine"}`,
+		"empty command":		`{"image":"alpine","command":[]}`,
+		"reserved env":			`{"image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"bad timeout":			`{"image":"alpine","command":["x"],"timeout":"banana"}`,
+		"negative timeout":		`{"image":"alpine","command":["x"],"timeout":"-1s"}`,
+		"github_status nocontext":	`{"image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
+		"unknown field":		`{"image":"alpine","command":["x"],"frobnicate":true}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse("h", "p", []byte(doc)); err == nil {
-				t.Fatalf("expected error for %q", doc)
-			}
+			_, err := Parse("h", "p", []byte(doc))
+			require.NotNil(t, err)
+
 		})
 	}
 }
@@ -60,15 +61,20 @@ func TestStripComments(t *testing.T) {
         "n": 1
     }`)
 	got, err := readAll(stripComments(in))
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+
+	// The result must parse as JSON and preserve the in-string sequences.
+	var parsed struct {
+		Key string `json:"key"`
+		N   int    `json:"n"`
 	}
-	if strings.Contains(got, "//") || strings.Contains(got, "/*") {
-		t.Errorf("comments survived: %s", got)
-	}
-	if !strings.Contains(got, `"value /* not a comment */"`) {
-		t.Errorf("string contents mangled: %s", got)
-	}
+	require.NoError(t, json.Unmarshal([]byte(got), &parsed))
+	assert.Equal(t, "value /* not a comment */", parsed.Key)
+	assert.Equal(t, 1, parsed.N)
+
+	// And the stripped output must not contain the literal comment text.
+	assert.NotContains(t, got, "line comment")
+	assert.NotContains(t, got, "block")
 }
 
 func readAll(r interface{ Read(p []byte) (int, error) }) (string, error) {

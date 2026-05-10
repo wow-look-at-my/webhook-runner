@@ -93,7 +93,7 @@ func (r *Runner) Wait() { r.wg.Wait() }
 func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header) (*runs.Run, error) {
 	run := r.tracker.New(hook.ID)
 
-	payloadPath, headersPath, cleanup, err := r.writeTempFiles(run.ID, payload, headers)
+	payloadPath, headersPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers)
 	if err != nil {
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("write temp files: %v", err))
 		if r.onFinish != nil {
@@ -120,7 +120,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		mountedPayload = "/var/run/webhook-runner/payload"
 		mountedHeaders = "/var/run/webhook-runner/headers.json"
 	)
-	containerName := "webhook-runner-" + run.ID
+	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{
 		"run", "--rm",
@@ -130,7 +130,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
 		"-e", "HOOK_ID=" + hook.ID,
-		"-e", "HOOK_RUN_ID=" + run.ID,
+		"-e", "HOOK_RUN_ID=" + run.ID(),
 	}
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
@@ -152,7 +152,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	args = append(args, hook.Command...)
 
 	r.log.Info("hook starting",
-		"hook", hook.ID, "run", run.ID, "image", hook.Image, "timeout", timeout)
+		"hook", hook.ID, "run", run.ID(), "image", hook.Image, "timeout", timeout)
 
 	if r.onStart != nil {
 		r.onStart(hook, run, payload)
@@ -239,7 +239,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
-		"hook", hook.ID, "run", run.ID, "status", status, "exit", exitCode)
+		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
@@ -253,11 +253,11 @@ func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.ReadCloser, hookID string,
 		line := scanner.Text()
 		run.AppendOutput(line)
 		r.log.Info("hook output",
-			"hook", hookID, "run", run.ID, "stream", stream, "line", line)
+			"hook", hookID, "run", run.ID(), "stream", stream, "line", line)
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		r.log.Warn("output scanner error",
-			"hook", hookID, "run", run.ID, "stream", stream, "err", err)
+			"hook", hookID, "run", run.ID(), "stream", stream, "err", err)
 	}
 }
 

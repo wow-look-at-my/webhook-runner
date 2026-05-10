@@ -67,14 +67,14 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		// The runner has already recorded the failure; return the run
 		// ID anyway so the client can fetch details.
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"run_id": run.ID,
+			"run_id": run.ID(),
 			"error":  err.Error(),
 		})
 		return
 	}
 
 	if !wantSync {
-		writeJSON(w, http.StatusAccepted, map[string]string{"run_id": run.ID})
+		writeJSON(w, http.StatusAccepted, map[string]string{"run_id": run.ID()})
 		return
 	}
 
@@ -84,7 +84,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(syncTimeout):
 		// Don't kill the run — it can finish in the background.
 		writeJSON(w, http.StatusAccepted, map[string]any{
-			"run_id": run.ID,
+			"run_id": run.ID(),
 			"status": "running",
 			"note":   "sync timeout exceeded; run continues in background",
 		})
@@ -134,7 +134,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	} else {
 		src = s.tracker.ListAll(max)
 	}
-	out := make([]runs.Run, 0, len(src))
+	out := make([]runs.RunState, 0, len(src))
 	for _, r := range src {
 		// Don't ship full output in the list view; clients can fetch
 		// /runs/{id} for that.

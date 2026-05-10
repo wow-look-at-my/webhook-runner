@@ -1,13 +1,16 @@
 package githubstatus
 
-import "testing"
+import (
+	"testing"
+	"github.com/wow-look-at-my/testify/assert"
+)
 
 func TestParseRepoSHA(t *testing.T) {
 	cases := []struct {
-		name        string
-		body        string
-		wantRepo    string
-		wantSHA     string
+		name		string
+		body		string
+		wantRepo	string
+		wantSHA		string
 	}{
 		{
 			"push", `{"after":"deadbeef","repository":{"full_name":"o/r"}}`,
@@ -47,9 +50,8 @@ func TestParseRepoSHA(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r, s := ParseRepoSHA([]byte(tc.body))
-			if r != tc.wantRepo || s != tc.wantSHA {
-				t.Errorf("got (%q,%q), want (%q,%q)", r, s, tc.wantRepo, tc.wantSHA)
-			}
+			assert.False(t, r != tc.wantRepo || s != tc.wantSHA)
+
 		})
 	}
 }
