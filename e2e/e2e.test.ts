@@ -1,6 +1,6 @@
-import { createServer } from "node:net";
-import { createHmac } from "node:crypto";
-import assert from "node:assert/strict";
+const { createServer } = require("node:net") as typeof import("node:net");
+const { createHmac } = require("node:crypto") as typeof import("node:crypto");
+const assert = require("node:assert/strict") as typeof import("node:assert/strict");
 
 const BINARY = path.join("build", "webhook-runner");
 const HOOKS_DIR = path.join("e2e", "hooks");
@@ -27,11 +27,11 @@ async function waitForHealth(base: string, timeout = 15_000) {
   throw new Error("server did not become ready");
 }
 
-async function pollRun(base: string, runId: string, timeout = 60_000) {
+async function pollRun(base: string, runId: string, timeout = 60_000): Promise<any> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const r = await fetch(`${base}/runs/${runId}`);
-    const body = await r.json();
+    const body: any = await r.json();
     if (body.status !== "pending" && body.status !== "running") return body;
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -47,8 +47,6 @@ async function test(name: string, fn: () => Promise<void>) {
   }
 }
 
-// --- Setup ---
-
 child_process.execSync("docker pull alpine:latest", { stdio: "inherit" });
 
 const port = await freePort();
@@ -63,16 +61,16 @@ try {
   await test("GET /health returns 200", async () => {
     const r = await fetch(`${base}/health`);
     assert.equal(r.status, 200);
-    const body = await r.json();
+    const body: any = await r.json();
     assert.equal(body.status, "ok");
   });
 
   await test("GET /hooks lists all hooks", async () => {
     const r = await fetch(`${base}/hooks`);
     assert.equal(r.status, 200);
-    const hooks: any[] = await r.json();
+    const hooks: any = await r.json();
     assert.equal(hooks.length, 6);
-    const ids = hooks.map((h) => h.id).sort();
+    const ids = hooks.map((h: any) => h.id).sort();
     assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "mount-hook", "secure-hook"]);
   });
 
@@ -199,14 +197,14 @@ try {
   await test("GET /runs lists runs", async () => {
     const r = await fetch(`${base}/runs`);
     assert.equal(r.status, 200);
-    const runs: any[] = await r.json();
+    const runs: any = await r.json();
     assert.ok(runs.length >= 1, "should have at least 1 run");
   });
 
   await test("GET /runs?hook= filters by hook", async () => {
     const r = await fetch(`${base}/runs?hook=echo-test`);
     assert.equal(r.status, 200);
-    const runs: any[] = await r.json();
+    const runs: any = await r.json();
     assert.ok(runs.length >= 2, `echo-test should have >= 2 runs, got ${runs.length}`);
   });
 } finally {
