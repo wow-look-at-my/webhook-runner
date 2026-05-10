@@ -1,0 +1,12 @@
+{
+  "description": "Forward the webhook to a Slack channel",
+  "image": "curlimages/curl:8.7.1",
+  "command": [
+    "sh", "-c",
+    "curl -fsS -X POST -H 'content-type: application/json' --data-binary @$HOOK_PAYLOAD_FILE \"$SLACK_WEBHOOK_URL\""
+  ],
+  "env": {
+    "SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/replace/me"
+  },
+  "timeout": "30s"
+}

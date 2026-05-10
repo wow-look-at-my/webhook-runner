@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/go-toolchain@v1
+        with:
+          autorelease: true

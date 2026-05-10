@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>webhook-runner</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<header>
+  <h1>webhook-runner</h1>
+  <div class="meta">
+    <span id="health-badge" class="badge">checking...</span>
+    <span id="updated"></span>
+  </div>
+</header>
+
+<main>
+  <section id="hooks-section">
+    <h2>Hooks</h2>
+    <table id="hooks-table">
+      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>URL</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
+  </section>
+
+  <section id="runs-section">
+    <h2>Recent runs</h2>
+    <table id="runs-table">
+      <thead><tr><th>Started</th><th>Hook</th><th>Status</th><th>Exit</th><th>Run ID</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="runs-empty" class="empty" hidden>No runs yet.</p>
+  </section>
+
+  <section id="run-detail" hidden>
+    <h2>Run <code id="run-detail-id"></code></h2>
+    <dl id="run-detail-meta"></dl>
+    <h3>Output</h3>
+    <pre id="run-detail-output"></pre>
+    <button id="run-detail-close">Close</button>
+  </section>
+</main>
+
+<script src="dashboard.js"></script>
+</body>
+</html>
