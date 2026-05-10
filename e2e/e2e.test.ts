@@ -1,10 +1,6 @@
 import { createServer } from "node:net";
 import { createHmac } from "node:crypto";
 import assert from "node:assert/strict";
-import * as path from "node:path";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as child_process from "node:child_process";
 
 const BINARY = path.join("build", "webhook-runner");
 const HOOKS_DIR = path.join("e2e", "hooks");
