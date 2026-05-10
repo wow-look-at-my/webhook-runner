@@ -1,6 +1,10 @@
-const { createServer } = require("node:net") as typeof import("node:net");
-const { createHmac } = require("node:crypto") as typeof import("node:crypto");
-const assert = require("node:assert/strict") as typeof import("node:assert/strict");
+import { createServer } from "node:net";
+import { createHmac } from "node:crypto";
+import assert from "node:assert/strict";
+import * as path from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as child_process from "node:child_process";
 
 const BINARY = path.join("build", "webhook-runner");
 const HOOKS_DIR = path.join("e2e", "hooks");
@@ -38,12 +42,17 @@ async function pollRun(base: string, runId: string, timeout = 60_000): Promise<a
   throw new Error(`run ${runId} did not complete`);
 }
 
+let passed = 0;
+let failed = 0;
+
 async function test(name: string, fn: () => Promise<void>) {
   try {
     await fn();
-    core.info(`PASS: ${name}`);
+    console.log(`  PASS: ${name}`);
+    passed++;
   } catch (e: any) {
-    core.setFailed(`FAIL: ${name}: ${e.message}`);
+    console.error(`  FAIL: ${name}: ${e.message}`);
+    failed++;
   }
 }
 
@@ -210,3 +219,6 @@ try {
 } finally {
   proc.kill();
 }
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);
