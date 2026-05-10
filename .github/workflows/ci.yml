@@ -24,6 +24,4 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@v1
       - uses: wow-look-at-my/actions@typescript#latest
         with:
-          script: |
-            await exec.exec('npm', ['install'], { cwd: 'e2e' });
-            await exec.exec('node', ['--import', 'tsx', '--test', 'e2e.test.ts'], { cwd: 'e2e' });
+          file: e2e/run.ts
