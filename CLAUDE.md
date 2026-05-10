@@ -18,6 +18,7 @@ internal/runner/           docker run dispatch + output streaming
 internal/runs/             in-memory run tracker (bounded)
 internal/githubstatus/     GitHub commit status API client
 internal/signature/        HMAC-SHA256 verification
+e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
 
