@@ -303,9 +303,11 @@ describe("webhook-runner e2e", () => {
       body: '{"mounted":"yes"}',
     });
     assert.equal(r.status, 200);
-    const run = await r.json();
-    assert.equal(run.status, "success");
-    const output = run.output.join("\n");
+    const sync = await r.json();
+    assert.equal(sync.status, "success");
+    // Sync response truncates output to 20 lines; fetch full output.
+    const full = await (await fetch(`${base}/runs/${sync.id}`)).json();
+    const output = full.output.join("\n");
     assert.ok(output.includes('"mounted":"yes"'), "missing payload");
     assert.ok(output.includes("Content-Type"), "missing headers");
   });
