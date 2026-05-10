@@ -26,4 +26,4 @@ jobs:
           node-version: 22
       - uses: wow-look-at-my/go-toolchain@v1
       - run: cd e2e && npm install
-      - run: node --import tsx --test e2e/e2e.test.ts
+      - run: cd e2e && node --import tsx --test e2e.test.ts
