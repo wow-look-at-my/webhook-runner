@@ -52,6 +52,7 @@ async function test(name: string, fn: () => Promise<void>) {
   }
 }
 
+async function main() {
 child_process.execSync("docker pull alpine:latest", { stdio: "inherit" });
 
 const port = await freePort();
@@ -218,3 +219,6 @@ try {
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
+}
+
+main();
