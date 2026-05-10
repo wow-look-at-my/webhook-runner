@@ -1,0 +1,5 @@
+{
+  "image": "alpine:latest",
+  "command": ["sh", "-c", "echo failing && exit 42"],
+  "timeout": "60s"
+}
