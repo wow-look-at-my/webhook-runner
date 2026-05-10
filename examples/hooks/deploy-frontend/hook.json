@@ -6,8 +6,7 @@
     "DEPLOY_TARGET": "production"
   },
   "timeout": "10m",
-  "secret": "whsec_replace_me",
-  "signature_header": "X-Hub-Signature-256",
+  "api_key": "replace-me-with-a-real-key",
   "github_status": {
     "enabled": true,
     "context": "webhook-runner/deploy-frontend",

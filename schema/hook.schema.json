@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "title": "webhook-runner hook configuration",
+  "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root.",
+  "type": "object",
+  "required": ["image", "command"],
+  "additionalProperties": false,
+  "properties": {
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of what this hook does."
+    },
+    "image": {
+      "type": "string",
+      "description": "Docker image to run (e.g. \"alpine:latest\")."
+    },
+    "command": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Command and arguments passed to docker run after the image name."
+    },
+    "networks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Docker networks to attach the container to."
+    },
+    "volumes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Volume mounts passed as -v flags (e.g. \"/host:/container:ro\")."
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Extra environment variables. HOOK_PAYLOAD_FILE and HOOK_HEADERS_FILE are reserved.",
+      "not": {
+        "anyOf": [
+          { "required": ["HOOK_PAYLOAD_FILE"] },
+          { "required": ["HOOK_HEADERS_FILE"] }
+        ]
+      }
+    },
+    "user": {
+      "type": "string",
+      "description": "User/UID to run the container as (--user flag)."
+    },
+    "workdir": {
+      "type": "string",
+      "description": "Working directory inside the container (--workdir flag)."
+    },
+    "timeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
+      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"). Default: 5m."
+    },
+    "synchronous": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, the server holds the HTTP response open until the container exits. Default: false (returns 202 immediately)."
+    },
+    "extra_docker_args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Additional raw arguments passed to docker run."
+    },
+    "api_key": {
+      "type": "string",
+      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). Recommended for most hooks."
+    },
+    "api_key_header": {
+      "type": "string",
+      "default": "X-API-Key",
+      "description": "HTTP header to read the API key from. Default: X-API-Key."
+    },
+    "public_key": {
+      "type": "string",
+      "description": "Base64 or hex-encoded Ed25519 public key. When set, incoming requests must include a valid Ed25519 signature of the body in the signature header."
+    },
+    "signature_header": {
+      "type": "string",
+      "description": "HTTP header containing the signature. Default: X-Signature-Ed25519 for public_key auth, X-Hub-Signature-256 for legacy HMAC."
+    },
+    "secret": {
+      "type": "string",
+      "description": "Legacy: shared secret for HMAC-SHA256 signature verification. Prefer api_key or public_key."
+    },
+    "github_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable GitHub commit status updates for this hook."
+        },
+        "context": {
+          "type": "string",
+          "description": "The status context string (e.g. \"ci/deploy\"). Required when enabled is true."
+        },
+        "target_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional URL linked from the GitHub status check."
+        }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "required": ["context"]
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "api_key": { "type": "string" },
+        "public_key": false,
+        "secret": false
+      }
+    },
+    {
+      "properties": {
+        "api_key": false,
+        "public_key": { "type": "string" },
+        "secret": false
+      }
+    },
+    {
+      "properties": {
+        "api_key": false,
+        "public_key": false,
+        "secret": { "type": "string" }
+      }
+    },
+    {
+      "not": {
+        "anyOf": [
+          { "required": ["api_key"] },
+          { "required": ["public_key"] },
+          { "required": ["secret"] }
+        ]
+      }
+    }
+  ]
+}

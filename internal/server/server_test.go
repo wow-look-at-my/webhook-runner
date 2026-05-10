@@ -1,8 +1,10 @@
 package server
 
 import (
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -293,4 +295,121 @@ func TestTriggerBodyTooLarge(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+}
+
+func TestTriggerAPIKeyValid(t *testing.T) {
+	s, reg, _, rn := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ak", Image: "alpine", Command: []string{"x"},
+		APIKey: "test-key-123",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "test-key-123")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rn.Wait()
+}
+
+func TestTriggerAPIKeyInvalid(t *testing.T) {
+	s, reg, _, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ak", Image: "alpine", Command: []string{"x"},
+		APIKey: "test-key-123",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "wrong-key")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestTriggerAPIKeyMissing(t *testing.T) {
+	s, reg, _, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ak", Image: "alpine", Command: []string{"x"},
+		APIKey: "test-key-123",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestTriggerAPIKeyCustomHeader(t *testing.T) {
+	s, reg, _, rn := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ak", Image: "alpine", Command: []string{"x"},
+		APIKey: "mykey", APIKeyHeader: "Authorization",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "mykey")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rn.Wait()
+}
+
+func TestTriggerEd25519Valid(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+
+	s, reg, _, rn := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ed", Image: "alpine", Command: []string{"x"},
+		PublicKey: base64.StdEncoding.EncodeToString(pub),
+	})
+
+	body := []byte(`{"signed":"payload"}`)
+	sig := ed25519.Sign(priv, body)
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ed", strings.NewReader(string(body)))
+	req.Header.Set("X-Signature-Ed25519", base64.StdEncoding.EncodeToString(sig))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rn.Wait()
+}
+
+func TestTriggerEd25519Invalid(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+
+	s, reg, _, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ed", Image: "alpine", Command: []string{"x"},
+		PublicKey: base64.StdEncoding.EncodeToString(pub),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ed", strings.NewReader(`{}`))
+	req.Header.Set("X-Signature-Ed25519", base64.StdEncoding.EncodeToString(make([]byte, 64)))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestTriggerEd25519WrongKey(t *testing.T) {
+	pub1, _, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	_, priv2, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+
+	s, reg, _, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ed", Image: "alpine", Command: []string{"x"},
+		PublicKey: base64.StdEncoding.EncodeToString(pub1),
+	})
+
+	body := []byte(`{"wrong":"key"}`)
+	sig := ed25519.Sign(priv2, body)
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ed", strings.NewReader(string(body)))
+	req.Header.Set("X-Signature-Ed25519", base64.StdEncoding.EncodeToString(sig))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }

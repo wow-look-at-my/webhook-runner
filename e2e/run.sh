@@ -64,6 +64,16 @@ cat > "$HOOKS_DIR/secure-hook/hook.json" <<'HOOK'
 }
 HOOK
 
+mkdir -p "$HOOKS_DIR/apikey-hook"
+cat > "$HOOKS_DIR/apikey-hook/hook.json" <<'HOOK'
+{
+  "image": "alpine:latest",
+  "command": ["echo", "apikey-ok"],
+  "api_key": "e2e-test-key-42",
+  "timeout": "60s"
+}
+HOOK
+
 mkdir -p "$HOOKS_DIR/env-hook"
 cat > "$HOOKS_DIR/env-hook/hook.json" <<'HOOK'
 {
@@ -144,7 +154,7 @@ HTTP_CODE=$(curl -s -o "$RESP_FILE" -w '%{http_code}' "$BASE/hooks")
 BODY=$(cat "$RESP_FILE")
 assert_eq "GET /hooks returns 200" "200" "$HTTP_CODE"
 COUNT=$(echo "$BODY" | jq 'length')
-assert_eq "hooks count is 5" "5" "$COUNT"
+assert_eq "hooks count is 6" "6" "$COUNT"
 assert_contains "hooks list contains echo-test" "$BODY" "echo-test"
 assert_contains "hooks list contains fail-hook" "$BODY" "fail-hook"
 assert_contains "hooks list contains secure-hook" "$BODY" "secure-hook"
@@ -241,9 +251,34 @@ assert_eq "exit_code is 42" "42" "$(echo "$BODY" | jq -r '.exit_code')"
 OUTPUT=$(echo "$BODY" | jq -r '.output[]')
 assert_contains "output contains failing" "$OUTPUT" "failing"
 
-# ---- HMAC signature: bad sig rejected ----
+# ---- API key: valid key accepted ----
 echo ""
-echo "=== Signature Validation ==="
+echo "=== API Key Authentication ==="
+HTTP_CODE=$(curl -s -o "$RESP_FILE" -w '%{http_code}' -X POST \
+    -H "X-API-Key: e2e-test-key-42" \
+    -H "Content-Type: application/json" \
+    -d '{}' \
+    "$BASE/hook/apikey-hook?wait=true")
+BODY=$(cat "$RESP_FILE")
+assert_eq "valid api key returns 200" "200" "$HTTP_CODE"
+assert_eq "apikey hook status is success" "success" "$(echo "$BODY" | jq -r '.status')"
+
+# ---- API key: wrong key rejected ----
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "X-API-Key: wrong-key" \
+    -d '{}' \
+    "$BASE/hook/apikey-hook")
+assert_eq "wrong api key returns 401" "401" "$HTTP_CODE"
+
+# ---- API key: missing key rejected ----
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -d '{}' \
+    "$BASE/hook/apikey-hook")
+assert_eq "missing api key returns 401" "401" "$HTTP_CODE"
+
+# ---- Legacy HMAC signature: bad sig rejected ----
+echo ""
+echo "=== Legacy HMAC Signature ==="
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "X-Hub-Signature-256: sha256=deadbeef" \
     -d '{"x":1}' \

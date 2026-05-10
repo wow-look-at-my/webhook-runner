@@ -11,7 +11,6 @@ import (
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
-	"github.com/wow-look-at-my/webhook-runner/internal/signature"
 )
 
 // MaxBodyBytes caps the request body size accepted on POST /hook/{id}.
@@ -47,13 +46,10 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if hook.Secret != "" {
-		got := r.Header.Get(hook.SigHeader())
-		if !signature.Verify(body, got, hook.Secret) {
-			s.log.Warn("invalid signature", "hook", hook.ID, "remote", r.RemoteAddr)
-			writeError(w, http.StatusUnauthorized, "invalid signature")
-			return
-		}
+	if err := s.authenticate(hook, r, body); err != nil {
+		s.log.Warn("auth failed", "hook", hook.ID, "remote", r.RemoteAddr, "err", err)
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
 	}
 
 	wantSync, syncTimeout, err := parseWaitParams(r, hook)
