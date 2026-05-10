@@ -21,7 +21,11 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - uses: wow-look-at-my/go-toolchain@v1
+      - uses: wow-look-at-my/actions@download-exe#latest
+        with:
+          name: go-build
+          path: build
+          files: webhook-runner_linux_amd64:webhook-runner
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/run.ts
