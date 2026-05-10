@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -205,6 +206,22 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 				close(timedOut)
 			}
 			r.killContainer(containerName)
+			// `docker kill` propagates SIGTERM/SIGKILL to the
+			// container, which causes the foreground `docker run`
+			// process to exit. If that doesn't happen within a
+			// short grace window — for example, because a mock
+			// docker shim doesn't actually orchestrate container
+			// processes — we force-kill the docker CLI ourselves
+			// so the run unblocks.
+			killTimer := time.AfterFunc(2*time.Second, func() {
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+			})
+			defer killTimer.Stop()
+			// Block until the watch is told to stop (signalled
+			// once cmd.Wait returns).
+			<-stopWatcher
 		case <-stopWatcher:
 		}
 	}()

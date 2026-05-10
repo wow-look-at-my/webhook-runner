@@ -18,9 +18,11 @@ import (
 )
 
 // writeMockDocker drops a shell script at <dir>/docker that:
-//   - prints all its arguments to stdout (one per line)
-//   - exits with code derived from the first arg-after-image when the
-//     special token "EXIT_<n>" appears in the command.
+//   - parses docker-run-style flags (skipping known flag-value pairs)
+//   - prints "image=<name>" once it identifies the image
+//   - prints each command token after the image on its own line
+//   - exits with code N when it sees "EXIT_N" in the command
+//   - sleeps N seconds when it sees "SLEEP_N" (kill-able)
 //
 // This lets the runner be exercised end-to-end without a real docker
 // daemon.
@@ -28,41 +30,30 @@ func writeMockDocker(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "docker")
 	script := `#!/bin/sh
-# Filter out the "kill" subcommand entirely; just exit 0.
-if [ "$1" = "kill" ]; then
-  exit 0
-fi
-# Walk the args after "run" to find the image and the command.
+if [ "$1" = "kill" ]; then exit 0; fi
+shift  # drop "run"
 saw_image=false
 exit_code=0
-for arg in "$@"; do
-  if [ "$saw_image" = true ]; then
-    case "$arg" in
-      EXIT_*)
-        exit_code="${arg#EXIT_}"
-        echo "would exit $exit_code"
-        ;;
-      SLEEP_*)
-        seconds="${arg#SLEEP_}"
-        sleep "$seconds"
-        ;;
-      *)
-        echo "$arg"
-        ;;
-    esac
-    continue
-  fi
-  case "$arg" in
-    -*|run|--rm|EXIT_*|SLEEP_*)
-      ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rm)
+      shift ;;
+    --name|-v|-e|--network|--user|--workdir)
+      shift; shift ;;
+    --cap-add=*|-*)
+      shift ;;
     *)
-      # First non-flag arg after "run" is the image; everything after
-      # that is part of the command.
       if [ "$saw_image" = false ]; then
         saw_image=true
-        echo "image=$arg"
-      fi
-      ;;
+        echo "image=$1"
+        shift
+      else
+        case "$1" in
+          EXIT_*) exit_code="${1#EXIT_}"; shift ;;
+          SLEEP_*) sleep "${1#SLEEP_}"; shift ;;
+          *) echo "$1"; shift ;;
+        esac
+      fi ;;
   esac
 done
 exit "$exit_code"
@@ -81,16 +72,16 @@ func TestRunnerSuccess(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
+		Tracker:	tracker,
+		Logger:		newSilentLogger(),
+		TmpDir:		dir,
+		Docker:		docker,
 	})
 
 	hook := &hooks.Hook{
-		ID:      "h",
-		Image:   "alpine",
-		Command: []string{"hello", "world"},
+		ID:		"h",
+		Image:		"alpine",
+		Command:	[]string{"hello", "world"},
 	}
 	run, err := r.Start(context.Background(), hook, []byte("payload"), http.Header{"X-Test": []string{"yes"}})
 	require.NoError(t, err)
@@ -110,16 +101,16 @@ func TestRunnerFailure(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
+		Tracker:	tracker,
+		Logger:		newSilentLogger(),
+		TmpDir:		dir,
+		Docker:		docker,
 	})
 
 	hook := &hooks.Hook{
-		ID:      "h",
-		Image:   "alpine",
-		Command: []string{"EXIT_3"},
+		ID:		"h",
+		Image:		"alpine",
+		Command:	[]string{"EXIT_3"},
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
@@ -135,17 +126,17 @@ func TestRunnerTimeout(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
+		Tracker:	tracker,
+		Logger:		newSilentLogger(),
+		TmpDir:		dir,
+		Docker:		docker,
 	})
 
 	hook := &hooks.Hook{
-		ID:         "h",
-		Image:      "alpine",
-		Command:    []string{"SLEEP_30"},
-		TimeoutRaw: "100ms",
+		ID:		"h",
+		Image:		"alpine",
+		Command:	[]string{"SLEEP_30"},
+		TimeoutRaw:	"100ms",
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
@@ -166,12 +157,12 @@ func TestRunnerStartHookCallback(t *testing.T) {
 	tracker := runs.NewTracker()
 	var startCalled, finishCalled bool
 	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
-		OnStart: func(*hooks.Hook, *runs.Run, []byte) { startCalled = true },
-		OnFinish: func(*hooks.Hook, *runs.Run, []byte) { finishCalled = true },
+		Tracker:	tracker,
+		Logger:		newSilentLogger(),
+		TmpDir:		dir,
+		Docker:		docker,
+		OnStart:	func(*hooks.Hook, *runs.Run, []byte) { startCalled = true },
+		OnFinish:	func(*hooks.Hook, *runs.Run, []byte) { finishCalled = true },
 	})
 	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
 	_, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
@@ -186,10 +177,10 @@ func TestRunnerWritesPayloadFile(t *testing.T) {
 	tmp := t.TempDir()
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  tmp,
-		Docker:  "/bin/true", // accepts and ignores all args, exits 0
+		Tracker:	tracker,
+		Logger:		newSilentLogger(),
+		TmpDir:		tmp,
+		Docker:		"/bin/true",	// accepts and ignores all args, exits 0
 	})
 	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
 	_, err := r.Start(context.Background(), hook, []byte("hello payload"), http.Header{})
@@ -199,8 +190,7 @@ func TestRunnerWritesPayloadFile(t *testing.T) {
 	entries, err := os.ReadDir(tmp)
 	require.NoError(t, err)
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) == "" && len(e.Name()) > 3 && e.Name()[:3] == "wh-" {
-			t.Errorf("temp dir leaked: %s", e.Name())
-		}
+		assert.False(t, filepath.Ext(e.Name()) == "" && len(e.Name()) > 3 && e.Name()[:3] == "wh-")
+
 	}
 }
