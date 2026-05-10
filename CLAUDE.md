@@ -17,7 +17,8 @@ internal/hooks/            hook.json model, loader, registry, fsnotify watcher
 internal/runner/           docker run dispatch + output streaming
 internal/runs/             in-memory run tracker (bounded)
 internal/githubstatus/     GitHub commit status API client
-internal/signature/        HMAC-SHA256 verification
+schema/                    JSON schema for hook.json (published to GitHub Pages)
+e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
 

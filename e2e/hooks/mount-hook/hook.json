@@ -1,0 +1,5 @@
+{
+  "image": "alpine:latest",
+  "command": ["sh", "-c", "cat $HOOK_PAYLOAD_FILE && echo --- && cat $HOOK_HEADERS_FILE"],
+  "timeout": "60s"
+}

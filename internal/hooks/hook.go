@@ -3,6 +3,9 @@
 package hooks
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +16,9 @@ import (
 // DefaultTimeout is applied when a hook does not specify one explicitly.
 const DefaultTimeout = 5 * time.Minute
 
-// DefaultSignatureHeader is the request header read for the HMAC signature
-// when a hook sets a secret without specifying signature_header.
-const DefaultSignatureHeader = "X-Hub-Signature-256"
+const DefaultSignatureHeader = "X-Signature-Ed25519"
+const LegacySignatureHeader = "X-Hub-Signature-256"
+const DefaultAPIKeyHeader = "X-API-Key"
 
 // Hook is the parsed in-memory representation of a single hook.json file.
 //
@@ -33,10 +36,17 @@ type Hook struct {
 	User            string             `json:"user,omitempty"`
 	Workdir         string             `json:"workdir,omitempty"`
 	TimeoutRaw      string             `json:"timeout,omitempty"`
-	Secret          string             `json:"secret,omitempty"`
-	SignatureHeader string             `json:"signature_header,omitempty"`
 	ExtraDockerArgs []string           `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
+
+	APIKey       string `json:"api_key,omitempty"`
+	APIKeyHeader string `json:"api_key_header,omitempty"`
+
+	PublicKey       string `json:"public_key,omitempty"`
+	SignatureHeader string `json:"signature_header,omitempty"`
+
+	// Legacy HMAC-SHA256 — prefer api_key or public_key.
+	Secret string `json:"secret,omitempty"`
 
 	// Synchronous, when true, makes the server hold the HTTP connection
 	// open until the container exits (subject to its timeout). When false
@@ -68,13 +78,24 @@ func (h *Hook) Timeout() time.Duration {
 	return d
 }
 
-// SigHeader returns the configured signature header or the default when
-// no override is set.
+// SigHeader returns the configured signature header or a sensible default
+// based on the auth method. For ed25519 public_key auth it defaults to
+// X-Signature-Ed25519; for legacy HMAC it defaults to X-Hub-Signature-256.
 func (h *Hook) SigHeader() string {
-	if h.SignatureHeader == "" {
-		return DefaultSignatureHeader
+	if h.SignatureHeader != "" {
+		return h.SignatureHeader
 	}
-	return h.SignatureHeader
+	if h.Secret != "" {
+		return LegacySignatureHeader
+	}
+	return DefaultSignatureHeader
+}
+
+func (h *Hook) APIKeyHdr() string {
+	if h.APIKeyHeader != "" {
+		return h.APIKeyHeader
+	}
+	return DefaultAPIKeyHeader
 }
 
 // Parse decodes a hook.json document and validates the resulting hook.
@@ -116,10 +137,52 @@ func (h *Hook) validate() error {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
 	}
+	if err := h.validateAuth(); err != nil {
+		return err
+	}
 	if h.GitHubStatus != nil && h.GitHubStatus.Enabled && h.GitHubStatus.Context == "" {
 		return errors.New("github_status.context is required when github_status.enabled is true")
 	}
 	return nil
+}
+
+func (h *Hook) validateAuth() error {
+	n := 0
+	if h.APIKey != "" {
+		n++
+	}
+	if h.PublicKey != "" {
+		n++
+	}
+	if h.Secret != "" {
+		n++
+	}
+	if n > 1 {
+		return errors.New("only one of api_key, public_key, or secret may be set")
+	}
+	if h.PublicKey != "" {
+		if _, err := parseEd25519PublicKey(h.PublicKey); err != nil {
+			return fmt.Errorf("invalid public_key: %w", err)
+		}
+	}
+	return nil
+}
+
+func parseEd25519PublicKey(s string) (ed25519.PublicKey, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		b, err = base64.RawStdEncoding.DecodeString(s)
+	}
+	if err != nil {
+		b, err = hex.DecodeString(s)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("not valid base64 or hex: %w", err)
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("expected %d bytes, got %d", ed25519.PublicKeySize, len(b))
+	}
+	return ed25519.PublicKey(b), nil
 }
 
 // stripComments returns a reader over the input with // and /* */ comments

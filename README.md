@@ -8,8 +8,8 @@ hooks without restart.
 ## Features
 
 - **Folder-per-hook config**, parsed with JSONC-style comments.
-- **HMAC-SHA256 signature verification** (`X-Hub-Signature-256` by default,
-  configurable per hook). Both `sha256=...` and bare hex are accepted.
+- **Three authentication methods**: API key (recommended), Ed25519 public
+  key signatures, and legacy HMAC-SHA256. At most one per hook.
 - **Disposable containers**: every run is `docker run --rm ...` with the
   request body and headers bind-mounted as files.
 - **Hot reload**: filesystem watch picks up new, modified, and removed
@@ -73,58 +73,9 @@ in `hook.json`. The query parameter still wins.
 
 ## hook.json reference
 
-```jsonc
-{
-  // Human-readable description shown in /hooks and the dashboard.
-  "description": "Deploy frontend on push to main",
-
-  // REQUIRED. Image reference passed to docker run.
-  "image": "alpine:3.20",
-
-  // REQUIRED. argv to execute inside the container.
-  "command": ["sh", "-c", "echo deploying $HOOK_PAYLOAD_FILE"],
-
-  // Optional: docker --network args.
-  "networks": ["frontend"],
-
-  // Optional: docker -v args (bind mounts or named volumes).
-  "volumes": ["/var/certs:/certs:ro", "shared-data:/data"],
-
-  // Optional: extra env vars. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE,
-  // HOOK_ID, and HOOK_RUN_ID are always injected and cannot be
-  // overridden.
-  "env": { "DEPLOY_TARGET": "production" },
-
-  // Optional: docker --user (e.g. "1000:1000").
-  "user": "",
-
-  // Optional: docker --workdir.
-  "workdir": "/app",
-
-  // Optional: max execution time. Go duration string. Default: 5m.
-  "timeout": "10m",
-
-  // Optional: HMAC-SHA256 secret. When set, requests must carry a
-  // valid signature in `signature_header` (default: X-Hub-Signature-256).
-  "secret": "whsec_abc123",
-  "signature_header": "X-Hub-Signature-256",
-
-  // Optional: extra raw docker run flags. Use sparingly.
-  "extra_docker_args": ["--cap-add=NET_ADMIN"],
-
-  // Optional: hold the HTTP connection until the container exits.
-  // The ?wait=true query parameter overrides this on a per-request basis.
-  "synchronous": false,
-
-  // Optional: GitHub commit-status integration. Requires
-  // WEBHOOK_RUNNER_GITHUB_TOKEN on the server.
-  "github_status": {
-    "enabled": true,
-    "context": "webhook-runner/deploy-frontend",
-    "target_url": "https://hooks.example.com/runs/{{.RunID}}"
-  }
-}
-```
+The full schema is published at
+`https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
+See `examples/hooks/` for working examples.
 
 ## Server configuration
 

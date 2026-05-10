@@ -29,6 +29,16 @@ func TestParseValid(t *testing.T) {
 	assert.Equal(t, 30*time.Second, got)
 
 	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
+}
+
+func TestAPIKeyHdrDefault(t *testing.T) {
+	h := &Hook{APIKey: "k"}
+	assert.Equal(t, DefaultAPIKeyHeader, h.APIKeyHdr())
+}
+
+func TestSigHeaderLegacyDefault(t *testing.T) {
+	h := &Hook{Secret: "s"}
+	assert.Equal(t, LegacySignatureHeader, h.SigHeader())
 
 }
 
@@ -42,6 +52,10 @@ func TestParseRejectsMissingFields(t *testing.T) {
 		"negative timeout":		`{"image":"alpine","command":["x"],"timeout":"-1s"}`,
 		"github_status nocontext":	`{"image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
 		"unknown field":		`{"image":"alpine","command":["x"],"frobnicate":true}`,
+		"api_key+secret":		`{"image":"alpine","command":["x"],"api_key":"k","secret":"s"}`,
+		"public_key+secret":		`{"image":"alpine","command":["x"],"public_key":"k","secret":"s"}`,
+		"api_key+public_key":		`{"image":"alpine","command":["x"],"api_key":"k","public_key":"k"}`,
+		"bad public_key":		`{"image":"alpine","command":["x"],"public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
