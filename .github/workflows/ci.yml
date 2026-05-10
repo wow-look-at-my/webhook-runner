@@ -21,9 +21,9 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: wow-look-at-my/go-toolchain@v1
-      - run: cd e2e && npm install
-      - run: cd e2e && node --import tsx --test e2e.test.ts
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            await exec.exec('npm', ['install'], { cwd: 'e2e' });
+            await exec.exec('node', ['--import', 'tsx', '--test', 'e2e.test.ts'], { cwd: 'e2e' });
