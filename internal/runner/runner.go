@@ -165,7 +165,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// being killed by the kernel. exec.CommandContext would SIGKILL the
 	// docker CLI process, which races against the actual container.
 	cmd := exec.Command(r.dockerBin, args...)
-	stdout, err := cmd.StdoutPipe()
+
+	// Use os.Pipe instead of cmd.StdoutPipe/StderrPipe. The cmd
+	// variants add the read end to closeAfterWait, meaning cmd.Wait
+	// closes the pipe before we finish reading — dropping output in
+	// a race. With our own pipes, Wait does not touch them.
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("stdout pipe: %v", err))
 		if r.onFinish != nil {
@@ -173,28 +178,39 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		}
 		return
 	}
-	stderr, err := cmd.StderrPipe()
+	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("stderr pipe: %v", err))
 		if r.onFinish != nil {
 			r.onFinish(hook, run, payload)
 		}
 		return
 	}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 
 	if err := cmd.Start(); err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
+		stderrR.Close()
+		stderrW.Close()
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("start docker: %v", err))
 		if r.onFinish != nil {
 			r.onFinish(hook, run, payload)
 		}
 		return
 	}
+	// Close write ends in the parent; only the child holds them now.
+	stdoutW.Close()
+	stderrW.Close()
 	run.SetRunning()
 
 	var streamWG sync.WaitGroup
 	streamWG.Add(2)
-	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
-	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
+	go r.streamPipe(&streamWG, stdoutR, hook.ID, run, "stdout")
+	go r.streamPipe(&streamWG, stderrR, hook.ID, run, "stderr")
 
 	// Watch ctx for cancellation/timeout in parallel with cmd.Wait.
 	timedOut := make(chan struct{})
@@ -206,21 +222,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 				close(timedOut)
 			}
 			r.killContainer(containerName)
-			// `docker kill` propagates SIGTERM/SIGKILL to the
-			// container, which causes the foreground `docker run`
-			// process to exit. If that doesn't happen within a
-			// short grace window — for example, because a mock
-			// docker shim doesn't actually orchestrate container
-			// processes — we force-kill the docker CLI ourselves
-			// so the run unblocks.
 			killTimer := time.AfterFunc(2*time.Second, func() {
 				if cmd.Process != nil {
 					_ = cmd.Process.Kill()
 				}
 			})
 			defer killTimer.Stop()
-			// Block until the watch is told to stop (signalled
-			// once cmd.Wait returns).
 			<-stopWatcher
 		case <-stopWatcher:
 		}
@@ -228,6 +235,18 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	waitErr := cmd.Wait()
 	close(stopWatcher)
+
+	// In the normal case the process has exited and its pipe ends
+	// are closed, so streamWG.Wait returns immediately. On timeout,
+	// orphaned child processes (e.g. the real docker container's
+	// descendants) can keep the write end open; force-close the
+	// read ends so the scanner goroutines unblock.
+	select {
+	case <-timedOut:
+		stdoutR.Close()
+		stderrR.Close()
+	default:
+	}
 	streamWG.Wait()
 
 	exitCode := 0

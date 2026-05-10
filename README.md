@@ -73,49 +73,9 @@ in `hook.json`. The query parameter still wins.
 
 ## hook.json reference
 
-A JSON schema is published at
+The full schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
-
-```jsonc
-{
-  "description": "Deploy frontend on push to main",
-
-  // REQUIRED.
-  "image": "alpine:3.20",
-  "command": ["sh", "-c", "echo deploying $HOOK_PAYLOAD_FILE"],
-
-  // --- Authentication (pick at most one) ---
-
-  // API key (recommended). Checked against the X-API-Key header.
-  "api_key": "your-secret-key",
-  "api_key_header": "X-API-Key",        // default
-
-  // Ed25519 public key. Base64 or hex encoded. Sender signs the
-  // body with the corresponding private key.
-  "public_key": "<base64-ed25519-pubkey>",
-  "signature_header": "X-Signature-Ed25519",  // default
-
-  // Legacy HMAC-SHA256. Prefer api_key or public_key for new hooks.
-  "secret": "whsec_abc123",
-
-  // --- Optional fields ---
-
-  "networks": ["frontend"],
-  "volumes": ["/var/certs:/certs:ro"],
-  "env": { "DEPLOY_TARGET": "production" },
-  "user": "1000:1000",
-  "workdir": "/app",
-  "timeout": "10m",
-  "extra_docker_args": ["--cap-add=NET_ADMIN"],
-  "synchronous": false,
-
-  "github_status": {
-    "enabled": true,
-    "context": "webhook-runner/deploy-frontend",
-    "target_url": "https://hooks.example.com/runs/{{.RunID}}"
-  }
-}
-```
+See `examples/hooks/` for working examples.
 
 ## Server configuration
 
