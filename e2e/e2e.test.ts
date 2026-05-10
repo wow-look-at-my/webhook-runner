@@ -6,9 +6,33 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { createHmac } from "node:crypto";
+import { readdirSync } from "node:fs";
+import { platform, arch } from "node:os";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
-const BINARY = join(REPO_ROOT, "build", "webhook-runner");
+
+function findBinary(): string {
+  const buildDir = join(REPO_ROOT, "build");
+  const goarch = arch() === "x64" ? "amd64" : arch();
+  const suffix = platform() === "win32" ? ".exe" : "";
+  const platformBin = join(buildDir, `webhook-runner_${platform()}_${goarch}${suffix}`);
+  const plainBin = join(buildDir, `webhook-runner${suffix}`);
+  try {
+    readdirSync(buildDir);
+  } catch {
+    throw new Error(`build directory not found: ${buildDir}`);
+  }
+  for (const candidate of [platformBin, plainBin]) {
+    try {
+      execSync(`test -x "${candidate}"`, { stdio: "ignore" });
+      return candidate;
+    } catch {}
+  }
+  const files = readdirSync(buildDir);
+  throw new Error(`no binary found in ${buildDir}: ${files.join(", ")}`);
+}
+
+const BINARY = findBinary();
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
