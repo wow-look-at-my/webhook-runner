@@ -55,10 +55,14 @@ async function test(name: string, fn: () => Promise<void>) {
 child_process.execSync("docker pull alpine:latest", { stdio: "inherit" });
 
 const port = await freePort();
+const adminPort = await freePort();
 const base = `http://127.0.0.1:${port}`;
-const proc = child_process.spawn(BINARY, ["--addr", `:${port}`, HOOKS_DIR], {
-  stdio: ["ignore", "inherit", "inherit"],
-});
+const adminBase = `http://127.0.0.1:${adminPort}`;
+const proc = child_process.spawn(
+  BINARY,
+  ["--addr", `:${port}`, "--admin-addr", `:${adminPort}`, HOOKS_DIR],
+  { stdio: ["ignore", "inherit", "inherit"] },
+);
 
 try {
   await waitForHealth(base);
@@ -70,13 +74,18 @@ try {
     assert.equal(body.status, "ok");
   });
 
-  await test("GET /hooks lists all hooks", async () => {
-    const r = await fetch(`${base}/hooks`);
+  await test("GET /hooks lists all hooks (admin port)", async () => {
+    const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
     assert.equal(hooks.length, 6);
     const ids = hooks.map((h: any) => h.id).sort();
     assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "mount-hook", "secure-hook"]);
+  });
+
+  await test("GET /hooks not on hook port", async () => {
+    const r = await fetch(`${base}/hooks`);
+    assert.equal(r.status, 404);
   });
 
   await test("sync trigger returns output and payload", async () => {
@@ -95,10 +104,10 @@ try {
     assert.ok(output.includes("e2e-test"), "missing payload content");
   });
 
-  await test("GET /runs/:id returns the run", async () => {
+  await test("GET /runs/:id returns the run (admin port)", async () => {
     const trigger = await fetch(`${base}/hook/echo-test?wait=true`, { method: "POST", body: "{}" });
     const run: any = await trigger.json();
-    const r = await fetch(`${base}/runs/${run.id}`);
+    const r = await fetch(`${adminBase}/runs/${run.id}`);
     assert.equal(r.status, 200);
     const fetched: any = await r.json();
     assert.equal(fetched.id, run.id);
@@ -110,7 +119,7 @@ try {
     assert.equal(r.status, 202);
     const body: any = await r.json();
     assert.ok(body.run_id, "missing run_id");
-    const result = await pollRun(base, body.run_id);
+    const result = await pollRun(adminBase, body.run_id);
     assert.equal(result.status, "success");
   });
 
@@ -188,26 +197,26 @@ try {
     });
     assert.equal(r.status, 200);
     const sync: any = await r.json();
-    const full: any = await (await fetch(`${base}/runs/${sync.id}`)).json();
+    const full: any = await (await fetch(`${adminBase}/runs/${sync.id}`)).json();
     const output = full.output.join("\n");
     assert.ok(output.includes('"mounted":"yes"'), "missing payload");
     assert.ok(output.includes("Content-Type"), "missing headers");
   });
 
-  await test("GET /runs/nonexistent returns 404", async () => {
-    const r = await fetch(`${base}/runs/nonexistent`);
+  await test("GET /runs/nonexistent returns 404 (admin port)", async () => {
+    const r = await fetch(`${adminBase}/runs/nonexistent`);
     assert.equal(r.status, 404);
   });
 
-  await test("GET /runs lists runs", async () => {
-    const r = await fetch(`${base}/runs`);
+  await test("GET /runs lists runs (admin port)", async () => {
+    const r = await fetch(`${adminBase}/runs`);
     assert.equal(r.status, 200);
     const runs: any = await r.json();
     assert.ok(runs.length >= 1, "should have at least 1 run");
   });
 
-  await test("GET /runs?hook= filters by hook", async () => {
-    const r = await fetch(`${base}/runs?hook=echo-test`);
+  await test("GET /runs?hook= filters by hook (admin port)", async () => {
+    const r = await fetch(`${adminBase}/runs?hook=echo-test`);
     assert.equal(r.status, 200);
     const runs: any = await r.json();
     assert.ok(runs.length >= 2, `echo-test should have >= 2 runs, got ${runs.length}`);
