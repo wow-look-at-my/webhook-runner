@@ -1,6 +1,6 @@
 // Package server wires the hook registry, runner, and HTTP routes
-// together. The exported Server type satisfies http.Handler so the
-// caller can host it under any net/http listener.
+// together. It exposes two http.Handlers: one for the public-facing
+// hook port and one for the admin port (dashboard, runs, reload).
 package server
 
 import (
@@ -14,15 +14,18 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// Server is the top-level HTTP handler for webhook-runner.
+// Server holds the shared state for both the hook and admin HTTP handlers.
 type Server struct {
-	registry *hooks.Registry
-	runner   *runner.Runner
-	tracker  *runs.Tracker
-	gh       *githubstatus.Client
-	log      *slog.Logger
+	registry     *hooks.Registry
+	runner       *runner.Runner
+	tracker      *runs.Tracker
+	gh           *githubstatus.Client
+	log          *slog.Logger
+	reloadSecret string
+	onReload     func() error
 
-	mux *http.ServeMux
+	hookMux  *http.ServeMux
+	adminMux *http.ServeMux
 }
 
 // Options configure a Server.
@@ -32,37 +35,61 @@ type Options struct {
 	Tracker  *runs.Tracker
 	GitHub   *githubstatus.Client
 	Logger   *slog.Logger
+
+	// ReloadSecret is the HMAC-SHA256 secret used to authenticate
+	// POST /_reload on the hook port. When empty, the endpoint is
+	// not registered.
+	ReloadSecret string
+
+	// OnReload is called when a reload is requested (admin POST /reload
+	// or authenticated POST /_reload on the hook port). When a hooks
+	// repo is configured, this pulls and reloads; otherwise it just
+	// reloads from disk.
+	OnReload func() error
 }
 
-// New constructs a Server, registering all routes.
+// New constructs a Server, registering routes on both muxes.
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
 	s := &Server{
-		registry: opts.Registry,
-		runner:   opts.Runner,
-		tracker:  opts.Tracker,
-		gh:       opts.GitHub,
-		log:      opts.Logger,
-		mux:      http.NewServeMux(),
+		registry:     opts.Registry,
+		runner:       opts.Runner,
+		tracker:      opts.Tracker,
+		gh:           opts.GitHub,
+		log:          opts.Logger,
+		reloadSecret: opts.ReloadSecret,
+		onReload:     opts.OnReload,
+		hookMux:      http.NewServeMux(),
+		adminMux:     http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
 }
 
-// ServeHTTP implements http.Handler.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
-}
+// HookHandler returns the handler for the public hook port.
+func (s *Server) HookHandler() http.Handler { return s.hookMux }
+
+// AdminHandler returns the handler for the internal admin port.
+func (s *Server) AdminHandler() http.Handler { return s.adminMux }
 
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("GET /health", s.handleHealth)
-	s.mux.HandleFunc("GET /hooks", s.handleListHooks)
-	s.mux.HandleFunc("POST /hook/{id}", s.handleTrigger)
-	s.mux.HandleFunc("GET /runs", s.handleListRuns)
-	s.mux.HandleFunc("GET /runs/{id}", s.handleGetRun)
-	s.mux.HandleFunc("GET /", s.handleDashboard)
+	// Hook port (public, exposed via tunnel).
+	s.hookMux.HandleFunc("GET /health", s.handleHealth)
+	s.hookMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
+	if s.reloadSecret != "" {
+		s.hookMux.HandleFunc("POST /_reload", s.handleReloadWebhook)
+	}
+
+	// Admin port (internal, behind zero trust).
+	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
+	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
+	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)
+	s.adminMux.HandleFunc("GET /runs/{id}", s.handleGetRun)
+	s.adminMux.HandleFunc("POST /reload", s.handleReload)
+	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 }
 
 // runRequestContext returns a background context derived from the server

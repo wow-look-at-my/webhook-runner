@@ -26,15 +26,15 @@ RUN go build \
     ./cmd/webhook-runner
 
 FROM alpine:3.20
-RUN apk add --no-cache docker-cli ca-certificates tzdata && \
+RUN apk add --no-cache docker-cli git ca-certificates tzdata && \
     addgroup -S webhook && adduser -S -G webhook webhook
 COPY --from=build /out/webhook-runner /usr/local/bin/webhook-runner
 
-# Sensible defaults; override with -e or `--addr` flag.
 ENV WEBHOOK_RUNNER_ADDR=":9000" \
+    WEBHOOK_RUNNER_ADMIN_ADDR=":9001" \
     WEBHOOK_RUNNER_LOG_FORMAT="text"
 
-EXPOSE 9000
+EXPOSE 9000 9001
 
 # Run as root by default so we can talk to the bind-mounted Docker
 # socket. Override with --user webhook + a properly-permissioned socket
