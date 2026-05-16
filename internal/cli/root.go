@@ -32,9 +32,8 @@ and exposes POST /_reload on the hook port to accept a GitHub push webhook
 
 Configuration via environment:
   WEBHOOK_RUNNER_HOOKS_DIR          hooks directory (or positional arg)
-  WEBHOOK_RUNNER_HOOKS_REPO         Git URL to clone hooks from
+  WEBHOOK_RUNNER_HOOKS_REPO         Git URL to clone hooks from (SSH recommended)
   WEBHOOK_RUNNER_HOOKS_BRANCH       branch to track (default: repo default)
-  WEBHOOK_RUNNER_HOOKS_REPO_TOKEN   token for authenticating to a private hooks repo
   WEBHOOK_RUNNER_HOOKS_REPO_SECRET  HMAC-SHA256 secret for POST /_reload
   WEBHOOK_RUNNER_ADDR               hook port (default :9000)
   WEBHOOK_RUNNER_ADMIN_ADDR         admin port (default :9001)

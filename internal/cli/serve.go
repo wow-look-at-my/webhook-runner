@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -27,7 +28,6 @@ type serveOptions struct {
 	hooksRepo       string
 	hooksBranch     string
 	hooksRepoSecret string
-	hooksRepoToken  string
 }
 
 func applyServeEnv(o *serveOptions) {
@@ -53,9 +53,6 @@ func applyServeEnv(o *serveOptions) {
 	if o.hooksRepoSecret == "" {
 		o.hooksRepoSecret = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO_SECRET")
 	}
-	if o.hooksRepoToken == "" {
-		o.hooksRepoToken = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO_TOKEN")
-	}
 }
 
 func runServe(ctx context.Context, o *serveOptions) error {
@@ -68,8 +65,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		if o.hooksDir == "" {
 			o.hooksDir = "/var/lib/webhook-runner/hooks"
 		}
-		var err error
-		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, o.hooksRepoToken, logger)
+		sshKeyPath, err := hooks.EnsureSSHKey(filepath.Join(filepath.Dir(o.hooksDir), "id_ed25519"), logger)
+		if err != nil {
+			return fmt.Errorf("hooks repo ssh key: %w", err)
+		}
+		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
 		if err != nil {
 			return fmt.Errorf("hooks repo: %w", err)
 		}

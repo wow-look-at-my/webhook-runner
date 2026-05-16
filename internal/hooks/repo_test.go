@@ -3,69 +3,90 @@ package hooks
 import (
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/wow-look-at-my/testify/assert"
 	"github.com/wow-look-at-my/testify/require"
 )
 
-func TestCloneRepo_TokenNotLeakedInError(t *testing.T) {
-	token := "ghp_S3CR3TT0K3N_do_not_leak_me"
+func TestCloneRepo_UsesSSHKey(t *testing.T) {
 	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+	require.Nil(t, os.WriteFile(keyPath, []byte("fake-key"), 0o600))
 
 	_, err := CloneRepo(
-		"https://git.invalid.example/org/repo.git",
+		"git@git.invalid.example:org/repo.git",
 		"",
-		dir+"/hooks",
-		token,
+		filepath.Join(dir, "hooks"),
+		keyPath,
 		slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	)
 	require.NotNil(t, err)
-
-	assert.NotContains(t, err.Error(), token)
+	assert.Contains(t, err.Error(), "git clone")
 }
 
-func TestSanitize(t *testing.T) {
-	cases := []struct {
-		input string
-		token string
-		want  string
-	}{
-		{"no token here", "secret", "no token here"},
-		{"the secret is secret!", "secret", "the [REDACTED] is [REDACTED]!"},
-		{"empty token", "", "empty token"},
-	}
-	for _, tc := range cases {
-		got := sanitize(tc.input, tc.token)
-		assert.Equal(t, tc.want, got)
-	}
-}
-
-func TestGitCmd_SetsAuthEnv(t *testing.T) {
-	r := &Repo{token: "test-token"}
+func TestGitCmd_SetsSSHCommand(t *testing.T) {
+	r := &Repo{sshKeyPath: "/tmp/test-key"}
 	cmd := r.gitCmd("status")
 
-	found := map[string]bool{}
+	found := false
 	for _, e := range cmd.Env {
-		switch {
-		case e == "GIT_CONFIG_COUNT=1":
-			found["count"] = true
-		case e == "GIT_CONFIG_KEY_0=http.extraHeader":
-			found["key"] = true
-		case e == "GIT_CONFIG_VALUE_0=Authorization: Bearer test-token":
-			found["value"] = true
-		case e == "GIT_TERMINAL_PROMPT=0":
-			found["prompt"] = true
+		if e == "GIT_SSH_COMMAND=ssh -i /tmp/test-key -o StrictHostKeyChecking=accept-new" {
+			found = true
+			break
 		}
 	}
-	assert.True(t, found["count"], "missing GIT_CONFIG_COUNT")
-	assert.True(t, found["key"], "missing GIT_CONFIG_KEY_0")
-	assert.True(t, found["value"], "missing GIT_CONFIG_VALUE_0")
-	assert.True(t, found["prompt"], "missing GIT_TERMINAL_PROMPT")
+	assert.True(t, found, "missing GIT_SSH_COMMAND in env")
 }
 
-func TestGitCmd_NoTokenNoExtraEnv(t *testing.T) {
+func TestGitCmd_NoKeyNoExtraEnv(t *testing.T) {
 	r := &Repo{}
 	cmd := r.gitCmd("status")
 	assert.Nil(t, cmd.Env)
+}
+
+func TestEnsureSSHKey_GeneratesKey(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available")
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+
+	path, err := EnsureSSHKey(keyPath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	require.Nil(t, err)
+	assert.Equal(t, keyPath, path)
+
+	_, err = os.Stat(keyPath)
+	require.Nil(t, err)
+	_, err = os.Stat(keyPath + ".pub")
+	require.Nil(t, err)
+
+	pub, err := os.ReadFile(keyPath + ".pub")
+	require.Nil(t, err)
+	assert.Contains(t, string(pub), "ssh-ed25519")
+}
+
+func TestEnsureSSHKey_ReusesExisting(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available")
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+
+	// Generate a key first.
+	_, err := EnsureSSHKey(keyPath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	require.Nil(t, err)
+
+	original, err := os.ReadFile(keyPath)
+	require.Nil(t, err)
+
+	// Call again — should reuse, not regenerate.
+	_, err = EnsureSSHKey(keyPath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	require.Nil(t, err)
+
+	after, err := os.ReadFile(keyPath)
+	require.Nil(t, err)
+	assert.Equal(t, original, after)
 }
