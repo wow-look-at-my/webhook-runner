@@ -55,6 +55,10 @@ accepts a GitHub push webhook (HMAC-SHA256 via `WEBHOOK_RUNNER_HOOKS_REPO_SECRET
 and triggers `git fetch --depth=1` + `git reset --hard FETCH_HEAD` + reload.
 The admin port's `POST /reload` does the same without auth.
 
+For private repos, set `WEBHOOK_RUNNER_HOOKS_REPO_TOKEN` to a PAT or
+GitHub App token. Auth is handled via `GIT_ASKPASS` so the token never
+appears in the clone URL, log messages, or error output.
+
 The companion repo is `wow-look-at-my/webhooks`.
 
 ## Things easy to get wrong

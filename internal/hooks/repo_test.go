@@ -3,8 +3,10 @@ package hooks
 import (
 	"log/slog"
 	"os"
-	"strings"
 	"testing"
+
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func TestCloneRepo_TokenNotLeakedInError(t *testing.T) {
@@ -19,20 +21,17 @@ func TestCloneRepo_TokenNotLeakedInError(t *testing.T) {
 		token,
 		slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	)
-	if err == nil {
-		t.Fatal("expected clone to fail against invalid host")
-	}
+	require.NotNil(t, err)
 
-	if strings.Contains(err.Error(), token) {
-		t.Errorf("error message contains token:\n%s", err.Error())
-	}
+	assert.NotContains(t, err.Error(), token)
+
 }
 
 func TestSanitize(t *testing.T) {
 	cases := []struct {
-		input string
-		token string
-		want  string
+		input	string
+		token	string
+		want	string
 	}{
 		{"no token here", "secret", "no token here"},
 		{"the secret is secret!", "secret", "the [REDACTED] is [REDACTED]!"},
@@ -40,35 +39,27 @@ func TestSanitize(t *testing.T) {
 	}
 	for _, tc := range cases {
 		got := sanitize(tc.input, tc.token)
-		if got != tc.want {
-			t.Errorf("sanitize(%q, %q) = %q, want %q", tc.input, tc.token, got, tc.want)
-		}
+		assert.Equal(t, tc.want, got)
+
 	}
 }
 
 func TestWriteAskpass(t *testing.T) {
 	path, err := writeAskpass("test-token-123")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer os.Remove(path)
 
 	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o700 {
-		t.Errorf("askpass script permissions = %o, want 700", info.Mode().Perm())
-	}
+	require.Nil(t, err)
+
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 
 	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(content), "x-access-token") {
-		t.Error("askpass script missing username response")
-	}
-	if !strings.Contains(string(content), "test-token-123") {
-		t.Error("askpass script missing token")
-	}
+	require.Nil(t, err)
+
+	assert.Contains(t, string(content), "x-access-token")
+
+	assert.Contains(t, string(content), "test-token-123")
+
 }
