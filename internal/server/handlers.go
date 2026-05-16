@@ -172,6 +172,50 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 	return sync, syncTimeout, nil
 }
 
+// handleReload triggers a reload on the admin port (no auth — the admin
+// port is behind zero trust).
+func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
+	if s.onReload == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "no-op"})
+		return
+	}
+	if err := s.onReload(); err != nil {
+		s.log.Error("reload failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+}
+
+// handleReloadWebhook triggers a reload on the hook port, authenticated
+// with the HMAC-SHA256 secret in WEBHOOK_RUNNER_HOOKS_REPO_SECRET. This
+// is the endpoint a GitHub push webhook should target.
+func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if !verifyLegacyHMAC(body, sig, s.reloadSecret) {
+		s.log.Warn("reload auth failed", "remote", r.RemoteAddr)
+		writeError(w, http.StatusUnauthorized, "invalid signature")
+		return
+	}
+
+	if s.onReload == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "no-op"})
+		return
+	}
+	if err := s.onReload(); err != nil {
+		s.log.Error("reload failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

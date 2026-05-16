@@ -18,17 +18,23 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
 )
 
-// serveOptions holds the values populated by flags + env vars.
 type serveOptions struct {
-	addr      string
-	hooksDir  string
-	logFormat string
-	ghToken   string
+	addr            string
+	adminAddr       string
+	hooksDir        string
+	logFormat       string
+	ghToken         string
+	hooksRepo       string
+	hooksBranch     string
+	hooksRepoSecret string
 }
 
 func applyServeEnv(o *serveOptions) {
 	if o.addr == "" {
 		o.addr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADDR"), ":9000")
+	}
+	if o.adminAddr == "" {
+		o.adminAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADMIN_ADDR"), ":9001")
 	}
 	if o.hooksDir == "" {
 		o.hooksDir = os.Getenv("WEBHOOK_RUNNER_HOOKS_DIR")
@@ -37,11 +43,37 @@ func applyServeEnv(o *serveOptions) {
 		o.logFormat = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_LOG_FORMAT"), "text")
 	}
 	o.ghToken = os.Getenv("WEBHOOK_RUNNER_GITHUB_TOKEN")
+	if o.hooksRepo == "" {
+		o.hooksRepo = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO")
+	}
+	if o.hooksBranch == "" {
+		o.hooksBranch = os.Getenv("WEBHOOK_RUNNER_HOOKS_BRANCH")
+	}
+	if o.hooksRepoSecret == "" {
+		o.hooksRepoSecret = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO_SECRET")
+	}
 }
 
 func runServe(ctx context.Context, o *serveOptions) error {
 	logger := newLogger(o.logFormat)
 	slog.SetDefault(logger)
+
+	// If a hooks repo is configured, clone/pull it.
+	var repo *hooks.Repo
+	if o.hooksRepo != "" {
+		if o.hooksDir == "" {
+			o.hooksDir = "/var/lib/webhook-runner/hooks"
+		}
+		var err error
+		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, logger)
+		if err != nil {
+			return fmt.Errorf("hooks repo: %w", err)
+		}
+	}
+
+	if o.hooksDir == "" {
+		return errors.New("hooks directory required (positional arg, WEBHOOK_RUNNER_HOOKS_DIR, or WEBHOOK_RUNNER_HOOKS_REPO)")
+	}
 
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
@@ -58,12 +90,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
+	onReload := buildReloadFunc(repo, o.hooksDir, registry, logger)
+
 	srv := server.New(server.Options{
-		Registry: registry,
-		Runner:   rn,
-		Tracker:  tracker,
-		GitHub:   gh,
-		Logger:   logger,
+		Registry:     registry,
+		Runner:       rn,
+		Tracker:      tracker,
+		GitHub:       gh,
+		Logger:       logger,
+		ReloadSecret: o.hooksRepoSecret,
+		OnReload:     onReload,
 	})
 
 	// Watcher runs for the lifetime of the server.
@@ -74,9 +110,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		watchErr <- hooks.Watch(watchCtx, o.hooksDir, registry, logger)
 	}()
 
-	httpSrv := &http.Server{
+	hookSrv := &http.Server{
 		Addr:              o.addr,
-		Handler:           srv,
+		Handler:           srv.HookHandler(),
+		ReadHeaderTimeout: 15 * time.Second,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
+	adminSrv := &http.Server{
+		Addr:              o.adminAddr,
+		Handler:           srv.AdminHandler(),
 		ReadHeaderTimeout: 15 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
@@ -85,15 +127,30 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	httpErr := make(chan error, 1)
+	httpErr := make(chan error, 2)
 	go func() {
-		logger.Info("listening", "addr", o.addr, "hooks_dir", o.hooksDir,
-			"github_status_enabled", gh.Enabled())
-		err := httpSrv.ListenAndServe()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			httpErr <- err
+		logger.Info("hook server listening", "addr", o.addr)
+		if err := hookSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			httpErr <- fmt.Errorf("hook server: %w", err)
 		}
 	}()
+	go func() {
+		logger.Info("admin server listening", "addr", o.adminAddr)
+		if err := adminSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			httpErr <- fmt.Errorf("admin server: %w", err)
+		}
+	}()
+
+	attrs := []any{
+		"hook_addr", o.addr,
+		"admin_addr", o.adminAddr,
+		"hooks_dir", o.hooksDir,
+		"github_status", gh.Enabled(),
+	}
+	if o.hooksRepo != "" {
+		attrs = append(attrs, "hooks_repo", o.hooksRepo)
+	}
+	logger.Info("webhook-runner started", attrs...)
 
 	select {
 	case err := <-httpErr:
@@ -108,12 +165,39 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	logger.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("http shutdown", "err", err)
+	if err := hookSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("hook server shutdown", "err", err)
+	}
+	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("admin server shutdown", "err", err)
 	}
 	cancelWatch()
 	rn.Wait()
 	return nil
+}
+
+func buildReloadFunc(repo *hooks.Repo, hooksDir string, registry *hooks.Registry, logger *slog.Logger) func() error {
+	reloadFromDisk := func() {
+		loaded, errs := hooks.LoadDir(hooksDir)
+		for _, e := range errs {
+			logger.Error("hook reload error", "err", e)
+		}
+		registry.Replace(loaded)
+		logger.Info("hooks reloaded", "count", len(loaded))
+	}
+	if repo != nil {
+		return func() error {
+			if err := repo.Pull(); err != nil {
+				return err
+			}
+			reloadFromDisk()
+			return nil
+		}
+	}
+	return func() error {
+		reloadFromDisk()
+		return nil
+	}
 }
 
 func newLogger(format string) *slog.Logger {
