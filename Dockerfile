@@ -26,7 +26,7 @@ RUN go build \
     ./cmd/webhook-runner
 
 FROM alpine:3.20
-RUN apk add --no-cache docker-cli git openssh-client ca-certificates tzdata && \
+RUN apk add --no-cache docker-cli git ca-certificates tzdata && \
     addgroup -S webhook && adduser -S -G webhook webhook
 COPY --from=build /out/webhook-runner /usr/local/bin/webhook-runner
 
