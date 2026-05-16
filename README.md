@@ -157,9 +157,11 @@ go-toolchain
 
 ## Notes
 
-- The runtime image is plain `alpine` plus `docker-cli`. The Docker
-  SDK is intentionally not used — webhook-runner shells out to `docker run`
-  exactly as you would on the command line.
+- The runtime image is `alpine` plus `docker-cli`, `git`, and
+  `openssh-client`. The Docker SDK is intentionally not used —
+  webhook-runner shells out to `docker run` exactly as you would on
+  the command line. SSH is available for `git@github.com:...` clone
+  URLs (mount your SSH key or agent socket into the container).
 - No CGO. The binary is `go build -o webhook-runner ./cmd/webhook-runner`
   with `CGO_ENABLED=0`.
 - No persistence: run history is in memory only and bounded
