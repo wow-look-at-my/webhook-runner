@@ -46,11 +46,12 @@ docker run --rm \
   -v $PWD/examples/hooks:/hooks:ro \
   webhook-runner /hooks
 
-# Or with a Git-backed hooks repo
+# Or with a Git-backed hooks repo (private)
 docker run --rm \
   -p 9000:9000 -p 9001:9001 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -e WEBHOOK_RUNNER_HOOKS_REPO=https://github.com/you/your-hooks.git \
+  -e WEBHOOK_RUNNER_HOOKS_REPO=https://github.com/you/your-private-hooks.git \
+  -e WEBHOOK_RUNNER_HOOKS_REPO_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   -e WEBHOOK_RUNNER_HOOKS_REPO_SECRET=your-webhook-secret \
   webhook-runner
 ```
@@ -116,6 +117,7 @@ See `examples/hooks/` for working examples.
 | `WEBHOOK_RUNNER_HOOKS_DIR`        | (none)                       | Hooks directory. Also accepted as positional arg.             |
 | `WEBHOOK_RUNNER_HOOKS_REPO`       | (none)                       | Git URL to clone hooks from. Sets `HOOKS_DIR` automatically. |
 | `WEBHOOK_RUNNER_HOOKS_BRANCH`     | (repo default)               | Branch to track when using `HOOKS_REPO`.                     |
+| `WEBHOOK_RUNNER_HOOKS_REPO_TOKEN` | (none)                       | Personal access token (or GitHub App token) for cloning a private hooks repo over HTTPS. |
 | `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`| (none)                       | HMAC-SHA256 secret for `POST /_reload` on the hook port.     |
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |

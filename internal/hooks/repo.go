@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -15,18 +16,30 @@ type Repo struct {
 	url    string
 	branch string
 	dir    string
+	token  string
 	log    *slog.Logger
 	mu     sync.Mutex
+
+	askpassPath string
 }
 
 // CloneRepo clones url into dir (shallow, single-branch). If dir already
 // contains a git repository, it pulls instead of cloning.
-func CloneRepo(url, branch, dir string, log *slog.Logger) (*Repo, error) {
+func CloneRepo(url, branch, dir, token string, log *slog.Logger) (*Repo, error) {
 	r := &Repo{
 		url:    url,
 		branch: branch,
 		dir:    dir,
+		token:  token,
 		log:    log,
+	}
+
+	if token != "" {
+		path, err := writeAskpass(token)
+		if err != nil {
+			return nil, fmt.Errorf("setup git credentials: %w", err)
+		}
+		r.askpassPath = path
 	}
 
 	if isGitRepo(dir) {
@@ -47,9 +60,9 @@ func CloneRepo(url, branch, dir string, log *slog.Logger) (*Repo, error) {
 	}
 	args = append(args, url, dir)
 
-	out, err := exec.Command("git", args...).CombinedOutput()
+	out, err := r.gitCmd(args...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("git clone %s: %w\n%s", url, err, out)
+		return nil, fmt.Errorf("git clone %s: %w\n%s", url, err, sanitize(string(out), token))
 	}
 	log.Info("hooks repo cloned", "url", url, "branch", branch, "dir", dir)
 	return r, nil
@@ -68,16 +81,56 @@ func (r *Repo) Pull() error {
 	if r.branch != "" {
 		fetchArgs = append(fetchArgs, r.branch)
 	}
-	if out, err := exec.Command("git", fetchArgs...).CombinedOutput(); err != nil {
-		return fmt.Errorf("git fetch: %w\n%s", err, out)
+	if out, err := r.gitCmd(fetchArgs...).CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch: %w\n%s", err, sanitize(string(out), r.token))
 	}
 
-	if out, err := exec.Command("git", "-C", r.dir, "reset", "--hard", "FETCH_HEAD").CombinedOutput(); err != nil {
-		return fmt.Errorf("git reset: %w\n%s", err, out)
+	if out, err := r.gitCmd("-C", r.dir, "reset", "--hard", "FETCH_HEAD").CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset: %w\n%s", err, sanitize(string(out), r.token))
 	}
 
 	r.log.Info("hooks repo updated")
 	return nil
+}
+
+func (r *Repo) gitCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	if r.askpassPath != "" {
+		cmd.Env = append(os.Environ(),
+			"GIT_ASKPASS="+r.askpassPath,
+			"GIT_TERMINAL_PROMPT=0",
+		)
+	}
+	return cmd
+}
+
+func writeAskpass(token string) (string, error) {
+	f, err := os.CreateTemp("", "webhook-runner-askpass-*")
+	if err != nil {
+		return "", err
+	}
+	script := "#!/bin/sh\ncase \"$1\" in\nUsername*|username*) echo x-access-token ;;\n*) echo '" + strings.ReplaceAll(token, "'", "'\\''") + "' ;;\nesac\n"
+	if _, err := f.WriteString(script); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := os.Chmod(f.Name(), 0o700); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+func sanitize(s, token string) string {
+	if token == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, token, "[REDACTED]")
 }
 
 func isGitRepo(dir string) bool {
