@@ -19,8 +19,6 @@ type Repo struct {
 	token  string
 	log    *slog.Logger
 	mu     sync.Mutex
-
-	askpassPath string
 }
 
 // CloneRepo clones url into dir (shallow, single-branch). If dir already
@@ -32,14 +30,6 @@ func CloneRepo(url, branch, dir, token string, log *slog.Logger) (*Repo, error) 
 		dir:    dir,
 		token:  token,
 		log:    log,
-	}
-
-	if token != "" {
-		path, err := writeAskpass(token)
-		if err != nil {
-			return nil, fmt.Errorf("setup git credentials: %w", err)
-		}
-		r.askpassPath = path
 	}
 
 	if isGitRepo(dir) {
@@ -95,35 +85,15 @@ func (r *Repo) Pull() error {
 
 func (r *Repo) gitCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
-	if r.askpassPath != "" {
+	if r.token != "" {
 		cmd.Env = append(os.Environ(),
-			"GIT_ASKPASS="+r.askpassPath,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=http.extraHeader",
+			"GIT_CONFIG_VALUE_0=Authorization: Bearer "+r.token,
 			"GIT_TERMINAL_PROMPT=0",
 		)
 	}
 	return cmd
-}
-
-func writeAskpass(token string) (string, error) {
-	f, err := os.CreateTemp("", "webhook-runner-askpass-*")
-	if err != nil {
-		return "", err
-	}
-	script := "#!/bin/sh\ncase \"$1\" in\nUsername*|username*) echo x-access-token ;;\n*) echo '" + strings.ReplaceAll(token, "'", "'\\''") + "' ;;\nesac\n"
-	if _, err := f.WriteString(script); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	if err := os.Chmod(f.Name(), 0o700); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
 }
 
 func sanitize(s, token string) string {
