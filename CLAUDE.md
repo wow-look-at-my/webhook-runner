@@ -55,6 +55,11 @@ accepts a GitHub push webhook (HMAC-SHA256 via `WEBHOOK_RUNNER_HOOKS_REPO_SECRET
 and triggers `git fetch --depth=1` + `git reset --hard FETCH_HEAD` + reload.
 The admin port's `POST /reload` does the same without auth.
 
+For private repos, use an SSH URL (`git@github.com:...`). On first
+startup, the server auto-generates an Ed25519 deploy key and logs the
+public key. Add it to the repo's deploy keys on GitHub, then restart.
+The key persists at `<hooks-dir>/../id_ed25519`.
+
 The companion repo is `wow-look-at-my/webhooks`.
 
 ## Things easy to get wrong

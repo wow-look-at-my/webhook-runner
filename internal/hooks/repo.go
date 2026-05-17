@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -17,16 +18,19 @@ type Repo struct {
 	dir    string
 	log    *slog.Logger
 	mu     sync.Mutex
+
+	sshKeyPath string
 }
 
 // CloneRepo clones url into dir (shallow, single-branch). If dir already
 // contains a git repository, it pulls instead of cloning.
-func CloneRepo(url, branch, dir string, log *slog.Logger) (*Repo, error) {
+func CloneRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, error) {
 	r := &Repo{
-		url:    url,
-		branch: branch,
-		dir:    dir,
-		log:    log,
+		url:        url,
+		branch:     branch,
+		dir:        dir,
+		sshKeyPath: sshKeyPath,
+		log:        log,
 	}
 
 	if isGitRepo(dir) {
@@ -47,7 +51,7 @@ func CloneRepo(url, branch, dir string, log *slog.Logger) (*Repo, error) {
 	}
 	args = append(args, url, dir)
 
-	out, err := exec.Command("git", args...).CombinedOutput()
+	out, err := r.gitCmd(args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git clone %s: %w\n%s", url, err, out)
 	}
@@ -68,16 +72,58 @@ func (r *Repo) Pull() error {
 	if r.branch != "" {
 		fetchArgs = append(fetchArgs, r.branch)
 	}
-	if out, err := exec.Command("git", fetchArgs...).CombinedOutput(); err != nil {
+	if out, err := r.gitCmd(fetchArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch: %w\n%s", err, out)
 	}
 
-	if out, err := exec.Command("git", "-C", r.dir, "reset", "--hard", "FETCH_HEAD").CombinedOutput(); err != nil {
+	if out, err := r.gitCmd("-C", r.dir, "reset", "--hard", "FETCH_HEAD").CombinedOutput(); err != nil {
 		return fmt.Errorf("git reset: %w\n%s", err, out)
 	}
 
 	r.log.Info("hooks repo updated")
 	return nil
+}
+
+func (r *Repo) gitCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	if r.sshKeyPath != "" {
+		cmd.Env = append(os.Environ(),
+			"GIT_SSH_COMMAND=ssh -i "+r.sshKeyPath+" -o StrictHostKeyChecking=accept-new",
+		)
+	}
+	return cmd
+}
+
+// EnsureSSHKey checks for an Ed25519 keypair at keyPath. If none exists,
+// it generates one. Returns the path to the private key.
+func EnsureSSHKey(keyPath string, log *slog.Logger) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return "", fmt.Errorf("create ssh key directory: %w", err)
+	}
+
+	if _, err := os.Stat(keyPath); err == nil {
+		pub, err := os.ReadFile(keyPath + ".pub")
+		if err != nil {
+			return "", fmt.Errorf("read public key: %w", err)
+		}
+		log.Info("hooks repo deploy key", "public_key", strings.TrimSpace(string(pub)))
+		return keyPath, nil
+	}
+
+	out, err := exec.Command(
+		"ssh-keygen", "-t", "ed25519", "-f", keyPath, "-N", "", "-C", "webhook-runner",
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("ssh-keygen: %w\n%s", err, out)
+	}
+
+	pub, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		return "", fmt.Errorf("read public key: %w", err)
+	}
+	log.Info("generated hooks repo deploy key — add this to your repo's deploy keys",
+		"public_key", strings.TrimSpace(string(pub)))
+	return keyPath, nil
 }
 
 func isGitRepo(dir string) bool {

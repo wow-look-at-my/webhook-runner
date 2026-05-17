@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -64,8 +65,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		if o.hooksDir == "" {
 			o.hooksDir = "/var/lib/webhook-runner/hooks"
 		}
-		var err error
-		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, logger)
+		sshKeyPath, err := hooks.EnsureSSHKey(filepath.Join(filepath.Dir(o.hooksDir), "id_ed25519"), logger)
+		if err != nil {
+			return fmt.Errorf("hooks repo ssh key: %w", err)
+		}
+		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
 		if err != nil {
 			return fmt.Errorf("hooks repo: %w", err)
 		}
