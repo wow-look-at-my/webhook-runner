@@ -106,7 +106,7 @@ func EnsureSSHKey(keyPath string, log *slog.Logger) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read public key: %w", err)
 		}
-		log.Info("hooks repo deploy key", "public_key", strings.TrimSpace(string(pub)))
+		printDeployKey(strings.TrimSpace(string(pub)))
 		return keyPath, nil
 	}
 
@@ -121,9 +121,14 @@ func EnsureSSHKey(keyPath string, log *slog.Logger) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read public key: %w", err)
 	}
-	log.Info("generated hooks repo deploy key — add this to your repo's deploy keys",
-		"public_key", strings.TrimSpace(string(pub)))
+	printDeployKey(strings.TrimSpace(string(pub)))
 	return keyPath, nil
+}
+
+func printDeployKey(pub string) {
+	fmt.Fprintf(os.Stderr, "\n"+
+		"Add this deploy key to your repository:\n\n"+
+		"  %s\n\n", pub)
 }
 
 func isGitRepo(dir string) bool {
