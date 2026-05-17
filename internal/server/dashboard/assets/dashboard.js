@@ -124,5 +124,77 @@ document.getElementById("run-detail-close").addEventListener("click", () => {
   document.getElementById("run-detail").hidden = true;
 });
 
+function parseGitHubURL(repoURL) {
+  let m = repoURL.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (m) return m[1];
+  return null;
+}
+
+async function loadConfig() {
+  try {
+    const cfg = await fetchJSON("/config");
+    if (!cfg.hooks_repo) return;
+
+    const section = document.getElementById("setup-section");
+    const content = document.getElementById("setup-content");
+    section.hidden = false;
+
+    const ghPath = parseGitHubURL(cfg.hooks_repo);
+    const repoLink = ghPath
+      ? `https://github.com/${ghPath}`
+      : cfg.hooks_repo;
+
+    const nodes = [];
+
+    const repoP = el("p", { class: "setup-repo" },
+      "Repository: ",
+      ghPath
+        ? el("a", { href: repoLink, target: "_blank" }, ghPath)
+        : el("code", null, cfg.hooks_repo)
+    );
+    nodes.push(repoP);
+
+    const reloadURL = cfg.hook_base_url
+      ? cfg.hook_base_url.replace(/\/$/, "") + "/_reload"
+      : "/_reload";
+
+    const h3 = el("h3", null, "Auto-reload webhook setup");
+    nodes.push(h3);
+
+    const intro = el("p", null,
+      "To auto-reload hooks on push, add a webhook to the repo:"
+    );
+    nodes.push(intro);
+
+    if (ghPath) {
+      const settingsURL = `https://github.com/${ghPath}/settings/hooks/new`;
+      const link = el("p", null,
+        el("a", { href: settingsURL, target: "_blank", class: "btn" },
+          "Add webhook on GitHub")
+      );
+      nodes.push(link);
+    }
+
+    const dl = document.createElement("dl");
+    const fields = [
+      ["Payload URL", reloadURL],
+      ["Content type", "application/json"],
+      ["Secret", cfg.reload_secret || "(not configured)"],
+      ["Events", "Just the push event"],
+    ];
+    for (const [k, v] of fields) {
+      dl.appendChild(el("dt", null, k));
+      const dd = el("dd", null, el("code", { class: "copyable" }, v));
+      dl.appendChild(dd);
+    }
+    nodes.push(dl);
+
+    for (const n of nodes) content.appendChild(n);
+  } catch (e) {
+    console.error("loadConfig:", e);
+  }
+}
+
+loadConfig();
 refresh();
 setInterval(refresh, POLL_MS);

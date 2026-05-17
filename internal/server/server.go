@@ -23,6 +23,8 @@ type Server struct {
 	log          *slog.Logger
 	reloadSecret string
 	onReload     func() error
+	hooksRepo    string
+	hookBaseURL  string
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -46,6 +48,15 @@ type Options struct {
 	// repo is configured, this pulls and reloads; otherwise it just
 	// reloads from disk.
 	OnReload func() error
+
+	// HooksRepo is the Git remote URL of the hooks repository (SSH or
+	// HTTPS). Exposed via the admin /config endpoint for the dashboard.
+	HooksRepo string
+
+	// HookBaseURL is the public base URL of the hook port (e.g.
+	// "https://hooks.example.com"). Used by the dashboard to show the
+	// full _reload webhook URL. Optional.
+	HookBaseURL string
 }
 
 // New constructs a Server, registering routes on both muxes.
@@ -61,6 +72,8 @@ func New(opts Options) *Server {
 		log:          opts.Logger,
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,
+		hooksRepo:    opts.HooksRepo,
+		hookBaseURL:  opts.HookBaseURL,
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
 	}
@@ -89,6 +102,7 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)
 	s.adminMux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	s.adminMux.HandleFunc("POST /reload", s.handleReload)
+	s.adminMux.HandleFunc("GET /config", s.handleConfig)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 }
 

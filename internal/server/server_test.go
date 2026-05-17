@@ -502,3 +502,42 @@ func TestReloadWebhookNotRegisteredWithoutSecret(t *testing.T) {
 	hook(s).ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
+
+func TestConfigEndpoint(t *testing.T) {
+	s := New(Options{
+		Registry:     hooks.NewRegistry(),
+		Tracker:      runs.NewTracker(),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		HooksRepo:    "git@github.com:wow-look-at-my/webhooks.git",
+		HookBaseURL:  "https://hooks.example.com",
+		ReloadSecret: "my-secret",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var cfg map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&cfg))
+	assert.Equal(t, "git@github.com:wow-look-at-my/webhooks.git", cfg["hooks_repo"])
+	assert.Equal(t, "https://hooks.example.com", cfg["hook_base_url"])
+	assert.Equal(t, "my-secret", cfg["reload_secret"])
+}
+
+func TestConfigEndpointEmpty(t *testing.T) {
+	s := New(Options{
+		Registry: hooks.NewRegistry(),
+		Tracker:  runs.NewTracker(),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var cfg map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&cfg))
+	assert.Empty(t, cfg)
+}
