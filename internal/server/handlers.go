@@ -216,6 +216,20 @@ func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
 }
 
+func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	cfg := map[string]string{}
+	if s.hooksRepo != "" {
+		cfg["hooks_repo"] = s.hooksRepo
+	}
+	if s.hookBaseURL != "" {
+		cfg["hook_base_url"] = s.hookBaseURL
+	}
+	if s.reloadSecret != "" {
+		cfg["reload_secret"] = s.reloadSecret
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

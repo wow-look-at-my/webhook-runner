@@ -68,7 +68,7 @@ pre {
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; font-size: 0.875rem; }
 dt { color: var(--muted); }
 dd { margin: 0; }
-button {
+button, .btn {
   background: var(--accent);
   color: white;
   border: 0;
@@ -76,5 +76,12 @@ button {
   font-size: 0.875rem;
   border-radius: 6px;
   cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
 }
-button:hover { filter: brightness(1.1); }
+button:hover, .btn:hover { filter: brightness(1.1); }
+#setup-section .setup-repo { font-size: 0.9rem; }
+#setup-section a:not(.btn) { color: var(--accent); text-decoration: none; }
+#setup-section a:not(.btn):hover { text-decoration: underline; }
+#setup-section dl { margin: 0.75rem 0; }
+.copyable { user-select: all; }

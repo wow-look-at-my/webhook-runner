@@ -28,6 +28,7 @@ type serveOptions struct {
 	hooksRepo       string
 	hooksBranch     string
 	hooksRepoSecret string
+	hookBaseURL     string
 }
 
 func applyServeEnv(o *serveOptions) {
@@ -52,6 +53,9 @@ func applyServeEnv(o *serveOptions) {
 	}
 	if o.hooksRepoSecret == "" {
 		o.hooksRepoSecret = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO_SECRET")
+	}
+	if o.hookBaseURL == "" {
+		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
 	}
 }
 
@@ -104,6 +108,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Logger:       logger,
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,
+		HooksRepo:    o.hooksRepo,
+		HookBaseURL:  o.hookBaseURL,
 	})
 
 	// Watcher runs for the lifetime of the server.
