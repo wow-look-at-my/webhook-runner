@@ -11,7 +11,6 @@ come from a local directory or be cloned from a Git repository.
 
 ```
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
-cmd/jit-runner/            standalone binary for JIT GitHub Actions runners
 internal/cli/              cobra commands (root = run server, validate, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded read-only HTML dashboard
