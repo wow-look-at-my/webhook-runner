@@ -172,7 +172,7 @@ func (h *Hook) resolveScript() error {
 			h.Image = "node:22-alpine"
 		}
 		if len(h.Command) == 0 {
-			h.Command = append([]string{"node", "--experimental-strip-types", scriptPath}, s.Args...)
+			h.Command = append([]string{"npx", "--yes", "tsx", scriptPath}, s.Args...)
 		}
 	default:
 		return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, node, or tsx)", s.Interpreter)

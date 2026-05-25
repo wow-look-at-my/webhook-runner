@@ -137,7 +137,7 @@ func TestScriptResolveTsx(t *testing.T) {
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
 	assert.Equal(t, "node:22-alpine", h.Image)
-	assert.Equal(t, []string{"node", "--experimental-strip-types", "/opt/hook/handler.ts"}, h.Command)
+	assert.Equal(t, []string{"npx", "--yes", "tsx", "/opt/hook/handler.ts"}, h.Command)
 }
 
 func TestScriptWithArgs(t *testing.T) {
