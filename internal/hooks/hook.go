@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -20,6 +21,17 @@ const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
 const DefaultAPIKeyHeader = "X-API-Key"
 
+const scriptMountPath = "/opt/hook"
+
+// Script configures a hook to run a script file from the hook directory
+// instead of requiring inline image/command. The interpreter determines
+// the default Docker image and command.
+type Script struct {
+	File        string   `json:"file"`
+	Interpreter string   `json:"interpreter"`
+	Args        []string `json:"args,omitempty"`
+}
+
 // Hook is the parsed in-memory representation of a single hook.json file.
 //
 // The ID is derived from the parent directory name and is not part of the
@@ -28,8 +40,9 @@ type Hook struct {
 	ID              string             `json:"-"`
 	SourcePath      string             `json:"-"`
 	Description     string             `json:"description"`
-	Image           string             `json:"image"`
-	Command         []string           `json:"command"`
+	Image           string             `json:"image,omitempty"`
+	Command         []string           `json:"command,omitempty"`
+	Script          *Script            `json:"script,omitempty"`
 	Networks        []string           `json:"networks,omitempty"`
 	Volumes         []string           `json:"volumes,omitempty"`
 	Env             map[string]string  `json:"env,omitempty"`
@@ -110,10 +123,71 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	if err := h.resolveScript(); err != nil {
+		return nil, err
+	}
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
 	return h, nil
+}
+
+func (h *Hook) resolveScript() error {
+	if h.Script == nil {
+		return nil
+	}
+	s := h.Script
+	if s.File == "" {
+		return errors.New("script.file is required")
+	}
+	if s.Interpreter == "" {
+		return errors.New("script.interpreter is required")
+	}
+
+	scriptPath := scriptMountPath + "/" + s.File
+	switch s.Interpreter {
+	case "bash":
+		if h.Image == "" {
+			h.Image = "bash:5"
+		}
+		if len(h.Command) == 0 {
+			h.Command = append([]string{"bash", scriptPath}, s.Args...)
+		}
+	case "pwsh":
+		if h.Image == "" {
+			h.Image = "mcr.microsoft.com/powershell:lts-alpine-3.20"
+		}
+		if len(h.Command) == 0 {
+			h.Command = append([]string{"pwsh", "-File", scriptPath}, s.Args...)
+		}
+	case "node":
+		if h.Image == "" {
+			h.Image = "node:22-alpine"
+		}
+		if len(h.Command) == 0 {
+			h.Command = append([]string{"node", scriptPath}, s.Args...)
+		}
+	default:
+		return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, or node)", s.Interpreter)
+	}
+
+	hookDir := filepath.Dir(h.SourcePath)
+	scriptAbs := filepath.Join(hookDir, s.File)
+
+	realScript, err := filepath.EvalSymlinks(scriptAbs)
+	if err != nil {
+		return fmt.Errorf("script.file %q: %w", s.File, err)
+	}
+	realHookDir, err := filepath.EvalSymlinks(hookDir)
+	if err != nil {
+		return fmt.Errorf("resolve hook directory: %w", err)
+	}
+	if !strings.HasPrefix(realScript, realHookDir+string(filepath.Separator)) {
+		return fmt.Errorf("script.file %q resolves outside hook directory", s.File)
+	}
+
+	h.Volumes = append(h.Volumes, hookDir+":"+scriptMountPath+":ro")
+	return nil
 }
 
 func (h *Hook) validate() error {

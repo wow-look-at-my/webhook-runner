@@ -4,8 +4,11 @@
   "title": "webhook-runner hook configuration",
   "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root.",
   "type": "object",
-  "required": ["image", "command"],
   "additionalProperties": false,
+  "anyOf": [
+    { "required": ["image", "command"] },
+    { "required": ["script"] }
+  ],
   "properties": {
     "description": {
       "type": "string",
@@ -85,6 +88,28 @@
     "secret": {
       "type": "string",
       "description": "Legacy: shared secret for HMAC-SHA256 signature verification. Prefer api_key or public_key."
+    },
+    "script": {
+      "type": "object",
+      "required": ["file", "interpreter"],
+      "additionalProperties": false,
+      "description": "Run a script file from the hook directory. Sets image, command, and volumes automatically based on the interpreter. image and command can still be overridden; volumes is appended.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Script file path relative to the hook directory. Must not be a symlink escaping the hook directory."
+        },
+        "interpreter": {
+          "type": "string",
+          "enum": ["bash", "pwsh", "node"],
+          "description": "Script interpreter. Determines the default Docker image and entrypoint command."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional arguments passed after the script path."
+        }
+      }
     },
     "github_status": {
       "type": "object",
