@@ -5,6 +5,46 @@ disposable Docker containers. Each webhook is described by a `hook.json`
 file in its own folder; the server watches the directory and hot-reloads
 hooks without restart.
 
+## Architecture
+
+```mermaid
+graph TB
+    subgraph Internet
+        GH[GitHub Org Webhook]
+    end
+
+    subgraph Host
+        subgraph "webhook-runner container"
+            WR[webhook-runner<br/>Go binary + docker-cli]
+            HOOKS["/var/lib/webhook-runner/hooks/<br/>(cloned from webhooks repo)"]
+        end
+
+        SOCK[/var/run/docker.sock]
+
+        subgraph "Hook container (disposable)"
+            IMG["Dockerfile.common image<br/>(bash, node, tsx)"]
+            SCRIPT["/opt/hook/hook-script.ts<br/>(bind-mounted from hooks dir)"]
+            PAYLOAD["/var/run/webhook-runner/payload<br/>(bind-mounted temp file)"]
+        end
+    end
+
+    GH -->|"POST /hook/{id}"| WR
+    WR -->|"reads hook.json"| HOOKS
+    WR -->|"docker run --rm"| SOCK
+    SOCK -->|spawns| IMG
+    HOOKS -->|"-v hookdir:/opt/hook:ro"| SCRIPT
+    WR -->|"-v tmpfile:payload:ro"| PAYLOAD
+
+    subgraph "Repos"
+        WR_REPO["wow-look-at-my/webhook-runner<br/>Go server + schema"]
+        HOOKS_REPO["wow-look-at-my/webhooks<br/>hook.json + scripts + Dockerfile.common"]
+    end
+
+    WR_REPO -.->|builds| WR
+    HOOKS_REPO -.->|cloned at startup| HOOKS
+    HOOKS_REPO -.->|builds| IMG
+```
+
 ## Features
 
 - **Folder-per-hook config**, parsed with JSONC-style comments.
