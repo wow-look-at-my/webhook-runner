@@ -38,6 +38,7 @@ func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) er
 		for _, e := range errs {
 			log.Error("hook reload error", "err", e)
 		}
+		ResolveAll(hooks)
 		reg.Replace(hooks)
 		log.Info("hooks reloaded", "count", len(hooks))
 	}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -160,12 +161,32 @@ func (h *Hook) validateAuth() error {
 	if n > 1 {
 		return errors.New("only one of api_key, public_key, or secret may be set")
 	}
-	if h.PublicKey != "" {
+	if h.PublicKey != "" && !strings.HasPrefix(h.PublicKey, "$") {
 		if _, err := parseEd25519PublicKey(h.PublicKey); err != nil {
 			return fmt.Errorf("invalid public_key: %w", err)
 		}
 	}
 	return nil
+}
+
+// Resolve expands $VAR and ${VAR} references in env values and auth
+// fields using the server's own environment. Call after Parse; not
+// called during validation so $-prefixed placeholders survive CI.
+func (h *Hook) Resolve() {
+	expand := func(s string) string { return os.Expand(s, os.Getenv) }
+	h.APIKey = expand(h.APIKey)
+	h.Secret = expand(h.Secret)
+	h.PublicKey = expand(h.PublicKey)
+	for k, v := range h.Env {
+		h.Env[k] = expand(v)
+	}
+}
+
+// ResolveAll calls Resolve on every hook in the map.
+func ResolveAll(hooks map[string]*Hook) {
+	for _, h := range hooks {
+		h.Resolve()
+	}
 }
 
 func parseEd25519PublicKey(s string) (ed25519.PublicKey, error) {

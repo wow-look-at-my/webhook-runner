@@ -192,6 +192,7 @@ func buildReloadFunc(repo *hooks.Repo, hooksDir string, registry *hooks.Registry
 		for _, e := range errs {
 			logger.Error("hook reload error", "err", e)
 		}
+		hooks.ResolveAll(loaded)
 		registry.Replace(loaded)
 		logger.Info("hooks reloaded", "count", len(loaded))
 	}
