@@ -19,7 +19,7 @@ graph TB
             HOOKS["/var/lib/webhook-runner/hooks/<br/>(cloned from webhooks repo)"]
         end
 
-        SOCK[/var/run/docker.sock]
+        SOCK["/var/run/docker.sock"]
 
         subgraph "Hook container (disposable)"
             IMG["Dockerfile.common image<br/>(bash, node, tsx)"]
