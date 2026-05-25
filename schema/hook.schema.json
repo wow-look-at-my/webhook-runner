@@ -101,7 +101,7 @@
         },
         "interpreter": {
           "type": "string",
-          "enum": ["bash", "pwsh", "node"],
+          "enum": ["bash", "pwsh", "node", "tsx"],
           "description": "Script interpreter. Determines the default Docker image and entrypoint command."
         },
         "args": {

@@ -131,6 +131,15 @@ func TestScriptResolveNode(t *testing.T) {
 	assert.Equal(t, []string{"node", "/opt/hook/index.js"}, h.Command)
 }
 
+func TestScriptResolveTsx(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "handler.ts", "console.log('hi')")
+	doc := []byte(`{"script":{"file":"handler.ts","interpreter":"tsx"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, "node:22-alpine", h.Image)
+	assert.Equal(t, []string{"node", "--experimental-strip-types", "/opt/hook/handler.ts"}, h.Command)
+}
+
 func TestScriptWithArgs(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
 	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash","args":["--verbose","--dry-run"]}}`)

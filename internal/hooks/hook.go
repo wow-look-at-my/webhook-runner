@@ -167,8 +167,15 @@ func (h *Hook) resolveScript() error {
 		if len(h.Command) == 0 {
 			h.Command = append([]string{"node", scriptPath}, s.Args...)
 		}
+	case "tsx":
+		if h.Image == "" {
+			h.Image = "node:22-alpine"
+		}
+		if len(h.Command) == 0 {
+			h.Command = append([]string{"node", "--experimental-strip-types", scriptPath}, s.Args...)
+		}
 	default:
-		return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, or node)", s.Interpreter)
+		return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, node, or tsx)", s.Interpreter)
 	}
 
 	hookDir := filepath.Dir(h.SourcePath)
