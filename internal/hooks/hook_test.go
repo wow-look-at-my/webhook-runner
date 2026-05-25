@@ -108,7 +108,7 @@ func TestScriptResolveBash(t *testing.T) {
 	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, "bash:5", h.Image)
+	assert.Equal(t, DefaultScriptImage, h.Image)
 	assert.Equal(t, []string{"bash", "/opt/hook/run.sh"}, h.Command)
 	assert.Contains(t, h.Volumes, hookDir+":/opt/hook:ro")
 }
@@ -118,7 +118,7 @@ func TestScriptResolvePwsh(t *testing.T) {
 	doc := []byte(`{"script":{"file":"run.ps1","interpreter":"pwsh"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, "mcr.microsoft.com/powershell:lts-alpine-3.20", h.Image)
+	assert.Equal(t, DefaultScriptImage, h.Image)
 	assert.Equal(t, []string{"pwsh", "-File", "/opt/hook/run.ps1"}, h.Command)
 }
 
@@ -127,7 +127,7 @@ func TestScriptResolveNode(t *testing.T) {
 	doc := []byte(`{"script":{"file":"index.js","interpreter":"node"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, "node:22-alpine", h.Image)
+	assert.Equal(t, DefaultScriptImage, h.Image)
 	assert.Equal(t, []string{"node", "/opt/hook/index.js"}, h.Command)
 }
 
@@ -136,8 +136,8 @@ func TestScriptResolveTsx(t *testing.T) {
 	doc := []byte(`{"script":{"file":"handler.ts","interpreter":"tsx"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, "node:22-alpine", h.Image)
-	assert.Equal(t, []string{"npx", "--yes", "tsx", "/opt/hook/handler.ts"}, h.Command)
+	assert.Equal(t, DefaultScriptImage, h.Image)
+	assert.Equal(t, []string{"tsx", "/opt/hook/handler.ts"}, h.Command)
 }
 
 func TestScriptWithArgs(t *testing.T) {

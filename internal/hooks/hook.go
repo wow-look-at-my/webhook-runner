@@ -23,6 +23,12 @@ const DefaultAPIKeyHeader = "X-API-Key"
 
 const scriptMountPath = "/opt/hook"
 
+// DefaultScriptImage is the Docker image used for script hooks when no
+// image is specified. Override with WEBHOOK_RUNNER_SCRIPT_IMAGE. When
+// set to the webhook-runner's own image, all interpreters (bash, node,
+// tsx) are available without pulling separate images.
+var DefaultScriptImage = "node:22-alpine"
+
 // Script configures a hook to run a script file from the hook directory
 // instead of requiring inline image/command. The interpreter determines
 // the default Docker image and command.
@@ -147,35 +153,26 @@ func (h *Hook) resolveScript() error {
 	scriptPath := scriptMountPath + "/" + s.File
 	switch s.Interpreter {
 	case "bash":
-		if h.Image == "" {
-			h.Image = "bash:5"
-		}
 		if len(h.Command) == 0 {
 			h.Command = append([]string{"bash", scriptPath}, s.Args...)
 		}
 	case "pwsh":
-		if h.Image == "" {
-			h.Image = "mcr.microsoft.com/powershell:lts-alpine-3.20"
-		}
 		if len(h.Command) == 0 {
 			h.Command = append([]string{"pwsh", "-File", scriptPath}, s.Args...)
 		}
 	case "node":
-		if h.Image == "" {
-			h.Image = "node:22-alpine"
-		}
 		if len(h.Command) == 0 {
 			h.Command = append([]string{"node", scriptPath}, s.Args...)
 		}
 	case "tsx":
-		if h.Image == "" {
-			h.Image = "node:22-alpine"
-		}
 		if len(h.Command) == 0 {
-			h.Command = append([]string{"npx", "--yes", "tsx", scriptPath}, s.Args...)
+			h.Command = append([]string{"tsx", scriptPath}, s.Args...)
 		}
 	default:
 		return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, node, or tsx)", s.Interpreter)
+	}
+	if h.Image == "" {
+		h.Image = DefaultScriptImage
 	}
 
 	hookDir := filepath.Dir(h.SourcePath)

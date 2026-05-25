@@ -38,6 +38,7 @@ Configuration via environment:
   WEBHOOK_RUNNER_ADDR               hook port (default :9000)
   WEBHOOK_RUNNER_ADMIN_ADDR         admin port (default :9001)
   WEBHOOK_RUNNER_GITHUB_TOKEN       GitHub token for commit-status updates
+  WEBHOOK_RUNNER_SCRIPT_IMAGE       default Docker image for script hooks
   WEBHOOK_RUNNER_LOG_FORMAT         "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

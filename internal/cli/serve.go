@@ -57,6 +57,9 @@ func applyServeEnv(o *serveOptions) {
 	if o.hookBaseURL == "" {
 		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
 	}
+	if v := os.Getenv("WEBHOOK_RUNNER_SCRIPT_IMAGE"); v != "" {
+		hooks.DefaultScriptImage = v
+	}
 }
 
 func runServe(ctx context.Context, o *serveOptions) error {
