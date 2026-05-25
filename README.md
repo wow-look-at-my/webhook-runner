@@ -140,6 +140,18 @@ set automatically:
 
 Both files are bind-mounted read-only at `/var/run/webhook-runner/`.
 
+Additionally, any `env` values in `hook.json` that use `$VAR` or `${VAR}`
+syntax are expanded from the server's environment at load time. The same
+expansion applies to `api_key`, `secret`, and `public_key` fields, keeping
+secrets out of the hooks repository:
+
+```jsonc
+{
+  "env": { "GITHUB_TOKEN": "$WEBHOOK_RUNNER_GITHUB_TOKEN" },
+  "secret": "$MY_WEBHOOK_SECRET"
+}
+```
+
 ## Subcommands
 
 - `webhook-runner [hooks-dir]` — start the server.

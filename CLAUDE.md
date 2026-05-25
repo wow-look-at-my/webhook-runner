@@ -62,6 +62,15 @@ The key persists at `<hooks-dir>/../id_ed25519`.
 
 The companion repo is `wow-look-at-my/webhooks`.
 
+## Env var expansion
+
+Hook `env` values and auth fields (`api_key`, `secret`, `public_key`)
+support `$VAR` / `${VAR}` syntax. These are expanded from the server's
+environment at hook load time via `Hook.Resolve()` / `ResolveAll()`.
+Expansion is NOT done during validation (`webhook-runner validate`), so
+`$`-prefixed placeholders survive CI. Validation also skips format
+checks on `$`-prefixed `public_key` values.
+
 ## Things easy to get wrong
 
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`)
