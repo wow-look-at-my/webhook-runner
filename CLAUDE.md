@@ -60,7 +60,10 @@ startup, the server auto-generates an Ed25519 deploy key and logs the
 public key. Add it to the repo's deploy keys on GitHub, then restart.
 The key persists at `<hooks-dir>/../id_ed25519`.
 
-The companion repo is `wow-look-at-my/webhooks`.
+The companion repo is `wow-look-at-my/webhooks`. It is the single source
+of truth for all hook configuration and code. Simple hooks reference stock
+images; hooks needing custom logic include a Dockerfile built by CI and
+pushed to `ghcr.io/wow-look-at-my/webhooks/<hook-id>:latest`.
 
 ## Things easy to get wrong
 
