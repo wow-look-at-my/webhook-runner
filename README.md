@@ -11,38 +11,38 @@ hooks without restart.
 graph TB
     subgraph Internet
         GH[GitHub Org Webhook]
+        GHCR[GHCR]
     end
 
     subgraph Host
-        subgraph "webhook-runner container"
-            WR[webhook-runner<br/>Go binary + docker-cli]
-            HOOKS["/var/lib/webhook-runner/hooks/"]
+        subgraph "webhook-runner process"
+            WR[webhook-runner]
+            HOOKS[hooks directory]
         end
 
-        SOCK["/var/run/docker.sock"]
+        SOCK[Docker socket]
 
         subgraph "Hook container (disposable)"
-            IMG["Dockerfile.common image<br/>(bash, node, tsx)"]
-            SCRIPT["/opt/hook/script.ts<br/>(bind-mounted from hooks dir)"]
-            PAYLOAD["/var/run/webhook-runner/payload<br/>(bind-mounted temp file)"]
+            SCRIPT["/opt/hook/script.ts"]
+            PAYLOAD["/var/run/webhook-runner/payload"]
         end
     end
 
     GH -->|"POST /hook/{id}"| WR
-    WR -->|reads hook.json| HOOKS
-    WR -->|"docker run --rm"| SOCK
-    SOCK -->|spawns| IMG
-    HOOKS -->|"-v hookdir:/opt/hook:ro"| SCRIPT
-    WR -->|"-v tmpfile:payload:ro"| PAYLOAD
+    WR -->|reads hook.json from| HOOKS
+    WR -->|"docker run --rm via"| SOCK
+    SOCK -->|pulls image from| GHCR
+    HOOKS -->|bind-mounts into| SCRIPT
+    WR -->|bind-mounts temp file into| PAYLOAD
 
-    subgraph "Build (GitHub Actions)"
-        WR_CI["webhook-runner CI<br/>go-toolchain + autorelease"]
-        HOOKS_CI["webhooks CI<br/>builds Dockerfile.common,<br/>pushes to GHCR"]
+    subgraph "CI (GitHub Actions)"
+        WR_CI[webhook-runner CI]
+        HOOKS_CI[webhooks CI]
     end
 
-    WR_CI -->|produces binary| WR
-    HOOKS_CI -->|pushes image| IMG
-    WR -->|"git clone at startup"| HOOKS
+    WR_CI -->|builds Go binary| WR
+    HOOKS_CI -->|builds and pushes Dockerfile.common| GHCR
+    WR -->|git clones webhooks repo into| HOOKS
 ```
 
 ## Features
