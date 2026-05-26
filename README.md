@@ -8,18 +8,17 @@ hooks without restart.
 ## Architecture
 
 ```mermaid
-graph TB
-    subgraph Internet
-        GH[GitHub Org Webhook]
-        GHCR[GHCR]
+graph LR
+    subgraph "CI (GitHub Actions)"
+        WR_CI[webhook-runner CI]
+        HOOKS_CI[webhooks CI]
     end
 
-    subgraph Host
-        subgraph "webhook-runner process"
-            WR[webhook-runner]
-            HOOKS[hooks directory]
-        end
+    GHCR[GHCR]
 
+    subgraph Host
+        WR[webhook-runner]
+        HOOKS[hooks directory]
         SOCK[Docker socket]
 
         subgraph "Hook container (disposable)"
@@ -28,21 +27,19 @@ graph TB
         end
     end
 
-    GH -->|"POST /hook/{id}"| WR
+    GH[GitHub Org Webhook]
+
+    WR_CI -->|builds Go binary| WR
+    HOOKS_CI -->|builds and pushes Dockerfile.common| GHCR
+
+    WR -->|git clones webhooks repo into| HOOKS
     WR -->|reads hook.json from| HOOKS
-    WR -->|"docker run --rm via"| SOCK
+    WR -->|docker run --rm via| SOCK
     SOCK -->|pulls image from| GHCR
     HOOKS -->|bind-mounts into| SCRIPT
     WR -->|bind-mounts temp file into| PAYLOAD
 
-    subgraph "CI (GitHub Actions)"
-        WR_CI[webhook-runner CI]
-        HOOKS_CI[webhooks CI]
-    end
-
-    WR_CI -->|builds Go binary| WR
-    HOOKS_CI -->|builds and pushes Dockerfile.common| GHCR
-    WR -->|git clones webhooks repo into| HOOKS
+    GH -->|"POST /hook/{id}"| WR
 ```
 
 ## Features
