@@ -135,10 +135,15 @@ set automatically:
 |----------------------|---------------------------------------------------------|
 | `HOOK_PAYLOAD_FILE`  | Path to a file containing the raw request body.         |
 | `HOOK_HEADERS_FILE`  | Path to a JSON file `{"X-Header": ["value"], ...}`.     |
+| `HOOK_SOURCE_DIR`    | Path to the hook's source directory (read-only mount).  |
 | `HOOK_ID`            | The hook ID (folder name).                              |
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
 
-Both files are bind-mounted read-only at `/var/run/webhook-runner/`.
+Payload and header files are bind-mounted read-only at
+`/var/run/webhook-runner/`. The hook's source directory is
+bind-mounted read-only at `/hook`. This allows hooks to contain source
+code alongside `hook.json` and run it directly (e.g. `go run .` with
+`"workdir": "/hook"`).
 
 ## Subcommands
 

@@ -118,8 +118,9 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	defer cancel()
 
 	const (
-		mountedPayload = "/var/run/webhook-runner/payload"
-		mountedHeaders = "/var/run/webhook-runner/headers.json"
+		mountedPayload   = "/var/run/webhook-runner/payload"
+		mountedHeaders   = "/var/run/webhook-runner/headers.json"
+		mountedSourceDir = "/hook"
 	)
 	containerName := "webhook-runner-" + run.ID()
 
@@ -128,8 +129,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"--name", containerName,
 		"-v", payloadPath + ":" + mountedPayload + ":ro",
 		"-v", headersPath + ":" + mountedHeaders + ":ro",
+		"-v", filepath.Dir(hook.SourcePath) + ":" + mountedSourceDir + ":ro",
 		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
+		"-e", "HOOK_SOURCE_DIR=" + mountedSourceDir,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
 	}

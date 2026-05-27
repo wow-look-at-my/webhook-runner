@@ -133,7 +133,7 @@ func (h *Hook) validate() error {
 		}
 	}
 	for k := range h.Env {
-		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" {
+		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" || k == "HOOK_SOURCE_DIR" {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
 	}

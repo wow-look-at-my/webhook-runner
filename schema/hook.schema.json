@@ -34,11 +34,12 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. HOOK_PAYLOAD_FILE and HOOK_HEADERS_FILE are reserved.",
+      "description": "Extra environment variables. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, and HOOK_SOURCE_DIR are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
-          { "required": ["HOOK_HEADERS_FILE"] }
+          { "required": ["HOOK_HEADERS_FILE"] },
+          { "required": ["HOOK_SOURCE_DIR"] }
         ]
       }
     },

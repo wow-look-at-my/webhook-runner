@@ -62,8 +62,8 @@ The key persists at `<hooks-dir>/../id_ed25519`.
 
 The companion repo is `wow-look-at-my/webhooks`. It is the single source
 of truth for all hook configuration and code. Simple hooks reference stock
-images; hooks needing custom logic include a Dockerfile built by CI and
-pushed to `ghcr.io/wow-look-at-my/webhooks/<hook-id>:latest`.
+images with inline commands; source hooks include code alongside hook.json
+that the runner mounts read-only at `/hook` inside the container.
 
 ## Things easy to get wrong
 
