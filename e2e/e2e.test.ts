@@ -1,6 +1,16 @@
-import { createServer } from "node:net";
-import { createHmac } from "node:crypto";
-import assert from "node:assert/strict";
+// Dynamic imports, not import declarations: the CI typescript action wraps
+// this file in an async function body, where top-level `import` is a syntax
+// error (TS1232). Dynamic import works there and under plain `node` alike,
+// and shadowing the action's injected `path`/`child_process` globals keeps
+// the file self-contained for local runs.
+const { createServer } = await import("node:net");
+const { createHmac } = await import("node:crypto");
+// Explicitly annotated: tsc requires assertion-function call targets
+// (assert.ok and friends) to have a declared type (TS2775).
+const assertNs = await import("node:assert/strict");
+const assert: typeof assertNs.default = assertNs.default;
+const path = await import("node:path");
+const child_process = await import("node:child_process");
 
 const BINARY = path.join("build", "webhook-runner");
 const HOOKS_DIR = path.join("e2e", "hooks");
