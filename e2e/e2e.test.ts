@@ -58,6 +58,9 @@ const port = await freePort();
 const adminPort = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const adminBase = `http://127.0.0.1:${adminPort}`;
+// hostenv-hook's hook.json references ${E2E_HOST_VAR}; the server process
+// (spawned below, inheriting this env) expands it at container start.
+process.env.E2E_HOST_VAR = "host-says-hi";
 const proc = child_process.spawn(
   BINARY,
   ["--addr", `:${port}`, "--admin-addr", `:${adminPort}`, HOOKS_DIR],
@@ -78,9 +81,9 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 6);
+    assert.equal(hooks.length, 9);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "mount-hook", "secure-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "hookdir-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook"]);
   });
 
   await test("GET /hooks not on hook port", async () => {
@@ -201,6 +204,54 @@ try {
     const output = full.output.join("\n");
     assert.ok(output.includes('"mounted":"yes"'), "missing payload");
     assert.ok(output.includes("Content-Type"), "missing headers");
+  });
+
+  await test("HOOK_DIR: the hook's own folder is mounted", async () => {
+    const r = await fetch(`${base}/hook/hookdir-hook?wait=true`, { method: "POST", body: "{}" });
+    assert.equal(r.status, 200);
+    const run: any = await r.json();
+    assert.ok(run.output.join("\n").includes("hello-from-hook-dir"), "missing hook-dir file content");
+  });
+
+  await test("env ${VAR} expands from the runner host", async () => {
+    const r = await fetch(`${base}/hook/hostenv-hook?wait=true`, { method: "POST", body: "{}" });
+    assert.equal(r.status, 200);
+    const run: any = await r.json();
+    assert.ok(run.output.join("\n").includes("fromhost=host-says-hi"), "missing expanded host env value");
+  });
+
+  await test("cancel kills an in-flight run", async () => {
+    const trigger = await fetch(`${base}/hook/sleep-hook`, { method: "POST", body: "{}" });
+    assert.equal(trigger.status, 202);
+    const { run_id } = (await trigger.json()) as any;
+    // Wait until the container has demonstrably started (its first echo
+    // arrived), so docker kill has a real container to hit.
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const s: any = await (await fetch(`${adminBase}/runs/${run_id}`)).json();
+      if ((s.output ?? []).join("\n").includes("sleeping")) break;
+      if (Date.now() > deadline) throw new Error(`run never produced output (status ${s.status})`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const c = await fetch(`${base}/hook/sleep-hook/cancel/${run_id}`, { method: "POST" });
+    assert.equal(c.status, 202);
+    const result = await pollRun(adminBase, run_id);
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.cancel_requested, true);
+  });
+
+  await test("cancel of a finished run returns 409", async () => {
+    const trigger = await fetch(`${base}/hook/echo-test?wait=true`, { method: "POST", body: "{}" });
+    const run: any = await trigger.json();
+    const c = await fetch(`${base}/hook/echo-test/cancel/${run.id}`, { method: "POST" });
+    assert.equal(c.status, 409);
+  });
+
+  await test("cancel with a wrong hook id returns 404", async () => {
+    const trigger = await fetch(`${base}/hook/echo-test?wait=true`, { method: "POST", body: "{}" });
+    const run: any = await trigger.json();
+    const c = await fetch(`${base}/hook/env-hook/cancel/${run.id}`, { method: "POST" });
+    assert.equal(c.status, 404);
   });
 
   await test("GET /runs/nonexistent returns 404 (admin port)", async () => {

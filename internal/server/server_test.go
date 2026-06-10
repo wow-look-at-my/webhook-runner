@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -540,4 +540,134 @@ func TestConfigEndpointEmpty(t *testing.T) {
 	var cfg map[string]string
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&cfg))
 	assert.Empty(t, cfg)
+}
+
+func TestCancelRunHookPort(t *testing.T) {
+	s, reg, tr, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, APIKey: "k"})
+	run := tr.New("h") // still pending — never handed to the runner
+
+	// Wrong key is rejected before the run is even looked up.
+	req := httptest.NewRequest(http.MethodPost, "/hook/h/cancel/"+run.ID(), nil)
+	req.Header.Set("X-API-Key", "wrong")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	req = httptest.NewRequest(http.MethodPost, "/hook/h/cancel/"+run.ID(), nil)
+	req.Header.Set("X-API-Key", "k")
+	rec = httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Contains(t, rec.Body.String(), "cancelling")
+
+	select {
+	case <-run.Cancelled():
+	default:
+		t.Error("run not flagged for cancel")
+	}
+}
+
+func TestCancelRunCrossHookIsNotFound(t *testing.T) {
+	// Hook a's valid key must not cancel (or detect) hook b's runs.
+	s, reg, tr, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{ID: "a", Image: "alpine", Command: []string{"x"}, APIKey: "ka"})
+	reg.Set(&hooks.Hook{ID: "b", Image: "alpine", Command: []string{"x"}, APIKey: "kb"})
+	run := tr.New("b")
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/a/cancel/"+run.ID(), nil)
+	req.Header.Set("X-API-Key", "ka")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	select {
+	case <-run.Cancelled():
+		t.Error("cross-hook cancel must not flag the run")
+	default:
+	}
+}
+
+func TestCancelRunUnknownHookOrRun(t *testing.T) {
+	s, reg, _, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, APIKey: "k"})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/nope/cancel/xyz", nil)
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	req = httptest.NewRequest(http.MethodPost, "/hook/h/cancel/doesnotexist", nil)
+	req.Header.Set("X-API-Key", "k")
+	rec = httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestCancelFinishedRunConflict(t *testing.T) {
+	s, reg, tr, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, APIKey: "k"})
+	run := tr.New("h")
+	run.Finish(runs.StatusSuccess, 0, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/h/cancel/"+run.ID(), nil)
+	req.Header.Set("X-API-Key", "k")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code)
+	assert.Contains(t, rec.Body.String(), "already finished")
+}
+
+func TestCancelRunAdminPort(t *testing.T) {
+	s, _, tr, _ := newTestServer(t)
+	run := tr.New("h")
+
+	req := httptest.NewRequest(http.MethodPost, "/runs/"+run.ID()+"/cancel", nil)
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+
+	select {
+	case <-run.Cancelled():
+	default:
+		t.Error("run not flagged for cancel")
+	}
+}
+
+func TestTriggerAPIKeyFromHostEnv(t *testing.T) {
+	t.Setenv("WHR_TEST_API_KEY", "sesame")
+	s, reg, _, rn := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ak", Image: "alpine", Command: []string{"x"},
+		APIKey: "${WHR_TEST_API_KEY}",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "sesame")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rn.Wait()
+
+	// The literal reference string is not a valid key.
+	req = httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "${WHR_TEST_API_KEY}")
+	rec = httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestTriggerAPIKeyFromHostEnvUnsetFailsClosed(t *testing.T) {
+	s, reg, _, _ := newTestServer(t)
+	reg.Set(&hooks.Hook{
+		ID: "ak", Image: "alpine", Command: []string{"x"},
+		APIKey: "${WHR_TEST_DEFINITELY_UNSET_KEY}",
+	})
+
+	// An unset reference must reject everything — even an empty key header.
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }

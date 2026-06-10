@@ -1,0 +1,5 @@
+{
+  "image": "alpine:latest",
+  "command": ["sh", "-c", "cat $HOOK_DIR/data.txt"],
+  "timeout": "60s"
+}

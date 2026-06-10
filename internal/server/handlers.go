@@ -98,6 +98,68 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, snap)
 }
 
+// handleCancelRun cancels an in-flight run from the public hook port:
+// POST /hook/{id}/cancel/{run}, authenticated exactly like triggering the
+// hook (for api_key hooks the body is irrelevant; for signature hooks the
+// signature covers whatever body the caller sent). The response is 202 —
+// cancellation is a request: the run reaches "cancelled" once the runner
+// has actually killed the container.
+func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	hook, ok := s.registry.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "no such hook")
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	if err := s.authenticate(hook, r, body); err != nil {
+		s.log.Warn("cancel auth failed", "hook", hook.ID, "remote", r.RemoteAddr, "err", err)
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	run := s.tracker.Get(r.PathValue("run"))
+	// A run belonging to a different hook is reported as absent — one
+	// hook's key must not act on (or probe for) another hook's runs.
+	if run == nil || run.HookID() != hook.ID {
+		writeError(w, http.StatusNotFound, "no such run")
+		return
+	}
+	s.cancelRun(w, run)
+}
+
+// handleAdminCancelRun cancels any run from the admin port (no auth — the
+// admin port is behind zero trust, same trust model as POST /reload).
+func (s *Server) handleAdminCancelRun(w http.ResponseWriter, r *http.Request) {
+	run := s.tracker.Get(r.PathValue("id"))
+	if run == nil {
+		writeError(w, http.StatusNotFound, "no such run")
+		return
+	}
+	s.cancelRun(w, run)
+}
+
+func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
+	if st := run.Status(); st.Terminal() {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"run_id": run.ID(),
+			"status": string(st),
+			"error":  "run already finished",
+		})
+		return
+	}
+	run.RequestCancel()
+	s.log.Info("run cancel requested", "hook", run.HookID(), "run", run.ID())
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"run_id": run.ID(),
+		"status": "cancelling",
+	})
+}
+
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	run := s.tracker.Get(id)

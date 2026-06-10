@@ -3,10 +3,14 @@
 // Each Run gets:
 //   - a temp file holding the raw request body (HOOK_PAYLOAD_FILE)
 //   - a temp file holding request headers as JSON (HOOK_HEADERS_FILE)
+//   - the hook's own source folder (HOOK_DIR), so hooks can ship scripts
+//     and assets alongside their hook.json
 //
-// Both files are bind-mounted into the container read-only and the env
-// variables point at the mount paths. Container output is streamed to
-// the server logger and to the Run's bounded ring buffer.
+// All three are bind-mounted into the container read-only and the env
+// variables point at the mount paths. hook.json env values may reference
+// host environment variables as ${NAME} (expanded at run time; see
+// hooks.ExpandEnvRefs). Container output is streamed to the server logger
+// and to the Run's bounded ring buffer.
 package runner
 
 import (
@@ -117,9 +121,22 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
+	// A cancel that arrives while the run is still pending skips the
+	// container entirely.
+	select {
+	case <-run.Cancelled():
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	default:
+	}
+
 	const (
 		mountedPayload = "/var/run/webhook-runner/payload"
 		mountedHeaders = "/var/run/webhook-runner/headers.json"
+		mountedHookDir = "/var/run/webhook-runner/hook"
 	)
 	containerName := "webhook-runner-" + run.ID()
 
@@ -133,6 +150,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
 	}
+	// The hook's own folder rides along read-only, so a hook can ship
+	// scripts/assets next to its hook.json and run them via $HOOK_DIR.
+	if dir := hook.Dir(); dir != "" {
+		args = append(args, "-v", dir+":"+mountedHookDir+":ro", "-e", "HOOK_DIR="+mountedHookDir)
+	}
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
 	}
@@ -140,7 +162,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		args = append(args, "-v", v)
 	}
 	for k, v := range hook.Env {
-		args = append(args, "-e", k+"="+v)
+		expanded, missing := hooks.ExpandEnvRefs(v, os.LookupEnv)
+		for _, name := range missing {
+			r.log.Warn("hook env references unset host variable",
+				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
+		}
+		args = append(args, "-e", k+"="+expanded)
 	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)
@@ -212,8 +239,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	go r.streamPipe(&streamWG, stdoutR, hook.ID, run, "stdout")
 	go r.streamPipe(&streamWG, stderrR, hook.ID, run, "stderr")
 
-	// Watch ctx for cancellation/timeout in parallel with cmd.Wait.
+	// Watch for timeout (ctx) and explicit cancel requests in parallel
+	// with cmd.Wait. Either one kills the container by name. A cancel
+	// requested before this goroutine started selects immediately (the
+	// channel is already closed), so the pre-start race is covered.
 	timedOut := make(chan struct{})
+	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
 	go func() {
 		select {
@@ -221,31 +252,40 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				close(timedOut)
 			}
-			r.killContainer(containerName)
-			killTimer := time.AfterFunc(2*time.Second, func() {
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-			})
-			defer killTimer.Stop()
-			<-stopWatcher
+		case <-run.Cancelled():
+			close(cancelled)
 		case <-stopWatcher:
+			return
 		}
+		r.killContainer(containerName)
+		killTimer := time.AfterFunc(2*time.Second, func() {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		})
+		defer killTimer.Stop()
+		<-stopWatcher
 	}()
 
 	waitErr := cmd.Wait()
 	close(stopWatcher)
 
 	// In the normal case the process has exited and its pipe ends
-	// are closed, so streamWG.Wait returns immediately. On timeout,
-	// orphaned child processes (e.g. the real docker container's
-	// descendants) can keep the write end open; force-close the
-	// read ends so the scanner goroutines unblock.
+	// are closed, so streamWG.Wait returns immediately. On a kill
+	// (timeout or cancel), orphaned child processes (e.g. the real
+	// docker container's descendants) can keep the write end open;
+	// force-close the read ends so the scanner goroutines unblock.
 	select {
 	case <-timedOut:
 		stdoutR.Close()
 		stderrR.Close()
 	default:
+		select {
+		case <-cancelled:
+			stdoutR.Close()
+			stderrR.Close()
+		default:
+		}
 	}
 	streamWG.Wait()
 
@@ -271,6 +311,17 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			exitCode = -1
 		}
 		errMsg = fmt.Sprintf("timed out after %s", timeout)
+	default:
+	}
+	// Checked after timeout so an explicit cancel takes precedence when
+	// both raced to kill the container.
+	select {
+	case <-cancelled:
+		status = runs.StatusCancelled
+		if exitCode == 0 {
+			exitCode = -1
+		}
+		errMsg = "cancelled"
 	default:
 	}
 	run.Finish(status, exitCode, errMsg)

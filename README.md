@@ -26,6 +26,15 @@ hooks without restart.
 - **Sync and async invocation**: every hook returns a unique 128-bit
   run ID; clients can poll `GET /runs/{id}` or use `?wait=true` to block
   on the response.
+- **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
+  run's container (authenticated like the hook itself), so async callers
+  can supersede stale work.
+- **Hooks ship their own code**: each hook's folder is bind-mounted
+  read-only into its container as `HOOK_DIR`, so scripts live next to
+  their `hook.json` in the hooks repo.
+- **Host-env secrets**: `env` values and `api_key` may reference runner
+  host environment variables as `${NAME}`, keeping secrets out of the
+  hooks repo.
 - **Concurrency**: no global queue, each request fires its own container.
 - **Dashboard**: read-only HTML view at `/` on the admin port.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
@@ -81,6 +90,7 @@ Trust).
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200).                      |
 | POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. |
+| POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
 
 ### Admin port (`:9001`)
@@ -90,8 +100,10 @@ Trust).
 | GET    | `/health`           | Liveness probe (200).                      |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
+| POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
 | GET    | `/runs`             | Recent runs across all hooks.              |
 | GET    | `/runs/{id}`        | Status + retained output for one run.      |
+| POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
 | GET    | `/`                 | Dashboard.                                 |
 
@@ -106,11 +118,40 @@ timeout elapses first).
 A hook can opt into sync-by-default by setting `"synchronous": true`
 in `hook.json`. The query parameter still wins.
 
+### Cancelling a run
+
+`POST /hook/{id}/cancel/{run}` asks the runner to kill an in-flight run's
+container. It is authenticated exactly like triggering the hook (same
+api_key / signature), and a hook's credentials can only cancel that hook's
+own runs. Responses:
+
+- `202` `{"run_id": "...", "status": "cancelling"}` — cancel requested; the
+  run reaches status `cancelled` once the container is actually gone.
+- `409` — the run already finished (body carries its final status).
+- `404` — unknown hook or run (including runs belonging to another hook).
+
+This is what lets a fire-and-forget caller supersede stale work: kick off a
+run, remember the `run_id` from the 202, and cancel it if a newer event
+makes its result obsolete (e.g. pr-minder cancelling an in-flight
+PR-describe run when new commits arrive).
+
 ## hook.json reference
 
 The full schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
 See `examples/hooks/` for working examples.
+
+Two values support `${NAME}` references to the **runner host's**
+environment, so secrets stay on the host instead of in the hooks repo:
+
+- `env` values — expanded when the container starts. Unset variables
+  expand to `""` with a logged warning.
+- `api_key` — expanded on every request. If the reference is unset, the
+  hook **fails closed** (every request is rejected with 401).
+
+Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
+untouched. Expansion never happens at load/validate time, so CI validation
+doesn't need the production environment.
 
 ## Server configuration
 
@@ -135,10 +176,15 @@ set automatically:
 |----------------------|---------------------------------------------------------|
 | `HOOK_PAYLOAD_FILE`  | Path to a file containing the raw request body.         |
 | `HOOK_HEADERS_FILE`  | Path to a JSON file `{"X-Header": ["value"], ...}`.     |
+| `HOOK_DIR`           | Path to the hook's own source folder (the directory containing its `hook.json`). |
 | `HOOK_ID`            | The hook ID (folder name).                              |
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
 
-Both files are bind-mounted read-only at `/var/run/webhook-runner/`.
+All three paths are bind-mounted read-only under `/var/run/webhook-runner/`.
+The `HOOK_DIR` mount means a hook can ship scripts and assets alongside its
+`hook.json` and run them directly, e.g.
+`"command": ["node", "/var/run/webhook-runner/hook/handler.ts"]` (or
+`["sh", "-c", "exec node $HOOK_DIR/handler.ts"]`).
 
 ## Subcommands
 

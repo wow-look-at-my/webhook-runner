@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -25,18 +26,18 @@ const DefaultAPIKeyHeader = "X-API-Key"
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID              string             `json:"-"`
-	SourcePath      string             `json:"-"`
-	Description     string             `json:"description"`
-	Image           string             `json:"image"`
-	Command         []string           `json:"command"`
-	Networks        []string           `json:"networks,omitempty"`
-	Volumes         []string           `json:"volumes,omitempty"`
-	Env             map[string]string  `json:"env,omitempty"`
-	User            string             `json:"user,omitempty"`
-	Workdir         string             `json:"workdir,omitempty"`
-	TimeoutRaw      string             `json:"timeout,omitempty"`
-	ExtraDockerArgs []string           `json:"extra_docker_args,omitempty"`
+	ID              string              `json:"-"`
+	SourcePath      string              `json:"-"`
+	Description     string              `json:"description"`
+	Image           string              `json:"image"`
+	Command         []string            `json:"command"`
+	Networks        []string            `json:"networks,omitempty"`
+	Volumes         []string            `json:"volumes,omitempty"`
+	Env             map[string]string   `json:"env,omitempty"`
+	User            string              `json:"user,omitempty"`
+	Workdir         string              `json:"workdir,omitempty"`
+	TimeoutRaw      string              `json:"timeout,omitempty"`
+	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
 
 	APIKey       string `json:"api_key,omitempty"`
@@ -98,6 +99,21 @@ func (h *Hook) APIKeyHdr() string {
 	return DefaultAPIKeyHeader
 }
 
+// Dir returns the absolute path of the directory containing this hook's
+// hook.json, or "" for hooks not loaded from disk (tests). The runner
+// bind-mounts it read-only into the container as HOOK_DIR so a hook can
+// ship scripts and assets alongside its config.
+func (h *Hook) Dir() string {
+	if h.SourcePath == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(filepath.Dir(h.SourcePath))
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
 // Parse decodes a hook.json document and validates the resulting hook.
 // The id and sourcePath are not part of the JSON; the caller supplies
 // them based on the file's location on disk.
@@ -133,7 +149,7 @@ func (h *Hook) validate() error {
 		}
 	}
 	for k := range h.Env {
-		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" {
+		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" || k == "HOOK_DIR" {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
 	}

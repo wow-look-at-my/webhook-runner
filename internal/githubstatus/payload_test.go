@@ -1,16 +1,16 @@
 package githubstatus
 
 import (
+	"github.com/stretchr/testify/assert"
 	"testing"
-	"github.com/wow-look-at-my/testify/assert"
 )
 
 func TestParseRepoSHA(t *testing.T) {
 	cases := []struct {
-		name		string
-		body		string
-		wantRepo	string
-		wantSHA		string
+		name     string
+		body     string
+		wantRepo string
+		wantSHA  string
 	}{
 		{
 			"push", `{"after":"deadbeef","repository":{"full_name":"o/r"}}`,

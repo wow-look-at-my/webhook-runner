@@ -38,10 +38,10 @@ examples/hooks/            sample hook configs
 
 The server listens on two ports:
 
-- **Hook port** (`:9000`): `POST /hook/{id}`, `GET /health`, `POST /_reload`.
-  Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`, `/reload`.
-  Internal, behind Cloudflare Zero Trust.
+- **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
+  `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
+- **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`,
+  `/runs/{id}/cancel`, `/reload`. Internal, behind Cloudflare Zero Trust.
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
@@ -75,3 +75,17 @@ The companion repo is `wow-look-at-my/webhooks`.
   builds container names from them must keep that alphabet (`a-z2-7`) in mind.
 - The watcher debounces events by 200ms; very rapid edits can collapse into
   a single reload.
+- Cancellation is a *request*: `Run.RequestCancel()` closes a channel the
+  runner's watcher goroutine selects on; the run only reaches the
+  `cancelled` status once `docker kill <name>` has actually run and
+  cmd.Wait returned. A cancel that races the container launch is covered
+  twice — a pre-start check in `runner.execute`, and the watcher's select
+  firing immediately on the already-closed channel.
+- `${NAME}` host-env references in hook.json (`env` values, `api_key`) are
+  expanded at run/request time via `hooks.ExpandEnvRefs`, never at load
+  time — `validate` in CI must pass without the production environment.
+  An `api_key` whose reference is unset fails closed (401 for everyone).
+- Every hook's source folder is bind-mounted read-only at
+  `/var/run/webhook-runner/hook` and exposed as `HOOK_DIR`, so hooks in the
+  hooks repo can ship scripts next to their hook.json. `HOOK_DIR` is a
+  reserved env key like `HOOK_PAYLOAD_FILE`/`HOOK_HEADERS_FILE`.

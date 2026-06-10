@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"os"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -25,8 +26,16 @@ func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) er
 }
 
 func checkAPIKey(hook *hooks.Hook, r *http.Request) error {
+	// api_key may reference a host env var as ${NAME}, so the real key
+	// lives on the runner host instead of in the hooks repo. Expanded per
+	// request (cheap), and failing closed: an unset/empty reference must
+	// never degrade to "no auth".
+	want, _ := hooks.ExpandEnvRefs(hook.APIKey, os.LookupEnv)
+	if want == "" {
+		return errors.New("api key not configured on the server")
+	}
 	got := r.Header.Get(hook.APIKeyHdr())
-	if subtle.ConstantTimeCompare([]byte(got), []byte(hook.APIKey)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 		return errors.New("invalid api key")
 	}
 	return nil

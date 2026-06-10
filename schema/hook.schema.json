@@ -34,11 +34,12 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. HOOK_PAYLOAD_FILE and HOOK_HEADERS_FILE are reserved.",
+      "description": "Extra environment variables. Values may reference runner-host environment variables as ${NAME} (expanded when the container starts; unset variables expand to \"\" with a warning), so secrets stay on the host instead of in the hooks repo. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, and HOOK_DIR are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
-          { "required": ["HOOK_HEADERS_FILE"] }
+          { "required": ["HOOK_HEADERS_FILE"] },
+          { "required": ["HOOK_DIR"] }
         ]
       }
     },
@@ -67,7 +68,7 @@
     },
     "api_key": {
       "type": "string",
-      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). Recommended for most hooks."
+      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). May reference a runner-host environment variable as ${NAME}; if the reference is unset the hook fails closed (all requests rejected). Recommended for most hooks."
     },
     "api_key_header": {
       "type": "string",
