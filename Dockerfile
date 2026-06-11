@@ -22,7 +22,5 @@ ENV WEBHOOK_RUNNER_ADDR=":9000" \
     WEBHOOK_RUNNER_ADMIN_ADDR=":9001" \
     WEBHOOK_RUNNER_LOG_FORMAT="text"
 
-EXPOSE 9000 9001
-
 # Runs as root by default so it can talk to the bind-mounted Docker socket.
 ENTRYPOINT ["/usr/local/bin/webhook-runner"]
