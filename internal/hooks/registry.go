@@ -55,6 +55,19 @@ type Summary struct {
 	Synchronous bool   `json:"synchronous,omitempty"`
 }
 
+// All returns every loaded hook, alphabetically sorted by ID. Callers
+// must treat the hooks as read-only.
+func (r *Registry) All() []*Hook {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*Hook, 0, len(r.hooks))
+	for _, h := range r.hooks {
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // List returns a stable, alphabetically-sorted list of hook summaries.
 func (r *Registry) List() []Summary {
 	r.mu.RLock()

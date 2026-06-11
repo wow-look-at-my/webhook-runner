@@ -1,5 +1,4 @@
 {
-  "image": "alpine:latest",
   "command": ["echo", "secure-output"],
   "secret": "e2e-secret-key",
   "timeout": "60s"

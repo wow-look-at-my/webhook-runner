@@ -1,0 +1,10 @@
+{
+  // Exercises sops secrets end to end: SECRET_MESSAGE is auto-injected from
+  // secrets.sops.env, REF_FROM_SECRET resolves a ${NAME} reference against
+  // it, and the api_key itself lives in the encrypted file. Decrypted with
+  // the committed test-only key at e2e/age-test-key.txt (SOPS_AGE_KEY_FILE).
+  "command": ["sh", "-c", "echo msg=$SECRET_MESSAGE ref=$REF_FROM_SECRET"],
+  "env": {"REF_FROM_SECRET": "${SECRET_REF}"},
+  "api_key": "${SOPS_HOOK_KEY}",
+  "timeout": "60s"
+}

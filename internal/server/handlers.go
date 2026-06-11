@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
@@ -98,6 +99,68 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, snap)
 }
 
+// handleCancelRun cancels an in-flight run from the public hook port:
+// POST /hook/{id}/cancel/{run}, authenticated exactly like triggering the
+// hook (for api_key hooks the body is irrelevant; for signature hooks the
+// signature covers whatever body the caller sent). The response is 202 —
+// cancellation is a request: the run reaches "cancelled" once the runner
+// has actually killed the container.
+func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	hook, ok := s.registry.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "no such hook")
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	if err := s.authenticate(hook, r, body); err != nil {
+		s.log.Warn("cancel auth failed", "hook", hook.ID, "remote", r.RemoteAddr, "err", err)
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	run := s.tracker.Get(r.PathValue("run"))
+	// A run belonging to a different hook is reported as absent — one
+	// hook's key must not act on (or probe for) another hook's runs.
+	if run == nil || run.HookID() != hook.ID {
+		writeError(w, http.StatusNotFound, "no such run")
+		return
+	}
+	s.cancelRun(w, run)
+}
+
+// handleAdminCancelRun cancels any run from the admin port (no auth — the
+// admin port is behind zero trust, same trust model as POST /reload).
+func (s *Server) handleAdminCancelRun(w http.ResponseWriter, r *http.Request) {
+	run := s.tracker.Get(r.PathValue("id"))
+	if run == nil {
+		writeError(w, http.StatusNotFound, "no such run")
+		return
+	}
+	s.cancelRun(w, run)
+}
+
+func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
+	if st := run.Status(); st.Terminal() {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"run_id": run.ID(),
+			"status": string(st),
+			"error":  "run already finished",
+		})
+		return
+	}
+	run.RequestCancel()
+	s.log.Info("run cancel requested", "hook", run.HookID(), "run", run.ID())
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"run_id": run.ID(),
+		"status": "cancelling",
+	})
+}
+
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	run := s.tracker.Get(id)
@@ -175,16 +238,8 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 // handleReload triggers a reload on the admin port (no auth — the admin
 // port is behind zero trust).
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
-	if s.onReload == nil {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "no-op"})
-		return
-	}
-	if err := s.onReload(); err != nil {
-		s.log.Error("reload failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+	s.events.Record("reload.requested", "reload requested via admin port", map[string]string{"source": "admin"})
+	s.runReload(w)
 }
 
 // handleReloadWebhook triggers a reload on the hook port, authenticated
@@ -200,20 +255,79 @@ func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 	sig := r.Header.Get("X-Hub-Signature-256")
 	if !verifyLegacyHMAC(body, sig, s.reloadSecret) {
 		s.log.Warn("reload auth failed", "remote", r.RemoteAddr)
+		s.events.Record("reload.denied", "reload webhook with invalid signature from "+r.RemoteAddr, nil)
 		writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
 
+	s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
+	s.runReload(w)
+}
+
+// runReload executes the configured reload and reports the outcome.
+func (s *Server) runReload(w http.ResponseWriter) {
 	if s.onReload == nil {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "no-op"})
 		return
 	}
 	if err := s.onReload(); err != nil {
 		s.log.Error("reload failed", "err", err)
+		s.events.Record("reload.failed", "reload failed: "+err.Error(), nil)
 		writeError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+}
+
+// describePush summarizes a GitHub push webhook payload for the activity
+// feed. Unparseable payloads still produce a generic entry — the event is
+// about what arrived, not about being pretty.
+func describePush(body []byte) string {
+	var p struct {
+		Ref        string `json:"ref"`
+		After      string `json:"after"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+		Pusher struct {
+			Name string `json:"name"`
+		} `json:"pusher"`
+		Commits []struct {
+			Message string `json:"message"`
+		} `json:"commits"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil || p.Repository.FullName == "" {
+		return "push webhook received (unparsed payload)"
+	}
+	sha := p.After
+	if len(sha) > 12 {
+		sha = sha[:12]
+	}
+	msg := fmt.Sprintf("push to %s %s @ %s by %s (%d commit(s))",
+		p.Repository.FullName, p.Ref, sha, p.Pusher.Name, len(p.Commits))
+	if len(p.Commits) > 0 {
+		first, _, _ := strings.Cut(p.Commits[len(p.Commits)-1].Message, "\n")
+		msg += ": " + first
+	}
+	return msg
+}
+
+// handleEvents returns the activity feed, newest first (admin port).
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	max := 200
+	if m := r.URL.Query().Get("max"); m != "" {
+		if n, err := strconv.Atoi(m); err == nil && n > 0 {
+			max = n
+		}
+	}
+	writeJSON(w, http.StatusOK, s.events.List(max))
+}
+
+// handleImages reports per-hook image state — the tag the hook's current
+// content resolves to, whether it's built (false = the next run builds
+// it), and every whr-hook image on disk (admin port).
+func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.runner.ImageStatus(s.registry.All()))
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {

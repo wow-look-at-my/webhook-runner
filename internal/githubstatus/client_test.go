@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -123,7 +123,7 @@ func TestPostFinishStateMapping(t *testing.T) {
 			c.SetAPIURL(srv.URL)
 
 			hook := &hooks.Hook{
-				ID: "h",
+				ID:           "h",
 				GitHubStatus: &hooks.GitHubStatusConfig{Enabled: true, Context: "x"},
 			}
 			run := newRun(t, "h", tc.status, 0)

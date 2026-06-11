@@ -1,0 +1,5 @@
+{
+  "command": ["sh", "-c", "echo fromhost=$FROM_HOST"],
+  "env": {"FROM_HOST": "${E2E_HOST_VAR}"},
+  "timeout": "60s"
+}

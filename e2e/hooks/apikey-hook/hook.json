@@ -1,5 +1,4 @@
 {
-  "image": "alpine:latest",
   "command": ["echo", "apikey-ok"],
   "api_key": "e2e-test-key-42",
   "timeout": "60s"
