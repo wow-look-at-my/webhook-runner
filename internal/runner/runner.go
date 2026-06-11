@@ -3,14 +3,15 @@
 // Each Run gets:
 //   - a temp file holding the raw request body (HOOK_PAYLOAD_FILE)
 //   - a temp file holding request headers as JSON (HOOK_HEADERS_FILE)
-//   - the hook's own source folder (HOOK_DIR), so hooks can ship scripts
-//     and assets alongside their hook.json
 //
-// All three are bind-mounted into the container read-only and the env
-// variables point at the mount paths. hook.json env values may reference
-// host environment variables as ${NAME} (expanded at run time; see
-// hooks.ExpandEnvRefs). Container output is streamed to the server logger
-// and to the Run's bounded ring buffer.
+// Both are bind-mounted into the container read-only and the env
+// variables point at the mount paths — per-run data, never code. A hook's
+// code is immutable per run: either it's part of a stock image, or (for
+// hooks shipping a Dockerfile) it's baked into an image built from the
+// hook directory and tagged by content hash (see EnsureImage). hook.json
+// env values may reference secrets/host environment variables as ${NAME}
+// (expanded at run time; see hooks.ExpandEnvRefs). Container output is
+// streamed to the server logger and to the Run's bounded ring buffer.
 package runner
 
 import (
@@ -38,7 +39,6 @@ import (
 const (
 	mountedPayload = "/var/run/webhook-runner/payload"
 	mountedHeaders = "/var/run/webhook-runner/headers.json"
-	mountedHookDir = "/var/run/webhook-runner/hook"
 )
 
 // HookFinishedFunc is invoked once the container exits (or fails to
@@ -161,6 +161,36 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	lookup := hooks.SecretsFirstLookup(secrets)
 
+	// Dockerfile hooks run an image built from the hook directory, tagged
+	// by content hash — their code is baked in, so a concurrent hooks-repo
+	// pull can't change what an in-flight run executes.
+	image := hook.Image
+	if hook.HasDockerfile {
+		buildLog := &slogLineWriter{logFn: func(line string) {
+			r.log.Info("hook image build", "hook", hook.ID, "run", run.ID(), "line", line)
+		}}
+		built, err := EnsureImage(r.dockerBin, hook, buildLog)
+		if err != nil {
+			run.Finish(runs.StatusError, -1, fmt.Sprintf("hook image: %v", err))
+			if r.onFinish != nil {
+				r.onFinish(hook, run, payload)
+			}
+			return
+		}
+		image = built
+		// A build can take a while; honor a cancel that arrived during it
+		// instead of starting a container nobody wants anymore.
+		select {
+		case <-run.Cancelled():
+			run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+			if r.onFinish != nil {
+				r.onFinish(hook, run, payload)
+			}
+			return
+		default:
+		}
+	}
+
 	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{
@@ -172,11 +202,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
-	}
-	// The hook's own folder rides along read-only, so a hook can ship
-	// scripts/assets next to its hook.json and run them via $HOOK_DIR.
-	if dir := hook.Dir(); dir != "" {
-		args = append(args, "-v", dir+":"+mountedHookDir+":ro", "-e", "HOOK_DIR="+mountedHookDir)
 	}
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
@@ -211,11 +236,13 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		args = append(args, "--workdir", hook.Workdir)
 	}
 	args = append(args, hook.ExtraDockerArgs...)
-	args = append(args, hook.Image)
+	args = append(args, image)
+	// An empty command is only valid for Dockerfile hooks: the image's
+	// CMD/ENTRYPOINT runs.
 	args = append(args, hook.Command...)
 
 	r.log.Info("hook starting",
-		"hook", hook.ID, "run", run.ID(), "image", hook.Image, "timeout", timeout)
+		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
 
 	if r.onStart != nil {
 		r.onStart(hook, run, payload)

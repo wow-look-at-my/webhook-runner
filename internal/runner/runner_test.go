@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,7 +281,7 @@ func TestRunnerCancelImmediately(t *testing.T) {
 	assert.Equal(t, runs.StatusCancelled, run.Status())
 }
 
-func TestRunnerMountsHookDirAndExpandsEnv(t *testing.T) {
+func TestRunnerExpandsEnv(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeArgDumpDocker(t, dir)
 	t.Setenv("WHR_TEST_SECRET", "s3cret")
@@ -312,33 +313,110 @@ func TestRunnerMountsHookDirAndExpandsEnv(t *testing.T) {
 	r.Wait()
 
 	out := run.Snapshot(-1).Output
-	assert.Contains(t, out, "arg="+hookDir+":/var/run/webhook-runner/hook:ro")
-	assert.Contains(t, out, "arg=HOOK_DIR=/var/run/webhook-runner/hook")
 	assert.Contains(t, out, "arg=TOKEN=s3cret")
 	assert.Contains(t, out, "arg=MISSING=")
 	assert.Contains(t, out, "arg=PLAIN=v")
+	// Code is never mounted: only the per-run payload/headers files are.
+	for _, line := range out {
+		assert.NotContains(t, line, hookDir+":")
+		assert.NotContains(t, line, "HOOK_DIR")
+	}
 }
 
-func TestRunnerNoHookDirMountWithoutSourcePath(t *testing.T) {
+// writeBuildAwareDocker drops a mock docker that understands the image
+// lifecycle: `image inspect` reports not-built, `build` records its args
+// to a file, `image ls` lists nothing, and `run` dumps args like
+// writeArgDumpDocker.
+func writeBuildAwareDocker(t *testing.T, dir string) (docker, buildLog string) {
+	t.Helper()
+	docker = filepath.Join(dir, "docker")
+	buildLog = filepath.Join(dir, "build.log")
+	script := `#!/bin/sh
+case "$1" in
+  kill) exit 0 ;;
+  image)
+    case "$2" in
+      inspect) exit 1 ;;
+    esac
+    exit 0 ;;
+  build)
+    for a in "$@"; do echo "buildarg=$a" >> ` + buildLog + `; done
+    exit 0 ;;
+  run)
+    for a in "$@"; do echo "arg=$a"; done
+    exit 0 ;;
+esac
+exit 0
+`
+	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+	return docker, buildLog
+}
+
+func dockerfileHook(t *testing.T, dir string) *hooks.Hook {
+	t.Helper()
+	hookDir := filepath.Join(dir, "myhook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"),
+		[]byte("FROM alpine\nCMD [\"true\"]\n"), 0o644))
+	return &hooks.Hook{
+		ID:            "myhook",
+		SourcePath:    filepath.Join(hookDir, "hook.json"),
+		HasDockerfile: true,
+	}
+}
+
+func TestRunnerBuildsDockerfileHookImage(t *testing.T) {
 	dir := t.TempDir()
-	docker := writeArgDumpDocker(t, dir)
+	docker, buildLog := writeBuildAwareDocker(t, dir)
+	hook := dockerfileHook(t, dir)
 
 	tracker := runs.NewTracker()
-	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
-	})
+	r := New(Options{Tracker: tracker, Logger: newSilentLogger(), TmpDir: dir, Docker: docker})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	require.NoError(t, err)
+	r.Wait()
+	require.Equal(t, runs.StatusSuccess, run.Status())
 
-	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
+	tag, err := ImageTag(hook)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(tag, "whr-hook/myhook:"))
+
+	built, err := os.ReadFile(buildLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(built), "buildarg="+tag)
+	assert.Contains(t, string(built), "buildarg="+filepath.Join(dir, "myhook"))
+
+	out := run.Snapshot(-1).Output
+	// The container runs the built tag with no command (image CMD) and no
+	// code mount.
+	assert.Contains(t, out, "arg="+tag)
+	for _, line := range out {
+		assert.NotContains(t, line, "HOOK_DIR")
+	}
+}
+
+func TestRunnerDockerfileBuildFailureFailsRun(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	script := `#!/bin/sh
+case "$1" in
+  image) exit 1 ;;
+  build) echo "no such base image" >&2; exit 1 ;;
+esac
+exit 0
+`
+	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+	hook := dockerfileHook(t, dir)
+
+	tracker := runs.NewTracker()
+	r := New(Options{Tracker: tracker, Logger: newSilentLogger(), TmpDir: dir, Docker: docker})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
-	for _, line := range run.Snapshot(-1).Output {
-		assert.NotContains(t, line, "HOOK_DIR")
-	}
+	assert.Equal(t, runs.StatusError, run.Status())
+	assert.Contains(t, run.Error(), "docker build")
+	assert.Empty(t, run.Snapshot(-1).Output) // the container never started
 }
 
 // writeRunnerMockSops mirrors hooks' test mock: cats the (plaintext in tests)

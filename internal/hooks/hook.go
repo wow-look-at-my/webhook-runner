@@ -4,11 +4,15 @@ package hooks
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +20,10 @@ import (
 
 // DefaultTimeout is applied when a hook does not specify one explicitly.
 const DefaultTimeout = 5 * time.Minute
+
+// DockerfileName, when present next to hook.json, makes the hook run a
+// locally built image (its code baked in) instead of a stock image.
+const DockerfileName = "Dockerfile"
 
 const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
@@ -26,14 +34,20 @@ const DefaultAPIKeyHeader = "X-API-Key"
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID          string   `json:"-"`
-	SourcePath  string   `json:"-"`
-	Description string   `json:"description"`
-	Image       string   `json:"image"`
-	Command     []string `json:"command"`
+	ID         string `json:"-"`
+	SourcePath string `json:"-"`
+	// HasDockerfile is set by the loader when a Dockerfile sits next to
+	// hook.json. Such hooks run an image built from the hook directory
+	// (tagged by content hash), so their code is immutable per run;
+	// `image` must be empty and `command` may be (the image's
+	// CMD/ENTRYPOINT runs).
+	HasDockerfile bool     `json:"-"`
+	Description   string   `json:"description"`
+	Image         string   `json:"image,omitempty"`
+	Command       []string `json:"command,omitempty"`
 	// Tests are argv arrays run by `webhook-runner test` in this hook's
-	// image with the hook directory mounted as HOOK_DIR and used as the
-	// working directory. They never run when the hook is triggered.
+	// image (the built one for Dockerfile hooks, so tests exercise the
+	// exact baked code). They never run when the hook is triggered.
 	Tests           [][]string          `json:"tests,omitempty"`
 	Networks        []string            `json:"networks,omitempty"`
 	Volumes         []string            `json:"volumes,omitempty"`
@@ -104,9 +118,9 @@ func (h *Hook) APIKeyHdr() string {
 }
 
 // Dir returns the absolute path of the directory containing this hook's
-// hook.json, or "" for hooks not loaded from disk (tests). The runner
-// bind-mounts it read-only into the container as HOOK_DIR so a hook can
-// ship scripts and assets alongside its config.
+// hook.json, or "" for hooks not loaded from disk (tests). For Dockerfile
+// hooks it is the docker build context, so code and assets ship alongside
+// hook.json and get baked into the image.
 func (h *Hook) Dir() string {
 	if h.SourcePath == "" {
 		return ""
@@ -130,28 +144,79 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	if dir := h.Dir(); dir != "" {
+		if fi, err := os.Stat(filepath.Join(dir, DockerfileName)); err == nil && !fi.IsDir() {
+			h.HasDockerfile = true
+		}
+	}
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
+// ContentHash digests every file under the hook's directory (relative
+// path + content). It tags the image built for a Dockerfile hook, so a
+// changed hook rebuilds on its next run while an unchanged one reuses
+// the already built image.
+func (h *Hook) ContentHash() (string, error) {
+	dir := h.Dir()
+	if dir == "" {
+		return "", errors.New("hook has no source directory")
+	}
+	digest := sha256.New()
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(digest, "%s\x00", filepath.ToSlash(rel))
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		_, cpErr := io.Copy(digest, f)
+		f.Close()
+		if cpErr != nil {
+			return cpErr
+		}
+		fmt.Fprint(digest, "\x00")
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
+	}
+	return hex.EncodeToString(digest.Sum(nil))[:16], nil
+}
+
 // ReservedEnvKey reports whether the runner sets this env key itself; hook
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
 	switch k {
-	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_DIR", "HOOK_ID", "HOOK_RUN_ID":
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID":
 		return true
 	}
 	return false
 }
 
 func (h *Hook) validate() error {
-	if h.Image == "" {
-		return errors.New("image is required")
-	}
-	if len(h.Command) == 0 {
-		return errors.New("command is required and must not be empty")
+	if h.HasDockerfile {
+		if h.Image != "" {
+			return errors.New("image must not be set when the hook has a Dockerfile (its FROM declares the base)")
+		}
+	} else {
+		if h.Image == "" {
+			return errors.New("image is required (or add a Dockerfile next to hook.json)")
+		}
+		if len(h.Command) == 0 {
+			return errors.New("command is required and must not be empty (only Dockerfile hooks may rely on the image's CMD)")
+		}
 	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {

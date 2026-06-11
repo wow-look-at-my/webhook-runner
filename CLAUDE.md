@@ -96,17 +96,27 @@ The companion repo is `wow-look-at-my/webhooks`.
   Decrypt failures fail the run (status `error`) before the container
   starts — never run a secrets-bearing hook without its secrets. The e2e
   fixture key at `e2e/age-test-key.txt` is intentionally committed.
-- Every hook's source folder is bind-mounted read-only at
-  `/var/run/webhook-runner/hook` and exposed as `HOOK_DIR`, so hooks in the
-  hooks repo can ship scripts next to their hook.json. `HOOK_DIR` is a
-  reserved env key like `HOOK_PAYLOAD_FILE`/`HOOK_HEADERS_FILE`.
+- Hook code is never mounted — it is immutable per run. A hook shipping a
+  `Dockerfile` next to hook.json runs an image built lazily from the hook
+  directory (`runner.EnsureImage`), tagged `whr-hook/<id>:<content-hash>`
+  (`hooks.ContentHash`): a hooks-repo pull makes the *next* run rebuild,
+  in-flight runs keep their image, superseded tags are best-effort
+  deleted after a successful build, and a build failure fails the run
+  (status `error`) before any container starts. For Dockerfile hooks,
+  `image` must be absent (FROM declares the base) and `command` may be
+  (the image's CMD runs); `validate` stays docker-free — builds happen
+  only at run/test time. Only the per-run payload/headers files are
+  mounted (data, not code).
 - Hook test commands (hook.json `tests`, run by `webhook-runner test` via
-  `runner.RunHookTests`) execute in the hook's image with `HOOK_DIR`
-  mounted as the working directory, but get NO payload, NO hook.json
-  `env`, and NO secrets — tests must be self-contained, which is what
-  lets a hooks repo's CI run them without production keys. The per-command
-  timeout (`--timeout`, default 10m) is deliberately independent of the
-  hook's run `timeout` (sized for production work, not unit tests).
-  Adding `tests` to a hook.json requires a runner binary that knows the
-  field — `Parse` uses `DisallowUnknownFields`, so older binaries reject
-  such files (deploy webhook-runner before merging hooks that use it).
+  `runner.RunHookTests`) execute in the hook's image — the *built* one
+  for Dockerfile hooks (built first if needed), so tests exercise the
+  exact baked bytes; copy test files into the image and set WORKDIR so
+  relative paths resolve. Tests get NO payload, NO hook.json `env`, and
+  NO secrets — they must be self-contained, which is what lets a hooks
+  repo's CI run them without production keys. The per-command timeout
+  (`--timeout`, default 10m) is deliberately independent of the hook's
+  run `timeout` (sized for production work, not unit tests). Adding
+  `tests` (or a Dockerfile-only hook.json) requires a runner binary that
+  knows the semantics — `Parse` uses `DisallowUnknownFields` and old
+  binaries demand `image`/`command` — so deploy webhook-runner before
+  merging hooks that rely on either.

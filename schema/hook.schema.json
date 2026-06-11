@@ -4,7 +4,6 @@
   "title": "webhook-runner hook configuration",
   "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root.",
   "type": "object",
-  "required": ["image", "command"],
   "additionalProperties": false,
   "properties": {
     "description": {
@@ -13,13 +12,13 @@
     },
     "image": {
       "type": "string",
-      "description": "Docker image to run (e.g. \"alpine:latest\")."
+      "description": "Docker image to run (e.g. \"alpine:latest\"). Required unless a Dockerfile sits next to hook.json — and must be omitted when one does: such hooks run an image webhook-runner builds from the hook directory (tagged by content hash), so their code is baked in and immutable per run."
     },
     "command": {
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1,
-      "description": "Command and arguments passed to docker run after the image name."
+      "description": "Command and arguments passed to docker run after the image name. Required for stock-image hooks; optional for Dockerfile hooks (the built image's CMD/ENTRYPOINT runs when omitted)."
     },
     "tests": {
       "type": "array",
@@ -28,7 +27,7 @@
         "items": { "type": "string" },
         "minItems": 1
       },
-      "description": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's image, with the hook directory mounted read-only at /var/run/webhook-runner/hook (HOOK_DIR) and used as the working directory. Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered."
+      "description": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's image — for Dockerfile hooks the locally built one, so tests exercise exactly the baked code (copy test files into the image and set WORKDIR so relative paths resolve). Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered."
     },
     "networks": {
       "type": "array",
@@ -43,12 +42,11 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_DIR, HOOK_ID, and HOOK_RUN_ID are reserved.",
+      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, and HOOK_RUN_ID are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
           { "required": ["HOOK_HEADERS_FILE"] },
-          { "required": ["HOOK_DIR"] },
           { "required": ["HOOK_ID"] },
           { "required": ["HOOK_RUN_ID"] }
         ]

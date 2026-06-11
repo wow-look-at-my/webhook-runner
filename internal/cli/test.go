@@ -24,11 +24,12 @@ func init() {
 		Short: "Run every hook's declared tests (hook.json \"tests\") in its image",
 		Long: `Run the test commands hooks declare in their hook.json "tests" array.
 
-Each test command runs in a fresh container of the hook's image, with the
-hook's directory mounted read-only at /var/run/webhook-runner/hook (HOOK_DIR)
-and used as the working directory — the same mount a live run sees, so
-relative paths like "node --test x.test.ts" just work. Tests get no payload,
-no hook env, and no secrets: they must be self-contained.
+Each test command runs in a fresh container of the hook's image. For hooks
+that ship a Dockerfile the image is built first (the same content-hash tag
+a live run uses), so tests exercise exactly the baked code — copy test
+files into the image and set WORKDIR so relative paths like
+"node --test x.test.ts" resolve. Tests get no payload, no hook env, and no
+secrets: they must be self-contained.
 
 Hooks without a "tests" array are skipped. Exits non-zero if any hook fails
 to load or any test command fails.`,

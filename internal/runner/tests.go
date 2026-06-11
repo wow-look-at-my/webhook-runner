@@ -25,21 +25,17 @@ type TestOptions struct {
 }
 
 // RunHookTests executes the hook's declared test commands (hook.json
-// "tests"), each in a fresh container of the hook's image. The hook's
-// directory is mounted read-only at the same HOOK_DIR path a live run
-// sees and is the working directory, so test commands can use relative
-// paths ("node --test x.test.ts"). Nothing else from a live run applies:
-// no payload, no hook env, no secrets — tests must be self-contained.
+// "tests"), each in a fresh container of the hook's image — for
+// Dockerfile hooks that is the locally built image (built first if
+// needed), so tests exercise exactly the bytes a live run would. Nothing
+// else from a live run applies: no payload, no hook env, no secrets —
+// tests must be self-contained.
 //
 // All commands run even if an earlier one fails; the returned error
 // aggregates every failure (nil when all passed or none are declared).
 func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 	if len(hook.Tests) == 0 {
 		return nil
-	}
-	dir := hook.Dir()
-	if dir == "" {
-		return fmt.Errorf("%s: hook has no source directory to mount", hook.ID)
 	}
 	docker := opts.Docker
 	if docker == "" {
@@ -54,12 +50,21 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 		out = io.Discard
 	}
 
+	image := hook.Image
+	if hook.HasDockerfile {
+		built, err := EnsureImage(docker, hook, out)
+		if err != nil {
+			return fmt.Errorf("%s: %w", hook.ID, err)
+		}
+		image = built
+	}
+
 	var failures []string
 	for i, argv := range hook.Tests {
 		label := fmt.Sprintf("%s: test %d/%d", hook.ID, i+1, len(hook.Tests))
 		fmt.Fprintf(out, "=== %s: %s\n", label, strings.Join(argv, " "))
 		start := time.Now()
-		if err := runOneTest(docker, hook, dir, argv, timeout, out); err != nil {
+		if err := runOneTest(docker, hook, image, argv, timeout, out); err != nil {
 			fmt.Fprintf(out, "--- %s FAILED after %s: %v\n", label, time.Since(start).Round(time.Millisecond), err)
 			failures = append(failures, fmt.Sprintf("test %d (%s): %v", i+1, strings.Join(argv, " "), err))
 			continue
@@ -72,7 +77,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 	return nil
 }
 
-func runOneTest(docker string, hook *hooks.Hook, dir string, argv []string, timeout time.Duration, out io.Writer) error {
+func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer) error {
 	suffix := make([]byte, 8)
 	if _, err := rand.Read(suffix); err != nil {
 		return fmt.Errorf("generate container name: %w", err)
@@ -82,12 +87,9 @@ func runOneTest(docker string, hook *hooks.Hook, dir string, argv []string, time
 	args := []string{
 		"run", "--rm",
 		"--name", name,
-		"-v", dir + ":" + mountedHookDir + ":ro",
-		"-e", "HOOK_DIR=" + mountedHookDir,
 		"-e", "HOOK_ID=" + hook.ID,
-		"--workdir", mountedHookDir,
 	}
-	args = append(args, hook.Image)
+	args = append(args, image)
 	args = append(args, argv...)
 
 	cmd := exec.Command(docker, args...)

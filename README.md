@@ -29,12 +29,13 @@ hooks without restart.
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
-- **Hooks ship their own code**: each hook's folder is bind-mounted
-  read-only into its container as `HOOK_DIR`, so scripts live next to
-  their `hook.json` in the hooks repo.
+- **Immutable hook code**: a hook that ships a `Dockerfile` next to its
+  `hook.json` runs an image webhook-runner builds from the hook directory,
+  tagged by content hash — code is baked in, a hooks-repo pull can't
+  change an in-flight run, and runs are plain `docker run --rm <image>`.
 - **Hooks ship their own tests**: a `tests` array in `hook.json` declares
   test commands; `webhook-runner test <hooks-dir>` runs each one in the
-  hook's image, so CI never hardcodes per-hook test invocations.
+  hook's (built) image, so CI never hardcodes per-hook test invocations.
 - **Secrets without plaintext**: `env` values and `api_key` may reference
   secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
   committed to the hooks repo (`secrets.sops.env`) or from the runner
@@ -204,19 +205,18 @@ A hook can declare test commands for its scripts in `hook.json`:
 
 ```jsonc
 {
-  "image": "node:24-alpine",
-  "command": ["node", "/var/run/webhook-runner/hook/handler.ts"],
+  // image/command come from this hook's Dockerfile
   "tests": [["node", "--test", "handler.test.ts"]]
 }
 ```
 
 `webhook-runner test <hooks-dir>` runs every declared test command in a
-fresh container of the hook's image, with the hook's directory mounted
-read-only at `/var/run/webhook-runner/hook` (`HOOK_DIR`) and used as the
-working directory — so relative paths like `handler.test.ts` resolve the
-same way they will in production. Hooks without a `tests` array are
-skipped; the command exits non-zero if any hook fails to load or any test
-command fails.
+fresh container of the hook's image. For Dockerfile hooks it builds the
+image first (the same content-hash tag a live run uses), so tests exercise
+exactly the baked code — copy test files into the image alongside the code
+and set `WORKDIR` so relative paths like `handler.test.ts` resolve. Hooks
+without a `tests` array are skipped; the command exits non-zero if any
+hook fails to load, any build fails, or any test command fails.
 
 Tests get no payload, no `hook.json` env, and no secrets: they must be
 self-contained (start their own mock servers, set their own env). That is
@@ -249,15 +249,41 @@ set automatically:
 |----------------------|---------------------------------------------------------|
 | `HOOK_PAYLOAD_FILE`  | Path to a file containing the raw request body.         |
 | `HOOK_HEADERS_FILE`  | Path to a JSON file `{"X-Header": ["value"], ...}`.     |
-| `HOOK_DIR`           | Path to the hook's own source folder (the directory containing its `hook.json`). |
 | `HOOK_ID`            | The hook ID (folder name).                              |
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
 
-All three paths are bind-mounted read-only under `/var/run/webhook-runner/`.
-The `HOOK_DIR` mount means a hook can ship scripts and assets alongside its
-`hook.json` and run them directly, e.g.
-`"command": ["node", "/var/run/webhook-runner/hook/handler.ts"]` (or
-`["sh", "-c", "exec node $HOOK_DIR/handler.ts"]`).
+Both files are bind-mounted read-only under `/var/run/webhook-runner/` —
+per-run *data*, never code. Hook code is immutable per run: it is either
+part of a stock image or baked into the hook's built image (see below).
+
+## Hooks with baked-in code (Dockerfile)
+
+A hook directory may contain a `Dockerfile` next to its `hook.json`. Such
+a hook runs an image webhook-runner builds locally from the hook directory
+(the build context), tagged `whr-hook/<id>:<content-hash>`:
+
+```
+my-hook/
+  hook.json       # no "image" (the Dockerfile's FROM declares the base);
+                  # "command" optional (the image's CMD runs by default)
+  Dockerfile      # FROM node:24-alpine / WORKDIR /app / COPY handler.ts . / CMD ["node", "handler.ts"]
+  handler.ts
+```
+
+The content-hash tag is what makes runs immutable and rebuilds automatic:
+
+- The image is built lazily on the hook's next run (or `test`) whenever no
+  image exists for the directory's current content — after a hooks-repo
+  pull, the first run rebuilds; an unchanged hook reuses the cached image.
+- In-flight runs keep the image they started with; a concurrent
+  `POST /_reload` + `git pull` cannot change what they execute.
+- Superseded builds are deleted after a successful new build (best-effort;
+  images backing still-running containers are skipped).
+- A failed build fails the run with status `error` before any container
+  starts; build output is streamed to the server log.
+
+No registry is involved: the hooks repo stays the single source of truth,
+and the runner host turns it into immutable local images.
 
 ## Subcommands
 

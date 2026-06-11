@@ -95,7 +95,7 @@ try {
     const hooks: any = await r.json();
     assert.equal(hooks.length, 10);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "hookdir-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook", "sops-hook"]);
   });
 
   await test("GET /hooks not on hook port", async () => {
@@ -218,11 +218,14 @@ try {
     assert.ok(output.includes("Content-Type"), "missing headers");
   });
 
-  await test("HOOK_DIR: the hook's own folder is mounted", async () => {
-    const r = await fetch(`${base}/hook/hookdir-hook?wait=true`, { method: "POST", body: "{}" });
+  await test("Dockerfile hook: code is baked into a locally built image", async () => {
+    // First run builds the image (content-hash tag), then runs its CMD —
+    // hook.json declares neither image nor command.
+    const r = await fetch(`${base}/hook/dockerfile-hook?wait=true`, { method: "POST", body: "{}" });
     assert.equal(r.status, 200);
     const run: any = await r.json();
-    assert.ok(run.output.join("\n").includes("hello-from-hook-dir"), "missing hook-dir file content");
+    assert.equal(run.status, "success");
+    assert.ok(run.output.join("\n").includes("hello-from-baked-image"), "missing baked file content");
   });
 
   await test("env ${VAR} expands from the runner host", async () => {
@@ -316,7 +319,7 @@ try {
 await test("webhook-runner test runs declared hook tests", async () => {
   const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
   assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
-  assert.ok(r.stdout.includes("hookdir-tests-ok"), "missing hookdir test output");
+  assert.ok(r.stdout.includes("built-tests-ok"), "missing built-image test output");
   assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
 });
 

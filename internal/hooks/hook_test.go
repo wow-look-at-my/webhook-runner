@@ -2,6 +2,8 @@ package hooks
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +52,6 @@ func TestParseRejectsMissingFields(t *testing.T) {
 		"missing command":         `{"image":"alpine"}`,
 		"empty command":           `{"image":"alpine","command":[]}`,
 		"reserved env":            `{"image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"reserved env hook_dir":   `{"image":"alpine","command":["x"],"env":{"HOOK_DIR":"x"}}`,
 		"empty test command":      `{"image":"alpine","command":["x"],"tests":[["ok"],[]]}`,
 		"bad timeout":             `{"image":"alpine","command":["x"],"timeout":"banana"}`,
 		"negative timeout":        `{"image":"alpine","command":["x"],"timeout":"-1s"}`,
@@ -68,6 +69,52 @@ func TestParseRejectsMissingFields(t *testing.T) {
 
 		})
 	}
+}
+
+func TestParseDockerfileHook(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName),
+		[]byte("FROM alpine\nCMD [\"true\"]\n"), 0o644))
+	src := filepath.Join(dir, "hook.json")
+
+	// Image and command are both optional: the Dockerfile supplies them.
+	h, err := Parse("built", src, []byte(`{"timeout":"30s"}`))
+	require.Nil(t, err)
+	assert.True(t, h.HasDockerfile)
+	assert.Empty(t, h.Image)
+	assert.Empty(t, h.Command)
+
+	// An explicit command still overrides the image's CMD.
+	h, err = Parse("built", src, []byte(`{"command":["sh","-c","x"]}`))
+	require.Nil(t, err)
+	assert.True(t, h.HasDockerfile)
+
+	// image conflicts with the Dockerfile's FROM.
+	_, err = Parse("built", src, []byte(`{"image":"alpine"}`))
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "Dockerfile")
+}
+
+func TestContentHash(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("two"), 0o644))
+	h := &Hook{ID: "h", SourcePath: filepath.Join(dir, "hook.json")}
+
+	first, err := h.ContentHash()
+	require.NoError(t, err)
+	again, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.Equal(t, first, again, "hash must be deterministic")
+	assert.Len(t, first, 16)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed"), 0o644))
+	changed, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, changed, "content change must change the hash")
+
+	_, err = (&Hook{ID: "nodisk"}).ContentHash()
+	require.Error(t, err)
 }
 
 func TestStripComments(t *testing.T) {
