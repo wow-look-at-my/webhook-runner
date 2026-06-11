@@ -120,6 +120,18 @@ The companion repo is `wow-look-at-my/webhooks`.
   overrides the image's CMD. `validate` stays docker-free — builds
   happen only at run/test time. Only the per-run payload/headers files
   are mounted (data, not code).
+- When the server itself runs in a container (the GHCR image + compose),
+  per-run payload/header bind mounts resolve on the docker HOST — a temp
+  dir private to the server's container doesn't exist there, docker
+  creates a directory at the mount source, and every run fails with
+  EISDIR reading its payload. `TMPDIR` must point at a dir bind-mounted
+  from the host at the same absolute path; startup records a
+  `server.misconfigured` event (and logs an error) when a container
+  marker (/.dockerenv, /run/.containerenv) is present and TMPDIR is
+  unset (`runner.WarnIfContainerized`, called from cli/serve.go — it
+  lives in runner because the hazard is that package's mounting model).
+  Image *builds* are immune — the docker CLI streams the build context
+  over the socket.
 - Hook test commands (hook.json `tests`, run by `webhook-runner test` via
   `runner.RunHookTests`) execute in the hook's built image (built first
   if needed), so tests exercise the exact baked bytes; copy test files

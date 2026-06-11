@@ -249,6 +249,35 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
+| `TMPDIR`                          | `/tmp`                       | Where per-run payload/header files are written before being bind-mounted into hook containers. Must be host-shared when the server itself runs in a container (below). |
+
+### Running the server in a container
+
+The server shells out to the **host's** docker daemon (mount
+`/var/run/docker.sock`), and per-run payload/header files are bind-mounted
+into hook containers **by host path**. A temp dir private to the server's
+container doesn't exist on the host, so docker silently creates a
+*directory* at the mount source and every run fails reading its payload
+(`EISDIR`). The server detects this topology at startup and records a
+`server.misconfigured` event on the dashboard unless `TMPDIR` is set.
+
+Share the temp dir with the host at the **same absolute path**, and declare
+it via `TMPDIR`:
+
+```yaml
+services:
+  webhook-runner:
+    image: ghcr.io/wow-look-at-my/webhook-runner:latest
+    environment:
+      - TMPDIR=/var/lib/webhook-runner/tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/webhook-runner/tmp:/var/lib/webhook-runner/tmp
+```
+
+(Sharing `/tmp:/tmp` also works — then declare `TMPDIR=/tmp` to silence the
+startup warning.) The hooks dir needs no sharing: image builds stream their
+context over the docker socket instead of resolving host paths.
 
 ## Inside the container
 
@@ -263,8 +292,8 @@ set automatically:
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
 
 Both files are bind-mounted read-only under `/var/run/webhook-runner/` —
-per-run *data*, never code. Hook code is immutable per run: it is either
-part of a stock image or baked into the hook's built image (see below).
+per-run *data*, never code. Hook code is immutable per run: it is baked
+into the hook's built image (see below).
 
 ## Hook images (Dockerfile)
 
