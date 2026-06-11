@@ -78,10 +78,10 @@ func TestHealthAdminPort(t *testing.T) {
 func TestListHooks(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "a", Description: "alpha", Image: "alpine", Command: []string{"x"},
+		ID: "a", Description: "alpha", Command: []string{"x"},
 		Secret: "supersecret",
 	})
-	reg.Set(&hooks.Hook{ID: "b", Description: "beta", Image: "alpine", Command: []string{"x"}})
+	reg.Set(&hooks.Hook{ID: "b", Description: "beta", Command: []string{"x"}})
 
 	req := httptest.NewRequest(http.MethodGet, "/hooks", nil)
 	rec := httptest.NewRecorder()
@@ -108,7 +108,6 @@ func TestTriggerInvalidSignature(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
 		ID:      "secret-hook",
-		Image:   "alpine",
 		Command: []string{"echo"},
 		Secret:  "abc",
 	})
@@ -124,7 +123,6 @@ func TestTriggerValidSignature(t *testing.T) {
 	s, reg, tr, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{
 		ID:      "ok",
-		Image:   "alpine",
 		Command: []string{"echo"},
 		Secret:  "abc",
 	})
@@ -152,10 +150,14 @@ func TestTriggerValidSignature(t *testing.T) {
 
 func TestTriggerSyncMode(t *testing.T) {
 	s, reg, _, rn := newTestServer(t)
+	// Sync mode surfaces the run's final status, so this hook needs a real
+	// directory for its image-tag content hash to resolve.
+	hookDir := filepath.Join(t.TempDir(), "sync")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
 	reg.Set(&hooks.Hook{
-		ID:      "sync",
-		Image:   "alpine",
-		Command: []string{"x"},
+		ID:         "sync",
+		Command:    []string{"x"},
+		SourcePath: filepath.Join(hookDir, "hook.json"),
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/hook/sync?wait=true", strings.NewReader(``))
@@ -171,7 +173,7 @@ func TestTriggerSyncMode(t *testing.T) {
 
 func TestTriggerInvalidWaitParam(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}})
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/hook/h?wait=banana", strings.NewReader(``))
 	rec := httptest.NewRecorder()
@@ -181,7 +183,7 @@ func TestTriggerInvalidWaitParam(t *testing.T) {
 
 func TestTriggerInvalidTimeoutParam(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}})
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/hook/h?wait=true&timeout=banana", strings.NewReader(``))
 	rec := httptest.NewRecorder()
@@ -307,7 +309,7 @@ func TestDashboardUnknownPath404(t *testing.T) {
 
 func TestTriggerBodyTooLarge(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}})
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}})
 
 	big := strings.Repeat("x", MaxBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/hook/h", strings.NewReader(big))
@@ -319,7 +321,7 @@ func TestTriggerBodyTooLarge(t *testing.T) {
 func TestTriggerAPIKeyValid(t *testing.T) {
 	s, reg, _, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ak", Image: "alpine", Command: []string{"x"},
+		ID: "ak", Command: []string{"x"},
 		APIKey: "test-key-123",
 	})
 
@@ -334,7 +336,7 @@ func TestTriggerAPIKeyValid(t *testing.T) {
 func TestTriggerAPIKeyInvalid(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ak", Image: "alpine", Command: []string{"x"},
+		ID: "ak", Command: []string{"x"},
 		APIKey: "test-key-123",
 	})
 
@@ -348,7 +350,7 @@ func TestTriggerAPIKeyInvalid(t *testing.T) {
 func TestTriggerAPIKeyMissing(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ak", Image: "alpine", Command: []string{"x"},
+		ID: "ak", Command: []string{"x"},
 		APIKey: "test-key-123",
 	})
 
@@ -361,7 +363,7 @@ func TestTriggerAPIKeyMissing(t *testing.T) {
 func TestTriggerAPIKeyCustomHeader(t *testing.T) {
 	s, reg, _, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ak", Image: "alpine", Command: []string{"x"},
+		ID: "ak", Command: []string{"x"},
 		APIKey: "mykey", APIKeyHeader: "Authorization",
 	})
 
@@ -379,7 +381,7 @@ func TestTriggerEd25519Valid(t *testing.T) {
 
 	s, reg, _, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ed", Image: "alpine", Command: []string{"x"},
+		ID: "ed", Command: []string{"x"},
 		PublicKey: base64.StdEncoding.EncodeToString(pub),
 	})
 
@@ -400,7 +402,7 @@ func TestTriggerEd25519Invalid(t *testing.T) {
 
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ed", Image: "alpine", Command: []string{"x"},
+		ID: "ed", Command: []string{"x"},
 		PublicKey: base64.StdEncoding.EncodeToString(pub),
 	})
 
@@ -419,7 +421,7 @@ func TestTriggerEd25519WrongKey(t *testing.T) {
 
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ed", Image: "alpine", Command: []string{"x"},
+		ID: "ed", Command: []string{"x"},
 		PublicKey: base64.StdEncoding.EncodeToString(pub1),
 	})
 
@@ -544,7 +546,7 @@ func TestConfigEndpointEmpty(t *testing.T) {
 
 func TestCancelRunHookPort(t *testing.T) {
 	s, reg, tr, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, APIKey: "k"})
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}, APIKey: "k"})
 	run := tr.New("h") // still pending — never handed to the runner
 
 	// Wrong key is rejected before the run is even looked up.
@@ -571,8 +573,8 @@ func TestCancelRunHookPort(t *testing.T) {
 func TestCancelRunCrossHookIsNotFound(t *testing.T) {
 	// Hook a's valid key must not cancel (or detect) hook b's runs.
 	s, reg, tr, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "a", Image: "alpine", Command: []string{"x"}, APIKey: "ka"})
-	reg.Set(&hooks.Hook{ID: "b", Image: "alpine", Command: []string{"x"}, APIKey: "kb"})
+	reg.Set(&hooks.Hook{ID: "a", Command: []string{"x"}, APIKey: "ka"})
+	reg.Set(&hooks.Hook{ID: "b", Command: []string{"x"}, APIKey: "kb"})
 	run := tr.New("b")
 
 	req := httptest.NewRequest(http.MethodPost, "/hook/a/cancel/"+run.ID(), nil)
@@ -590,7 +592,7 @@ func TestCancelRunCrossHookIsNotFound(t *testing.T) {
 
 func TestCancelRunUnknownHookOrRun(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, APIKey: "k"})
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}, APIKey: "k"})
 
 	req := httptest.NewRequest(http.MethodPost, "/hook/nope/cancel/xyz", nil)
 	rec := httptest.NewRecorder()
@@ -606,7 +608,7 @@ func TestCancelRunUnknownHookOrRun(t *testing.T) {
 
 func TestCancelFinishedRunConflict(t *testing.T) {
 	s, reg, tr, _ := newTestServer(t)
-	reg.Set(&hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, APIKey: "k"})
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}, APIKey: "k"})
 	run := tr.New("h")
 	run.Finish(runs.StatusSuccess, 0, "")
 
@@ -638,7 +640,7 @@ func TestTriggerAPIKeyFromHostEnv(t *testing.T) {
 	t.Setenv("WHR_TEST_API_KEY", "sesame")
 	s, reg, _, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ak", Image: "alpine", Command: []string{"x"},
+		ID: "ak", Command: []string{"x"},
 		APIKey: "${WHR_TEST_API_KEY}",
 	})
 
@@ -660,7 +662,7 @@ func TestTriggerAPIKeyFromHostEnv(t *testing.T) {
 func TestTriggerAPIKeyFromHostEnvUnsetFailsClosed(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
-		ID: "ak", Image: "alpine", Command: []string{"x"},
+		ID: "ak", Command: []string{"x"},
 		APIKey: "${WHR_TEST_DEFINITELY_UNSET_KEY}",
 	})
 
@@ -691,8 +693,8 @@ func TestTriggerAPIKeyFromSopsSecrets(t *testing.T) {
 
 	reg.Set(&hooks.Hook{
 		ID: "ak", SourcePath: filepath.Join(hookDir, "hook.json"),
-		Image: "alpine", Command: []string{"x"},
-		APIKey: "${AK_FROM_SOPS}",
+		Command: []string{"x"},
+		APIKey:  "${AK_FROM_SOPS}",
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
@@ -728,8 +730,8 @@ func TestTriggerAPIKeySecretsDecryptFailureFailsClosed(t *testing.T) {
 
 	reg.Set(&hooks.Hook{
 		ID: "ak", SourcePath: filepath.Join(hookDir, "hook.json"),
-		Image: "alpine", Command: []string{"x"},
-		APIKey: "${K}",
+		Command: []string{"x"},
+		APIKey:  "${K}",
 	})
 
 	// Even a request that would match the (undecryptable) key fails closed.

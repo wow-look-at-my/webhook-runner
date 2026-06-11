@@ -21,7 +21,6 @@ func testsHook(t *testing.T, dir string, tests [][]string) *hooks.Hook {
 	return &hooks.Hook{
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
-		Image:      "node:24-alpine",
 		Command:    []string{"node", "/app/x.ts"},
 		Env:        map[string]string{"HOOK_ONLY_SECRET": "live-runs-only"},
 		Tests:      tests,
@@ -37,11 +36,13 @@ func TestRunHookTestsDockerInvocation(t *testing.T) {
 	err := RunHookTests(hook, TestOptions{Docker: docker, Out: &out})
 	require.NoError(t, err)
 
+	tag, err := ImageTag(hook)
+	require.NoError(t, err)
 	got := out.String()
 	for _, want := range []string{
 		"arg=run", "arg=--rm",
 		"arg=HOOK_ID=myhook",
-		"arg=node:24-alpine",
+		"arg=" + tag,
 		"arg=--test", "arg=x.test.ts",
 	} {
 		assert.Contains(t, got, want)
@@ -102,6 +103,7 @@ func TestRunHookTestsRunsAllAndAggregatesFailures(t *testing.T) {
 	// Fails any command whose argv mentions FAIL, succeeds otherwise.
 	script := `#!/bin/sh
 if [ "$1" = "kill" ]; then exit 0; fi
+if [ "$1" = "image" ] || [ "$1" = "build" ]; then exit 0; fi
 echo "ran: $@"
 case "$@" in *FAIL*) exit 7;; esac
 exit 0
@@ -127,14 +129,13 @@ func TestRunHookTestsNoTestsIsNoop(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestRunHookTestsStockImageNeedsNoSourceDir(t *testing.T) {
-	// A stock-image hook's tests run with no mounts at all, so even a hook
-	// not loaded from disk can run them.
-	dir := t.TempDir()
-	docker := writeArgDumpDocker(t, dir)
-	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}, Tests: [][]string{{"true"}}}
-	err := RunHookTests(hook, TestOptions{Docker: docker})
-	require.NoError(t, err)
+func TestRunHookTestsRequiresSourceDir(t *testing.T) {
+	// Every hook resolves its image from its directory's content hash; a
+	// hook not loaded from disk can't.
+	hook := &hooks.Hook{ID: "h", Command: []string{"x"}, Tests: [][]string{{"true"}}}
+	err := RunHookTests(hook, TestOptions{Docker: "/bin/true"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no source directory")
 }
 
 func TestRunHookTestsTimeout(t *testing.T) {
@@ -144,6 +145,7 @@ func TestRunHookTestsTimeout(t *testing.T) {
 	// Process.Kill genuinely reaps it (no orphan holding the output pipe).
 	script := `#!/bin/sh
 if [ "$1" = "kill" ]; then exit 0; fi
+if [ "$1" = "image" ] || [ "$1" = "build" ]; then exit 0; fi
 exec sleep 30
 `
 	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))

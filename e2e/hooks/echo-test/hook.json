@@ -1,6 +1,5 @@
 {
   "description": "e2e echo test",
-  "image": "alpine:latest",
   "command": ["sh", "-c", "echo hello-e2e && cat $HOOK_PAYLOAD_FILE"],
   "timeout": "60s"
 }

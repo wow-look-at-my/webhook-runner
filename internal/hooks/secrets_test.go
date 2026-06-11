@@ -47,7 +47,7 @@ func secretsHook(t *testing.T, dir, content string) *Hook {
 	if content != "" {
 		require.NoError(t, os.WriteFile(filepath.Join(hookDir, SecretsFileName), []byte(content), 0o600))
 	}
-	return &Hook{ID: "h", SourcePath: filepath.Join(hookDir, "hook.json"), Image: "alpine", Command: []string{"x"}}
+	return &Hook{ID: "h", SourcePath: filepath.Join(hookDir, "hook.json"), Command: []string{"x"}}
 }
 
 func TestSecretsLoaderNoFile(t *testing.T) {
@@ -59,7 +59,7 @@ func TestSecretsLoaderNoFile(t *testing.T) {
 	assert.Equal(t, 0, sopsCalls(t, dir)) // absent file never invokes sops
 
 	// A hook not loaded from disk has no secrets either.
-	got, err = l.Load(&Hook{ID: "mem", Image: "alpine", Command: []string{"x"}})
+	got, err = l.Load(&Hook{ID: "mem", Command: []string{"x"}})
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }

@@ -1,5 +1,4 @@
 {
-  "image": "alpine:latest",
   "command": ["sh", "-c", "echo sleeping && sleep 30"],
   "timeout": "60s"
 }

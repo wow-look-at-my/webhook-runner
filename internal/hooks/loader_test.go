@@ -13,17 +13,18 @@ func writeHook(t *testing.T, root, id, body string) {
 	t.Helper()
 	dir := filepath.Join(root, id)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"), []byte(body), 0o644))
 }
 
 func TestLoadDir(t *testing.T) {
 	root := t.TempDir()
-	writeHook(t, root, "good", `{"image":"alpine","command":["x"]}`)
-	writeHook(t, root, "broken", `{"image":"alpine"}`) // missing command
+	writeHook(t, root, "good", `{"command":["x"]}`)
+	writeHook(t, root, "broken", `{"image":"alpine"}`) // image is no longer a field
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "no-hook"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "stray.txt"), []byte("ignore me"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".hidden"), 0o755))
-	writeHook(t, root, ".hidden", `{"image":"alpine","command":["x"]}`)
+	writeHook(t, root, ".hidden", `{"command":["x"]}`)
 
 	hooks, errs := LoadDir(root)
 	assert.Len(t, hooks, 1)
@@ -45,7 +46,6 @@ func TestLoadOne(t *testing.T) {
 	writeHook(t, root, "deploy", `{
 		// pretty
 		"description": "Deploy",
-		"image": "alpine",
 		"command": ["echo"]
 	}`)
 	h, err := LoadOne(root, "deploy")

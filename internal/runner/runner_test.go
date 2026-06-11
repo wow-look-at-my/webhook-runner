@@ -32,6 +32,8 @@ func writeMockDocker(t *testing.T, dir string) string {
 	path := filepath.Join(dir, "docker")
 	script := `#!/bin/sh
 if [ "$1" = "kill" ]; then exit 0; fi
+# image inspect: pretend every tag is already built; build: succeed quietly
+if [ "$1" = "image" ] || [ "$1" = "build" ]; then exit 0; fi
 shift  # drop "run"
 saw_image=false
 exit_code=0
@@ -67,6 +69,17 @@ func newSilentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// diskHook returns a hook backed by a real directory — every hook hashes
+// its directory to resolve its image tag, so even mock-docker tests need
+// one on disk.
+func diskHook(t *testing.T, base string, h *hooks.Hook) *hooks.Hook {
+	t.Helper()
+	hookDir := filepath.Join(base, h.ID)
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	h.SourcePath = filepath.Join(hookDir, "hook.json")
+	return h
+}
+
 func TestRunnerSuccess(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
@@ -79,19 +92,20 @@ func TestRunnerSuccess(t *testing.T) {
 		Docker:  docker,
 	})
 
-	hook := &hooks.Hook{
+	hook := diskHook(t, dir, &hooks.Hook{
 		ID:      "h",
-		Image:   "alpine",
 		Command: []string{"hello", "world"},
-	}
+	})
 	run, err := r.Start(context.Background(), hook, []byte("payload"), http.Header{"X-Test": []string{"yes"}})
 	require.NoError(t, err)
 	r.Wait()
 
+	tag, err := ImageTag(hook)
+	require.NoError(t, err)
 	snap := run.Snapshot(-1)
 	assert.Equal(t, runs.StatusSuccess, snap.Status)
 	assert.Equal(t, 0, snap.ExitCode)
-	assert.Contains(t, snap.Output, "image=alpine")
+	assert.Contains(t, snap.Output, "image="+tag)
 	assert.Contains(t, snap.Output, "hello")
 	assert.Contains(t, snap.Output, "world")
 }
@@ -108,11 +122,10 @@ func TestRunnerFailure(t *testing.T) {
 		Docker:  docker,
 	})
 
-	hook := &hooks.Hook{
+	hook := diskHook(t, dir, &hooks.Hook{
 		ID:      "h",
-		Image:   "alpine",
 		Command: []string{"EXIT_3"},
-	}
+	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
@@ -133,12 +146,11 @@ func TestRunnerTimeout(t *testing.T) {
 		Docker:  docker,
 	})
 
-	hook := &hooks.Hook{
+	hook := diskHook(t, dir, &hooks.Hook{
 		ID:         "h",
-		Image:      "alpine",
 		Command:    []string{"SLEEP_30"},
 		TimeoutRaw: "100ms",
-	}
+	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
 
@@ -165,7 +177,7 @@ func TestRunnerStartHookCallback(t *testing.T) {
 		OnStart:  func(*hooks.Hook, *runs.Run, []byte) { startCalled = true },
 		OnFinish: func(*hooks.Hook, *runs.Run, []byte) { finishCalled = true },
 	})
-	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
+	hook := diskHook(t, dir, &hooks.Hook{ID: "h", Command: []string{"x"}})
 	_, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
@@ -183,7 +195,7 @@ func TestRunnerWritesPayloadFile(t *testing.T) {
 		TmpDir:  tmp,
 		Docker:  "/bin/true", // accepts and ignores all args, exits 0
 	})
-	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
+	hook := diskHook(t, tmp, &hooks.Hook{ID: "h", Command: []string{"x"}})
 	_, err := r.Start(context.Background(), hook, []byte("hello payload"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
@@ -203,6 +215,8 @@ func writeArgDumpDocker(t *testing.T, dir string) string {
 	path := filepath.Join(dir, "docker")
 	script := `#!/bin/sh
 if [ "$1" = "kill" ]; then exit 0; fi
+# image inspect: pretend every tag is already built; build: succeed quietly
+if [ "$1" = "image" ] || [ "$1" = "build" ]; then exit 0; fi
 for a in "$@"; do echo "arg=$a"; done
 `
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
@@ -221,11 +235,10 @@ func TestRunnerCancelWhileRunning(t *testing.T) {
 		Docker:  docker,
 	})
 
-	hook := &hooks.Hook{
+	hook := diskHook(t, dir, &hooks.Hook{
 		ID:      "h",
-		Image:   "alpine",
 		Command: []string{"SLEEP_30"},
-	}
+	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
 
@@ -262,11 +275,10 @@ func TestRunnerCancelImmediately(t *testing.T) {
 		Docker:  docker,
 	})
 
-	hook := &hooks.Hook{
+	hook := diskHook(t, dir, &hooks.Hook{
 		ID:      "h",
-		Image:   "alpine",
 		Command: []string{"SLEEP_30"},
-	}
+	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
 	run.RequestCancel()
@@ -300,7 +312,6 @@ func TestRunnerExpandsEnv(t *testing.T) {
 	hook := &hooks.Hook{
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
-		Image:      "alpine",
 		Command:    []string{"x"},
 		Env: map[string]string{
 			"TOKEN":   "${WHR_TEST_SECRET}",
@@ -359,9 +370,8 @@ func dockerfileHook(t *testing.T, dir string) *hooks.Hook {
 	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"),
 		[]byte("FROM alpine\nCMD [\"true\"]\n"), 0o644))
 	return &hooks.Hook{
-		ID:            "myhook",
-		SourcePath:    filepath.Join(hookDir, "hook.json"),
-		HasDockerfile: true,
+		ID:         "myhook",
+		SourcePath: filepath.Join(hookDir, "hook.json"),
 	}
 }
 
@@ -457,7 +467,6 @@ func TestRunnerInjectsSopsSecrets(t *testing.T) {
 	hook := &hooks.Hook{
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
-		Image:      "alpine",
 		Command:    []string{"x"},
 		Env: map[string]string{
 			"OVERRIDDEN": "env-version",                           // explicit env beats the injected secret
@@ -513,7 +522,6 @@ func TestRunnerSecretsDecryptFailureFailsRun(t *testing.T) {
 	hook := &hooks.Hook{
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
-		Image:      "alpine",
 		Command:    []string{"x"},
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})

@@ -27,7 +27,7 @@ func eventually(t *testing.T, timeout time.Duration, fn func() bool) {
 
 func TestWatcherInitialLoad(t *testing.T) {
 	root := t.TempDir()
-	writeHook(t, root, "first", `{"image":"alpine","command":["x"]}`)
+	writeHook(t, root, "first", `{"command":["x"]}`)
 
 	reg := NewRegistry()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,7 +52,7 @@ func TestWatcherDetectsNewHook(t *testing.T) {
 	// Wait for initial scan to finish.
 	time.Sleep(100 * time.Millisecond)
 
-	writeHook(t, root, "later", `{"image":"alpine","command":["x"]}`)
+	writeHook(t, root, "later", `{"command":["x"]}`)
 
 	eventually(t, 3*time.Second, func() bool {
 		_, ok := reg.Get("later")
@@ -62,7 +62,7 @@ func TestWatcherDetectsNewHook(t *testing.T) {
 
 func TestWatcherDetectsRemoval(t *testing.T) {
 	root := t.TempDir()
-	writeHook(t, root, "doomed", `{"image":"alpine","command":["x"]}`)
+	writeHook(t, root, "doomed", `{"command":["x"]}`)
 
 	reg := NewRegistry()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -85,7 +85,7 @@ func TestWatcherDetectsRemoval(t *testing.T) {
 
 func TestWatcherDetectsModification(t *testing.T) {
 	root := t.TempDir()
-	writeHook(t, root, "h", `{"image":"alpine","command":["x"],"description":"v1"}`)
+	writeHook(t, root, "h", `{"command":["x"],"description":"v1"}`)
 
 	reg := NewRegistry()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -100,7 +100,7 @@ func TestWatcherDetectsModification(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "h", "hook.json"),
-		[]byte(`{"image":"alpine","command":["x"],"description":"v2"}`),
+		[]byte(`{"command":["x"],"description":"v2"}`),
 		0o644,
 	))
 

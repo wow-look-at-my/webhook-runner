@@ -25,11 +25,10 @@ type TestOptions struct {
 }
 
 // RunHookTests executes the hook's declared test commands (hook.json
-// "tests"), each in a fresh container of the hook's image — for
-// Dockerfile hooks that is the locally built image (built first if
-// needed), so tests exercise exactly the bytes a live run would. Nothing
-// else from a live run applies: no payload, no hook env, no secrets —
-// tests must be self-contained.
+// "tests"), each in a fresh container of the hook's built image (built
+// first if needed), so tests exercise exactly the bytes a live run
+// would. Nothing else from a live run applies: no payload, no hook env,
+// no secrets — tests must be self-contained.
 //
 // All commands run even if an earlier one fails; the returned error
 // aggregates every failure (nil when all passed or none are declared).
@@ -50,13 +49,9 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 		out = io.Discard
 	}
 
-	image := hook.Image
-	if hook.HasDockerfile {
-		built, err := EnsureImage(docker, hook, out)
-		if err != nil {
-			return fmt.Errorf("%s: %w", hook.ID, err)
-		}
-		image = built
+	image, err := EnsureImage(docker, hook, out)
+	if err != nil {
+		return fmt.Errorf("%s: %w", hook.ID, err)
 	}
 
 	var failures []string

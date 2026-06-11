@@ -29,13 +29,14 @@ hooks without restart.
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
-- **Immutable hook code**: a hook that ships a `Dockerfile` next to its
-  `hook.json` runs an image webhook-runner builds from the hook directory,
-  tagged by content hash — code is baked in, a hooks-repo pull can't
-  change an in-flight run, and runs are plain `docker run --rm <image>`.
+- **Immutable hook code**: every hook ships a `Dockerfile` next to its
+  `hook.json` and runs an image webhook-runner builds from the hook
+  directory, tagged by content hash — code is baked in, a hooks-repo pull
+  can't change an in-flight run, and runs are plain
+  `docker run --rm <image>`.
 - **Hooks ship their own tests**: a `tests` array in `hook.json` declares
   test commands; `webhook-runner test <hooks-dir>` runs each one in the
-  hook's (built) image, so CI never hardcodes per-hook test invocations.
+  hook's built image, so CI never hardcodes per-hook test invocations.
 - **Secrets without plaintext**: `env` values and `api_key` may reference
   secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
   committed to the hooks repo (`secrets.sops.env`) or from the runner
@@ -256,16 +257,16 @@ Both files are bind-mounted read-only under `/var/run/webhook-runner/` —
 per-run *data*, never code. Hook code is immutable per run: it is either
 part of a stock image or baked into the hook's built image (see below).
 
-## Hooks with baked-in code (Dockerfile)
+## Hook images (Dockerfile)
 
-A hook directory may contain a `Dockerfile` next to its `hook.json`. Such
-a hook runs an image webhook-runner builds locally from the hook directory
-(the build context), tagged `whr-hook/<id>:<content-hash>`:
+Every hook directory contains a `Dockerfile` next to its `hook.json` —
+there is no other way to supply code. The hook runs an image
+webhook-runner builds locally from the hook directory (the build
+context), tagged `whr-hook/<id>:<content-hash>`:
 
 ```
 my-hook/
-  hook.json       # no "image" (the Dockerfile's FROM declares the base);
-                  # "command" optional (the image's CMD runs by default)
+  hook.json       # "command" optional (the image's CMD runs by default)
   Dockerfile      # FROM node:24-alpine / WORKDIR /app / COPY handler.ts . / CMD ["node", "handler.ts"]
   handler.ts
 ```

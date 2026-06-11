@@ -161,34 +161,31 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	lookup := hooks.SecretsFirstLookup(secrets)
 
-	// Dockerfile hooks run an image built from the hook directory, tagged
-	// by content hash — their code is baked in, so a concurrent hooks-repo
-	// pull can't change what an in-flight run executes.
-	image := hook.Image
-	if hook.HasDockerfile {
-		buildLog := &slogLineWriter{logFn: func(line string) {
-			r.log.Info("hook image build", "hook", hook.ID, "run", run.ID(), "line", line)
-		}}
-		built, err := EnsureImage(r.dockerBin, hook, buildLog)
-		if err != nil {
-			run.Finish(runs.StatusError, -1, fmt.Sprintf("hook image: %v", err))
-			if r.onFinish != nil {
-				r.onFinish(hook, run, payload)
-			}
-			return
+	// Every hook runs an image built from its directory, tagged by content
+	// hash — code is baked in, so a concurrent hooks-repo pull can't
+	// change what an in-flight run executes. The build is a cheap no-op
+	// when the image for the current content already exists.
+	buildLog := &slogLineWriter{logFn: func(line string) {
+		r.log.Info("hook image build", "hook", hook.ID, "run", run.ID(), "line", line)
+	}}
+	image, err := EnsureImage(r.dockerBin, hook, buildLog)
+	if err != nil {
+		run.Finish(runs.StatusError, -1, fmt.Sprintf("hook image: %v", err))
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
 		}
-		image = built
-		// A build can take a while; honor a cancel that arrived during it
-		// instead of starting a container nobody wants anymore.
-		select {
-		case <-run.Cancelled():
-			run.Finish(runs.StatusCancelled, -1, "cancelled before start")
-			if r.onFinish != nil {
-				r.onFinish(hook, run, payload)
-			}
-			return
-		default:
+		return
+	}
+	// A build can take a while; honor a cancel that arrived during it
+	// instead of starting a container nobody wants anymore.
+	select {
+	case <-run.Cancelled():
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
 		}
+		return
+	default:
 	}
 
 	containerName := "webhook-runner-" + run.ID()
@@ -237,8 +234,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	args = append(args, hook.ExtraDockerArgs...)
 	args = append(args, image)
-	// An empty command is only valid for Dockerfile hooks: the image's
-	// CMD/ENTRYPOINT runs.
+	// With no command override, the image's CMD/ENTRYPOINT runs.
 	args = append(args, hook.Command...)
 
 	r.log.Info("hook starting",

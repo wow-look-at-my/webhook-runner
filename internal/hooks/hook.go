@@ -21,8 +21,8 @@ import (
 // DefaultTimeout is applied when a hook does not specify one explicitly.
 const DefaultTimeout = 5 * time.Minute
 
-// DockerfileName, when present next to hook.json, makes the hook run a
-// locally built image (its code baked in) instead of a stock image.
+// DockerfileName is the file every hook must ship next to its hook.json:
+// hooks run images built from their own directory, code baked in.
 const DockerfileName = "Dockerfile"
 
 const DefaultSignatureHeader = "X-Signature-Ed25519"
@@ -34,20 +34,16 @@ const DefaultAPIKeyHeader = "X-API-Key"
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID         string `json:"-"`
-	SourcePath string `json:"-"`
-	// HasDockerfile is set by the loader when a Dockerfile sits next to
-	// hook.json. Such hooks run an image built from the hook directory
-	// (tagged by content hash), so their code is immutable per run;
-	// `image` must be empty and `command` may be (the image's
-	// CMD/ENTRYPOINT runs).
-	HasDockerfile bool     `json:"-"`
-	Description   string   `json:"description"`
-	Image         string   `json:"image,omitempty"`
-	Command       []string `json:"command,omitempty"`
+	ID          string `json:"-"`
+	SourcePath  string `json:"-"`
+	Description string `json:"description"`
+	// Command optionally overrides the image's CMD. Every hook runs the
+	// image built from its directory's Dockerfile (tagged by content
+	// hash), so code is baked in and immutable per run.
+	Command []string `json:"command,omitempty"`
 	// Tests are argv arrays run by `webhook-runner test` in this hook's
-	// image (the built one for Dockerfile hooks, so tests exercise the
-	// exact baked code). They never run when the hook is triggered.
+	// built image, so tests exercise the exact baked code. They never run
+	// when the hook is triggered.
 	Tests           [][]string          `json:"tests,omitempty"`
 	Networks        []string            `json:"networks,omitempty"`
 	Volumes         []string            `json:"volumes,omitempty"`
@@ -144,15 +140,22 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
-	if dir := h.Dir(); dir != "" {
-		if fi, err := os.Stat(filepath.Join(dir, DockerfileName)); err == nil && !fi.IsDir() {
-			h.HasDockerfile = true
-		}
+	if !h.hasDockerfile() {
+		return nil, errors.New("hook must ship a Dockerfile next to hook.json (every hook runs an image built from its directory)")
 	}
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
 	return h, nil
+}
+
+func (h *Hook) hasDockerfile() bool {
+	dir := h.Dir()
+	if dir == "" {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(dir, DockerfileName))
+	return err == nil && !fi.IsDir()
 }
 
 // ContentHash digests every file under the hook's directory (relative
@@ -206,18 +209,6 @@ func ReservedEnvKey(k string) bool {
 }
 
 func (h *Hook) validate() error {
-	if h.HasDockerfile {
-		if h.Image != "" {
-			return errors.New("image must not be set when the hook has a Dockerfile (its FROM declares the base)")
-		}
-	} else {
-		if h.Image == "" {
-			return errors.New("image is required (or add a Dockerfile next to hook.json)")
-		}
-		if len(h.Command) == 0 {
-			return errors.New("command is required and must not be empty (only Dockerfile hooks may rely on the image's CMD)")
-		}
-	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
 			return fmt.Errorf("tests[%d] must not be empty", i)
