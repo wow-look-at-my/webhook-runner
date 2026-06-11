@@ -33,6 +33,14 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
+// In-container mount paths. These are part of the documented contract:
+// hook commands reference them directly (argv isn't shell-expanded).
+const (
+	mountedPayload = "/var/run/webhook-runner/payload"
+	mountedHeaders = "/var/run/webhook-runner/headers.json"
+	mountedHookDir = "/var/run/webhook-runner/hook"
+)
+
 // HookFinishedFunc is invoked once the container exits (or fails to
 // start). Implementations typically push GitHub commit-status updates.
 type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
@@ -153,11 +161,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	lookup := hooks.SecretsFirstLookup(secrets)
 
-	const (
-		mountedPayload = "/var/run/webhook-runner/payload"
-		mountedHeaders = "/var/run/webhook-runner/headers.json"
-		mountedHookDir = "/var/run/webhook-runner/hook"
-	)
 	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{

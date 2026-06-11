@@ -1,0 +1,121 @@
+package runner
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
+)
+
+// DefaultTestTimeout caps a single test command when the caller doesn't
+// specify one. Deliberately independent of the hook's run timeout: that
+// one is sized for production work (e.g. long LLM calls), not unit tests.
+const DefaultTestTimeout = 10 * time.Minute
+
+// TestOptions configure RunHookTests.
+type TestOptions struct {
+	Docker  string        // docker binary; "" = "docker"
+	Timeout time.Duration // per-command cap; <= 0 = DefaultTestTimeout
+	Out     io.Writer     // combined progress + container output; nil = io.Discard
+}
+
+// RunHookTests executes the hook's declared test commands (hook.json
+// "tests"), each in a fresh container of the hook's image. The hook's
+// directory is mounted read-only at the same HOOK_DIR path a live run
+// sees and is the working directory, so test commands can use relative
+// paths ("node --test x.test.ts"). Nothing else from a live run applies:
+// no payload, no hook env, no secrets — tests must be self-contained.
+//
+// All commands run even if an earlier one fails; the returned error
+// aggregates every failure (nil when all passed or none are declared).
+func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
+	if len(hook.Tests) == 0 {
+		return nil
+	}
+	dir := hook.Dir()
+	if dir == "" {
+		return fmt.Errorf("%s: hook has no source directory to mount", hook.ID)
+	}
+	docker := opts.Docker
+	if docker == "" {
+		docker = "docker"
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTestTimeout
+	}
+	out := opts.Out
+	if out == nil {
+		out = io.Discard
+	}
+
+	var failures []string
+	for i, argv := range hook.Tests {
+		label := fmt.Sprintf("%s: test %d/%d", hook.ID, i+1, len(hook.Tests))
+		fmt.Fprintf(out, "=== %s: %s\n", label, strings.Join(argv, " "))
+		start := time.Now()
+		if err := runOneTest(docker, hook, dir, argv, timeout, out); err != nil {
+			fmt.Fprintf(out, "--- %s FAILED after %s: %v\n", label, time.Since(start).Round(time.Millisecond), err)
+			failures = append(failures, fmt.Sprintf("test %d (%s): %v", i+1, strings.Join(argv, " "), err))
+			continue
+		}
+		fmt.Fprintf(out, "--- %s passed (%s)\n", label, time.Since(start).Round(time.Millisecond))
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%s: %s", hook.ID, strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func runOneTest(docker string, hook *hooks.Hook, dir string, argv []string, timeout time.Duration, out io.Writer) error {
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		return fmt.Errorf("generate container name: %w", err)
+	}
+	name := "webhook-runner-test-" + hex.EncodeToString(suffix)
+
+	args := []string{
+		"run", "--rm",
+		"--name", name,
+		"-v", dir + ":" + mountedHookDir + ":ro",
+		"-e", "HOOK_DIR=" + mountedHookDir,
+		"-e", "HOOK_ID=" + hook.ID,
+		"--workdir", mountedHookDir,
+	}
+	args = append(args, hook.Image)
+	args = append(args, argv...)
+
+	cmd := exec.Command(docker, args...)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start docker: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		// Same rationale as execute(): kill the container by name, not the
+		// docker CLI — a SIGKILLed CLI can leave the container running. The
+		// fallback Process.Kill only fires if the CLI itself wedges.
+		_ = exec.Command(docker, "kill", name).Run()
+		killTimer := time.AfterFunc(2*time.Second, func() {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		})
+		defer killTimer.Stop()
+		<-done
+		return fmt.Errorf("timed out after %s", timeout)
+	}
+}

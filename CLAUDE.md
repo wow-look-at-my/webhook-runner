@@ -11,7 +11,7 @@ come from a local directory or be cloned from a Git repository.
 
 ```
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
-internal/cli/              cobra commands (root = run server, validate, version)
+internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded read-only HTML dashboard
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
@@ -100,3 +100,13 @@ The companion repo is `wow-look-at-my/webhooks`.
   `/var/run/webhook-runner/hook` and exposed as `HOOK_DIR`, so hooks in the
   hooks repo can ship scripts next to their hook.json. `HOOK_DIR` is a
   reserved env key like `HOOK_PAYLOAD_FILE`/`HOOK_HEADERS_FILE`.
+- Hook test commands (hook.json `tests`, run by `webhook-runner test` via
+  `runner.RunHookTests`) execute in the hook's image with `HOOK_DIR`
+  mounted as the working directory, but get NO payload, NO hook.json
+  `env`, and NO secrets — tests must be self-contained, which is what
+  lets a hooks repo's CI run them without production keys. The per-command
+  timeout (`--timeout`, default 10m) is deliberately independent of the
+  hook's run `timeout` (sized for production work, not unit tests).
+  Adding `tests` to a hook.json requires a runner binary that knows the
+  field — `Parse` uses `DisallowUnknownFields`, so older binaries reject
+  such files (deploy webhook-runner before merging hooks that use it).

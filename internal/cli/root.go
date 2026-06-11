@@ -1,7 +1,7 @@
 // Package cli wires the cobra command tree for webhook-runner.
 //
-// The root command runs the HTTP server. Subcommands (validate, version)
-// register themselves via init() in their own files.
+// The root command runs the HTTP server. Subcommands (validate, test,
+// version) register themselves via init() in their own files.
 package cli
 
 import (

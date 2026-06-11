@@ -26,11 +26,15 @@ const DefaultAPIKeyHeader = "X-API-Key"
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID              string              `json:"-"`
-	SourcePath      string              `json:"-"`
-	Description     string              `json:"description"`
-	Image           string              `json:"image"`
-	Command         []string            `json:"command"`
+	ID          string   `json:"-"`
+	SourcePath  string   `json:"-"`
+	Description string   `json:"description"`
+	Image       string   `json:"image"`
+	Command     []string `json:"command"`
+	// Tests are argv arrays run by `webhook-runner test` in this hook's
+	// image with the hook directory mounted as HOOK_DIR and used as the
+	// working directory. They never run when the hook is triggered.
+	Tests           [][]string          `json:"tests,omitempty"`
 	Networks        []string            `json:"networks,omitempty"`
 	Volumes         []string            `json:"volumes,omitempty"`
 	Env             map[string]string   `json:"env,omitempty"`
@@ -148,6 +152,11 @@ func (h *Hook) validate() error {
 	}
 	if len(h.Command) == 0 {
 		return errors.New("command is required and must not be empty")
+	}
+	for i, tc := range h.Tests {
+		if len(tc) == 0 {
+			return fmt.Errorf("tests[%d] must not be empty", i)
+		}
 	}
 	if h.TimeoutRaw != "" {
 		d, err := time.ParseDuration(h.TimeoutRaw)

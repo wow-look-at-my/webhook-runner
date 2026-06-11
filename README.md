@@ -32,6 +32,9 @@ hooks without restart.
 - **Hooks ship their own code**: each hook's folder is bind-mounted
   read-only into its container as `HOOK_DIR`, so scripts live next to
   their `hook.json` in the hooks repo.
+- **Hooks ship their own tests**: a `tests` array in `hook.json` declares
+  test commands; `webhook-runner test <hooks-dir>` runs each one in the
+  hook's image, so CI never hardcodes per-hook test invocations.
 - **Secrets without plaintext**: `env` values and `api_key` may reference
   secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
   committed to the hooks repo (`secrets.sops.env`) or from the runner
@@ -195,6 +198,33 @@ sops --encrypt --age <public-key> --input-type dotenv --output-type dotenv \
 required on the runner host (override its path with
 `WEBHOOK_RUNNER_SOPS_BIN`).
 
+## Hook tests
+
+A hook can declare test commands for its scripts in `hook.json`:
+
+```jsonc
+{
+  "image": "node:24-alpine",
+  "command": ["node", "/var/run/webhook-runner/hook/handler.ts"],
+  "tests": [["node", "--test", "handler.test.ts"]]
+}
+```
+
+`webhook-runner test <hooks-dir>` runs every declared test command in a
+fresh container of the hook's image, with the hook's directory mounted
+read-only at `/var/run/webhook-runner/hook` (`HOOK_DIR`) and used as the
+working directory — so relative paths like `handler.test.ts` resolve the
+same way they will in production. Hooks without a `tests` array are
+skipped; the command exits non-zero if any hook fails to load or any test
+command fails.
+
+Tests get no payload, no `hook.json` env, and no secrets: they must be
+self-contained (start their own mock servers, set their own env). That is
+what lets a hooks repo's CI run them with nothing but Docker — the test
+commands live next to the code they test instead of being hardcoded into a
+workflow. Each command is capped by `--timeout` (default 10m, independent
+of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
+
 ## Server configuration
 
 | Variable                          | Default                      | Notes                                                        |
@@ -234,6 +264,9 @@ The `HOOK_DIR` mount means a hook can ship scripts and assets alongside its
 - `webhook-runner [hooks-dir]` — start the server.
 - `webhook-runner validate <hooks-dir>` — load and validate every hook
   without starting the server. Exits non-zero on validation errors.
+- `webhook-runner test <hooks-dir>` — run every hook's declared `tests`
+  commands in its image (see "Hook tests"). Requires Docker. Exits
+  non-zero on load errors or test failures.
 - `webhook-runner version` — print build version.
 
 ## Building

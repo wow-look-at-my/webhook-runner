@@ -16,6 +16,7 @@ func TestParseValid(t *testing.T) {
 		"description": "deploy",
 		"image": "alpine:3.20",
 		"command": ["sh", "-c", "echo hi"],
+		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
 		"timeout": "30s",
 		"env": {"FOO": "bar"},
 		"github_status": { "enabled": true, "context": "ci/deploy" }
@@ -24,6 +25,7 @@ func TestParseValid(t *testing.T) {
 	require.Nil(t, err)
 
 	assert.Equal(t, "deploy-frontend", h.ID)
+	assert.Equal(t, [][]string{{"sh", "-c", "true"}, {"node", "--test", "x.test.ts"}}, h.Tests)
 
 	got := h.Timeout()
 	assert.Equal(t, 30*time.Second, got)
@@ -49,6 +51,7 @@ func TestParseRejectsMissingFields(t *testing.T) {
 		"empty command":           `{"image":"alpine","command":[]}`,
 		"reserved env":            `{"image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
 		"reserved env hook_dir":   `{"image":"alpine","command":["x"],"env":{"HOOK_DIR":"x"}}`,
+		"empty test command":      `{"image":"alpine","command":["x"],"tests":[["ok"],[]]}`,
 		"bad timeout":             `{"image":"alpine","command":["x"],"timeout":"banana"}`,
 		"negative timeout":        `{"image":"alpine","command":["x"],"timeout":"-1s"}`,
 		"github_status nocontext": `{"image":"alpine","command":["x"],"github_status":{"enabled":true}}`,

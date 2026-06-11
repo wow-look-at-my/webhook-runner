@@ -311,5 +311,21 @@ try {
   proc.kill();
 }
 
+// The `test` subcommand needs no server: it loads the hooks dir itself and
+// runs each hook's declared "tests" commands in that hook's image.
+await test("webhook-runner test runs declared hook tests", async () => {
+  const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
+  assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.ok(r.stdout.includes("hookdir-tests-ok"), "missing hookdir test output");
+  assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
+});
+
+await test("webhook-runner test fails when a hook's test fails", async () => {
+  const r = child_process.spawnSync(BINARY, ["test", path.join("e2e", "failing-tests")], { encoding: "utf8" });
+  assert.notEqual(r.status, 0, "should exit non-zero");
+  assert.ok(r.stdout.includes("deliberate-test-failure"), "missing failing test output");
+  assert.ok(r.stderr.includes("bad-hook"), "stderr should name the failing hook");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

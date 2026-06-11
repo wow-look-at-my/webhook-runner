@@ -21,6 +21,15 @@
       "minItems": 1,
       "description": "Command and arguments passed to docker run after the image name."
     },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1
+      },
+      "description": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's image, with the hook directory mounted read-only at /var/run/webhook-runner/hook (HOOK_DIR) and used as the working directory. Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered."
+    },
     "networks": {
       "type": "array",
       "items": { "type": "string" },
