@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "title": "webhook-runner hook configuration",
-  "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root.",
+  "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root, next to the mandatory Dockerfile that bakes the hook's code into its image.",
   "type": "object",
-  "required": ["$schema", "image", "command"],
+  "required": ["$schema"],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -16,15 +16,20 @@
       "type": "string",
       "description": "Human-readable description of what this hook does."
     },
-    "image": {
-      "type": "string",
-      "description": "Docker image to run (e.g. \"alpine:latest\")."
-    },
     "command": {
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1,
-      "description": "Command and arguments passed to docker run after the image name."
+      "description": "Optional override of the image's CMD, passed to docker run after the image name. Every hook runs the image webhook-runner builds from the Dockerfile in its directory (tagged by content hash) — code is baked in and immutable per run; when command is omitted, the image's CMD/ENTRYPOINT runs."
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1
+      },
+      "description": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's built image, so tests exercise exactly the baked code (copy test files into the image and set WORKDIR so relative paths resolve). Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered."
     },
     "networks": {
       "type": "array",
@@ -39,11 +44,13 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. HOOK_PAYLOAD_FILE and HOOK_HEADERS_FILE are reserved.",
+      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, and HOOK_RUN_ID are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
-          { "required": ["HOOK_HEADERS_FILE"] }
+          { "required": ["HOOK_HEADERS_FILE"] },
+          { "required": ["HOOK_ID"] },
+          { "required": ["HOOK_RUN_ID"] }
         ]
       }
     },
@@ -72,7 +79,7 @@
     },
     "api_key": {
       "type": "string",
-      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). Recommended for most hooks."
+      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). May reference a secret as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment; if the reference is unresolvable the hook fails closed (all requests rejected). Recommended for most hooks."
     },
     "api_key_header": {
       "type": "string",

@@ -2,6 +2,8 @@ package hooks
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,26 +12,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// parseInDir parses a hook.json document inside a fresh hook directory
+// that ships the mandatory Dockerfile.
+func parseInDir(t *testing.T, doc string) (*Hook, error) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName), []byte("FROM alpine\n"), 0o644))
+	return Parse("h", filepath.Join(dir, "hook.json"), []byte(doc))
+}
+
 func TestParseValid(t *testing.T) {
-	doc := []byte(`{
+	doc := `{
 		// description supports JSONC comments
 		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "deploy",
-		"image": "alpine:3.20",
 		"command": ["sh", "-c", "echo hi"],
+		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
 		"timeout": "30s",
 		"env": {"FOO": "bar"},
 		"github_status": { "enabled": true, "context": "ci/deploy" }
-	}`)
-	h, err := Parse("deploy-frontend", "/some/path/hook.json", doc)
+	}`
+	h, err := parseInDir(t, doc)
 	require.Nil(t, err)
 
-	assert.Equal(t, "deploy-frontend", h.ID)
+	assert.Equal(t, "h", h.ID)
+	assert.Equal(t, [][]string{{"sh", "-c", "true"}, {"node", "--test", "x.test.ts"}}, h.Tests)
 
 	got := h.Timeout()
 	assert.Equal(t, 30*time.Second, got)
 
 	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
+}
+
+func TestParseMinimal(t *testing.T) {
+	// Command is optional: the image's CMD (from the Dockerfile) runs.
+	// $schema is the only required field.
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Empty(t, h.Command)
+}
+
+func TestParseRequiresDockerfile(t *testing.T) {
+	dir := t.TempDir() // no Dockerfile
+	_, err := Parse("h", filepath.Join(dir, "hook.json"), []byte(`{}`))
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "Dockerfile")
 }
 
 func TestAPIKeyHdrDefault(t *testing.T) {
@@ -43,31 +70,52 @@ func TestSigHeaderLegacyDefault(t *testing.T) {
 
 }
 
-func TestParseRejectsMissingFields(t *testing.T) {
+func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
 		// Go validation only checks that $schema is present (non-empty);
 		// json-validator enforces it points at the published schema.
-		"missing schema":          `{"image":"alpine","command":["x"]}`,
-		"missing image":           `{"$schema":"s","command":["x"]}`,
-		"missing command":         `{"$schema":"s","image":"alpine"}`,
-		"empty command":           `{"$schema":"s","image":"alpine","command":[]}`,
-		"reserved env":            `{"$schema":"s","image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"bad timeout":             `{"$schema":"s","image":"alpine","command":["x"],"timeout":"banana"}`,
-		"negative timeout":        `{"$schema":"s","image":"alpine","command":["x"],"timeout":"-1s"}`,
-		"github_status nocontext": `{"$schema":"s","image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
-		"unknown field":           `{"$schema":"s","image":"alpine","command":["x"],"frobnicate":true}`,
-		"api_key+secret":          `{"$schema":"s","image":"alpine","command":["x"],"api_key":"k","secret":"s"}`,
-		"public_key+secret":       `{"$schema":"s","image":"alpine","command":["x"],"public_key":"k","secret":"s"}`,
-		"api_key+public_key":      `{"$schema":"s","image":"alpine","command":["x"],"api_key":"k","public_key":"k"}`,
-		"bad public_key":          `{"$schema":"s","image":"alpine","command":["x"],"public_key":"not-a-key"}`,
+		"missing schema":          `{"command":["x"]}`,
+		"image is not a field":    `{"$schema":"s","image":"alpine"}`,
+		"reserved env":            `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"empty test command":      `{"$schema":"s","tests":[["ok"],[]]}`,
+		"bad timeout":             `{"$schema":"s","timeout":"banana"}`,
+		"negative timeout":        `{"$schema":"s","timeout":"-1s"}`,
+		"github_status nocontext": `{"$schema":"s","github_status":{"enabled":true}}`,
+		"unknown field":           `{"$schema":"s","frobnicate":true}`,
+		"api_key+secret":          `{"$schema":"s","api_key":"k","secret":"s"}`,
+		"public_key+secret":       `{"$schema":"s","public_key":"k","secret":"s"}`,
+		"api_key+public_key":      `{"$schema":"s","api_key":"k","public_key":"k"}`,
+		"bad public_key":          `{"$schema":"s","public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse("h", "p", []byte(doc))
+			_, err := parseInDir(t, doc)
 			require.NotNil(t, err)
 
 		})
 	}
+}
+
+func TestContentHash(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("two"), 0o644))
+	h := &Hook{ID: "h", SourcePath: filepath.Join(dir, "hook.json")}
+
+	first, err := h.ContentHash()
+	require.NoError(t, err)
+	again, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.Equal(t, first, again, "hash must be deterministic")
+	assert.Len(t, first, 16)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed"), 0o644))
+	changed, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, changed, "content change must change the hash")
+
+	_, err = (&Hook{ID: "nodisk"}).ContentHash()
+	require.Error(t, err)
 }
 
 func TestStripComments(t *testing.T) {

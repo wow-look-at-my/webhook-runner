@@ -1,6 +1,5 @@
 {
   "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
-  "image": "alpine:latest",
   "command": ["echo", "secure-output"],
   "secret": "e2e-secret-key",
   "timeout": "60s"

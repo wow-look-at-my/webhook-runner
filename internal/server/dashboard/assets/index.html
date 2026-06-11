@@ -18,7 +18,13 @@
 <main>
   <section id="setup-section" hidden>
     <h2>Hooks repo</h2>
-    <div id="setup-content"></div>
+    <p id="setup-repo"></p>
+    <!-- One-time setup info: collapsed by default so it doesn't dominate
+         the page; the live state below is what this dashboard is for. -->
+    <details id="setup-details">
+      <summary>Auto-reload webhook setup instructions</summary>
+      <div id="setup-content"></div>
+    </details>
   </section>
 
   <section id="hooks-section">
@@ -30,6 +36,15 @@
     <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
   </section>
 
+  <section id="images-section">
+    <h2>Images</h2>
+    <table id="images-table">
+      <thead><tr><th>Hook</th><th>Current tag</th><th>State</th><th>On disk</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="images-empty" class="empty" hidden>No hooks loaded.</p>
+  </section>
+
   <section id="runs-section">
     <h2>Recent runs</h2>
     <table id="runs-table">
@@ -37,6 +52,15 @@
       <tbody></tbody>
     </table>
     <p id="runs-empty" class="empty" hidden>No runs yet.</p>
+  </section>
+
+  <section id="events-section">
+    <h2>Activity</h2>
+    <table id="events-table">
+      <thead><tr><th>Time</th><th>Kind</th><th>What happened</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="events-empty" class="empty" hidden>Nothing yet.</p>
   </section>
 
   <section id="run-detail" hidden>
