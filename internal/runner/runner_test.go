@@ -340,3 +340,109 @@ func TestRunnerNoHookDirMountWithoutSourcePath(t *testing.T) {
 		assert.NotContains(t, line, "HOOK_DIR")
 	}
 }
+
+// writeRunnerMockSops mirrors hooks' test mock: cats the (plaintext in tests)
+// secrets file passed as its last argument.
+func writeRunnerMockSops(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "sops")
+	script := `#!/bin/sh
+for a; do f="$a"; done
+cat "$f"
+`
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	return path
+}
+
+func TestRunnerInjectsSopsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeArgDumpDocker(t, dir)
+	t.Setenv("WHR_RUNNER_HOST_ONLY", "host-val")
+
+	hookDir := filepath.Join(dir, "myhook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	secretsFile := "INJECTED=from-sops\n" +
+		"OVERRIDDEN=secret-version\n" +
+		"REFERENCED=ref-value\n" +
+		"HOOK_ID=evil\n" // reserved: must be skipped, not injected
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, hooks.SecretsFileName), []byte(secretsFile), 0o600))
+
+	tracker := runs.NewTracker()
+	r := New(Options{
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
+		Secrets: hooks.NewSecretsLoader(writeRunnerMockSops(t, dir)),
+	})
+
+	hook := &hooks.Hook{
+		ID:         "myhook",
+		SourcePath: filepath.Join(hookDir, "hook.json"),
+		Image:      "alpine",
+		Command:    []string{"x"},
+		Env: map[string]string{
+			"OVERRIDDEN": "env-version",                           // explicit env beats the injected secret
+			"COMBINED":   "${REFERENCED}/${WHR_RUNNER_HOST_ONLY}", // ${NAME} sees secrets, then host env
+		},
+	}
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	require.NoError(t, err)
+	r.Wait()
+
+	out := run.Snapshot(-1).Output
+	require.Equal(t, runs.StatusSuccess, run.Status())
+	assert.Contains(t, out, "arg=INJECTED=from-sops")
+	assert.Contains(t, out, "arg=COMBINED=ref-value/host-val")
+	assert.NotContains(t, out, "arg=HOOK_ID=evil")
+
+	// Both OVERRIDDEN values are passed, with the hook.json one last so
+	// docker's last-wins semantics give it precedence.
+	secretIdx, envIdx := -1, -1
+	for i, line := range out {
+		switch line {
+		case "arg=OVERRIDDEN=secret-version":
+			secretIdx = i
+		case "arg=OVERRIDDEN=env-version":
+			envIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, secretIdx, 0)
+	require.GreaterOrEqual(t, envIdx, 0)
+	assert.Greater(t, envIdx, secretIdx)
+}
+
+func TestRunnerSecretsDecryptFailureFailsRun(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeArgDumpDocker(t, dir)
+
+	hookDir := filepath.Join(dir, "myhook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, hooks.SecretsFileName), []byte("KEY=v\n"), 0o600))
+
+	failingSops := filepath.Join(dir, "sops")
+	require.NoError(t, os.WriteFile(failingSops, []byte("#!/bin/sh\necho 'cannot decrypt' >&2\nexit 1\n"), 0o755))
+
+	tracker := runs.NewTracker()
+	r := New(Options{
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
+		Secrets: hooks.NewSecretsLoader(failingSops),
+	})
+
+	hook := &hooks.Hook{
+		ID:         "myhook",
+		SourcePath: filepath.Join(hookDir, "hook.json"),
+		Image:      "alpine",
+		Command:    []string{"x"},
+	}
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	require.NoError(t, err)
+	r.Wait()
+
+	assert.Equal(t, runs.StatusError, run.Status())
+	assert.Contains(t, run.Error(), "cannot decrypt")
+	assert.Empty(t, run.Snapshot(-1).Output) // the container never started
+}

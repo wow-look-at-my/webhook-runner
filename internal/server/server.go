@@ -20,6 +20,7 @@ type Server struct {
 	runner       *runner.Runner
 	tracker      *runs.Tracker
 	gh           *githubstatus.Client
+	secrets      *hooks.SecretsLoader
 	log          *slog.Logger
 	reloadSecret string
 	onReload     func() error
@@ -36,7 +37,10 @@ type Options struct {
 	Runner   *runner.Runner
 	Tracker  *runs.Tracker
 	GitHub   *githubstatus.Client
-	Logger   *slog.Logger
+	// Secrets decrypts per-hook sops secrets files; api_key ${NAME}
+	// references resolve through it. nil disables decryption.
+	Secrets *hooks.SecretsLoader
+	Logger  *slog.Logger
 
 	// ReloadSecret is the HMAC-SHA256 secret used to authenticate
 	// POST /_reload on the hook port. When empty, the endpoint is
@@ -69,6 +73,7 @@ func New(opts Options) *Server {
 		runner:       opts.Runner,
 		tracker:      opts.Tracker,
 		gh:           opts.GitHub,
+		secrets:      opts.Secrets,
 		log:          opts.Logger,
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,

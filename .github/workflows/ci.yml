@@ -27,6 +27,13 @@ jobs:
           name: go-build
           path: build
           files: webhook-runner_linux_amd64:webhook-runner
+      # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
+      # the committed test-only age key.
+      - name: Install sops
+        run: |
+          curl -fsSL https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64 -o /tmp/sops
+          sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+          sops --version
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/e2e.test.ts

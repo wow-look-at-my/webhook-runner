@@ -32,9 +32,10 @@ hooks without restart.
 - **Hooks ship their own code**: each hook's folder is bind-mounted
   read-only into its container as `HOOK_DIR`, so scripts live next to
   their `hook.json` in the hooks repo.
-- **Host-env secrets**: `env` values and `api_key` may reference runner
-  host environment variables as `${NAME}`, keeping secrets out of the
-  hooks repo.
+- **Secrets without plaintext**: `env` values and `api_key` may reference
+  secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
+  committed to the hooks repo (`secrets.sops.env`) or from the runner
+  host's environment.
 - **Concurrency**: no global queue, each request fires its own container.
 - **Dashboard**: read-only HTML view at `/` on the admin port.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
@@ -141,17 +142,58 @@ The full schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
 See `examples/hooks/` for working examples.
 
-Two values support `${NAME}` references to the **runner host's**
-environment, so secrets stay on the host instead of in the hooks repo:
+Two values support `${NAME}` secret references:
 
-- `env` values — expanded when the container starts. Unset variables
+- `env` values — expanded when the container starts. Unresolvable names
   expand to `""` with a logged warning.
-- `api_key` — expanded on every request. If the reference is unset, the
-  hook **fails closed** (every request is rejected with 401).
+- `api_key` — expanded on every request. If the reference is unresolvable,
+  the hook **fails closed** (every request is rejected with 401).
 
+`${NAME}` resolves against the hook's decrypted `secrets.sops.env` first
+(see below), then the runner host's environment — so a secret can start
+life as a host env var and move into the repo without touching hook.json.
 Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
 untouched. Expansion never happens at load/validate time, so CI validation
-doesn't need the production environment.
+needs neither the production environment nor any decryption keys.
+
+## Encrypted secrets in the hooks repo (sops)
+
+A hook directory may contain `secrets.sops.env` — a
+[sops](https://github.com/getsops/sops)-encrypted **dotenv** file. At
+container start webhook-runner decrypts it (by shelling out to the `sops`
+binary) and:
+
+- **injects every entry** into the container environment (an explicit
+  `env` entry in hook.json wins on conflict; reserved `HOOK_*` keys are
+  skipped with a warning), and
+- makes the entries resolvable by `${NAME}` references in `env` values
+  and `api_key`.
+
+Decryption failures are loud: a run fails with status `error` before the
+container starts, and an `api_key` backed by an undecryptable file rejects
+all requests. Results are cached per file (invalidated by mtime/size), so
+steady-state requests don't re-exec sops; a `git pull` of the hooks repo
+picks up rotated values automatically.
+
+Setup with [age](https://github.com/FiloSottile/age) (any sops keysource
+works — age, KMS, PGP, Vault):
+
+```sh
+# once, on the runner host
+age-keygen -o /etc/webhook-runner/age.key        # note the public key
+# export SOPS_AGE_KEY_FILE=/etc/webhook-runner/age.key in the service env
+
+# in the hooks repo, per hook
+cat > my-hook/secrets.sops.env <<EOF
+MY_HOOK_API_KEY=super-secret
+EOF
+sops --encrypt --age <public-key> --input-type dotenv --output-type dotenv \
+  --in-place my-hook/secrets.sops.env
+```
+
+`validate` ignores secrets files entirely, and the `sops` binary is only
+required on the runner host (override its path with
+`WEBHOOK_RUNNER_SOPS_BIN`).
 
 ## Server configuration
 
@@ -165,6 +207,7 @@ doesn't need the production environment.
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
+| `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
 
 ## Inside the container

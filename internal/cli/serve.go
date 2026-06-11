@@ -86,10 +86,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
 	gh := githubstatus.New(o.ghToken, logger)
+	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
+	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
+	// key material (e.g. SOPS_AGE_KEY_FILE) is plain sops configuration on
+	// this process's environment.
+	secrets := hooks.NewSecretsLoader(os.Getenv("WEBHOOK_RUNNER_SOPS_BIN"))
 
 	rn := runner.New(runner.Options{
 		Tracker: tracker,
 		Logger:  logger,
+		Secrets: secrets,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -105,6 +111,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Runner:       rn,
 		Tracker:      tracker,
 		GitHub:       gh,
+		Secrets:      secrets,
 		Logger:       logger,
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,

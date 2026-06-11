@@ -81,10 +81,21 @@ The companion repo is `wow-look-at-my/webhooks`.
   cmd.Wait returned. A cancel that races the container launch is covered
   twice — a pre-start check in `runner.execute`, and the watcher's select
   firing immediately on the already-closed channel.
-- `${NAME}` host-env references in hook.json (`env` values, `api_key`) are
-  expanded at run/request time via `hooks.ExpandEnvRefs`, never at load
-  time — `validate` in CI must pass without the production environment.
-  An `api_key` whose reference is unset fails closed (401 for everyone).
+- `${NAME}` references in hook.json (`env` values, `api_key`) are expanded
+  at run/request time via `hooks.ExpandEnvRefs`, never at load time —
+  `validate` in CI must pass without the production environment or keys.
+  Resolution order: the hook's decrypted `secrets.sops.env` first, then
+  the host environment. An `api_key` whose reference is unresolvable
+  fails closed (401 for everyone).
+- Per-hook sops secrets (`hooks.SecretsLoader`, `secrets.sops.env`)
+  decrypt by exec'ing the `sops` binary (`WEBHOOK_RUNNER_SOPS_BIN`
+  overrides; key material like `SOPS_AGE_KEY_FILE` is plain sops config
+  on the service env), cached per file by mtime+size. Decrypted entries
+  are also injected into the container env, with hook.json `env` winning
+  on conflict (it's appended after, and docker keeps the last `-e`).
+  Decrypt failures fail the run (status `error`) before the container
+  starts — never run a secrets-bearing hook without its secrets. The e2e
+  fixture key at `e2e/age-test-key.txt` is intentionally committed.
 - Every hook's source folder is bind-mounted read-only at
   `/var/run/webhook-runner/hook` and exposed as `HOOK_DIR`, so hooks in the
   hooks repo can ship scripts next to their hook.json. `HOOK_DIR` is a

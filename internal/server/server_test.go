@@ -671,3 +671,71 @@ func TestTriggerAPIKeyFromHostEnvUnsetFailsClosed(t *testing.T) {
 	hook(s).ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
+
+func TestTriggerAPIKeyFromSopsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeMockDocker(t, dir)
+	mockSops := filepath.Join(dir, "sops")
+	require.NoError(t, os.WriteFile(mockSops, []byte("#!/bin/sh\nfor a; do f=\"$a\"; done\ncat \"$f\"\n"), 0o755))
+
+	hookDir := filepath.Join(dir, "ak")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, hooks.SecretsFileName), []byte("AK_FROM_SOPS=open-sesame\n"), 0o600))
+
+	reg := hooks.NewRegistry()
+	tr := runs.NewTracker()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	secrets := hooks.NewSecretsLoader(mockSops)
+	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker, Secrets: secrets})
+	s := New(Options{Registry: reg, Runner: rn, Tracker: tr, Logger: logger, Secrets: secrets})
+
+	reg.Set(&hooks.Hook{
+		ID: "ak", SourcePath: filepath.Join(hookDir, "hook.json"),
+		Image: "alpine", Command: []string{"x"},
+		APIKey: "${AK_FROM_SOPS}",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "open-sesame")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rn.Wait()
+
+	req = httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "wrong")
+	rec = httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestTriggerAPIKeySecretsDecryptFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeMockDocker(t, dir)
+	failingSops := filepath.Join(dir, "sops")
+	require.NoError(t, os.WriteFile(failingSops, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+
+	hookDir := filepath.Join(dir, "ak")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, hooks.SecretsFileName), []byte("K=v\n"), 0o600))
+
+	reg := hooks.NewRegistry()
+	tr := runs.NewTracker()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	secrets := hooks.NewSecretsLoader(failingSops)
+	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker, Secrets: secrets})
+	s := New(Options{Registry: reg, Runner: rn, Tracker: tr, Logger: logger, Secrets: secrets})
+
+	reg.Set(&hooks.Hook{
+		ID: "ak", SourcePath: filepath.Join(hookDir, "hook.json"),
+		Image: "alpine", Command: []string{"x"},
+		APIKey: "${K}",
+	})
+
+	// Even a request that would match the (undecryptable) key fails closed.
+	req := httptest.NewRequest(http.MethodPost, "/hook/ak", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", "v")
+	rec := httptest.NewRecorder()
+	hook(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}

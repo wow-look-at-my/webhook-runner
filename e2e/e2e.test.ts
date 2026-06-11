@@ -71,6 +71,8 @@ const adminBase = `http://127.0.0.1:${adminPort}`;
 // hostenv-hook's hook.json references ${E2E_HOST_VAR}; the server process
 // (spawned below, inheriting this env) expands it at container start.
 process.env.E2E_HOST_VAR = "host-says-hi";
+// sops-hook's secrets.sops.env decrypts with the committed test-only age key.
+process.env.SOPS_AGE_KEY_FILE = path.resolve("e2e", "age-test-key.txt");
 const proc = child_process.spawn(
   BINARY,
   ["--addr", `:${port}`, "--admin-addr", `:${adminPort}`, HOOKS_DIR],
@@ -91,9 +93,9 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 9);
+    assert.equal(hooks.length, 10);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "hookdir-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "hookdir-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook", "sops-hook"]);
   });
 
   await test("GET /hooks not on hook port", async () => {
@@ -228,6 +230,29 @@ try {
     assert.equal(r.status, 200);
     const run: any = await r.json();
     assert.ok(run.output.join("\n").includes("fromhost=host-says-hi"), "missing expanded host env value");
+  });
+
+  await test("sops secrets: injected env, ${NAME} reference, and api_key all decrypt", async () => {
+    // SOPS_HOOK_KEY lives only inside the encrypted secrets.sops.env.
+    const r = await fetch(`${base}/hook/sops-hook?wait=true`, {
+      method: "POST",
+      headers: { "X-API-Key": "sops-sesame-77" },
+      body: "{}",
+    });
+    assert.equal(r.status, 200);
+    const run: any = await r.json();
+    const output = run.output.join("\n");
+    assert.ok(output.includes("msg=hello-from-sops"), "missing injected secret");
+    assert.ok(output.includes("ref=sops-ref-value"), "missing ${NAME}-referenced secret");
+  });
+
+  await test("sops secrets: wrong api_key rejected", async () => {
+    const r = await fetch(`${base}/hook/sops-hook`, {
+      method: "POST",
+      headers: { "X-API-Key": "wrong" },
+      body: "{}",
+    });
+    assert.equal(r.status, 401);
   });
 
   await test("cancel kills an in-flight run", async () => {

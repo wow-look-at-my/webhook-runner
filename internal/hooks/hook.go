@@ -132,6 +132,16 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	return h, nil
 }
 
+// ReservedEnvKey reports whether the runner sets this env key itself; hook
+// env entries must not declare it and secrets-file entries are skipped.
+func ReservedEnvKey(k string) bool {
+	switch k {
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_DIR", "HOOK_ID", "HOOK_RUN_ID":
+		return true
+	}
+	return false
+}
+
 func (h *Hook) validate() error {
 	if h.Image == "" {
 		return errors.New("image is required")
@@ -149,7 +159,7 @@ func (h *Hook) validate() error {
 		}
 	}
 	for k := range h.Env {
-		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" || k == "HOOK_DIR" {
+		if ReservedEnvKey(k) {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
 	}

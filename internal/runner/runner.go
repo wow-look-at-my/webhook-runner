@@ -48,6 +48,7 @@ type Runner struct {
 	tmpDir   string
 	onStart  HookStartedFunc
 	onFinish HookFinishedFunc
+	secrets  *hooks.SecretsLoader
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -62,7 +63,8 @@ type Options struct {
 	TmpDir   string // directory for payload/header temp files; "" = os.TempDir()
 	OnStart  HookStartedFunc
 	OnFinish HookFinishedFunc
-	Docker   string // docker binary path; "" = "docker"
+	Docker   string               // docker binary path; "" = "docker"
+	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
 }
 
 // New constructs a Runner.
@@ -82,6 +84,7 @@ func New(opts Options) *Runner {
 		tmpDir:    opts.TmpDir,
 		onStart:   opts.OnStart,
 		onFinish:  opts.OnFinish,
+		secrets:   opts.Secrets,
 		dockerBin: opts.Docker,
 	}
 }
@@ -133,6 +136,23 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	default:
 	}
 
+	// Decrypt the hook's repo-stored secrets (if any) before building the
+	// container env. A hook that ships a secrets file expects them, so a
+	// decrypt failure fails the run loudly instead of starting without them.
+	var secrets map[string]string
+	if r.secrets != nil {
+		var err error
+		secrets, err = r.secrets.Load(hook)
+		if err != nil {
+			run.Finish(runs.StatusError, -1, fmt.Sprintf("hook secrets: %v", err))
+			if r.onFinish != nil {
+				r.onFinish(hook, run, payload)
+			}
+			return
+		}
+	}
+	lookup := hooks.SecretsFirstLookup(secrets)
+
 	const (
 		mountedPayload = "/var/run/webhook-runner/payload"
 		mountedHeaders = "/var/run/webhook-runner/headers.json"
@@ -161,10 +181,22 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	for _, v := range hook.Volumes {
 		args = append(args, "-v", v)
 	}
+	// Decrypted secrets are injected first, so an explicit hook.json env
+	// entry wins on conflict (docker keeps the last -e for a key).
+	for k, v := range secrets {
+		if hooks.ReservedEnvKey(k) {
+			r.log.Warn("hook secret shadows a reserved env key; skipped",
+				"hook", hook.ID, "run", run.ID(), "env", k)
+			continue
+		}
+		args = append(args, "-e", k+"="+v)
+	}
+	// hook.json env values resolve ${NAME} from the hook's secrets first,
+	// then the host environment.
 	for k, v := range hook.Env {
-		expanded, missing := hooks.ExpandEnvRefs(v, os.LookupEnv)
+		expanded, missing := hooks.ExpandEnvRefs(v, lookup)
 		for _, name := range missing {
-			r.log.Warn("hook env references unset host variable",
+			r.log.Warn("hook env references unset variable",
 				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
 		}
 		args = append(args, "-e", k+"="+expanded)
