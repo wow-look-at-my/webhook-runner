@@ -6,6 +6,7 @@ on:
 permissions:
   id-token: write
   contents: write
+  packages: write
   actions: read
 
 jobs:
@@ -37,3 +38,10 @@ jobs:
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/e2e.test.ts
+
+  # Builds the Dockerfile from the prebuilt go-build artifact and pushes
+  # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The
+  # deployed compose pulls this image and docker-updater watches its digest.
+  publish-ghcr:
+    needs: e2e
+    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
