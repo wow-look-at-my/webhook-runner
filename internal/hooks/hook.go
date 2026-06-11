@@ -25,18 +25,19 @@ const DefaultAPIKeyHeader = "X-API-Key"
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID              string             `json:"-"`
-	SourcePath      string             `json:"-"`
-	Description     string             `json:"description"`
-	Image           string             `json:"image"`
-	Command         []string           `json:"command"`
-	Networks        []string           `json:"networks,omitempty"`
-	Volumes         []string           `json:"volumes,omitempty"`
-	Env             map[string]string  `json:"env,omitempty"`
-	User            string             `json:"user,omitempty"`
-	Workdir         string             `json:"workdir,omitempty"`
-	TimeoutRaw      string             `json:"timeout,omitempty"`
-	ExtraDockerArgs []string           `json:"extra_docker_args,omitempty"`
+	ID              string              `json:"-"`
+	SourcePath      string              `json:"-"`
+	Schema          string              `json:"$schema,omitempty"`
+	Description     string              `json:"description"`
+	Image           string              `json:"image"`
+	Command         []string            `json:"command"`
+	Networks        []string            `json:"networks,omitempty"`
+	Volumes         []string            `json:"volumes,omitempty"`
+	Env             map[string]string   `json:"env,omitempty"`
+	User            string              `json:"user,omitempty"`
+	Workdir         string              `json:"workdir,omitempty"`
+	TimeoutRaw      string              `json:"timeout,omitempty"`
+	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
 
 	APIKey       string `json:"api_key,omitempty"`
@@ -117,6 +118,9 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 }
 
 func (h *Hook) validate() error {
+	if h.Schema == "" {
+		return errors.New("$schema is required (point it at https://wow-look-at-my.github.io/webhook-runner/hook.schema.json)")
+	}
 	if h.Image == "" {
 		return errors.New("image is required")
 	}

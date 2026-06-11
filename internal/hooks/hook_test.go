@@ -6,13 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseValid(t *testing.T) {
 	doc := []byte(`{
 		// description supports JSONC comments
+		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "deploy",
 		"image": "alpine:3.20",
 		"command": ["sh", "-c", "echo hi"],
@@ -44,18 +45,21 @@ func TestSigHeaderLegacyDefault(t *testing.T) {
 
 func TestParseRejectsMissingFields(t *testing.T) {
 	cases := map[string]string{
-		"missing image":		`{"command":["x"]}`,
-		"missing command":		`{"image":"alpine"}`,
-		"empty command":		`{"image":"alpine","command":[]}`,
-		"reserved env":			`{"image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"bad timeout":			`{"image":"alpine","command":["x"],"timeout":"banana"}`,
-		"negative timeout":		`{"image":"alpine","command":["x"],"timeout":"-1s"}`,
-		"github_status nocontext":	`{"image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
-		"unknown field":		`{"image":"alpine","command":["x"],"frobnicate":true}`,
-		"api_key+secret":		`{"image":"alpine","command":["x"],"api_key":"k","secret":"s"}`,
-		"public_key+secret":		`{"image":"alpine","command":["x"],"public_key":"k","secret":"s"}`,
-		"api_key+public_key":		`{"image":"alpine","command":["x"],"api_key":"k","public_key":"k"}`,
-		"bad public_key":		`{"image":"alpine","command":["x"],"public_key":"not-a-key"}`,
+		// Go validation only checks that $schema is present (non-empty);
+		// json-validator enforces it points at the published schema.
+		"missing schema":          `{"image":"alpine","command":["x"]}`,
+		"missing image":           `{"$schema":"s","command":["x"]}`,
+		"missing command":         `{"$schema":"s","image":"alpine"}`,
+		"empty command":           `{"$schema":"s","image":"alpine","command":[]}`,
+		"reserved env":            `{"$schema":"s","image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"bad timeout":             `{"$schema":"s","image":"alpine","command":["x"],"timeout":"banana"}`,
+		"negative timeout":        `{"$schema":"s","image":"alpine","command":["x"],"timeout":"-1s"}`,
+		"github_status nocontext": `{"$schema":"s","image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
+		"unknown field":           `{"$schema":"s","image":"alpine","command":["x"],"frobnicate":true}`,
+		"api_key+secret":          `{"$schema":"s","image":"alpine","command":["x"],"api_key":"k","secret":"s"}`,
+		"public_key+secret":       `{"$schema":"s","image":"alpine","command":["x"],"public_key":"k","secret":"s"}`,
+		"api_key+public_key":      `{"$schema":"s","image":"alpine","command":["x"],"api_key":"k","public_key":"k"}`,
+		"bad public_key":          `{"$schema":"s","image":"alpine","command":["x"],"public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

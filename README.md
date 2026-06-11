@@ -112,6 +112,21 @@ The full schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
 See `examples/hooks/` for working examples.
 
+Every `hook.json` **must** declare a `$schema` field pointing at that URL:
+
+```json
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "image": "alpine:3.20",
+  "command": ["sh", "-c", "echo hi"]
+}
+```
+
+This is required: the server and `webhook-runner validate` both reject a
+hook whose `hook.json` is missing `$schema`. Declaring it lets editors and
+CI (e.g. [json-validator](https://github.com/wow-look-at-my/json-validator))
+validate the file against the published schema.
+
 ## Server configuration
 
 | Variable                          | Default                      | Notes                                                        |

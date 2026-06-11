@@ -1,4 +1,5 @@
 {
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "description": "e2e echo test",
   "image": "alpine:latest",
   "command": ["sh", "-c", "echo hello-e2e && cat $HOOK_PAYLOAD_FILE"],

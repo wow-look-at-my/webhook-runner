@@ -1,4 +1,5 @@
 {
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "description": "Run the test suite for an incoming push",
   "image": "golang:1.24-alpine",
   "command": ["sh", "-c", "echo 'tests would run here for run id $HOOK_RUN_ID'"],

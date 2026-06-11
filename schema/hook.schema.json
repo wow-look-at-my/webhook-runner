@@ -4,9 +4,14 @@
   "title": "webhook-runner hook configuration",
   "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root.",
   "type": "object",
-  "required": ["image", "command"],
+  "required": ["$schema", "image", "command"],
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "URI of the JSON Schema this hook.json is validated against. Set it to https://wow-look-at-my.github.io/webhook-runner/hook.schema.json."
+    },
     "description": {
       "type": "string",
       "description": "Human-readable description of what this hook does."
@@ -115,6 +120,7 @@
   },
   "oneOf": [
     {
+      "required": ["api_key"],
       "properties": {
         "api_key": { "type": "string" },
         "public_key": false,
@@ -122,6 +128,7 @@
       }
     },
     {
+      "required": ["public_key"],
       "properties": {
         "api_key": false,
         "public_key": { "type": "string" },
@@ -129,6 +136,7 @@
       }
     },
     {
+      "required": ["secret"],
       "properties": {
         "api_key": false,
         "public_key": false,
