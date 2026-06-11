@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -72,16 +72,16 @@ func TestRunnerSuccess(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker:	tracker,
-		Logger:		newSilentLogger(),
-		TmpDir:		dir,
-		Docker:		docker,
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
 	})
 
 	hook := &hooks.Hook{
-		ID:		"h",
-		Image:		"alpine",
-		Command:	[]string{"hello", "world"},
+		ID:      "h",
+		Image:   "alpine",
+		Command: []string{"hello", "world"},
 	}
 	run, err := r.Start(context.Background(), hook, []byte("payload"), http.Header{"X-Test": []string{"yes"}})
 	require.NoError(t, err)
@@ -101,16 +101,16 @@ func TestRunnerFailure(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker:	tracker,
-		Logger:		newSilentLogger(),
-		TmpDir:		dir,
-		Docker:		docker,
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
 	})
 
 	hook := &hooks.Hook{
-		ID:		"h",
-		Image:		"alpine",
-		Command:	[]string{"EXIT_3"},
+		ID:      "h",
+		Image:   "alpine",
+		Command: []string{"EXIT_3"},
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
@@ -126,17 +126,17 @@ func TestRunnerTimeout(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker:	tracker,
-		Logger:		newSilentLogger(),
-		TmpDir:		dir,
-		Docker:		docker,
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
 	})
 
 	hook := &hooks.Hook{
-		ID:		"h",
-		Image:		"alpine",
-		Command:	[]string{"SLEEP_30"},
-		TimeoutRaw:	"100ms",
+		ID:         "h",
+		Image:      "alpine",
+		Command:    []string{"SLEEP_30"},
+		TimeoutRaw: "100ms",
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
 	require.NoError(t, err)
@@ -157,12 +157,12 @@ func TestRunnerStartHookCallback(t *testing.T) {
 	tracker := runs.NewTracker()
 	var startCalled, finishCalled bool
 	r := New(Options{
-		Tracker:	tracker,
-		Logger:		newSilentLogger(),
-		TmpDir:		dir,
-		Docker:		docker,
-		OnStart:	func(*hooks.Hook, *runs.Run, []byte) { startCalled = true },
-		OnFinish:	func(*hooks.Hook, *runs.Run, []byte) { finishCalled = true },
+		Tracker:  tracker,
+		Logger:   newSilentLogger(),
+		TmpDir:   dir,
+		Docker:   docker,
+		OnStart:  func(*hooks.Hook, *runs.Run, []byte) { startCalled = true },
+		OnFinish: func(*hooks.Hook, *runs.Run, []byte) { finishCalled = true },
 	})
 	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
 	_, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
@@ -177,10 +177,10 @@ func TestRunnerWritesPayloadFile(t *testing.T) {
 	tmp := t.TempDir()
 	tracker := runs.NewTracker()
 	r := New(Options{
-		Tracker:	tracker,
-		Logger:		newSilentLogger(),
-		TmpDir:		tmp,
-		Docker:		"/bin/true",	// accepts and ignores all args, exits 0
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  tmp,
+		Docker:  "/bin/true", // accepts and ignores all args, exits 0
 	})
 	hook := &hooks.Hook{ID: "h", Image: "alpine", Command: []string{"x"}}
 	_, err := r.Start(context.Background(), hook, []byte("hello payload"), http.Header{})
