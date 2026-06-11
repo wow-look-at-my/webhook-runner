@@ -91,7 +91,7 @@ func (c *Client) PostFinish(ctx context.Context, hook *hooks.Hook, run *runs.Run
 		state = StateSuccess
 	case runs.StatusFailure:
 		state = StateFailure
-	case runs.StatusTimeout, runs.StatusError:
+	case runs.StatusTimeout, runs.StatusError, runs.StatusCancelled:
 		state = StateError
 	default:
 		state = StateError
@@ -167,6 +167,8 @@ func buildDescription(hookID string, run *runs.Run) string {
 		return fmt.Sprintf("%s exit %d: %s", hookID, run.ExitCode(), tail)
 	case runs.StatusError:
 		return fmt.Sprintf("%s error: %s", hookID, firstNonEmpty(run.Error(), tail))
+	case runs.StatusCancelled:
+		return fmt.Sprintf("%s cancelled", hookID)
 	}
 	return fmt.Sprintf("%s %s", hookID, run.Status())
 }

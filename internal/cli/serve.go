@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -86,10 +87,23 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
 	gh := githubstatus.New(o.ghToken, logger)
+	// Activity feed for the admin dashboard (in-memory, bounded — same
+	// persistence model as run history).
+	rec := events.NewRecorder(500)
+	rec.Record("server.started", "webhook-runner started", map[string]string{
+		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
+	})
+	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
+	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
+	// key material (e.g. SOPS_AGE_KEY_FILE) is plain sops configuration on
+	// this process's environment.
+	secrets := hooks.NewSecretsLoader(os.Getenv("WEBHOOK_RUNNER_SOPS_BIN"))
 
 	rn := runner.New(runner.Options{
 		Tracker: tracker,
 		Logger:  logger,
+		Secrets: secrets,
+		Events:  rec,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -98,13 +112,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
-	onReload := buildReloadFunc(repo, o.hooksDir, registry, logger)
+	onReload := buildReloadFunc(repo, o.hooksDir, registry, logger, rec)
 
 	srv := server.New(server.Options{
 		Registry:     registry,
 		Runner:       rn,
 		Tracker:      tracker,
 		GitHub:       gh,
+		Secrets:      secrets,
+		Events:       rec,
 		Logger:       logger,
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,
@@ -186,20 +202,24 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	return nil
 }
 
-func buildReloadFunc(repo *hooks.Repo, hooksDir string, registry *hooks.Registry, logger *slog.Logger) func() error {
+func buildReloadFunc(repo *hooks.Repo, hooksDir string, registry *hooks.Registry, logger *slog.Logger, rec *events.Recorder) func() error {
 	reloadFromDisk := func() {
 		loaded, errs := hooks.LoadDir(hooksDir)
 		for _, e := range errs {
 			logger.Error("hook reload error", "err", e)
+			rec.Record("hook.load_error", e.Error(), nil)
 		}
 		registry.Replace(loaded)
 		logger.Info("hooks reloaded", "count", len(loaded))
+		rec.Record("hooks.reloaded", fmt.Sprintf("%d hook(s) loaded, %d error(s)", len(loaded), len(errs)), nil)
 	}
 	if repo != nil {
 		return func() error {
 			if err := repo.Pull(); err != nil {
+				rec.Record("git.pull_failed", "hooks repo pull failed: "+err.Error(), nil)
 				return err
 			}
+			rec.Record("git.pulled", "hooks repo pulled", nil)
 			reloadFromDisk()
 			return nil
 		}

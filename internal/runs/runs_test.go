@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunOutputBounded(t *testing.T) {
@@ -130,4 +130,39 @@ func TestAppendOutputTrimsNewline(t *testing.T) {
 	r.AppendOutput("hello\n")
 	r.AppendOutput("world\r\n")
 	assert.Equal(t, []string{"hello", "world"}, r.Snapshot(-1).Output)
+}
+
+func TestRequestCancel(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+
+	select {
+	case <-r.Cancelled():
+		t.Fatal("Cancelled closed before any request")
+	default:
+	}
+
+	r.RequestCancel()
+	r.RequestCancel() // idempotent — a second request must not re-close the channel
+
+	select {
+	case <-r.Cancelled():
+	default:
+		t.Error("Cancelled channel not closed after RequestCancel")
+	}
+	assert.True(t, r.Snapshot(0).CancelRequested)
+
+	// Cancel only signals; the run is finished by the runner.
+	assert.Equal(t, StatusPending, r.Status())
+	r.Finish(StatusCancelled, -1, "cancelled")
+	assert.Equal(t, StatusCancelled, r.Status())
+}
+
+func TestStatusTerminal(t *testing.T) {
+	for _, s := range []Status{StatusSuccess, StatusFailure, StatusTimeout, StatusError, StatusCancelled} {
+		assert.True(t, s.Terminal(), string(s))
+	}
+	for _, s := range []Status{StatusPending, StatusRunning} {
+		assert.False(t, s.Terminal(), string(s))
+	}
 }

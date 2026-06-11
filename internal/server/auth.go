@@ -14,7 +14,7 @@ import (
 func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) error {
 	switch {
 	case hook.APIKey != "":
-		return checkAPIKey(hook, r)
+		return s.checkAPIKey(hook, r)
 	case hook.PublicKey != "":
 		return checkPublicKey(hook, r, body)
 	case hook.Secret != "":
@@ -24,9 +24,27 @@ func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) er
 	}
 }
 
-func checkAPIKey(hook *hooks.Hook, r *http.Request) error {
+func (s *Server) checkAPIKey(hook *hooks.Hook, r *http.Request) error {
+	// api_key may reference a secret as ${NAME} — resolved from the hook's
+	// sops secrets file first, then the host environment — so the real key
+	// never lives in the hooks repo as plaintext. Expanded per request
+	// (decryption is cached by the loader), and failing closed: an
+	// unresolvable or empty reference must never degrade to "no auth".
+	var secrets map[string]string
+	if s.secrets != nil {
+		var err error
+		secrets, err = s.secrets.Load(hook)
+		if err != nil {
+			s.log.Error("hook secrets unavailable for api_key check", "hook", hook.ID, "err", err)
+			return errors.New("server misconfigured: hook secrets unavailable")
+		}
+	}
+	want, _ := hooks.ExpandEnvRefs(hook.APIKey, hooks.SecretsFirstLookup(secrets))
+	if want == "" {
+		return errors.New("api key not configured on the server")
+	}
 	got := r.Header.Get(hook.APIKeyHdr())
-	if subtle.ConstantTimeCompare([]byte(got), []byte(hook.APIKey)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 		return errors.New("invalid api key")
 	}
 	return nil

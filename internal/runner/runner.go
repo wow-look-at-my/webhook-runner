@@ -4,9 +4,14 @@
 //   - a temp file holding the raw request body (HOOK_PAYLOAD_FILE)
 //   - a temp file holding request headers as JSON (HOOK_HEADERS_FILE)
 //
-// Both files are bind-mounted into the container read-only and the env
-// variables point at the mount paths. Container output is streamed to
-// the server logger and to the Run's bounded ring buffer.
+// Both are bind-mounted into the container read-only and the env
+// variables point at the mount paths — per-run data, never code. A hook's
+// code is immutable per run: either it's part of a stock image, or (for
+// hooks shipping a Dockerfile) it's baked into an image built from the
+// hook directory and tagged by content hash (see EnsureImage). hook.json
+// env values may reference secrets/host environment variables as ${NAME}
+// (expanded at run time; see hooks.ExpandEnvRefs). Container output is
+// streamed to the server logger and to the Run's bounded ring buffer.
 package runner
 
 import (
@@ -25,8 +30,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
+)
+
+// In-container mount paths. These are part of the documented contract:
+// hook commands reference them directly (argv isn't shell-expanded).
+const (
+	mountedPayload = "/var/run/webhook-runner/payload"
+	mountedHeaders = "/var/run/webhook-runner/headers.json"
 )
 
 // HookFinishedFunc is invoked once the container exits (or fails to
@@ -44,6 +57,8 @@ type Runner struct {
 	tmpDir   string
 	onStart  HookStartedFunc
 	onFinish HookFinishedFunc
+	secrets  *hooks.SecretsLoader
+	events   *events.Recorder
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -58,7 +73,9 @@ type Options struct {
 	TmpDir   string // directory for payload/header temp files; "" = os.TempDir()
 	OnStart  HookStartedFunc
 	OnFinish HookFinishedFunc
-	Docker   string // docker binary path; "" = "docker"
+	Docker   string               // docker binary path; "" = "docker"
+	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
+	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 }
 
 // New constructs a Runner.
@@ -78,6 +95,8 @@ func New(opts Options) *Runner {
 		tmpDir:    opts.TmpDir,
 		onStart:   opts.OnStart,
 		onFinish:  opts.OnFinish,
+		secrets:   opts.Secrets,
+		events:    opts.Events,
 		dockerBin: opts.Docker,
 	}
 }
@@ -117,10 +136,69 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	const (
-		mountedPayload = "/var/run/webhook-runner/payload"
-		mountedHeaders = "/var/run/webhook-runner/headers.json"
-	)
+	// A cancel that arrives while the run is still pending skips the
+	// container entirely.
+	select {
+	case <-run.Cancelled():
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	default:
+	}
+
+	// Decrypt the hook's repo-stored secrets (if any) before building the
+	// container env. A hook that ships a secrets file expects them, so a
+	// decrypt failure fails the run loudly instead of starting without them.
+	var secrets map[string]string
+	if r.secrets != nil {
+		var err error
+		secrets, err = r.secrets.Load(hook)
+		if err != nil {
+			run.Finish(runs.StatusError, -1, fmt.Sprintf("hook secrets: %v", err))
+			if r.onFinish != nil {
+				r.onFinish(hook, run, payload)
+			}
+			return
+		}
+	}
+	lookup := hooks.SecretsFirstLookup(secrets)
+
+	// Every hook runs an image built from its directory, tagged by content
+	// hash — code is baked in, so a concurrent hooks-repo pull can't
+	// change what an in-flight run executes. The build is a cheap no-op
+	// when the image for the current content already exists.
+	buildLog := &slogLineWriter{logFn: func(line string) {
+		r.log.Info("hook image build", "hook", hook.ID, "run", run.ID(), "line", line)
+	}}
+	buildStart := time.Now()
+	image, built, err := EnsureImage(r.dockerBin, hook, buildLog)
+	if err != nil {
+		r.events.Record("image.build_failed", fmt.Sprintf("image build for %s failed: %v", hook.ID, err),
+			map[string]string{"hook": hook.ID, "run": run.ID()})
+		run.Finish(runs.StatusError, -1, fmt.Sprintf("hook image: %v", err))
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	if built {
+		r.events.Record("image.built", fmt.Sprintf("built %s in %s", image, time.Since(buildStart).Round(time.Millisecond)),
+			map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
+	}
+	// A build can take a while; honor a cancel that arrived during it
+	// instead of starting a container nobody wants anymore.
+	select {
+	case <-run.Cancelled():
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	default:
+	}
+
 	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{
@@ -139,8 +217,25 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	for _, v := range hook.Volumes {
 		args = append(args, "-v", v)
 	}
-	for k, v := range hook.Env {
+	// Decrypted secrets are injected first, so an explicit hook.json env
+	// entry wins on conflict (docker keeps the last -e for a key).
+	for k, v := range secrets {
+		if hooks.ReservedEnvKey(k) {
+			r.log.Warn("hook secret shadows a reserved env key; skipped",
+				"hook", hook.ID, "run", run.ID(), "env", k)
+			continue
+		}
 		args = append(args, "-e", k+"="+v)
+	}
+	// hook.json env values resolve ${NAME} from the hook's secrets first,
+	// then the host environment.
+	for k, v := range hook.Env {
+		expanded, missing := hooks.ExpandEnvRefs(v, lookup)
+		for _, name := range missing {
+			r.log.Warn("hook env references unset variable",
+				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
+		}
+		args = append(args, "-e", k+"="+expanded)
 	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)
@@ -149,11 +244,14 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		args = append(args, "--workdir", hook.Workdir)
 	}
 	args = append(args, hook.ExtraDockerArgs...)
-	args = append(args, hook.Image)
+	args = append(args, image)
+	// With no command override, the image's CMD/ENTRYPOINT runs.
 	args = append(args, hook.Command...)
 
 	r.log.Info("hook starting",
-		"hook", hook.ID, "run", run.ID(), "image", hook.Image, "timeout", timeout)
+		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
+	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, run.ID(), image),
+		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
 	if r.onStart != nil {
 		r.onStart(hook, run, payload)
@@ -212,8 +310,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	go r.streamPipe(&streamWG, stdoutR, hook.ID, run, "stdout")
 	go r.streamPipe(&streamWG, stderrR, hook.ID, run, "stderr")
 
-	// Watch ctx for cancellation/timeout in parallel with cmd.Wait.
+	// Watch for timeout (ctx) and explicit cancel requests in parallel
+	// with cmd.Wait. Either one kills the container by name. A cancel
+	// requested before this goroutine started selects immediately (the
+	// channel is already closed), so the pre-start race is covered.
 	timedOut := make(chan struct{})
+	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
 	go func() {
 		select {
@@ -221,31 +323,40 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				close(timedOut)
 			}
-			r.killContainer(containerName)
-			killTimer := time.AfterFunc(2*time.Second, func() {
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-			})
-			defer killTimer.Stop()
-			<-stopWatcher
+		case <-run.Cancelled():
+			close(cancelled)
 		case <-stopWatcher:
+			return
 		}
+		r.killContainer(containerName)
+		killTimer := time.AfterFunc(2*time.Second, func() {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		})
+		defer killTimer.Stop()
+		<-stopWatcher
 	}()
 
 	waitErr := cmd.Wait()
 	close(stopWatcher)
 
 	// In the normal case the process has exited and its pipe ends
-	// are closed, so streamWG.Wait returns immediately. On timeout,
-	// orphaned child processes (e.g. the real docker container's
-	// descendants) can keep the write end open; force-close the
-	// read ends so the scanner goroutines unblock.
+	// are closed, so streamWG.Wait returns immediately. On a kill
+	// (timeout or cancel), orphaned child processes (e.g. the real
+	// docker container's descendants) can keep the write end open;
+	// force-close the read ends so the scanner goroutines unblock.
 	select {
 	case <-timedOut:
 		stdoutR.Close()
 		stderrR.Close()
 	default:
+		select {
+		case <-cancelled:
+			stdoutR.Close()
+			stderrR.Close()
+		default:
+		}
 	}
 	streamWG.Wait()
 
@@ -273,9 +384,22 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		errMsg = fmt.Sprintf("timed out after %s", timeout)
 	default:
 	}
+	// Checked after timeout so an explicit cancel takes precedence when
+	// both raced to kill the container.
+	select {
+	case <-cancelled:
+		status = runs.StatusCancelled
+		if exitCode == 0 {
+			exitCode = -1
+		}
+		errMsg = "cancelled"
+	default:
+	}
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
+	r.events.Record("run.finished", fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode),
+		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
