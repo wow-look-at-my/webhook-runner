@@ -39,12 +39,16 @@ async function refresh() {
     setBadge(false);
   }
   try {
-    const [hooks, runs] = await Promise.all([
+    const [hooks, runs, images, events] = await Promise.all([
       fetchJSON("/hooks"),
       fetchJSON("/runs?max=50"),
+      fetchJSON("/images"),
+      fetchJSON("/events?max=100"),
     ]);
     renderHooks(hooks);
     renderRuns(runs);
+    renderImages(images);
+    renderEvents(events);
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
   } catch (e) {
@@ -90,6 +94,44 @@ function renderRuns(rs) {
     );
     tr.addEventListener("click", () => showRun(r.id));
     tbody.appendChild(tr);
+  }
+}
+
+function renderImages(images) {
+  const tbody = document.querySelector("#images-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("images-empty").hidden = images.length > 0;
+  for (const im of images) {
+    let state;
+    if (im.error) state = el("span", { class: "badge bad" }, "error: " + im.error);
+    else if (im.built) state = el("span", { class: "badge ok" }, "built");
+    else state = el("span", { class: "badge warn" }, "will build on next run");
+    const others = (im.images || [])
+      .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+      .join(", ");
+    tbody.appendChild(
+      el("tr", null,
+        el("td", null, el("code", null, im.hook_id)),
+        el("td", null, el("code", null, im.tag || "-")),
+        el("td", null, state),
+        el("td", { class: "images-on-disk" }, others || "none"),
+      )
+    );
+  }
+}
+
+function renderEvents(events) {
+  const tbody = document.querySelector("#events-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("events-empty").hidden = events.length > 0;
+  for (const ev of events) {
+    tbody.appendChild(
+      el("tr", null,
+        el("td", { class: "event-time" }, fmtTime(ev.time)),
+        el("td", null, el("span", { class: "kind " + ev.kind.replace(/\./g, "-") }, ev.kind)),
+        el("td", null, ev.msg),
+      )
+    );
   }
 }
 
@@ -144,22 +186,21 @@ async function loadConfig() {
       ? `https://github.com/${ghPath}`
       : cfg.hooks_repo;
 
-    const nodes = [];
-
-    const repoP = el("p", { class: "setup-repo" },
-      "Repository: ",
+    // The repo identity stays visible; the one-time webhook setup recipe
+    // lives inside the (collapsed) <details>.
+    const repoP = document.getElementById("setup-repo");
+    repoP.appendChild(document.createTextNode("Repository: "));
+    repoP.appendChild(
       ghPath
         ? el("a", { href: repoLink, target: "_blank" }, ghPath)
         : el("code", null, cfg.hooks_repo)
     );
-    nodes.push(repoP);
+
+    const nodes = [];
 
     const reloadURL = cfg.hook_base_url
       ? cfg.hook_base_url.replace(/\/$/, "") + "/_reload"
       : "/_reload";
-
-    const h3 = el("h3", null, "Auto-reload webhook setup");
-    nodes.push(h3);
 
     const intro = el("p", null,
       "To auto-reload hooks on push, add a webhook to the repo:"

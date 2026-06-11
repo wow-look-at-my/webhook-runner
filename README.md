@@ -42,7 +42,11 @@ hooks without restart.
   committed to the hooks repo (`secrets.sops.env`) or from the runner
   host's environment.
 - **Concurrency**: no global queue, each request fires its own container.
-- **Dashboard**: read-only HTML view at `/` on the admin port.
+- **Dashboard**: read-only HTML view at `/` on the admin port showing the
+  full internal state — loaded hooks, per-hook image status (built /
+  will-build-next-run, images on disk), recent runs, and a live activity
+  feed (GitHub push webhooks received, git pulls, reloads, load errors,
+  image builds, run lifecycle). One-time setup instructions stay collapsed.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 
@@ -111,6 +115,8 @@ Trust).
 | GET    | `/runs/{id}`        | Status + retained output for one run.      |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle. Newest first; `?max=` caps it. |
+| GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/`                 | Dashboard.                                 |
 
 ### Sync vs async

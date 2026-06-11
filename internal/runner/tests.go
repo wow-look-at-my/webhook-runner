@@ -49,7 +49,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 		out = io.Discard
 	}
 
-	image, err := EnsureImage(docker, hook, out)
+	image, _, err := EnsureImage(docker, hook, out)
 	if err != nil {
 		return fmt.Errorf("%s: %w", hook.ID, err)
 	}

@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
@@ -57,6 +58,7 @@ type Runner struct {
 	onStart  HookStartedFunc
 	onFinish HookFinishedFunc
 	secrets  *hooks.SecretsLoader
+	events   *events.Recorder
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -73,6 +75,7 @@ type Options struct {
 	OnFinish HookFinishedFunc
 	Docker   string               // docker binary path; "" = "docker"
 	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
+	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 }
 
 // New constructs a Runner.
@@ -93,6 +96,7 @@ func New(opts Options) *Runner {
 		onStart:   opts.OnStart,
 		onFinish:  opts.OnFinish,
 		secrets:   opts.Secrets,
+		events:    opts.Events,
 		dockerBin: opts.Docker,
 	}
 }
@@ -168,13 +172,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	buildLog := &slogLineWriter{logFn: func(line string) {
 		r.log.Info("hook image build", "hook", hook.ID, "run", run.ID(), "line", line)
 	}}
-	image, err := EnsureImage(r.dockerBin, hook, buildLog)
+	buildStart := time.Now()
+	image, built, err := EnsureImage(r.dockerBin, hook, buildLog)
 	if err != nil {
+		r.events.Record("image.build_failed", fmt.Sprintf("image build for %s failed: %v", hook.ID, err),
+			map[string]string{"hook": hook.ID, "run": run.ID()})
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("hook image: %v", err))
 		if r.onFinish != nil {
 			r.onFinish(hook, run, payload)
 		}
 		return
+	}
+	if built {
+		r.events.Record("image.built", fmt.Sprintf("built %s in %s", image, time.Since(buildStart).Round(time.Millisecond)),
+			map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 	}
 	// A build can take a while; honor a cancel that arrived during it
 	// instead of starting a container nobody wants anymore.
@@ -239,6 +250,8 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	r.log.Info("hook starting",
 		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
+	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, run.ID(), image),
+		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
 	if r.onStart != nil {
 		r.onStart(hook, run, payload)
@@ -385,6 +398,8 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
+	r.events.Record("run.finished", fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode),
+		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}

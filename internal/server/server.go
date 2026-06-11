@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -21,6 +22,7 @@ type Server struct {
 	tracker      *runs.Tracker
 	gh           *githubstatus.Client
 	secrets      *hooks.SecretsLoader
+	events       *events.Recorder
 	log          *slog.Logger
 	reloadSecret string
 	onReload     func() error
@@ -40,7 +42,10 @@ type Options struct {
 	// Secrets decrypts per-hook sops secrets files; api_key ${NAME}
 	// references resolve through it. nil disables decryption.
 	Secrets *hooks.SecretsLoader
-	Logger  *slog.Logger
+	// Events is the activity feed shown on the admin dashboard. nil is
+	// fine (events are dropped).
+	Events *events.Recorder
+	Logger *slog.Logger
 
 	// ReloadSecret is the HMAC-SHA256 secret used to authenticate
 	// POST /_reload on the hook port. When empty, the endpoint is
@@ -74,6 +79,7 @@ func New(opts Options) *Server {
 		tracker:      opts.Tracker,
 		gh:           opts.GitHub,
 		secrets:      opts.Secrets,
+		events:       opts.Events,
 		log:          opts.Logger,
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,
@@ -111,6 +117,8 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("POST /runs/{id}/cancel", s.handleAdminCancelRun)
 	s.adminMux.HandleFunc("POST /reload", s.handleReload)
 	s.adminMux.HandleFunc("GET /config", s.handleConfig)
+	s.adminMux.HandleFunc("GET /events", s.handleEvents)
+	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 }
 

@@ -15,8 +15,9 @@ internal/cli/              cobra commands (root = run server, validate, test, ve
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded read-only HTML dashboard
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
-internal/runner/           docker run dispatch + output streaming
+internal/runner/           docker run dispatch + output streaming + image build/status
 internal/runs/             in-memory run tracker (bounded)
+internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schema for hook.json (published to GitHub Pages)
 e2e/                       end-to-end test (shell script, requires Docker)
@@ -41,7 +42,13 @@ The server listens on two ports:
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
   `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
 - **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`,
-  `/runs/{id}/cancel`, `/reload`. Internal, behind Cloudflare Zero Trust.
+  `/runs/{id}/cancel`, `/reload`, `/events` (activity feed), `/images`
+  (per-hook image state). Internal, behind Cloudflare Zero Trust.
+  The dashboard's one-time webhook-setup instructions live in a
+  collapsed `<details>`; the page is about live state (hooks, images,
+  runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
+  by the server (push webhooks, reloads, load errors) and the runner
+  (image builds, run lifecycle) — memory only, like run history.
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.

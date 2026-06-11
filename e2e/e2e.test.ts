@@ -63,6 +63,14 @@ async function test(name: string, fn: () => Promise<void>) {
 }
 
 child_process.execSync("docker pull alpine:latest", { stdio: "inherit" });
+// Drop any hook images left by earlier runs so the build path (and its
+// image.built event) is actually exercised, not skipped via cache.
+try {
+  child_process.execSync(
+    "docker image ls --filter=reference='whr-hook/*' --format '{{.Repository}}:{{.Tag}}' | xargs -r docker rmi -f",
+    { stdio: "ignore" },
+  );
+} catch {}
 
 const port = await freePort();
 const adminPort = await freePort();
@@ -309,6 +317,44 @@ try {
     assert.equal(r.status, 200);
     const runs: any = await r.json();
     assert.ok(runs.length >= 2, `echo-test should have >= 2 runs, got ${runs.length}`);
+  });
+
+  await test("dashboard collapses setup instructions by default", async () => {
+    const r = await fetch(`${adminBase}/`);
+    assert.equal(r.status, 200);
+    const html = await r.text();
+    assert.ok(html.includes("<details"), "setup instructions should sit inside <details>");
+    assert.ok(!html.includes("<details open"), "details must start collapsed");
+    assert.ok(html.includes("Activity"), "activity section missing");
+    assert.ok(html.includes("Images"), "images section missing");
+  });
+
+  await test("GET /images reports built hook images (admin port)", async () => {
+    const r = await fetch(`${adminBase}/images`);
+    assert.equal(r.status, 200);
+    const images: any = await r.json();
+    const df = images.find((i: any) => i.hook_id === "dockerfile-hook");
+    assert.ok(df, "dockerfile-hook missing from /images");
+    assert.ok(df.tag.startsWith("whr-hook/dockerfile-hook:"), `unexpected tag ${df.tag}`);
+    assert.equal(df.built, true);
+    assert.ok((df.images || []).some((i: any) => i.current), "current image not listed on disk");
+  });
+
+  await test("GET /events shows builds, runs, and reloads (admin port)", async () => {
+    const rel = await fetch(`${adminBase}/reload`, { method: "POST" });
+    assert.equal(rel.status, 200);
+    const r = await fetch(`${adminBase}/events`);
+    assert.equal(r.status, 200);
+    const events: any = await r.json();
+    const kinds = new Set(events.map((e: any) => e.kind));
+    for (const want of ["server.started", "image.built", "run.started", "run.finished", "reload.requested", "hooks.reloaded"]) {
+      assert.ok(kinds.has(want), `missing ${want} event (got ${[...kinds].join(", ")})`);
+    }
+  });
+
+  await test("GET /events not on hook port", async () => {
+    const r = await fetch(`${base}/events`);
+    assert.equal(r.status, 404);
   });
 } finally {
   proc.kill();
