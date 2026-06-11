@@ -234,6 +234,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		for _, name := range missing {
 			r.log.Warn("hook env references unset variable",
 				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
+			// Also surface it on the dashboard: a hook silently running with
+			// an empty secret (e.g. an AI key that never resolved) looks
+			// healthy from the outside while every run fails downstream.
+			r.events.Record("env.unresolved",
+				hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
+				map[string]string{"hook": hook.ID, "run": run.ID()})
 		}
 		args = append(args, "-e", k+"="+expanded)
 	}

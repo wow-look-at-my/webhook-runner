@@ -47,8 +47,13 @@ The server listens on two ports:
   The dashboard's one-time webhook-setup instructions live in a
   collapsed `<details>`; the page is about live state (hooks, images,
   runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
-  by the server (push webhooks, reloads, load errors) and the runner
-  (image builds, run lifecycle) — memory only, like run history.
+  by the server (push webhooks, reloads, load errors, rejected hook
+  requests: `hook.unknown` / `hook.denied` / `hook.misconfigured` — the
+  last one names an unresolvable `${NAME}` api_key reference, logged to
+  the feed but never to the 401 body) and the runner (image builds, run
+  lifecycle, `env.unresolved` when an env reference expands to nothing)
+  — memory only, like run history. Rejections are events on purpose:
+  the dashboard must be able to answer "did you receive anything?".
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.

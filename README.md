@@ -46,7 +46,10 @@ hooks without restart.
   full internal state — loaded hooks, per-hook image status (built /
   will-build-next-run, images on disk), recent runs, and a live activity
   feed (GitHub push webhooks received, git pulls, reloads, load errors,
-  image builds, run lifecycle). One-time setup instructions stay collapsed.
+  image builds, run lifecycle — and rejected requests: unknown hook ids,
+  denied auth, unresolvable `${NAME}` references in `api_key`/`env`, so
+  "did you receive anything?" always has an answer). One-time setup
+  instructions stay collapsed.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 
@@ -115,7 +118,7 @@ Trust).
 | GET    | `/runs/{id}`        | Status + retained output for one run.      |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
-| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle. Newest first; `?max=` caps it. |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle, rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/`                 | Dashboard.                                 |
 
