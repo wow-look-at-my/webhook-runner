@@ -365,6 +365,9 @@ go-toolchain
 - The runtime image is plain `alpine` plus `docker-cli`. The Docker
   SDK is intentionally not used — webhook-runner shells out to `docker run`
   exactly as you would on the command line.
+- The image defines a `HEALTHCHECK` that probes `GET /health` on the hook
+  port (derived from `WEBHOOK_RUNNER_ADDR`), so `docker ps` reports health
+  and deploy tooling like docker-updater can gate updates on it.
 - No CGO. The binary is `go build -o webhook-runner ./cmd/webhook-runner`
   with `CGO_ENABLED=0`.
 - No persistence: run history is in memory only and bounded

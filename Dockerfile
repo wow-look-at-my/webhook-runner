@@ -22,5 +22,12 @@ ENV WEBHOOK_RUNNER_ADDR=":9000" \
     WEBHOOK_RUNNER_ADMIN_ADDR=":9001" \
     WEBHOOK_RUNNER_LOG_FORMAT="text"
 
+# Probe the hook port's /health endpoint (busybox wget ships with alpine).
+# Shell form so the port tracks WEBHOOK_RUNNER_ADDR at runtime. Without a
+# HEALTHCHECK, orchestrators like docker-updater have no health signal to
+# gate deploys on.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q -O /dev/null "http://127.0.0.1:${WEBHOOK_RUNNER_ADDR##*:}/health" || exit 1
+
 # Runs as root by default so it can talk to the bind-mounted Docker socket.
 ENTRYPOINT ["/usr/local/bin/webhook-runner"]
