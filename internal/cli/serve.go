@@ -93,6 +93,10 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	rec.Record("server.started", "webhook-runner started", map[string]string{
 		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
 	})
+	// A containerized server whose temp dir isn't host-shared breaks every
+	// hook run (payload mounts resolve on the docker HOST) — detect the
+	// topology at startup and say so loudly. See runner.WarnIfContainerized.
+	runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv")
 	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
 	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
 	// key material (e.g. SOPS_AGE_KEY_FILE) is plain sops configuration on

@@ -106,7 +106,7 @@ details#setup-details[open] summary { margin-bottom: 0.5rem; }
   white-space: nowrap;
 }
 .kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied { background: rgba(248,81,73,0.15); color: var(--failure); }
+.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured { background: rgba(248,81,73,0.15); color: var(--failure); }
 .kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
 .event-time { white-space: nowrap; color: var(--muted); }
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }

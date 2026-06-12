@@ -52,8 +52,13 @@ The server listens on two ports:
   The dashboard's one-time webhook-setup instructions live in a
   collapsed `<details>`; the page is about live state (hooks, images,
   runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
-  by the server (push webhooks, reloads, load errors) and the runner
-  (image builds, run lifecycle) — memory only, like run history.
+  by the server (push webhooks, reloads, load errors, rejected hook
+  requests: `hook.unknown` / `hook.denied` / `hook.misconfigured` — the
+  last one names an unresolvable `${NAME}` api_key reference, logged to
+  the feed but never to the 401 body) and the runner (image builds, run
+  lifecycle, `env.unresolved` when an env reference expands to nothing)
+  — memory only, like run history. Rejections are events on purpose:
+  the dashboard must be able to answer "did you receive anything?".
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
@@ -120,6 +125,18 @@ The companion repo is `wow-look-at-my/webhooks`.
   overrides the image's CMD. `validate` stays docker-free — builds
   happen only at run/test time. Only the per-run payload/headers files
   are mounted (data, not code).
+- When the server itself runs in a container (the GHCR image + compose),
+  per-run payload/header bind mounts resolve on the docker HOST — a temp
+  dir private to the server's container doesn't exist there, docker
+  creates a directory at the mount source, and every run fails with
+  EISDIR reading its payload. `TMPDIR` must point at a dir bind-mounted
+  from the host at the same absolute path; startup records a
+  `server.misconfigured` event (and logs an error) when a container
+  marker (/.dockerenv, /run/.containerenv) is present and TMPDIR is
+  unset (`runner.WarnIfContainerized`, called from cli/serve.go — it
+  lives in runner because the hazard is that package's mounting model).
+  Image *builds* are immune — the docker CLI streams the build context
+  over the socket.
 - Hook test commands (hook.json `tests`, run by `webhook-runner test` via
   `runner.RunHookTests`) execute in the hook's built image (built first
   if needed), so tests exercise the exact baked bytes; copy test files

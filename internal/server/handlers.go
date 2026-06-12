@@ -32,6 +32,11 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
 	if !ok {
+		// Rejected requests are activity too: a caller hitting a wrong URL or
+		// a stale key is exactly the misconfiguration the dashboard must be
+		// able to answer "did you receive anything?" about.
+		s.events.Record("hook.unknown", "trigger for unknown hook "+id+" from "+r.RemoteAddr,
+			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
 		return
 	}
@@ -49,6 +54,10 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.authenticate(hook, r, body); err != nil {
 		s.log.Warn("auth failed", "hook", hook.ID, "remote", r.RemoteAddr, "err", err)
+		// Auth errors never contain presented credentials (see auth.go), so
+		// the reason is safe to surface on the dashboard.
+		s.events.Record("hook.denied", hook.ID+": trigger denied from "+r.RemoteAddr+": "+err.Error(),
+			map[string]string{"hook": hook.ID})
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -106,8 +115,11 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 // cancellation is a request: the run reaches "cancelled" once the runner
 // has actually killed the container.
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
-	hook, ok := s.registry.Get(r.PathValue("id"))
+	id := r.PathValue("id")
+	hook, ok := s.registry.Get(id)
 	if !ok {
+		s.events.Record("hook.unknown", "cancel for unknown hook "+id+" from "+r.RemoteAddr,
+			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
 		return
 	}
@@ -119,6 +131,8 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.authenticate(hook, r, body); err != nil {
 		s.log.Warn("cancel auth failed", "hook", hook.ID, "remote", r.RemoteAddr, "err", err)
+		s.events.Record("hook.denied", hook.ID+": cancel denied from "+r.RemoteAddr+": "+err.Error(),
+			map[string]string{"hook": hook.ID})
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
