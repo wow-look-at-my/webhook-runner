@@ -4,17 +4,26 @@ package hooks
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 // DefaultTimeout is applied when a hook does not specify one explicitly.
 const DefaultTimeout = 5 * time.Minute
+
+// DockerfileName is the file every hook must ship next to its hook.json:
+// hooks run images built from their own directory, code baked in.
+const DockerfileName = "Dockerfile"
 
 const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
@@ -25,11 +34,17 @@ const DefaultAPIKeyHeader = "X-API-Key"
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID              string              `json:"-"`
-	SourcePath      string              `json:"-"`
-	Description     string              `json:"description"`
-	Image           string              `json:"image"`
-	Command         []string            `json:"command"`
+	ID          string `json:"-"`
+	SourcePath  string `json:"-"`
+	Description string `json:"description"`
+	// Command optionally overrides the image's CMD. Every hook runs the
+	// image built from its directory's Dockerfile (tagged by content
+	// hash), so code is baked in and immutable per run.
+	Command []string `json:"command,omitempty"`
+	// Tests are argv arrays run by `webhook-runner test` in this hook's
+	// built image, so tests exercise the exact baked code. They never run
+	// when the hook is triggered.
+	Tests           [][]string          `json:"tests,omitempty"`
 	Networks        []string            `json:"networks,omitempty"`
 	Volumes         []string            `json:"volumes,omitempty"`
 	Env             map[string]string   `json:"env,omitempty"`
@@ -98,6 +113,21 @@ func (h *Hook) APIKeyHdr() string {
 	return DefaultAPIKeyHeader
 }
 
+// Dir returns the absolute path of the directory containing this hook's
+// hook.json, or "" for hooks not loaded from disk (tests). For Dockerfile
+// hooks it is the docker build context, so code and assets ship alongside
+// hook.json and get baked into the image.
+func (h *Hook) Dir() string {
+	if h.SourcePath == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(filepath.Dir(h.SourcePath))
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
 // Parse decodes a hook.json document and validates the resulting hook.
 // The id and sourcePath are not part of the JSON; the caller supplies
 // them based on the file's location on disk.
@@ -110,18 +140,79 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	if !h.hasDockerfile() {
+		return nil, errors.New("hook must ship a Dockerfile next to hook.json (every hook runs an image built from its directory)")
+	}
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-func (h *Hook) validate() error {
-	if h.Image == "" {
-		return errors.New("image is required")
+func (h *Hook) hasDockerfile() bool {
+	dir := h.Dir()
+	if dir == "" {
+		return false
 	}
-	if len(h.Command) == 0 {
-		return errors.New("command is required and must not be empty")
+	fi, err := os.Stat(filepath.Join(dir, DockerfileName))
+	return err == nil && !fi.IsDir()
+}
+
+// ContentHash digests every file under the hook's directory (relative
+// path + content). It tags the image built for a Dockerfile hook, so a
+// changed hook rebuilds on its next run while an unchanged one reuses
+// the already built image.
+func (h *Hook) ContentHash() (string, error) {
+	dir := h.Dir()
+	if dir == "" {
+		return "", errors.New("hook has no source directory")
+	}
+	digest := sha256.New()
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(digest, "%s\x00", filepath.ToSlash(rel))
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		_, cpErr := io.Copy(digest, f)
+		f.Close()
+		if cpErr != nil {
+			return cpErr
+		}
+		fmt.Fprint(digest, "\x00")
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
+	}
+	return hex.EncodeToString(digest.Sum(nil))[:16], nil
+}
+
+// ReservedEnvKey reports whether the runner sets this env key itself; hook
+// env entries must not declare it and secrets-file entries are skipped.
+func ReservedEnvKey(k string) bool {
+	switch k {
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID":
+		return true
+	}
+	return false
+}
+
+func (h *Hook) validate() error {
+	for i, tc := range h.Tests {
+		if len(tc) == 0 {
+			return fmt.Errorf("tests[%d] must not be empty", i)
+		}
 	}
 	if h.TimeoutRaw != "" {
 		d, err := time.ParseDuration(h.TimeoutRaw)
@@ -133,7 +224,7 @@ func (h *Hook) validate() error {
 		}
 	}
 	for k := range h.Env {
-		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" {
+		if ReservedEnvKey(k) {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
 	}

@@ -48,6 +48,7 @@ code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radiu
 }
 .badge.ok { background: rgba(63,185,80,0.15); color: var(--success); }
 .badge.bad { background: rgba(248,81,73,0.15); color: var(--failure); }
+.badge.warn { background: rgba(210,153,34,0.15); color: var(--running); }
 .status { font-weight: 500; }
 .status.success { color: var(--success); }
 .status.failure, .status.error, .status.timeout { color: var(--failure); }
@@ -80,8 +81,33 @@ button, .btn {
   display: inline-block;
 }
 button:hover, .btn:hover { filter: brightness(1.1); }
-#setup-section .setup-repo { font-size: 0.9rem; }
+#setup-section #setup-repo { font-size: 0.9rem; margin: 0 0 0.5rem; }
 #setup-section a:not(.btn) { color: var(--accent); text-decoration: none; }
 #setup-section a:not(.btn):hover { text-decoration: underline; }
 #setup-section dl { margin: 0.75rem 0; }
 .copyable { user-select: all; }
+details#setup-details {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+details#setup-details summary { cursor: pointer; color: var(--muted); }
+details#setup-details[open] summary { margin-bottom: 0.5rem; }
+.kind {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-family: monospace;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started { background: rgba(63,185,80,0.15); color: var(--success); }
+.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied { background: rgba(248,81,73,0.15); color: var(--failure); }
+.kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
+.event-time { white-space: nowrap; color: var(--muted); }
+.images-on-disk { color: var(--muted); font-size: 0.8rem; }
+#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr { cursor: default; }

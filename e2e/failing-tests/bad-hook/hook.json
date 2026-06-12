@@ -1,0 +1,7 @@
+{
+  // Fixture for the e2e check that `webhook-runner test` propagates a
+  // failing test command. Lives outside e2e/hooks so the passing-path
+  // invocation (`webhook-runner test e2e/hooks`) never sees it.
+  "command": ["true"],
+  "tests": [["sh", "-c", "echo deliberate-test-failure; exit 7"]]
+}
