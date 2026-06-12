@@ -1,4 +1,5 @@
 {
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "command": ["sh", "-c", "cat $HOOK_PAYLOAD_FILE && echo --- && cat $HOOK_HEADERS_FILE"],
   "timeout": "60s"
 }

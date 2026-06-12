@@ -34,6 +34,11 @@ examples/hooks/            sample hook configs
   via `init()`.
 - **HTTP routing** uses Go 1.22+ `http.ServeMux` patterns (`POST /hook/{id}`).
   Don't add chi/gorilla/echo.
+- **`$schema` is required.** Every `hook.json` must declare a `$schema`
+  field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
+  one. The matching property lives in `schema/hook.schema.json`, which is
+  published to GitHub Pages and is what the `$schema` URL points at. Keep
+  the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
 ## Architecture: dual ports
 
