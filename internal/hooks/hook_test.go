@@ -24,6 +24,7 @@ func parseInDir(t *testing.T, doc string) (*Hook, error) {
 func TestParseValid(t *testing.T) {
 	doc := `{
 		// description supports JSONC comments
+		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "deploy",
 		"command": ["sh", "-c", "echo hi"],
 		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
@@ -45,7 +46,8 @@ func TestParseValid(t *testing.T) {
 
 func TestParseMinimal(t *testing.T) {
 	// Command is optional: the image's CMD (from the Dockerfile) runs.
-	h, err := parseInDir(t, `{}`)
+	// $schema is the only required field.
+	h, err := parseInDir(t, `{"$schema":"s"}`)
 	require.Nil(t, err)
 	assert.Empty(t, h.Command)
 }
@@ -70,17 +72,20 @@ func TestSigHeaderLegacyDefault(t *testing.T) {
 
 func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
-		"image is not a field":    `{"image":"alpine"}`,
-		"reserved env":            `{"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"empty test command":      `{"tests":[["ok"],[]]}`,
-		"bad timeout":             `{"timeout":"banana"}`,
-		"negative timeout":        `{"timeout":"-1s"}`,
-		"github_status nocontext": `{"github_status":{"enabled":true}}`,
-		"unknown field":           `{"frobnicate":true}`,
-		"api_key+secret":          `{"api_key":"k","secret":"s"}`,
-		"public_key+secret":       `{"public_key":"k","secret":"s"}`,
-		"api_key+public_key":      `{"api_key":"k","public_key":"k"}`,
-		"bad public_key":          `{"public_key":"not-a-key"}`,
+		// Go validation only checks that $schema is present (non-empty);
+		// json-validator enforces it points at the published schema.
+		"missing schema":          `{"command":["x"]}`,
+		"image is not a field":    `{"$schema":"s","image":"alpine"}`,
+		"reserved env":            `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"empty test command":      `{"$schema":"s","tests":[["ok"],[]]}`,
+		"bad timeout":             `{"$schema":"s","timeout":"banana"}`,
+		"negative timeout":        `{"$schema":"s","timeout":"-1s"}`,
+		"github_status nocontext": `{"$schema":"s","github_status":{"enabled":true}}`,
+		"unknown field":           `{"$schema":"s","frobnicate":true}`,
+		"api_key+secret":          `{"$schema":"s","api_key":"k","secret":"s"}`,
+		"public_key+secret":       `{"$schema":"s","public_key":"k","secret":"s"}`,
+		"api_key+public_key":      `{"$schema":"s","api_key":"k","public_key":"k"}`,
+		"bad public_key":          `{"$schema":"s","public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
