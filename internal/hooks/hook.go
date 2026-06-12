@@ -36,6 +36,7 @@ const DefaultAPIKeyHeader = "X-API-Key"
 type Hook struct {
 	ID          string `json:"-"`
 	SourcePath  string `json:"-"`
+	Schema      string `json:"$schema,omitempty"`
 	Description string `json:"description"`
 	// Command optionally overrides the image's CMD. Every hook runs the
 	// image built from its directory's Dockerfile (tagged by content
@@ -209,6 +210,9 @@ func ReservedEnvKey(k string) bool {
 }
 
 func (h *Hook) validate() error {
+	if h.Schema == "" {
+		return errors.New("$schema is required (point it at https://wow-look-at-my.github.io/webhook-runner/hook.schema.json)")
+	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
 			return fmt.Errorf("tests[%d] must not be empty", i)

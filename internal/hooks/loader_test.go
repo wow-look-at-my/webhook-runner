@@ -19,8 +19,8 @@ func writeHook(t *testing.T, root, id, body string) {
 
 func TestLoadDir(t *testing.T) {
 	root := t.TempDir()
-	writeHook(t, root, "good", `{"command":["x"]}`)
-	writeHook(t, root, "broken", `{"image":"alpine"}`) // image is no longer a field
+	writeHook(t, root, "good", `{"$schema":"s","command":["x"]}`)
+	writeHook(t, root, "broken", `{"$schema":"s","image":"alpine"}`) // image is no longer a field
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "no-hook"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "stray.txt"), []byte("ignore me"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".hidden"), 0o755))
@@ -45,6 +45,7 @@ func TestLoadOne(t *testing.T) {
 	root := t.TempDir()
 	writeHook(t, root, "deploy", `{
 		// pretty
+		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "Deploy",
 		"command": ["echo"]
 	}`)

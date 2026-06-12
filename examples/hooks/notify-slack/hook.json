@@ -1,4 +1,5 @@
 {
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "description": "Forward the webhook to a Slack channel",
   "command": [
     "sh", "-c",
