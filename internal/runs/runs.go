@@ -40,8 +40,11 @@ func (s Status) Terminal() bool {
 }
 
 // MaxOutputLines is the most recent stdout/stderr lines retained per run.
-// Older lines are dropped as new ones arrive.
-const MaxOutputLines = 500
+// Older lines are dropped as new ones arrive. Sized so a hook that echoes
+// its working data for the dashboard (pr-describe logs the model's input
+// and reply — several hundred lines) fits without evicting its own verdict;
+// worst case is ~MaxRunsPerHook*MaxOutputLines lines (~10-20MB) per hook.
+const MaxOutputLines = 2000
 
 // MaxRunsPerHook is the most recent finished runs retained per hook ID.
 const MaxRunsPerHook = 50
