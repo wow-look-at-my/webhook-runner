@@ -100,6 +100,9 @@ dialog#run-detail {
 dialog#run-detail::backdrop {
   background: rgba(1, 4, 9, 0.7);
 }
+/* Lock the page behind the modal while it's open. showModal() makes the
+   background inert but does NOT stop it from scrolling on its own. */
+html:has(dialog#run-detail[open]) { overflow: hidden; }
 .modal-body {
   display: flex;
   flex-direction: column;
@@ -172,6 +175,9 @@ dialog#run-detail::backdrop {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  /* Keep wheel/touch scrolling inside this box -- don't chain to the page
+     behind the modal when reaching the top/bottom of the output. */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -179,11 +185,18 @@ dialog#run-detail::backdrop {
 }
 .raw-log {
   margin: 0;
+  /* Take natural content height and let #run-detail-output scroll, instead of
+     being shrunk to fit (flex children default to flex-shrink: 1). */
+  flex-shrink: 0;
   max-height: none;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .turn {
+  /* Without this, the flex column shrinks every card to fit the box height and
+     overflow: hidden clips its body to a squished sliver -- and because nothing
+     overflows, the box never scrolls so the wheel scrolls the page instead. */
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-left-width: 3px;
   border-radius: 8px;
