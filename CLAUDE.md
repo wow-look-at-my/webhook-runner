@@ -45,10 +45,12 @@ examples/hooks/            sample hook configs
 The server listens on two ports:
 
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
-  `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
+  `GET /health`, `GET /version`, `POST /_reload`. Public-facing, exposed via
+  Cloudflare Tunnel.
 - **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`,
   `/runs/{id}/cancel`, `/reload`, `/events` (activity feed), `/images`
-  (per-hook image state). Internal, behind Cloudflare Zero Trust.
+  (per-hook image state), `/health`, `/version`. Internal, behind Cloudflare
+  Zero Trust.
   The dashboard's one-time webhook-setup instructions live in a
   collapsed `<details>`; the page is about live state (hooks, images,
   runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
@@ -62,6 +64,13 @@ The server listens on two ports:
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
+
+`GET /version` (both ports) and `GET /health` (which also embeds the
+version) report the build string so a deploy can be confirmed with one
+curl against the public hook port. The string comes from
+`cli.versionString()` (ldflags `version`, else module version, else
+`dev-<vcs.revision>`), passed into `server.Options.Version` from
+`serve.go`; it defaults to `"dev"` when unset.
 
 ## Hooks repo integration
 

@@ -101,7 +101,8 @@ Trust).
 
 | Method | Path                | Purpose                                    |
 |--------|---------------------|--------------------------------------------|
-| GET    | `/health`           | Liveness probe (200).                      |
+| GET    | `/health`           | Liveness probe (200). Body includes the build `version`. |
+| GET    | `/version`          | Build version (`{"version":"..."}`) — confirm a deploy with one curl. |
 | POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
@@ -110,7 +111,8 @@ Trust).
 
 | Method | Path                | Purpose                                    |
 |--------|---------------------|--------------------------------------------|
-| GET    | `/health`           | Liveness probe (200).                      |
+| GET    | `/health`           | Liveness probe (200). Body includes the build `version`. |
+| GET    | `/version`          | Build version (`{"version":"..."}`).       |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |

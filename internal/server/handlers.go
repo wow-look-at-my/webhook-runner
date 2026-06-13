@@ -20,8 +20,13 @@ import (
 const MaxBodyBytes = 25 * 1024 * 1024
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
+}
+
+// handleVersion reports the build version (also on the public hook port) so a
+// deploy can be confirmed with a single curl against /version.
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": s.version})
 }
 
 func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {

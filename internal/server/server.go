@@ -28,6 +28,7 @@ type Server struct {
 	onReload     func() error
 	hooksRepo    string
 	hookBaseURL  string
+	version      string
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -66,12 +67,20 @@ type Options struct {
 	// "https://hooks.example.com"). Used by the dashboard to show the
 	// full _reload webhook URL. Optional.
 	HookBaseURL string
+
+	// Version is the build version string reported by GET /version and
+	// included in GET /health (so a deploy can be confirmed with a single
+	// curl). Defaults to "dev" when empty.
+	Version string
 }
 
 // New constructs a Server, registering routes on both muxes.
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
+	}
+	if opts.Version == "" {
+		opts.Version = "dev"
 	}
 	s := &Server{
 		registry:     opts.Registry,
@@ -85,6 +94,7 @@ func New(opts Options) *Server {
 		onReload:     opts.OnReload,
 		hooksRepo:    opts.HooksRepo,
 		hookBaseURL:  opts.HookBaseURL,
+		version:      opts.Version,
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
 	}
@@ -101,6 +111,7 @@ func (s *Server) AdminHandler() http.Handler { return s.adminMux }
 func (s *Server) registerRoutes() {
 	// Hook port (public, exposed via tunnel).
 	s.hookMux.HandleFunc("GET /health", s.handleHealth)
+	s.hookMux.HandleFunc("GET /version", s.handleVersion)
 	s.hookMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.hookMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	if s.reloadSecret != "" {
@@ -109,6 +120,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)

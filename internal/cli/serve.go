@@ -130,6 +130,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		OnReload:     onReload,
 		HooksRepo:    o.hooksRepo,
 		HookBaseURL:  o.hookBaseURL,
+		Version:      versionString(),
 	})
 
 	// Watcher runs for the lifetime of the server.
