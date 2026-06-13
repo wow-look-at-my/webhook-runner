@@ -73,8 +73,14 @@
       <button id="run-detail-close" class="modal-close" aria-label="Close" title="Close (Esc)">&times;</button>
     </div>
     <dl id="run-detail-meta"></dl>
-    <h3>Output</h3>
-    <pre id="run-detail-output"></pre>
+    <div class="output-head">
+      <h3>Output</h3>
+      <div id="run-detail-view-toggle" class="view-toggle" hidden>
+        <button type="button" data-view="conversation" class="active">Conversation</button>
+        <button type="button" data-view="raw">Raw log</button>
+      </div>
+    </div>
+    <div id="run-detail-output"></div>
   </div>
 </dialog>
 
