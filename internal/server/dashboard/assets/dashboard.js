@@ -31,6 +31,93 @@ function fmtTime(s) {
   return d.toLocaleString();
 }
 
+// --- Run output: render the model's log as a conversation -----------------
+//
+// Hooks like pr-describe echo their model I/O into the run log, delimited by
+// marker lines:
+//   --- model input: system prompt ---
+//   --- model input: existing metadata ---
+//   --- model input: diff (123 lines) ---
+//   --- model output (456 chars) ---
+// Joined into one <pre> that's an unreadable wall of text, so we split on
+// those markers into role-tagged turns. The hook's own progress/status lines
+// (and anything outside a model section) become "log" turns. Output with no
+// model markers (a non-conversational hook) returns null -> raw <pre>.
+
+let currentRunLines = [];
+let currentRunTurns = null;
+
+function classifyMarker(line) {
+  let m = line.match(/^--- model input: (.+?) ---$/);
+  if (m) return { role: /^system prompt/.test(m[1]) ? "system" : "user", label: m[1] };
+  m = line.match(/^--- model output(?: \((.*)\))? ---$/);
+  if (m) return { role: "assistant", label: m[1] ? `model output (${m[1]})` : "model output" };
+  return null;
+}
+
+// The hook's own log lines (progress, status, retries) that can appear between
+// or after model sections -- kept out of the conversation turns.
+function isLogLine(line) {
+  return (
+    /^[^\s/]+\/[^\s/]+#\d+:/.test(line) ||
+    /^--- (summarizing part|diff is|\d+ section summaries)/.test(line) ||
+    /\battempt \d+ failed\b/.test(line)
+  );
+}
+
+function parseConversation(lines) {
+  if (!lines.some(classifyMarker)) return null;
+  const turns = [];
+  let cur = null;
+  const pushLog = (line) => {
+    const last = turns[turns.length - 1];
+    if (last && last.role === "log") last.lines.push(line);
+    else turns.push({ role: "log", label: "log", lines: [line] });
+  };
+  for (const line of lines) {
+    const marker = classifyMarker(line);
+    if (marker) {
+      cur = { role: marker.role, label: marker.label, lines: [] };
+      turns.push(cur);
+    } else if (isLogLine(line)) {
+      cur = null;
+      pushLog(line);
+    } else if (cur) {
+      cur.lines.push(line);
+    } else {
+      pushLog(line);
+    }
+  }
+  return turns;
+}
+
+function renderRunOutput(view) {
+  const container = document.getElementById("run-detail-output");
+  container.innerHTML = "";
+  if (view === "conversation" && currentRunTurns) {
+    for (const t of currentRunTurns) {
+      const body = t.lines.join("\n").replace(/^\n+|\n+$/g, "");
+      container.appendChild(
+        el("div", { class: "turn turn-" + t.role },
+          el("div", { class: "turn-head" },
+            el("span", { class: "role-badge role-" + t.role }, t.role),
+            t.label && t.label !== t.role ? el("span", { class: "turn-label" }, t.label) : null,
+          ),
+          el("pre", { class: "turn-body" }, body || "(empty)"),
+        )
+      );
+    }
+  } else {
+    container.appendChild(
+      el("pre", { class: "raw-log" }, currentRunLines.join("\n") || "(no output)")
+    );
+  }
+  container.scrollTop = 0;
+  for (const b of document.querySelectorAll("#run-detail-view-toggle button")) {
+    b.classList.toggle("active", b.dataset.view === view);
+  }
+}
+
 async function refresh() {
   try {
     await fetchJSON("/health");
@@ -153,17 +240,29 @@ async function showRun(id) {
       dl.appendChild(el("dt", null, k));
       dl.appendChild(el("dd", null, v));
     }
-    const out = document.getElementById("run-detail-output");
-    out.textContent = (r.output || []).join("\n") || "(no output)";
-    document.getElementById("run-detail").hidden = false;
-    document.getElementById("run-detail").scrollIntoView({ behavior: "smooth" });
+    currentRunLines = r.output || [];
+    currentRunTurns = parseConversation(currentRunLines);
+    document.getElementById("run-detail-view-toggle").hidden = !currentRunTurns;
+    renderRunOutput(currentRunTurns ? "conversation" : "raw");
+    const dlg = document.getElementById("run-detail");
+    if (!dlg.open) dlg.showModal();
   } catch (e) {
     console.error(e);
   }
 }
 
+const runDetailDialog = document.getElementById("run-detail");
 document.getElementById("run-detail-close").addEventListener("click", () => {
-  document.getElementById("run-detail").hidden = true;
+  runDetailDialog.close();
+});
+// Click outside the modal box (on the backdrop) closes it; Escape already does.
+runDetailDialog.addEventListener("click", (e) => {
+  if (e.target === runDetailDialog) runDetailDialog.close();
+});
+// Switch between the conversation and raw-log views of the same run output.
+document.getElementById("run-detail-view-toggle").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-view]");
+  if (btn) renderRunOutput(btn.dataset.view);
 });
 
 function parseGitHubURL(repoURL) {

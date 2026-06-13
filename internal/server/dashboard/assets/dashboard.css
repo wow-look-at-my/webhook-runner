@@ -81,6 +81,153 @@ button, .btn {
   display: inline-block;
 }
 button:hover, .btn:hover { filter: brightness(1.1); }
+
+/* Run detail modal: a large centered popup so output is readable without
+   scrolling the whole page. Native <dialog> gives us the backdrop, Escape
+   key, focus trapping and centering for free. */
+dialog#run-detail {
+  width: min(92vw, 1100px);
+  height: min(88vh, 900px);
+  max-width: 92vw;
+  max-height: 88vh;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
+}
+dialog#run-detail::backdrop {
+  background: rgba(1, 4, 9, 0.7);
+}
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.modal-body h3 {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.modal-close {
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0 0.5rem;
+  border-radius: 6px;
+}
+.modal-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+  filter: none;
+}
+/* Output header: "Output" label on the left, view toggle on the right. */
+.output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.75rem 0 0.5rem;
+}
+.output-head h3 { margin: 0; }
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.view-toggle button {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-radius: 0;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.view-toggle button:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+.view-toggle button.active { background: var(--accent); color: #fff; }
+
+/* Output fills the remaining modal height and scrolls inside the box,
+   overriding the global pre { max-height: 50vh }. The conversation view
+   stacks one card per turn; the raw view is a single <pre>. */
+#run-detail-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+}
+.raw-log {
+  margin: 0;
+  max-height: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.turn {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.turn-system { border-left-color: var(--running); }
+.turn-user { border-left-color: var(--accent); }
+.turn-assistant { border-left-color: var(--success); }
+.turn-log { border-left-color: var(--pending); }
+.turn-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
+}
+.role-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+.role-system { background: rgba(210, 153, 34, 0.18); color: var(--running); }
+.role-user { background: rgba(47, 129, 247, 0.18); color: var(--accent); }
+.role-assistant { background: rgba(63, 185, 80, 0.18); color: var(--success); }
+.role-log { background: rgba(125, 133, 144, 0.18); color: var(--muted); }
+.turn-label { font-size: 0.75rem; color: var(--muted); }
+.turn-body {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 #setup-section #setup-repo { font-size: 0.9rem; margin: 0 0 0.5rem; }
 #setup-section a:not(.btn) { color: var(--accent); text-decoration: none; }
 #setup-section a:not(.btn):hover { text-decoration: underline; }
