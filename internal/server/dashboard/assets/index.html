@@ -62,15 +62,21 @@
     </table>
     <p id="events-empty" class="empty" hidden>Nothing yet.</p>
   </section>
+</main>
 
-  <section id="run-detail" hidden>
-    <h2>Run <code id="run-detail-id"></code></h2>
+<!-- Run detail opens as a modal so output is visible immediately, without
+     scrolling past the hooks/images/runs/activity tables to the page bottom. -->
+<dialog id="run-detail" aria-labelledby="run-detail-title">
+  <div class="modal-body">
+    <div class="modal-header">
+      <h2 id="run-detail-title">Run <code id="run-detail-id"></code></h2>
+      <button id="run-detail-close" class="modal-close" aria-label="Close" title="Close (Esc)">&times;</button>
+    </div>
     <dl id="run-detail-meta"></dl>
     <h3>Output</h3>
     <pre id="run-detail-output"></pre>
-    <button id="run-detail-close">Close</button>
-  </section>
-</main>
+  </div>
+</dialog>
 
 <script src="dashboard.js"></script>
 </body>

@@ -155,15 +155,20 @@ async function showRun(id) {
     }
     const out = document.getElementById("run-detail-output");
     out.textContent = (r.output || []).join("\n") || "(no output)";
-    document.getElementById("run-detail").hidden = false;
-    document.getElementById("run-detail").scrollIntoView({ behavior: "smooth" });
+    const dlg = document.getElementById("run-detail");
+    if (!dlg.open) dlg.showModal();
   } catch (e) {
     console.error(e);
   }
 }
 
+const runDetailDialog = document.getElementById("run-detail");
 document.getElementById("run-detail-close").addEventListener("click", () => {
-  document.getElementById("run-detail").hidden = true;
+  runDetailDialog.close();
+});
+// Click outside the modal box (on the backdrop) closes it; Escape already does.
+runDetailDialog.addEventListener("click", (e) => {
+  if (e.target === runDetailDialog) runDetailDialog.close();
 });
 
 function parseGitHubURL(repoURL) {
