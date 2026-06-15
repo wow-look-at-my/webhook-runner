@@ -72,6 +72,10 @@
       "default": false,
       "description": "When true, the server holds the HTTP response open until the container exits. Default: false (returns 202 immediately)."
     },
+    "concurrency_group": {
+      "type": "string",
+      "description": "Name of a concurrency group declared in concurrency.json at the hooks root. At most that group's limit of runs (counted across every hook sharing the group) execute at once; the rest queue as 'pending' with their timeout not yet counting. Referencing a group not declared in concurrency.json is a load/validation error. Omit for unbounded concurrency."
+    },
     "extra_docker_args": {
       "type": "array",
       "items": { "type": "string" },

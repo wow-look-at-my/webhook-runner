@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
@@ -103,11 +104,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// this process's environment.
 	secrets := hooks.NewSecretsLoader(os.Getenv("WEBHOOK_RUNNER_SOPS_BIN"))
 
+	// Concurrency groups (concurrency.json at the hooks root) gate how many
+	// runs of a hook — or of several hooks sharing a group — execute at
+	// once; the rest queue. The manager starts empty and is populated by
+	// the initial load below.
+	concurrencyMgr := concurrency.NewManager(nil)
+
 	rn := runner.New(runner.Options{
 		Tracker: tracker,
 		Logger:  logger,
 		Secrets: secrets,
 		Events:  rec,
+		Groups:  concurrencyMgr,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -116,7 +124,14 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
-	onReload := buildReloadFunc(repo, o.hooksDir, registry, logger, rec)
+	// loadAndApply reloads hooks and concurrency groups together so the
+	// registry and the manager never drift: a hook referencing an
+	// undeclared group is rejected (not registered) rather than allowed to
+	// run unbounded. Both the filesystem watcher and the admin/webhook
+	// reload path go through this one function.
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, logger, rec)
+
+	onReload := buildReloadFunc(repo, loadAndApply, rec)
 
 	srv := server.New(server.Options{
 		Registry:     registry,
@@ -124,6 +139,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Tracker:      tracker,
 		GitHub:       gh,
 		Secrets:      secrets,
+		Concurrency:  concurrencyMgr,
 		Events:       rec,
 		Logger:       logger,
 		ReloadSecret: o.hooksRepoSecret,
@@ -132,12 +148,13 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HookBaseURL:  o.hookBaseURL,
 	})
 
-	// Watcher runs for the lifetime of the server.
+	// Watcher runs for the lifetime of the server; its initial scan is what
+	// first populates the registry and concurrency manager.
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watchErr := make(chan error, 1)
 	go func() {
-		watchErr <- hooks.Watch(watchCtx, o.hooksDir, registry, logger)
+		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadAndApply, logger)
 	}()
 
 	hookSrv := &http.Server{
@@ -206,17 +223,51 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	return nil
 }
 
-func buildReloadFunc(repo *hooks.Repo, hooksDir string, registry *hooks.Registry, logger *slog.Logger, rec *events.Recorder) func() error {
-	reloadFromDisk := func() {
+// buildLoadAndApply returns the single reload routine shared by the
+// filesystem watcher and the admin/webhook reload path. It loads the hooks
+// and the concurrency-group config from disk, rejects hooks that reference
+// an undeclared group, then atomically updates the concurrency manager and
+// the registry.
+func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, logger *slog.Logger, rec *events.Recorder) func() {
+	return func() {
 		loaded, errs := hooks.LoadDir(hooksDir)
+
+		cfg, cerr := concurrency.Load(hooksDir)
+		if cerr != nil {
+			// An unparseable concurrency.json means we can't trust any
+			// group reference; treat the set as empty so referencing hooks
+			// fail closed below rather than running unbounded.
+			errs = append(errs, cerr)
+			cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
+		}
+
+		// A hook naming an undeclared group is a misconfiguration: drop it
+		// so it can't be triggered (and can't run without its intended
+		// backpressure).
+		refs := make(map[string]string, len(loaded))
+		for id, h := range loaded {
+			refs[id] = h.ConcurrencyGroup
+		}
+		for _, re := range concurrency.CheckRefs(cfg, refs) {
+			errs = append(errs, re)
+			delete(loaded, re.HookID)
+		}
+
 		for _, e := range errs {
 			logger.Error("hook reload error", "err", e)
 			rec.Record("hook.load_error", e.Error(), nil)
 		}
+
+		mgr.Update(cfg)
 		registry.Replace(loaded)
-		logger.Info("hooks reloaded", "count", len(loaded))
-		rec.Record("hooks.reloaded", fmt.Sprintf("%d hook(s) loaded, %d error(s)", len(loaded), len(errs)), nil)
+		logger.Info("hooks reloaded", "count", len(loaded), "concurrency_groups", len(cfg.Groups))
+		rec.Record("hooks.reloaded",
+			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d error(s)", len(loaded), len(cfg.Groups), len(errs)),
+			nil)
 	}
+}
+
+func buildReloadFunc(repo *hooks.Repo, loadAndApply func(), rec *events.Recorder) func() error {
 	if repo != nil {
 		return func() error {
 			if err := repo.Pull(); err != nil {
@@ -224,12 +275,12 @@ func buildReloadFunc(repo *hooks.Repo, hooksDir string, registry *hooks.Registry
 				return err
 			}
 			rec.Record("git.pulled", "hooks repo pulled", nil)
-			reloadFromDisk()
+			loadAndApply()
 			return nil
 		}
 	}
 	return func() error {
-		reloadFromDisk()
+		loadAndApply()
 		return nil
 	}
 }

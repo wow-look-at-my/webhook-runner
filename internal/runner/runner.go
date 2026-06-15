@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -59,6 +60,7 @@ type Runner struct {
 	onFinish HookFinishedFunc
 	secrets  *hooks.SecretsLoader
 	events   *events.Recorder
+	groups   *concurrency.Manager
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -76,6 +78,7 @@ type Options struct {
 	Docker   string               // docker binary path; "" = "docker"
 	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
+	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
 }
 
 // New constructs a Runner.
@@ -97,6 +100,7 @@ func New(opts Options) *Runner {
 		onFinish:  opts.OnFinish,
 		secrets:   opts.Secrets,
 		events:    opts.Events,
+		groups:    opts.Groups,
 		dockerBin: opts.Docker,
 	}
 }
@@ -133,8 +137,6 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
 	timeout := hook.Timeout()
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -198,6 +200,40 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	default:
 	}
+
+	// Queue: reserve a slot in the hook's concurrency group before doing
+	// any actual processing. When a hook (or several hooks sharing a group)
+	// is flooded, the excess runs wait here — staying "pending", not
+	// "running" — instead of all launching containers at once. The timeout
+	// is deliberately NOT started yet: a run must not burn its budget while
+	// sitting in the queue.
+	release, acquired, qErr := r.acquireSlot(hook, run)
+	if qErr != nil {
+		// An undeclared group is a misconfiguration; fail closed rather
+		// than silently running unbounded.
+		r.events.Record("run.misconfigured", fmt.Sprintf("%s run %s: %v", hook.ID, run.ID(), qErr),
+			map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
+		run.Finish(runs.StatusError, -1, qErr.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	if !acquired {
+		// Cancelled while waiting in the queue.
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	defer release()
+
+	// The timeout clock starts now — we hold a slot and are about to launch
+	// — so it bounds only real container processing, never the time spent
+	// decrypting secrets, building the image, or queued behind other runs.
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()
 
@@ -425,6 +461,21 @@ func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.ReadCloser, hookID string,
 		r.log.Warn("output scanner error",
 			"hook", hookID, "run", run.ID(), "stream", stream, "err", err)
 	}
+}
+
+// acquireSlot reserves a concurrency-group slot for the run, recording a
+// one-time "queued" activity event the moment the run actually has to wait
+// (not when it gets a slot immediately). A hook with no concurrency_group
+// returns instantly with a no-op release. The returned release must be
+// called exactly once when the run finishes.
+func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, err error) {
+	return r.groups.Acquire(hook.ConcurrencyGroup, run.Cancelled(), func() {
+		r.log.Info("hook run queued",
+			"hook", hook.ID, "run", run.ID(), "group", hook.ConcurrencyGroup)
+		r.events.Record("run.queued",
+			fmt.Sprintf("%s run %s queued on concurrency group %q", hook.ID, run.ID(), hook.ConcurrencyGroup),
+			map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
+	})
 }
 
 func (r *Runner) killContainer(name string) {

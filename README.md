@@ -118,8 +118,9 @@ Trust).
 | GET    | `/runs/{id}`        | Status + retained output for one run.      |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
-| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle, rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it. |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
+| GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
 | GET    | `/`                 | Dashboard.                                 |
 
 ### Sync vs async
@@ -185,6 +186,55 @@ life as a host env var and move into the repo without touching hook.json.
 Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
 untouched. Expansion never happens at load/validate time, so CI validation
 needs neither the production environment nor any decryption keys.
+
+## Concurrency groups
+
+By default a hook runs with unbounded concurrency: every accepted request
+spawns its container immediately. When a burst arrives — or several hooks
+share one scarce backend (a single local model server, a rate-limited API)
+— that means many containers competing at once, and, worse, **every run's
+timeout starts counting the moment it is accepted**, so runs that are really
+just *waiting* can time out before they ever do work.
+
+Concurrency groups fix both. A group is a named slot pool with a limit; at
+most `limit` runs in the group execute at once and the rest **queue**
+(staying `pending`, not `running`). A queued run's `timeout` clock does not
+start until it actually begins processing — queue time is never counted.
+
+Unlike GitHub Actions' free-form `concurrency:` expression, the set of valid
+groups is **declared centrally** so names can't drift: put a
+`concurrency.json` at the hooks root (next to the hook folders), and each
+hook opts in by name. Referencing a group that isn't declared is a
+load/validation error — the hook won't load.
+
+```jsonc
+// concurrency.json (at the hooks root)
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json",
+  "groups": {
+    // Serialize everything that hits the single local model server.
+    "ollama-local": { "description": "shared local model server", "limit": 1 }
+  }
+}
+```
+
+```jsonc
+// some-hook/hook.json
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "concurrency_group": "ollama-local"
+}
+```
+
+`limit` defaults to `1` (full serialization) and must be `>= 1`. Multiple
+hooks may share a group — the limit applies across all of them, so two
+different hooks that both call the same backend take turns. Omit
+`concurrency_group` for unbounded concurrency. Watch live utilization on the
+admin port's `/concurrency` endpoint, and a `run.queued` event appears in
+the activity feed whenever a run has to wait.
+
+The schema is published at
+`https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
 
 ## Encrypted secrets in the hooks repo (sops)
 

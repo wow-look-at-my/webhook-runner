@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
@@ -22,6 +23,7 @@ type Server struct {
 	tracker      *runs.Tracker
 	gh           *githubstatus.Client
 	secrets      *hooks.SecretsLoader
+	concurrency  *concurrency.Manager
 	events       *events.Recorder
 	log          *slog.Logger
 	reloadSecret string
@@ -42,6 +44,9 @@ type Options struct {
 	// Secrets decrypts per-hook sops secrets files; api_key ${NAME}
 	// references resolve through it. nil disables decryption.
 	Secrets *hooks.SecretsLoader
+	// Concurrency exposes the live state of the named concurrency groups
+	// on the admin port. nil is fine (the endpoint reports no groups).
+	Concurrency *concurrency.Manager
 	// Events is the activity feed shown on the admin dashboard. nil is
 	// fine (events are dropped).
 	Events *events.Recorder
@@ -79,6 +84,7 @@ func New(opts Options) *Server {
 		tracker:      opts.Tracker,
 		gh:           opts.GitHub,
 		secrets:      opts.Secrets,
+		concurrency:  opts.Concurrency,
 		events:       opts.Events,
 		log:          opts.Logger,
 		reloadSecret: opts.ReloadSecret,
@@ -119,6 +125,7 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /config", s.handleConfig)
 	s.adminMux.HandleFunc("GET /events", s.handleEvents)
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
+	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 }
 

@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
 // DefaultTimeout is applied when a hook does not specify one explicitly.
@@ -54,6 +56,14 @@ type Hook struct {
 	TimeoutRaw      string              `json:"timeout,omitempty"`
 	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
+
+	// ConcurrencyGroup, when set, names a concurrency group the hook's runs
+	// must be scheduled through: at most that group's limit run at once and
+	// the rest queue (staying "pending" with their timeout NOT yet counting
+	// — see runner.execute). The group must be declared in the central
+	// concurrency.json at the hooks root; referencing an undeclared group is
+	// a load/validation error. Empty means unbounded (no queueing).
+	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 
 	APIKey       string `json:"api_key,omitempty"`
 	APIKeyHeader string `json:"api_key_header,omitempty"`
@@ -281,64 +291,8 @@ func parseEd25519PublicKey(s string) (ed25519.PublicKey, error) {
 }
 
 // stripComments returns a reader over the input with // and /* */ comments
-// removed, since the hook.json format documented to users contains JSONC-style
-// comments. The implementation is intentionally simple and string-state aware:
-// it preserves bytes inside string literals exactly.
+// removed, since the hook.json format documented to users contains
+// JSONC-style comments. The shared implementation lives in internal/jsonc.
 func stripComments(in []byte) *strings.Reader {
-	var out strings.Builder
-	out.Grow(len(in))
-	const (
-		stateNormal = iota
-		stateString
-		stateLineComment
-		stateBlockComment
-	)
-	state := stateNormal
-	escape := false
-	for i := 0; i < len(in); i++ {
-		c := in[i]
-		switch state {
-		case stateNormal:
-			if c == '/' && i+1 < len(in) {
-				switch in[i+1] {
-				case '/':
-					state = stateLineComment
-					i++
-					continue
-				case '*':
-					state = stateBlockComment
-					i++
-					continue
-				}
-			}
-			if c == '"' {
-				state = stateString
-			}
-			out.WriteByte(c)
-		case stateString:
-			out.WriteByte(c)
-			if escape {
-				escape = false
-				continue
-			}
-			if c == '\\' {
-				escape = true
-				continue
-			}
-			if c == '"' {
-				state = stateNormal
-			}
-		case stateLineComment:
-			if c == '\n' {
-				state = stateNormal
-				out.WriteByte(c)
-			}
-		case stateBlockComment:
-			if c == '*' && i+1 < len(in) && in[i+1] == '/' {
-				state = stateNormal
-				i++
-			}
-		}
-	}
-	return strings.NewReader(out.String())
+	return jsonc.NewReader(in)
 }
