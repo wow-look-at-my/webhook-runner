@@ -344,6 +344,13 @@ func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.runner.ImageStatus(s.registry.All()))
 }
 
+// handleConcurrency reports the live state of every declared concurrency
+// group — its limit, how many runs are active, and how many are queued
+// behind it (admin port).
+func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.concurrency.Status())
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	cfg := map[string]string{}
 	if s.hooksRepo != "" {

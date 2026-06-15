@@ -15,11 +15,13 @@ internal/cli/              cobra commands (root = run server, validate, test, ve
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded read-only HTML dashboard
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
+internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager
+internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
 internal/runner/           docker run dispatch + output streaming + image build/status
 internal/runs/             in-memory run tracker (bounded)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schema for hook.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -48,7 +50,8 @@ The server listens on two ports:
   `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
 - **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`,
   `/runs/{id}/cancel`, `/reload`, `/events` (activity feed), `/images`
-  (per-hook image state). Internal, behind Cloudflare Zero Trust.
+  (per-hook image state), `/concurrency` (live per-group limit/active/
+  waiting). Internal, behind Cloudflare Zero Trust.
   The dashboard's one-time webhook-setup instructions live in a
   collapsed `<details>`; the page is about live state (hooks, images,
   runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
@@ -150,3 +153,30 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
+- The run `timeout` bounds **only container processing**. In
+  `runner.execute` the timeout `context.WithTimeout` is created *after*
+  secrets decrypt, image build, and (crucially) after the concurrency-group
+  slot is acquired — never at the top. A run waiting in a group's queue
+  stays `pending` with no timeout running; if you move the `WithTimeout`
+  back up, queued runs start timing out while they wait, which is the exact
+  bug this avoids. `run.SetRunning()` (pending→running) still fires only
+  once the container launches, so the dashboard shows queued runs as
+  `pending`.
+- Concurrency groups (`internal/concurrency`) are declared centrally in
+  `concurrency.json` at the hooks root, NOT per-hook: a hook only references
+  a group by name via `concurrency_group`, and referencing an undeclared
+  group is a load/validation error (the hook is dropped, not run unbounded —
+  fail closed). The `concurrency.Manager` holds one buffered-channel
+  semaphore per group; `Acquire` captures the channel in its release closure
+  so a reload that swaps a group's semaphore can't lose or double-count a
+  token. `concurrency_group` is a new hook.json field (so `Parse`'s
+  `DisallowUnknownFields` means old binaries reject it — same deploy-first
+  rule as above), and `concurrency.json` has its own published schema.
+- Hooks AND concurrency groups reload together through one closure
+  (`buildLoadAndApply` in cli/serve.go), used by both the admin/webhook
+  reload and the filesystem watcher. The watcher is now `hooks.WatchFunc`
+  (takes an `onChange` callback; `hooks.Watch` is a thin back-compat
+  wrapper) and also fires on `concurrency.json` edits. Don't reintroduce a
+  second, separate hook-only reload path — the registry and the
+  `concurrency.Manager` must update atomically together or a hook can be
+  registered before its group exists.
