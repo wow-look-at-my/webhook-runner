@@ -3,6 +3,7 @@ package runs
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,6 +131,42 @@ func TestAppendOutputTrimsNewline(t *testing.T) {
 	r.AppendOutput("hello\n")
 	r.AppendOutput("world\r\n")
 	assert.Equal(t, []string{"hello", "world"}, r.Snapshot(-1).Output)
+}
+
+// OutputTimes must stay 1:1 with Output through append, ring eviction, and
+// tail slicing — the dashboard zips the two by index, so a length mismatch
+// would misalign every timestamp.
+func TestOutputTimesTrackOutput(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+
+	before := time.Now().UTC()
+	for _, line := range []string{"a", "b", "c", "d"} {
+		r.AppendOutput(line)
+	}
+	after := time.Now().UTC()
+
+	full := r.Snapshot(-1)
+	require.Len(t, full.OutputTimes, len(full.Output))
+	for _, ts := range full.OutputTimes {
+		assert.False(t, ts.Before(before), "timestamp predates the appends")
+		assert.False(t, ts.After(after), "timestamp postdates the appends")
+	}
+
+	// Tail slices both halves together.
+	tail := r.Snapshot(2)
+	assert.Equal(t, []string{"c", "d"}, tail.Output)
+	require.Len(t, tail.OutputTimes, 2)
+	assert.Equal(t, full.OutputTimes[2:], tail.OutputTimes)
+
+	// Eviction drops from both halves together.
+	r2 := tr.New("h")
+	for i := 0; i < MaxOutputLines+50; i++ {
+		r2.AppendOutput("line")
+	}
+	snap := r2.Snapshot(-1)
+	assert.Len(t, snap.Output, MaxOutputLines)
+	assert.Len(t, snap.OutputTimes, MaxOutputLines)
 }
 
 func TestRequestCancel(t *testing.T) {

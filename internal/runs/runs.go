@@ -64,6 +64,15 @@ type RunState struct {
 	// stdout+stderr. The slice is newline-free.
 	Output []string `json:"output,omitempty"`
 
+	// OutputTimes carries one UTC timestamp per Output line: the moment
+	// the server recorded that line (≈ when the container emitted it).
+	// Kept as a parallel slice rather than folded into Output so Output
+	// stays []string for the commit-status LastLines caller and the
+	// existing JSON contract. AppendOutput/Snapshot append, evict, and
+	// slice the two together, so OutputTimes always has the same length
+	// as Output (or is nil when output is stripped, as in the list view).
+	OutputTimes []time.Time `json:"output_times,omitempty"`
+
 	// Error is set when the run failed before or outside the container
 	// (for example, "docker: command not found"). When the container
 	// itself ran and exited non-zero, Error stays empty and the failure
@@ -143,11 +152,14 @@ func (r *Run) Snapshot(tail int) RunState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := r.state.Output
+	times := r.state.OutputTimes
 	if tail >= 0 && tail < len(out) {
 		out = out[len(out)-tail:]
+		times = times[len(times)-tail:]
 	}
 	cp := r.state
 	cp.Output = append([]string(nil), out...)
+	cp.OutputTimes = append([]time.Time(nil), times...)
 	return cp
 }
 
@@ -155,12 +167,15 @@ func (r *Run) Snapshot(tail int) RunState {
 // stored without a trailing newline.
 func (r *Run) AppendOutput(line string) {
 	line = strings.TrimRight(line, "\r\n")
+	now := time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.state.Output = append(r.state.Output, line)
+	r.state.OutputTimes = append(r.state.OutputTimes, now)
 	if len(r.state.Output) > MaxOutputLines {
 		drop := len(r.state.Output) - MaxOutputLines
 		r.state.Output = append(r.state.Output[:0], r.state.Output[drop:]...)
+		r.state.OutputTimes = append(r.state.OutputTimes[:0], r.state.OutputTimes[drop:]...)
 	}
 }
 

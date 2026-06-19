@@ -167,6 +167,22 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
 }
 .view-toggle button:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
 .view-toggle button.active { background: var(--accent); color: #fff; }
+/* Toggle + copy button share the right side of the output header. */
+.output-actions { display: flex; align-items: center; gap: 0.5rem; }
+/* Understated ghost button (not the big primary blue) next to the toggle. */
+.copy-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.copy-btn:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+.copy-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.copy-btn:disabled:hover { background: transparent; color: var(--muted); }
+.copy-btn.copied { border-color: var(--success); color: var(--success); }
 
 /* Output fills the remaining modal height and scrolls inside the box,
    overriding the global pre { max-height: 50vh }. The conversation view
@@ -183,15 +199,39 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
   gap: 0.75rem;
   margin: 0;
 }
+/* Raw view. Self-sufficient box styling (background/border/padding) because
+   it renders as a <div> of timestamped rows, not a <pre> that would inherit
+   the global pre styling -- though the "(no output)" placeholder is still a
+   <pre class="raw-log"> and must look the same. */
 .raw-log {
   margin: 0;
   /* Take natural content height and let #run-detail-output scroll, instead of
      being shrunk to fit (flex children default to flex-shrink: 1). */
   flex-shrink: 0;
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
   max-height: none;
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* One log line: a non-selectable timestamp gutter + the line text. */
+.log-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+.log-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+}
+.log-text { white-space: pre-wrap; word-break: break-word; }
 .turn {
   /* Without this, the flex column shrinks every card to fit the box height and
      overflow: hidden clips its body to a squished sliver -- and because nothing
@@ -230,6 +270,14 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
 .role-assistant { background: rgba(63, 185, 80, 0.18); color: var(--success); }
 .role-log { background: rgba(125, 133, 144, 0.18); color: var(--muted); }
 .turn-label { font-size: 0.75rem; color: var(--muted); }
+/* Pushed to the far right of the turn header: when this turn began. */
+.turn-time {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .turn-body {
   margin: 0;
   padding: 0.6rem 0.85rem;

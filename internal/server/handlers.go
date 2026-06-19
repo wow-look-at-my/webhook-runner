@@ -213,6 +213,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		// /runs/{id} for that.
 		s := r.Snapshot(0)
 		s.Output = nil
+		s.OutputTimes = nil
 		out = append(out, s)
 	}
 	writeJSON(w, http.StatusOK, out)
