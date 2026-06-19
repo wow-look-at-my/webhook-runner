@@ -49,7 +49,10 @@ hooks without restart.
   image builds, run lifecycle — and rejected requests: unknown hook ids,
   denied auth, unresolvable `${NAME}` references in `api_key`/`env`, so
   "did you receive anything?" always has an answer). One-time setup
-  instructions stay collapsed.
+  instructions stay collapsed. Opening a run shows its output with a
+  per-line timestamp column (the raw view) or per-turn times (the
+  conversation view), plus a **Copy log** button that puts the whole
+  timestamped log on the clipboard.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 

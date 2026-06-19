@@ -31,6 +31,17 @@ function fmtTime(s) {
   return d.toLocaleString();
 }
 
+// Short wall-clock time (HH:MM:SS) for per-line log timestamps. The run's
+// full Started date lives in the meta table, so the per-line stamp only
+// needs the time of day.
+function fmtClock(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 // --- Run output: render the model's log as a conversation -----------------
 //
 // Hooks like pr-describe echo their model I/O into the run log, delimited by
@@ -45,6 +56,7 @@ function fmtTime(s) {
 // model markers (a non-conversational hook) returns null -> raw <pre>.
 
 let currentRunLines = [];
+let currentRunTimes = [];
 let currentRunTurns = null;
 
 function classifyMarker(line) {
@@ -65,27 +77,30 @@ function isLogLine(line) {
   );
 }
 
-function parseConversation(lines) {
-  if (!lines.some(classifyMarker)) return null;
+// entries is an array of { text, time } (time is the line's ISO timestamp or
+// null). Turns carry their entries plus the timestamp of their first line so
+// the conversation view can show when each turn began.
+function parseConversation(entries) {
+  if (!entries.some((e) => classifyMarker(e.text))) return null;
   const turns = [];
   let cur = null;
-  const pushLog = (line) => {
+  const pushLog = (e) => {
     const last = turns[turns.length - 1];
-    if (last && last.role === "log") last.lines.push(line);
-    else turns.push({ role: "log", label: "log", lines: [line] });
+    if (last && last.role === "log") last.entries.push(e);
+    else turns.push({ role: "log", label: "log", entries: [e], time: e.time });
   };
-  for (const line of lines) {
-    const marker = classifyMarker(line);
+  for (const e of entries) {
+    const marker = classifyMarker(e.text);
     if (marker) {
-      cur = { role: marker.role, label: marker.label, lines: [] };
+      cur = { role: marker.role, label: marker.label, entries: [], time: e.time };
       turns.push(cur);
-    } else if (isLogLine(line)) {
+    } else if (isLogLine(e.text)) {
       cur = null;
-      pushLog(line);
+      pushLog(e);
     } else if (cur) {
-      cur.lines.push(line);
+      cur.entries.push(e);
     } else {
-      pushLog(line);
+      pushLog(e);
     }
   }
   return turns;
@@ -96,21 +111,33 @@ function renderRunOutput(view) {
   container.innerHTML = "";
   if (view === "conversation" && currentRunTurns) {
     for (const t of currentRunTurns) {
-      const body = t.lines.join("\n").replace(/^\n+|\n+$/g, "");
+      const body = t.entries.map((e) => e.text).join("\n").replace(/^\n+|\n+$/g, "");
+      const clock = fmtClock(t.time);
       container.appendChild(
         el("div", { class: "turn turn-" + t.role },
           el("div", { class: "turn-head" },
             el("span", { class: "role-badge role-" + t.role }, t.role),
             t.label && t.label !== t.role ? el("span", { class: "turn-label" }, t.label) : null,
+            clock ? el("span", { class: "turn-time" }, clock) : null,
           ),
           el("pre", { class: "turn-body" }, body || "(empty)"),
         )
       );
     }
+  } else if (currentRunLines.length) {
+    // Raw view: one row per line, each with its own timestamp column.
+    const log = el("div", { class: "raw-log" });
+    for (let i = 0; i < currentRunLines.length; i++) {
+      log.appendChild(
+        el("div", { class: "log-row" },
+          el("span", { class: "log-time" }, fmtClock(currentRunTimes[i])),
+          el("span", { class: "log-text" }, currentRunLines[i]),
+        )
+      );
+    }
+    container.appendChild(log);
   } else {
-    container.appendChild(
-      el("pre", { class: "raw-log" }, currentRunLines.join("\n") || "(no output)")
-    );
+    container.appendChild(el("pre", { class: "raw-log" }, "(no output)"));
   }
   container.scrollTop = 0;
   for (const b of document.querySelectorAll("#run-detail-view-toggle button")) {
@@ -241,8 +268,11 @@ async function showRun(id) {
       dl.appendChild(el("dd", null, v));
     }
     currentRunLines = r.output || [];
-    currentRunTurns = parseConversation(currentRunLines);
+    currentRunTimes = r.output_times || [];
+    const entries = currentRunLines.map((text, i) => ({ text, time: currentRunTimes[i] }));
+    currentRunTurns = parseConversation(entries);
     document.getElementById("run-detail-view-toggle").hidden = !currentRunTurns;
+    document.getElementById("run-detail-copy").disabled = currentRunLines.length === 0;
     renderRunOutput(currentRunTurns ? "conversation" : "raw");
     const dlg = document.getElementById("run-detail");
     if (!dlg.open) dlg.showModal();
@@ -263,6 +293,59 @@ runDetailDialog.addEventListener("click", (e) => {
 document.getElementById("run-detail-view-toggle").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-view]");
   if (btn) renderRunOutput(btn.dataset.view);
+});
+
+// The full log as plain text, each line prefixed with its timestamp when one
+// is known — the same content the raw view shows, ready to paste into a report.
+function buildCopyText() {
+  return currentRunLines
+    .map((text, i) => {
+      const clock = fmtClock(currentRunTimes[i]);
+      return clock ? `${clock}  ${text}` : text;
+    })
+    .join("\n");
+}
+
+// navigator.clipboard needs a secure context (the admin port is behind HTTPS
+// zero-trust, so it normally works); fall back to a hidden textarea + execCommand
+// for plain-HTTP access (e.g. port-forwarding over http://localhost).
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through to the legacy path */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+const copyBtn = document.getElementById("run-detail-copy");
+copyBtn.addEventListener("click", async () => {
+  const text = buildCopyText();
+  if (!text) return;
+  const ok = await copyToClipboard(text);
+  copyBtn.textContent = ok ? "Copied!" : "Copy failed";
+  copyBtn.classList.toggle("copied", ok);
+  setTimeout(() => {
+    copyBtn.textContent = "Copy log";
+    copyBtn.classList.remove("copied");
+  }, 1500);
 });
 
 function parseGitHubURL(repoURL) {
