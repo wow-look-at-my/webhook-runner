@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 	"time"
@@ -56,9 +57,9 @@ func TestFiresImmediatelyOnFirstRegistration(t *testing.T) {
 	s.Update(map[string]time.Duration{"sweep": 5 * time.Minute})
 	// A freshly added schedule is due at "now", so the very first tick fires it.
 	s.fireDue()
-	if got := rec.count("sweep"); got != 1 {
-		t.Fatalf("expected immediate fire, got %d", got)
-	}
+	got := rec.count("sweep")
+	require.Equal(t, 1, got)
+
 }
 
 func TestDoesNotFireBeforeInterval(t *testing.T) {
@@ -67,14 +68,13 @@ func TestDoesNotFireBeforeInterval(t *testing.T) {
 	s.fireDue() // immediate fire (1)
 	clk.advance(4 * time.Minute)
 	s.fireDue() // too early for the second fire
-	if got := rec.count("sweep"); got != 1 {
-		t.Fatalf("expected no second fire before interval, got %d", got)
-	}
+	got := rec.count("sweep")
+	require.Equal(t, 1, got)
+
 	clk.advance(1 * time.Minute) // now 5m since the first fire
 	s.fireDue()
-	if got := rec.count("sweep"); got != 2 {
-		t.Fatalf("expected second fire at the interval, got %d", got)
-	}
+	require.Equal(t, 2, rec.count("sweep"))
+
 }
 
 func TestFiresEveryInterval(t *testing.T) {
@@ -85,9 +85,9 @@ func TestFiresEveryInterval(t *testing.T) {
 		clk.advance(time.Minute)
 		s.fireDue()
 	}
-	if got := rec.count("sweep"); got != 4 {
-		t.Fatalf("expected 4 fires, got %d", got)
-	}
+	got := rec.count("sweep")
+	require.Equal(t, 4, got)
+
 }
 
 func TestUnchangedReloadPreservesNextFire(t *testing.T) {
@@ -98,14 +98,13 @@ func TestUnchangedReloadPreservesNextFire(t *testing.T) {
 	// A reload with the SAME interval must not reset the timer or re-fire.
 	s.Update(map[string]time.Duration{"sweep": 5 * time.Minute})
 	s.fireDue()
-	if got := rec.count("sweep"); got != 1 {
-		t.Fatalf("unchanged reload should not re-fire, got %d", got)
-	}
+	got := rec.count("sweep")
+	require.Equal(t, 1, got)
+
 	clk.advance(3 * time.Minute) // 5m total since first fire
 	s.fireDue()
-	if got := rec.count("sweep"); got != 2 {
-		t.Fatalf("expected fire at the original interval after reload, got %d", got)
-	}
+	require.Equal(t, 2, rec.count("sweep"))
+
 }
 
 func TestChangedIntervalRefiresImmediately(t *testing.T) {
@@ -116,9 +115,8 @@ func TestChangedIntervalRefiresImmediately(t *testing.T) {
 	// Changing the interval re-arms the schedule to fire immediately.
 	s.Update(map[string]time.Duration{"sweep": 10 * time.Minute})
 	s.fireDue()
-	if got := rec.count("sweep"); got != 2 {
-		t.Fatalf("changed interval should re-fire immediately, got %d", got)
-	}
+	require.Equal(t, 2, rec.count("sweep"))
+
 }
 
 func TestRemovedScheduleStopsFiring(t *testing.T) {
@@ -128,27 +126,24 @@ func TestRemovedScheduleStopsFiring(t *testing.T) {
 	s.Update(map[string]time.Duration{}) // removed
 	clk.advance(time.Hour)
 	s.fireDue()
-	if got := rec.count("sweep"); got != 1 {
-		t.Fatalf("removed schedule should not fire again, got %d", got)
-	}
-	if len(s.Schedules()) != 0 {
-		t.Fatalf("expected no schedules after removal")
-	}
+	got := rec.count("sweep")
+	require.Equal(t, 1, got)
+
+	require.Equal(t, 0, len(s.Schedules()))
+
 }
 
 func TestNonPositiveIntervalIgnored(t *testing.T) {
 	s, _, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"bad": 0, "neg": -time.Minute, "ok": time.Minute})
 	s.fireDue()
-	if rec.count("bad") != 0 || rec.count("neg") != 0 {
-		t.Fatalf("non-positive intervals must be ignored")
-	}
-	if rec.count("ok") != 1 {
-		t.Fatalf("valid schedule should fire, got %d", rec.count("ok"))
-	}
-	if _, ok := s.Schedules()["bad"]; ok {
-		t.Fatalf("non-positive schedule should not be tracked")
-	}
+	require.False(t, rec.count("bad") != 0 || rec.count("neg") != 0)
+
+	require.Equal(t, 1, rec.count("ok"))
+
+	_, ok := s.Schedules()["bad"]
+	require.False(t, ok)
+
 }
 
 func TestNoBacklogBurstAfterLongPause(t *testing.T) {
@@ -160,16 +155,14 @@ func TestNoBacklogBurstAfterLongPause(t *testing.T) {
 	// minute.
 	clk.advance(time.Hour)
 	s.fireDue()
-	if got := rec.count("sweep"); got != 2 {
-		t.Fatalf("expected a single catch-up fire after a long pause, got %d", got)
-	}
+	require.Equal(t, 2, rec.count("sweep"))
+
 }
 
 func TestMultipleHooksDeterministic(t *testing.T) {
 	s, _, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"a": time.Minute, "b": time.Minute})
 	s.fireDue()
-	if rec.count("a") != 1 || rec.count("b") != 1 {
-		t.Fatalf("both due hooks should fire: a=%d b=%d", rec.count("a"), rec.count("b"))
-	}
+	require.False(t, rec.count("a") != 1 || rec.count("b") != 1)
+
 }
