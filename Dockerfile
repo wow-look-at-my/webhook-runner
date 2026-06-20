@@ -18,14 +18,13 @@ LABEL org.opencontainers.image.description="Executes incoming webhooks inside di
 
 COPY --chmod=755 build/webhook-runner_linux_amd64 /usr/local/bin/webhook-runner
 
-# The state (KV) port is internal and must NOT be published to the host: state
-# hooks reach it container-to-container over the server's Docker network, which
-# the server auto-detects from its own container (no host networking). Set
-# WEBHOOK_RUNNER_DATA_DIR to a persistent volume so KV state and the token
-# secret survive restarts. See the README.
+# The KV state store is served on a Unix socket (under TMPDIR), not a port:
+# the runner bind-mounts it into state hooks, so there is nothing to publish.
+# TMPDIR must be host-shared (same as payload files); set WEBHOOK_RUNNER_DATA_DIR
+# to a persistent volume so KV state and the token secret survive restarts.
+# See the README.
 ENV WEBHOOK_RUNNER_ADDR=":9000" \
     WEBHOOK_RUNNER_ADMIN_ADDR=":9001" \
-    WEBHOOK_RUNNER_STATE_ADDR=":9002" \
     WEBHOOK_RUNNER_LOG_FORMAT="text"
 
 # Probe the hook port's /health endpoint (busybox wget ships with alpine).

@@ -117,17 +117,17 @@ func New(opts Options) *Runner {
 		opts.TmpDir = os.TempDir()
 	}
 	return &Runner{
-		tracker:     opts.Tracker,
-		log:         opts.Logger,
-		tmpDir:      opts.TmpDir,
-		onStart:     opts.OnStart,
-		onFinish:    opts.OnFinish,
-		secrets:     opts.Secrets,
-		events:      opts.Events,
-		groups:      opts.Groups,
-		kv:          opts.KV,
-		kvSocket:    opts.KVSocket,
-		dockerBin:   opts.Docker,
+		tracker:   opts.Tracker,
+		log:       opts.Logger,
+		tmpDir:    opts.TmpDir,
+		onStart:   opts.OnStart,
+		onFinish:  opts.OnFinish,
+		secrets:   opts.Secrets,
+		events:    opts.Events,
+		groups:    opts.Groups,
+		kv:        opts.KV,
+		kvSocket:  opts.KVSocket,
+		dockerBin: opts.Docker,
 	}
 }
 
