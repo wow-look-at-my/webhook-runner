@@ -83,11 +83,11 @@ type Hook struct {
 
 	// State, when true, opts the hook into the persistent KV store: the
 	// runner injects HOOK_KV_URL and HOOK_KV_TOKEN (a per-hook bearer token
-	// scoped to a namespace == this hook's ID) and adds a host-gateway
-	// mapping so the disposable container can reach the internal state API.
-	// The hook's data survives across its runs and across server restarts,
-	// isolated from every other hook. Omitted (the default) means no KV
-	// access and no extra host exposure.
+	// scoped to a namespace == this hook's ID) and attaches the disposable
+	// container to the server's Docker network so it can reach the internal
+	// state API by name (no host networking). The hook's data survives across
+	// its runs and across server restarts, isolated from every other hook.
+	// Omitted (the default) means no KV access and no extra reachability.
 	State bool `json:"state,omitempty"`
 }
 

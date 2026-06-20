@@ -8,8 +8,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +38,7 @@ type serveOptions struct {
 	hooksBranch     string
 	hooksRepoSecret string
 	hookBaseURL     string
+	stateNetwork    string
 	stateAdvertise  string
 	stateSecret     string
 }
@@ -54,6 +58,9 @@ func applyServeEnv(o *serveOptions) {
 	}
 	if o.dataDir == "" {
 		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
+	}
+	if o.stateNetwork == "" {
+		o.stateNetwork = os.Getenv("WEBHOOK_RUNNER_STATE_NETWORK")
 	}
 	if o.stateAdvertise == "" {
 		o.stateAdvertise = os.Getenv("WEBHOOK_RUNNER_STATE_ADVERTISE_URL")
@@ -145,9 +152,25 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	kvStore.StartSweeper()
 	defer kvStore.Close()
-	stateAdvertise := o.stateAdvertise
+
+	// State-hook containers reach the state port over a shared Docker network
+	// (never host networking). Explicit env wins; otherwise auto-detect the
+	// server's own network + advertise address by inspecting its container.
+	stateNetwork, stateAdvertise := o.stateNetwork, o.stateAdvertise
+	if stateNetwork == "" || stateAdvertise == "" {
+		dn, da := detectStateNetworking(logger, o.stateAddr)
+		if stateNetwork == "" {
+			stateNetwork = dn
+		}
+		if stateAdvertise == "" {
+			stateAdvertise = da
+		}
+	}
 	if stateAdvertise == "" {
-		stateAdvertise = defaultStateAdvertiseURL(o.stateAddr)
+		logger.Warn("state hooks will be unreachable: no WEBHOOK_RUNNER_STATE_ADVERTISE_URL and could not auto-detect a Docker network (run the server in a container on a user-defined network, or set WEBHOOK_RUNNER_STATE_NETWORK + _ADVERTISE_URL)")
+		rec.Record("state.unreachable", "state store enabled but no advertise URL/network — state hooks cannot reach the KV API", nil)
+	} else {
+		logger.Info("state networking", "network", stateNetwork, "advertise", stateAdvertise)
 	}
 
 	// Concurrency groups (concurrency.json at the hooks root) gate how many
@@ -164,6 +187,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Groups:      concurrencyMgr,
 		KV:          kvStore,
 		KVAdvertise: stateAdvertise,
+		KVNetwork:   stateNetwork,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -369,16 +393,45 @@ func firstNonEmpty(parts ...string) string {
 	return ""
 }
 
-// defaultStateAdvertiseURL builds the URL hook containers use to reach the
-// state port, derived from the listen address's port. Containers resolve
-// host.docker.internal to the docker host via the --add-host the runner adds
-// for state-enabled hooks. Operators override it
-// (WEBHOOK_RUNNER_STATE_ADVERTISE_URL) when the server itself is
-// containerized or the port is remapped.
-func defaultStateAdvertiseURL(stateAddr string) string {
-	_, port, err := net.SplitHostPort(stateAddr)
-	if err != nil || port == "" {
+// detectStateNetworking figures out how state-hook containers should reach the
+// state port, for the common case where the server runs in a container. It
+// inspects its own container (hostname == container ID) for a user-defined
+// Docker network and advertises itself by that hostname — siblings the runner
+// attaches to the same network resolve it via Docker's embedded DNS, so the
+// state port is reachable container-to-container without ever touching host
+// networking or publishing a port. Returns empty strings when not
+// containerized, on the default bridge only (no DNS), or on any error; the
+// operator can always set WEBHOOK_RUNNER_STATE_NETWORK /
+// WEBHOOK_RUNNER_STATE_ADVERTISE_URL explicitly.
+func detectStateNetworking(logger *slog.Logger, stateAddr string) (network, advertise string) {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "", ""
+	}
+	out, err := exec.Command("docker", "inspect", host,
+		"--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}").Output()
+	if err != nil {
+		return "", "" // not in a container we can inspect, or docker unavailable
+	}
+	var nets []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		switch s := strings.TrimSpace(line); s {
+		case "", "host", "none", "bridge": // default bridge gives no inter-container DNS
+		default:
+			nets = append(nets, s)
+		}
+	}
+	if len(nets) == 0 {
+		return "", ""
+	}
+	sort.Strings(nets)
+	if len(nets) > 1 {
+		logger.Warn("server is on multiple Docker networks; using the first for state hooks (set WEBHOOK_RUNNER_STATE_NETWORK to choose)",
+			"chosen", nets[0], "all", nets)
+	}
+	_, port, _ := net.SplitHostPort(stateAddr)
+	if port == "" {
 		port = "9002"
 	}
-	return "http://host.docker.internal:" + port
+	return nets[0], "http://" + host + ":" + port
 }

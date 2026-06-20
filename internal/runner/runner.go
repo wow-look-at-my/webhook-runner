@@ -69,11 +69,13 @@ type Runner struct {
 	events   *events.Recorder
 	groups   *concurrency.Manager
 
-	// kv and kvAdvertise inject the state-store env into containers whose
-	// hook sets state: true. kv == nil (or an empty advertise URL) disables
-	// injection entirely.
+	// kv, kvAdvertise, and kvNetwork inject the state-store env into
+	// containers whose hook sets state: true. kv == nil (or an empty advertise
+	// URL) disables injection entirely; kvNetwork is the Docker network the
+	// hook container joins to reach the state port by name.
 	kv          KVInjector
 	kvAdvertise string
+	kvNetwork   string
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -94,9 +96,12 @@ type Options struct {
 	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
 
 	// KV mints per-hook state tokens; KVAdvertise is the base URL containers
-	// use to reach the state API. Both empty/nil disables KV injection.
+	// use to reach the state API; KVNetwork is the Docker network state-hook
+	// containers join to reach it. KV nil or KVAdvertise empty disables KV
+	// injection.
 	KV          KVInjector
 	KVAdvertise string
+	KVNetwork   string
 }
 
 // New constructs a Runner.
@@ -121,6 +126,7 @@ func New(opts Options) *Runner {
 		groups:      opts.Groups,
 		kv:          opts.KV,
 		kvAdvertise: opts.KVAdvertise,
+		kvNetwork:   opts.KVNetwork,
 		dockerBin:   opts.Docker,
 	}
 }
@@ -267,14 +273,19 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
 	}
-	// State store: only opted-in hooks get a token + the host-gateway
-	// mapping, so non-stateful hooks gain no new host exposure. Injected
+	// State store: opted-in hooks reach the state port over a shared Docker
+	// network (NOT host networking) — the hook container joins the same
+	// network as the server and addresses it by name via Docker's embedded
+	// DNS, so the state port never needs publishing to the host. Only state
+	// hooks join the network, so others gain no new reachability. Injected
 	// among the reserved env entries (before secrets/hook env) so these keys
 	// can't be shadowed — ReservedEnvKey already covers them, but docker's
 	// last--e-wins makes ordering matter too.
 	if hook.State && r.kv != nil && r.kvAdvertise != "" {
+		if r.kvNetwork != "" {
+			args = append(args, "--network", r.kvNetwork)
+		}
 		args = append(args,
-			"--add-host=host.docker.internal:host-gateway",
 			"-e", "HOOK_KV_URL="+r.kvAdvertise,
 			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID),
 		)

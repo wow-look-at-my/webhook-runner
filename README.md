@@ -188,11 +188,11 @@ key/value store — enough to count invocations, dedupe events, cache a token,
 or carry anything else across runs. This is what makes webhook-runner almost
 a simple serverless platform.
 
-When a state hook runs, the runner injects two environment variables and a
-`host.docker.internal:host-gateway` mapping (so the container can reach the
-internal state port):
+When a state hook runs, the runner attaches the container to the server's
+Docker network (so it can reach the internal state port by name, without host
+networking) and injects two environment variables:
 
-- `HOOK_KV_URL` — base URL of the state API.
+- `HOOK_KV_URL` — base URL of the state API (the server addressed by name).
 - `HOOK_KV_TOKEN` — a bearer token scoped to **this hook's** namespace.
 
 The hook just makes HTTP calls:
@@ -214,6 +214,9 @@ Properties:
   temp+rename) and survives server restarts.
 - **Isolated**: the namespace comes from the verified token, never the URL —
   a hook can only ever read and write its own data.
+- **Internal**: the state port is reached container-to-container over the
+  Docker network — never via host networking, and it is never published to
+  the host.
 - **Bounded**: per-value size, keys-per-hook, and namespace-count caps keep a
   runaway hook from exhausting disk (oversize writes get `413`).
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
@@ -224,10 +227,9 @@ See the state-port table above for the full endpoint list. The admin port's
 
 > **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"state":
-> true` (older binaries reject unknown fields). If the server itself runs in
-> a container, publish the state port to the host and set
-> `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` — see *Running the server in a
-> container*.
+> true` (older binaries reject unknown fields). State hooks reach the KV API
+> over the server's Docker network, which is auto-detected when the server
+> runs in a container — see *Running the server in a container*.
 
 ## hook.json reference
 
@@ -392,7 +394,8 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
 | `WEBHOOK_RUNNER_STATE_ADDR`       | `:9002`                      | State (KV) port listen address.                              |
 | `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`) and the token `state-secret`. Defaults alongside the hooks clone + deploy key. |
-| `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` | `http://host.docker.internal:<state-port>` | URL injected into containers as `HOOK_KV_URL`. Override when the server itself is containerized or the port is remapped (below). |
+| `WEBHOOK_RUNNER_STATE_NETWORK`    | (auto-detected)              | Docker network state hooks join to reach the state port. Auto-detected from the server's own container; set it to choose when the server is on several networks. |
+| `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` | (auto-detected)           | URL injected into containers as `HOOK_KV_URL`. Auto-detected as `http://<server-container>:<state-port>`; set it (with `_STATE_NETWORK`) when the server runs on the host rather than in a container. |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
@@ -416,28 +419,29 @@ it via `TMPDIR`:
 services:
   webhook-runner:
     image: ghcr.io/wow-look-at-my/webhook-runner:latest
-    ports:
-      # Publish the state port so hook containers can reach it via the host.
-      - "9002:9002"
     environment:
       - TMPDIR=/var/lib/webhook-runner/tmp
       # KV state lives here — keep it on a persistent volume.
       - WEBHOOK_RUNNER_DATA_DIR=/var/lib/webhook-runner
-      # Hook containers resolve host.docker.internal to the host; point them
-      # at the published state port there.
-      - WEBHOOK_RUNNER_STATE_ADVERTISE_URL=http://host.docker.internal:9002
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/webhook-runner/tmp:/var/lib/webhook-runner/tmp
       - webhook-runner-data:/var/lib/webhook-runner
 ```
 
+State hooks need **no** extra config here: the state port is *not* published,
+and the server auto-detects the Compose network it's on (and advertises itself
+by name on it) so the hook containers it launches join that network and reach
+the KV API directly — no host networking. If the server is attached to several
+networks, set `WEBHOOK_RUNNER_STATE_NETWORK` to pick one.
+
 (Sharing `/tmp:/tmp` also works — then declare `TMPDIR=/tmp` to silence the
 startup warning.) The hooks dir needs no sharing: image builds stream their
-context over the docker socket instead of resolving host paths. The
-`WEBHOOK_RUNNER_STATE_ADVERTISE_URL` / published-port pair is only needed if
-any hook sets `"state": true`; when the server runs directly on the host the
-default (`http://host.docker.internal:9002`) works without extra config.
+context over the docker socket instead of resolving host paths. Running the
+server **directly on the host** instead of in a container is the one case
+state hooks can't auto-configure (there's no container to inspect and no shared
+network) — set `WEBHOOK_RUNNER_STATE_NETWORK` + `WEBHOOK_RUNNER_STATE_ADVERTISE_URL`
+explicitly, or run the server in a container.
 
 ## Inside the container
 

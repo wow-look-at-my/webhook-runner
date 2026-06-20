@@ -42,8 +42,10 @@ Configuration via environment:
   WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
   WEBHOOK_RUNNER_STATE_ADDR           state (KV) port (default :9002)
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
+  WEBHOOK_RUNNER_STATE_NETWORK        Docker network state hooks join to reach the state port
+                                      (default: auto-detected from the server's own container)
   WEBHOOK_RUNNER_STATE_ADVERTISE_URL  URL containers use for the state port
-                                      (default http://host.docker.internal:<state-port>)
+                                      (default: auto-detected, http://<server-container>:<state-port>)
   WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
   WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
@@ -65,6 +67,7 @@ func init() {
 	rootCmd.Flags().StringVar(&serveOptsRoot.adminAddr, "admin-addr", "", "admin listen address (default :9001, env WEBHOOK_RUNNER_ADMIN_ADDR)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.stateAddr, "state-addr", "", "state (KV) listen address (default :9002, env WEBHOOK_RUNNER_STATE_ADDR)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.dataDir, "data-dir", "", "directory for KV state and the token secret (default: hooks-dir parent, env WEBHOOK_RUNNER_DATA_DIR)")
+	rootCmd.Flags().StringVar(&serveOptsRoot.stateNetwork, "state-network", "", "Docker network state hooks join to reach the state port (default: auto-detected, env WEBHOOK_RUNNER_STATE_NETWORK)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.logFormat, "log-format", "", "log format: text or json (env WEBHOOK_RUNNER_LOG_FORMAT)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.hooksRepo, "hooks-repo", "", "Git URL to clone hooks from (env WEBHOOK_RUNNER_HOOKS_REPO)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.hooksBranch, "hooks-branch", "", "branch to track (env WEBHOOK_RUNNER_HOOKS_BRANCH)")

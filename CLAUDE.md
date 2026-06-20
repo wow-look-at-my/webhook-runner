@@ -202,16 +202,24 @@ The companion repo is `wow-look-at-my/webhooks`.
 - A hook opts into the store with `state: true`. `state` is a new hook.json
   field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
   same deploy-first rule as `concurrency_group`. The runner injects
-  `HOOK_KV_URL`/`HOOK_KV_TOKEN` (both `ReservedEnvKey`) and a
-  `host.docker.internal:host-gateway` mapping ONLY for state hooks, so
-  non-stateful hooks gain no new host exposure. The token is a stateless
-  HMAC over the hook ID (`kv.Token`/`VerifyToken`) — namespace == hook ID,
-  minted per run, nothing to store or expire.
-- State port reachability has the same containerized-server footgun as the
-  `TMPDIR` payload-mount hazard: `host.docker.internal:host-gateway` resolves
-  to the docker HOST. When webhook-runner itself runs in a container, the
-  state listener binds inside that container, so a hook container hitting
-  `host.docker.internal:9002` reaches the host where nothing listens unless
-  the server's state port is published (`-p 9002:9002`) AND
-  `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` is set to a host-reachable URL. On the
-  host (the common case) the default advertise URL just works.
+  `HOOK_KV_URL`/`HOOK_KV_TOKEN` (both `ReservedEnvKey`) and attaches the
+  container to the state Docker network ONLY for state hooks, so non-stateful
+  hooks gain no new reachability. The token is a stateless HMAC over the hook
+  ID (`kv.Token`/`VerifyToken`) — namespace == hook ID, minted per run,
+  nothing to store or expire.
+- State-hook containers reach the state port over a shared **Docker network**,
+  NOT host networking — deliberately, after host-gateway proved to be the wrong
+  model: when webhook-runner runs in a container (the GHCR image + compose, the
+  normal deploy), `host.docker.internal` resolves to the docker HOST, where the
+  state listener (bound inside the server's container) isn't reachable unless
+  the port is published. Instead the runner attaches the hook container to the
+  same network as the server (`--network`) and injects an advertise URL that
+  addresses the server by name via Docker's embedded DNS, so the state port is
+  reachable container-to-container and never needs publishing to the host (it
+  stays internal — good). `serve.go`'s `detectStateNetworking` auto-detects
+  both by inspecting the server's own container (hostname == container ID) for
+  a user-defined network and advertising itself by that hostname; the default
+  `bridge`/`host`/`none` networks are skipped (no inter-container DNS).
+  `WEBHOOK_RUNNER_STATE_NETWORK` / `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` override
+  the auto-detection (and are required when the server runs on the host rather
+  than in a container, since there's nothing to inspect).

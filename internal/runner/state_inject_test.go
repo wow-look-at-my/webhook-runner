@@ -38,15 +38,19 @@ func TestRunnerInjectsStateEnv(t *testing.T) {
 		TmpDir:      dir,
 		Docker:      writeArgDumpDocker(t, dir),
 		KV:          fakeKV{token: "stateful.SIG"},
-		KVAdvertise: "http://host.docker.internal:9002",
+		KVAdvertise: "http://webhook-runner:9002",
+		KVNetwork:   "whrnet",
 	})
 	run, err := r.Start(context.Background(), stateHook(t, dir, "stateful", true), []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
 	out := run.Snapshot(-1).Output
-	assert.Contains(t, out, "arg=--add-host=host.docker.internal:host-gateway")
-	assert.Contains(t, out, "arg=HOOK_KV_URL=http://host.docker.internal:9002")
+	// Reaches the state port over a shared Docker network — never host networking.
+	assert.NotContains(t, out, "arg=--add-host=host.docker.internal:host-gateway")
+	assert.Contains(t, out, "arg=--network")
+	assert.Contains(t, out, "arg=whrnet")
+	assert.Contains(t, out, "arg=HOOK_KV_URL=http://webhook-runner:9002")
 	assert.Contains(t, out, "arg=HOOK_KV_TOKEN=stateful.SIG")
 }
 
@@ -58,14 +62,15 @@ func TestRunnerSkipsStateEnvWhenNotOptedIn(t *testing.T) {
 		TmpDir:      dir,
 		Docker:      writeArgDumpDocker(t, dir),
 		KV:          fakeKV{token: "plain.SIG"},
-		KVAdvertise: "http://host.docker.internal:9002",
+		KVAdvertise: "http://webhook-runner:9002",
+		KVNetwork:   "whrnet",
 	})
 	run, err := r.Start(context.Background(), stateHook(t, dir, "plain", false), []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
 	for _, line := range run.Snapshot(-1).Output {
-		assert.NotContains(t, line, "host-gateway")
+		assert.NotContains(t, line, "whrnet")
 		assert.NotContains(t, line, "HOOK_KV_URL")
 		assert.NotContains(t, line, "HOOK_KV_TOKEN")
 	}
