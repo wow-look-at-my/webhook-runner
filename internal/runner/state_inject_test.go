@@ -39,19 +39,23 @@ func TestRunnerInjectsStateEnv(t *testing.T) {
 		Docker:   writeArgDumpDocker(t, dir),
 		KV:       fakeKV{token: "stateful.SIG"},
 		KVSocket: "/tmp/whr/whr-state.sock",
+		KVShim:   "/tmp/whr/whr-shim",
 	})
 	run, err := r.Start(context.Background(), stateHook(t, dir, "stateful", true), []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
 	out := run.Snapshot(-1).Output
-	// Reaches the KV API over a bind-mounted Unix socket — never networking.
+	// Reaches the KV API at a plain localhost URL via the injected proxy shim —
+	// no networking.
 	assert.NotContains(t, out, "arg=--network")
-	assert.NotContains(t, out, "arg=--add-host=host.docker.internal:host-gateway")
+	assert.Contains(t, out, "arg=--entrypoint")
+	assert.Contains(t, out, "arg=/run/webhook-runner/whr-shim")
+	assert.Contains(t, out, "arg=/tmp/whr/whr-shim:/run/webhook-runner/whr-shim:ro")
 	assert.Contains(t, out, "arg=/tmp/whr/whr-state.sock:/run/webhook-runner/state.sock")
-	assert.Contains(t, out, "arg=HOOK_KV_SOCKET=/run/webhook-runner/state.sock")
-	assert.Contains(t, out, "arg=HOOK_KV_URL=http://localhost")
+	assert.Contains(t, out, "arg=HOOK_KV_URL=http://localhost:9002")
 	assert.Contains(t, out, "arg=HOOK_KV_TOKEN=stateful.SIG")
+	assert.Contains(t, out, "arg=kv-forward")
 }
 
 func TestRunnerSkipsStateEnvWhenNotOptedIn(t *testing.T) {
@@ -63,14 +67,35 @@ func TestRunnerSkipsStateEnvWhenNotOptedIn(t *testing.T) {
 		Docker:   writeArgDumpDocker(t, dir),
 		KV:       fakeKV{token: "plain.SIG"},
 		KVSocket: "/tmp/whr/whr-state.sock",
+		KVShim:   "/tmp/whr/whr-shim",
 	})
 	run, err := r.Start(context.Background(), stateHook(t, dir, "plain", false), []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
 	for _, line := range run.Snapshot(-1).Output {
-		assert.NotContains(t, line, "whr-state.sock")
-		assert.NotContains(t, line, "HOOK_KV_SOCKET")
+		assert.NotContains(t, line, "kv-forward")
+		assert.NotContains(t, line, "whr-shim")
 		assert.NotContains(t, line, "HOOK_KV_TOKEN")
 	}
+}
+
+func TestImageCommandReconstructs(t *testing.T) {
+	dir := t.TempDir()
+	// A docker mock whose `inspect` prints an image's Entrypoint then Cmd as
+	// JSON arrays (the format imageCommand asks for).
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = inspect ]; then printf '%s\\n%s\\n' '[\"node\"]' '[\"app.js\"]'; exit 0; fi\nexit 0\n"
+	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+
+	// No hook command -> entrypoint + cmd.
+	argv, err := imageCommand(docker, "img", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"node", "app.js"}, argv)
+
+	// Hook command overrides cmd but keeps entrypoint.
+	argv, err = imageCommand(docker, "img", []string{"other.js"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"node", "other.js"}, argv)
 }

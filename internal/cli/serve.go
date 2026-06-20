@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -152,6 +153,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	if socketPath == "" {
 		socketPath = filepath.Join(tmpDir, "whr-state.sock")
 	}
+	// The KV proxy shim is webhook-runner's own (static) binary, copied to the
+	// host-shared tmp dir so the runner can bind-mount it into state hooks as
+	// their entrypoint — same host-shared-path requirement as the socket and
+	// payload files. It proxies http://localhost:9002 to the socket so hooks
+	// use a plain URL with any client.
+	shimPath := filepath.Join(tmpDir, "whr-shim")
+	if err := copyExecutable(shimPath); err != nil {
+		return fmt.Errorf("kv proxy shim: %w", err)
+	}
 
 	// Concurrency groups (concurrency.json at the hooks root) gate how many
 	// runs of a hook — or of several hooks sharing a group — execute at
@@ -168,6 +178,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Groups:   concurrencyMgr,
 		KV:       kvStore,
 		KVSocket: socketPath,
+		KVShim:   shimPath,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -382,4 +393,34 @@ func firstNonEmpty(parts ...string) string {
 		}
 	}
 	return ""
+}
+
+// copyExecutable copies the running binary to dst (0755) via temp+rename, so
+// it can be bind-mounted into hook containers as the KV proxy shim. The binary
+// is static (CGO disabled), so it runs in any hook base image.
+func copyExecutable(dst string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(self)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
