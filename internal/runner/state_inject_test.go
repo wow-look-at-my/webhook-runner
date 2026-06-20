@@ -33,45 +33,44 @@ func stateHook(t *testing.T, dir, id string, state bool) *hooks.Hook {
 func TestRunnerInjectsStateEnv(t *testing.T) {
 	dir := t.TempDir()
 	r := New(Options{
-		Tracker:     runs.NewTracker(),
-		Logger:      newSilentLogger(),
-		TmpDir:      dir,
-		Docker:      writeArgDumpDocker(t, dir),
-		KV:          fakeKV{token: "stateful.SIG"},
-		KVAdvertise: "http://webhook-runner:9002",
-		KVNetwork:   "whrnet",
+		Tracker:  runs.NewTracker(),
+		Logger:   newSilentLogger(),
+		TmpDir:   dir,
+		Docker:   writeArgDumpDocker(t, dir),
+		KV:       fakeKV{token: "stateful.SIG"},
+		KVSocket: "/tmp/whr/whr-state.sock",
 	})
 	run, err := r.Start(context.Background(), stateHook(t, dir, "stateful", true), []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
 	out := run.Snapshot(-1).Output
-	// Reaches the state port over a shared Docker network — never host networking.
+	// Reaches the KV API over a bind-mounted Unix socket — never networking.
+	assert.NotContains(t, out, "arg=--network")
 	assert.NotContains(t, out, "arg=--add-host=host.docker.internal:host-gateway")
-	assert.Contains(t, out, "arg=--network")
-	assert.Contains(t, out, "arg=whrnet")
-	assert.Contains(t, out, "arg=HOOK_KV_URL=http://webhook-runner:9002")
+	assert.Contains(t, out, "arg=/tmp/whr/whr-state.sock:/run/webhook-runner/state.sock")
+	assert.Contains(t, out, "arg=HOOK_KV_SOCKET=/run/webhook-runner/state.sock")
+	assert.Contains(t, out, "arg=HOOK_KV_URL=http://localhost")
 	assert.Contains(t, out, "arg=HOOK_KV_TOKEN=stateful.SIG")
 }
 
 func TestRunnerSkipsStateEnvWhenNotOptedIn(t *testing.T) {
 	dir := t.TempDir()
 	r := New(Options{
-		Tracker:     runs.NewTracker(),
-		Logger:      newSilentLogger(),
-		TmpDir:      dir,
-		Docker:      writeArgDumpDocker(t, dir),
-		KV:          fakeKV{token: "plain.SIG"},
-		KVAdvertise: "http://webhook-runner:9002",
-		KVNetwork:   "whrnet",
+		Tracker:  runs.NewTracker(),
+		Logger:   newSilentLogger(),
+		TmpDir:   dir,
+		Docker:   writeArgDumpDocker(t, dir),
+		KV:       fakeKV{token: "plain.SIG"},
+		KVSocket: "/tmp/whr/whr-state.sock",
 	})
 	run, err := r.Start(context.Background(), stateHook(t, dir, "plain", false), []byte("p"), http.Header{})
 	require.NoError(t, err)
 	r.Wait()
 
 	for _, line := range run.Snapshot(-1).Output {
-		assert.NotContains(t, line, "whrnet")
-		assert.NotContains(t, line, "HOOK_KV_URL")
+		assert.NotContains(t, line, "whr-state.sock")
+		assert.NotContains(t, line, "HOOK_KV_SOCKET")
 		assert.NotContains(t, line, "HOOK_KV_TOKEN")
 	}
 }

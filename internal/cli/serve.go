@@ -8,11 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
-	"strings"
 	"syscall"
 	"time"
 
@@ -29,7 +26,6 @@ import (
 type serveOptions struct {
 	addr            string
 	adminAddr       string
-	stateAddr       string
 	hooksDir        string
 	dataDir         string
 	logFormat       string
@@ -38,8 +34,7 @@ type serveOptions struct {
 	hooksBranch     string
 	hooksRepoSecret string
 	hookBaseURL     string
-	stateNetwork    string
-	stateAdvertise  string
+	stateSocket     string
 	stateSecret     string
 }
 
@@ -50,20 +45,14 @@ func applyServeEnv(o *serveOptions) {
 	if o.adminAddr == "" {
 		o.adminAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADMIN_ADDR"), ":9001")
 	}
-	if o.stateAddr == "" {
-		o.stateAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_STATE_ADDR"), ":9002")
-	}
 	if o.hooksDir == "" {
 		o.hooksDir = os.Getenv("WEBHOOK_RUNNER_HOOKS_DIR")
 	}
 	if o.dataDir == "" {
 		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
 	}
-	if o.stateNetwork == "" {
-		o.stateNetwork = os.Getenv("WEBHOOK_RUNNER_STATE_NETWORK")
-	}
-	if o.stateAdvertise == "" {
-		o.stateAdvertise = os.Getenv("WEBHOOK_RUNNER_STATE_ADVERTISE_URL")
+	if o.stateSocket == "" {
+		o.stateSocket = os.Getenv("WEBHOOK_RUNNER_STATE_SOCKET")
 	}
 	if o.stateSecret == "" {
 		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
@@ -117,7 +106,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// persistence model as run history).
 	rec := events.NewRecorder(500)
 	rec.Record("server.started", "webhook-runner started", map[string]string{
-		"hook_addr": o.addr, "admin_addr": o.adminAddr, "state_addr": o.stateAddr, "hooks_dir": o.hooksDir,
+		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
 	})
 	// A containerized server whose temp dir isn't host-shared breaks every
 	// hook run (payload mounts resolve on the docker HOST) — detect the
@@ -153,24 +142,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	kvStore.StartSweeper()
 	defer kvStore.Close()
 
-	// State-hook containers reach the state port over a shared Docker network
-	// (never host networking). Explicit env wins; otherwise auto-detect the
-	// server's own network + advertise address by inspecting its container.
-	stateNetwork, stateAdvertise := o.stateNetwork, o.stateAdvertise
-	if stateNetwork == "" || stateAdvertise == "" {
-		dn, da := detectStateNetworking(logger, o.stateAddr)
-		if stateNetwork == "" {
-			stateNetwork = dn
-		}
-		if stateAdvertise == "" {
-			stateAdvertise = da
-		}
-	}
-	if stateAdvertise == "" {
-		logger.Warn("state hooks will be unreachable: no WEBHOOK_RUNNER_STATE_ADVERTISE_URL and could not auto-detect a Docker network (run the server in a container on a user-defined network, or set WEBHOOK_RUNNER_STATE_NETWORK + _ADVERTISE_URL)")
-		rec.Record("state.unreachable", "state store enabled but no advertise URL/network — state hooks cannot reach the KV API", nil)
-	} else {
-		logger.Info("state networking", "network", stateNetwork, "advertise", stateAdvertise)
+	// The state KV API is served on a Unix socket (no networking). It must
+	// live in the same host-shared dir the runner mounts per-run files from
+	// (TMPDIR), so a sibling hook container resolves the same host path when
+	// the runner bind-mounts it in. os.TempDir() honors $TMPDIR and matches
+	// the runner's default tmp dir.
+	tmpDir := os.TempDir()
+	socketPath := o.stateSocket
+	if socketPath == "" {
+		socketPath = filepath.Join(tmpDir, "whr-state.sock")
 	}
 
 	// Concurrency groups (concurrency.json at the hooks root) gate how many
@@ -180,14 +160,14 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	concurrencyMgr := concurrency.NewManager(nil)
 
 	rn := runner.New(runner.Options{
-		Tracker:     tracker,
-		Logger:      logger,
-		Secrets:     secrets,
-		Events:      rec,
-		Groups:      concurrencyMgr,
-		KV:          kvStore,
-		KVAdvertise: stateAdvertise,
-		KVNetwork:   stateNetwork,
+		Tracker:  tracker,
+		Logger:   logger,
+		TmpDir:   tmpDir,
+		Secrets:  secrets,
+		Events:   rec,
+		Groups:   concurrencyMgr,
+		KV:       kvStore,
+		KVSocket: socketPath,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -242,8 +222,19 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		ReadHeaderTimeout: 15 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+	// The state KV API listens on a Unix socket bind-mounted into state hooks,
+	// not a network port. Clear any stale socket left by a crashed prior run.
+	_ = os.Remove(socketPath)
+	stateLn, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("state socket %s: %w", socketPath, err)
+	}
+	// World-accessible so hooks running as non-root users can connect; the
+	// per-hook bearer token (not file perms) is what authorizes access.
+	if err := os.Chmod(socketPath, 0o666); err != nil {
+		logger.Warn("chmod state socket", "path", socketPath, "err", err)
+	}
 	stateSrv := &http.Server{
-		Addr:              o.stateAddr,
 		Handler:           srv.StateHandler(),
 		ReadHeaderTimeout: 15 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
@@ -267,8 +258,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 	}()
 	go func() {
-		logger.Info("state server listening", "addr", o.stateAddr)
-		if err := stateSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Info("state socket listening", "path", socketPath)
+		if err := stateSrv.Serve(stateLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			httpErr <- fmt.Errorf("state server: %w", err)
 		}
 	}()
@@ -276,7 +267,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	attrs := []any{
 		"hook_addr", o.addr,
 		"admin_addr", o.adminAddr,
-		"state_addr", o.stateAddr,
+		"state_socket", socketPath,
 		"hooks_dir", o.hooksDir,
 		"github_status", gh.Enabled(),
 	}
@@ -391,47 +382,4 @@ func firstNonEmpty(parts ...string) string {
 		}
 	}
 	return ""
-}
-
-// detectStateNetworking figures out how state-hook containers should reach the
-// state port, for the common case where the server runs in a container. It
-// inspects its own container (hostname == container ID) for a user-defined
-// Docker network and advertises itself by that hostname — siblings the runner
-// attaches to the same network resolve it via Docker's embedded DNS, so the
-// state port is reachable container-to-container without ever touching host
-// networking or publishing a port. Returns empty strings when not
-// containerized, on the default bridge only (no DNS), or on any error; the
-// operator can always set WEBHOOK_RUNNER_STATE_NETWORK /
-// WEBHOOK_RUNNER_STATE_ADVERTISE_URL explicitly.
-func detectStateNetworking(logger *slog.Logger, stateAddr string) (network, advertise string) {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		return "", ""
-	}
-	out, err := exec.Command("docker", "inspect", host,
-		"--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}").Output()
-	if err != nil {
-		return "", "" // not in a container we can inspect, or docker unavailable
-	}
-	var nets []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		switch s := strings.TrimSpace(line); s {
-		case "", "host", "none", "bridge": // default bridge gives no inter-container DNS
-		default:
-			nets = append(nets, s)
-		}
-	}
-	if len(nets) == 0 {
-		return "", ""
-	}
-	sort.Strings(nets)
-	if len(nets) > 1 {
-		logger.Warn("server is on multiple Docker networks; using the first for state hooks (set WEBHOOK_RUNNER_STATE_NETWORK to choose)",
-			"chosen", nets[0], "all", nets)
-	}
-	_, port, _ := net.SplitHostPort(stateAddr)
-	if port == "" {
-		port = "9002"
-	}
-	return nets[0], "http://" + host + ":" + port
 }
