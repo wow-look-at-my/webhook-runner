@@ -14,10 +14,18 @@ hooks without restart.
   request body and headers bind-mounted as files.
 - **Hot reload**: filesystem watch picks up new, modified, and removed
   `hook.json` files immediately.
-- **Separate hook and admin ports**: the hook port (`:9000`) handles
-  incoming webhooks and can be exposed publicly; the admin port (`:9001`)
-  serves the dashboard, hook list, and run history and should be placed
-  behind authentication (e.g. Cloudflare Zero Trust).
+- **Separate hook, admin, and state ports**: the hook port (`:9000`)
+  handles incoming webhooks and can be exposed publicly; the admin port
+  (`:9001`) serves the dashboard, hook list, and run history; and the state
+  port (`:9002`) serves the per-hook KV store to hook containers. The admin
+  and state ports should be placed behind authentication (e.g. Cloudflare
+  Zero Trust).
+- **Stateful hooks (KV store)**: a hook can opt into a small persistent
+  key/value store with `"state": true` — making webhook-runner almost a
+  simple serverless platform. The runner injects `HOOK_KV_URL` and a scoped
+  `HOOK_KV_TOKEN`; the hook gets get/put/delete/list, atomic increment, and
+  per-key TTL over HTTP. Data is disk-backed (survives restarts), bounded,
+  and isolated per hook.
 - **Git-backed hooks**: point at a Git repository with
   `WEBHOOK_RUNNER_HOOKS_REPO` and the server clones it on startup.
   Configure a GitHub push webhook to `POST /_reload` to auto-pull on push.
@@ -95,10 +103,11 @@ curl http://localhost:9001/runs/abqkr2f6mfjrtgsihpnz5rdgye
 
 ## HTTP API
 
-The server listens on two ports. The **hook port** (default `:9000`) should
+The server listens on three ports. The **hook port** (default `:9000`) should
 be publicly accessible (e.g. via a Cloudflare Tunnel). The **admin port**
-(default `:9001`) should be behind authentication (e.g. Cloudflare Zero
-Trust).
+(default `:9001`) and the **state port** (default `:9002`) should be behind
+authentication (e.g. Cloudflare Zero Trust); the state port additionally
+authenticates each request with the per-hook bearer token the runner injects.
 
 ### Hook port (`:9000`)
 
@@ -124,7 +133,24 @@ Trust).
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
+| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
 | GET    | `/`                 | Dashboard.                                 |
+
+### State port (`:9002`)
+
+The per-hook KV store, consumed by hook containers. Every request carries the
+bearer token the runner injects as `HOOK_KV_TOKEN`
+(`Authorization: Bearer <token>`); the namespace is derived from the token,
+never from the URL, so a hook can only ever reach its own data. This port is
+internal — it is not exposed via the public tunnel.
+
+| Method | Path             | Purpose                                                        |
+|--------|------------------|----------------------------------------------------------------|
+| GET    | `/kv/{key}`      | Read a value (`200` raw bytes, `404` if absent/expired).       |
+| PUT    | `/kv/{key}`      | Store a value (body = raw bytes). Optional TTL via `X-KV-TTL: <seconds>` header or `?ttl=<seconds>`. `204` on success, `413` over the value cap. |
+| DELETE | `/kv/{key}`      | Remove a key (idempotent `204`).                               |
+| GET    | `/kv`            | List the caller's keys: `{"keys":[...]}` (sorted, non-expired). |
+| POST   | `/kv/{key}/incr` | Atomically add to an integer counter. Optional body `{"delta":N}` (default `+1`) and TTL as for PUT. Returns `{"value":<int64>}`; `409` if the existing value isn't an integer. |
 
 ### Sync vs async
 
@@ -153,6 +179,55 @@ This is what lets a fire-and-forget caller supersede stale work: kick off a
 run, remember the `run_id` from the 202, and cancel it if a newer event
 makes its result obsolete (e.g. pr-minder cancelling an in-flight
 PR-describe run when new commits arrive).
+
+## Stateful hooks (KV store)
+
+Hook containers are disposable and have no memory of their own. Set
+`"state": true` in a hook's `hook.json` to give it a small persistent
+key/value store — enough to count invocations, dedupe events, cache a token,
+or carry anything else across runs. This is what makes webhook-runner almost
+a simple serverless platform.
+
+When a state hook runs, the runner injects two environment variables and a
+`host.docker.internal:host-gateway` mapping (so the container can reach the
+internal state port):
+
+- `HOOK_KV_URL` — base URL of the state API.
+- `HOOK_KV_TOKEN` — a bearer token scoped to **this hook's** namespace.
+
+The hook just makes HTTP calls:
+
+```sh
+# Increment a counter and read the running total (atomic, race-free)
+curl -fsS -XPOST -H "Authorization: Bearer $HOOK_KV_TOKEN" "$HOOK_KV_URL/kv/hits/incr"
+# {"value":1}
+
+# Put a value with a 1-hour TTL, then read it back
+curl -fsS -XPUT  -H "Authorization: Bearer $HOOK_KV_TOKEN" -H "X-KV-TTL: 3600" \
+  --data-binary @- "$HOOK_KV_URL/kv/last-seen" <<<"$COMMIT_SHA"
+curl -fsS        -H "Authorization: Bearer $HOOK_KV_TOKEN" "$HOOK_KV_URL/kv/last-seen"
+```
+
+Properties:
+
+- **Durable**: data is written to `<data-dir>/kv/<hook-id>.json` (atomic
+  temp+rename) and survives server restarts.
+- **Isolated**: the namespace comes from the verified token, never the URL —
+  a hook can only ever read and write its own data.
+- **Bounded**: per-value size, keys-per-hook, and namespace-count caps keep a
+  runaway hook from exhausting disk (oversize writes get `413`).
+- **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
+  `?ttl=`); expired keys disappear from reads and are swept from disk.
+
+See the state-port table above for the full endpoint list. The admin port's
+`GET /kv` shows per-hook key counts and byte totals (never values).
+
+> **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
+> webhook-runner build that understands it before any hook sets `"state":
+> true` (older binaries reject unknown fields). If the server itself runs in
+> a container, publish the state port to the host and set
+> `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` — see *Running the server in a
+> container*.
 
 ## hook.json reference
 
@@ -315,6 +390,10 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_HOOK_BASE_URL`    | (none)                       | Public base URL of the hook port (e.g. `https://hooks.example.com`). Shown in the dashboard setup instructions. |
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
+| `WEBHOOK_RUNNER_STATE_ADDR`       | `:9002`                      | State (KV) port listen address.                              |
+| `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`) and the token `state-secret`. Defaults alongside the hooks clone + deploy key. |
+| `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` | `http://host.docker.internal:<state-port>` | URL injected into containers as `HOOK_KV_URL`. Override when the server itself is containerized or the port is remapped (below). |
+| `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
@@ -337,16 +416,28 @@ it via `TMPDIR`:
 services:
   webhook-runner:
     image: ghcr.io/wow-look-at-my/webhook-runner:latest
+    ports:
+      # Publish the state port so hook containers can reach it via the host.
+      - "9002:9002"
     environment:
       - TMPDIR=/var/lib/webhook-runner/tmp
+      # KV state lives here — keep it on a persistent volume.
+      - WEBHOOK_RUNNER_DATA_DIR=/var/lib/webhook-runner
+      # Hook containers resolve host.docker.internal to the host; point them
+      # at the published state port there.
+      - WEBHOOK_RUNNER_STATE_ADVERTISE_URL=http://host.docker.internal:9002
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/webhook-runner/tmp:/var/lib/webhook-runner/tmp
+      - webhook-runner-data:/var/lib/webhook-runner
 ```
 
 (Sharing `/tmp:/tmp` also works — then declare `TMPDIR=/tmp` to silence the
 startup warning.) The hooks dir needs no sharing: image builds stream their
-context over the docker socket instead of resolving host paths.
+context over the docker socket instead of resolving host paths. The
+`WEBHOOK_RUNNER_STATE_ADVERTISE_URL` / published-port pair is only needed if
+any hook sets `"state": true`; when the server runs directly on the host the
+default (`http://host.docker.internal:9002`) works without extra config.
 
 ## Inside the container
 
@@ -359,6 +450,8 @@ set automatically:
 | `HOOK_HEADERS_FILE`  | Path to a JSON file `{"X-Header": ["value"], ...}`.     |
 | `HOOK_ID`            | The hook ID (folder name).                              |
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
+| `HOOK_KV_URL`        | Base URL of the state (KV) API. **Only for `state: true` hooks.** |
+| `HOOK_KV_TOKEN`      | Bearer token scoped to this hook's KV namespace. **Only for `state: true` hooks.** |
 
 Both files are bind-mounted read-only under `/var/run/webhook-runner/` —
 per-run *data*, never code. Hook code is immutable per run: it is baked

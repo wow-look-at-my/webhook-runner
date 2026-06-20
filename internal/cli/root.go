@@ -20,10 +20,13 @@ var rootCmd = &cobra.Command{
 Docker container. Each hook is configured by a hook.json file in its own
 folder. The server hot-reloads hook definitions when the directory changes.
 
-The server listens on two ports: the hook port (default :9000) handles
-incoming webhooks and should be publicly accessible, while the admin port
-(default :9001) serves the dashboard, hook list, and run history and
-should be placed behind authentication (e.g. Cloudflare Zero Trust).
+The server listens on three ports: the hook port (default :9000) handles
+incoming webhooks and should be publicly accessible; the admin port
+(default :9001) serves the dashboard, hook list, and run history; and the
+state port (default :9002) serves the per-hook KV store to hook containers.
+The admin and state ports are internal and should be placed behind
+authentication (e.g. Cloudflare Zero Trust) — the state port additionally
+authenticates each request with the per-hook bearer token the runner injects.
 
 Hooks can be loaded from a local directory or cloned from a Git repository.
 When WEBHOOK_RUNNER_HOOKS_REPO is set, the server clones the repo on startup
@@ -31,14 +34,19 @@ and exposes POST /_reload on the hook port to accept a GitHub push webhook
 (authenticated with WEBHOOK_RUNNER_HOOKS_REPO_SECRET via HMAC-SHA256).
 
 Configuration via environment:
-  WEBHOOK_RUNNER_HOOKS_DIR          hooks directory (or positional arg)
-  WEBHOOK_RUNNER_HOOKS_REPO         Git URL to clone hooks from (SSH recommended)
-  WEBHOOK_RUNNER_HOOKS_BRANCH       branch to track (default: repo default)
-  WEBHOOK_RUNNER_HOOKS_REPO_SECRET  HMAC-SHA256 secret for POST /_reload
-  WEBHOOK_RUNNER_ADDR               hook port (default :9000)
-  WEBHOOK_RUNNER_ADMIN_ADDR         admin port (default :9001)
-  WEBHOOK_RUNNER_GITHUB_TOKEN       GitHub token for commit-status updates
-  WEBHOOK_RUNNER_LOG_FORMAT         "text" (default) or "json"`,
+  WEBHOOK_RUNNER_HOOKS_DIR            hooks directory (or positional arg)
+  WEBHOOK_RUNNER_HOOKS_REPO           Git URL to clone hooks from (SSH recommended)
+  WEBHOOK_RUNNER_HOOKS_BRANCH         branch to track (default: repo default)
+  WEBHOOK_RUNNER_HOOKS_REPO_SECRET    HMAC-SHA256 secret for POST /_reload
+  WEBHOOK_RUNNER_ADDR                 hook port (default :9000)
+  WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
+  WEBHOOK_RUNNER_STATE_ADDR           state (KV) port (default :9002)
+  WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
+  WEBHOOK_RUNNER_STATE_ADVERTISE_URL  URL containers use for the state port
+                                      (default http://host.docker.internal:<state-port>)
+  WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
+  WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
+  WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		applyServeEnv(serveOptsRoot)
@@ -55,6 +63,8 @@ Configuration via environment:
 func init() {
 	rootCmd.Flags().StringVar(&serveOptsRoot.addr, "addr", "", "hook listen address (default :9000, env WEBHOOK_RUNNER_ADDR)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.adminAddr, "admin-addr", "", "admin listen address (default :9001, env WEBHOOK_RUNNER_ADMIN_ADDR)")
+	rootCmd.Flags().StringVar(&serveOptsRoot.stateAddr, "state-addr", "", "state (KV) listen address (default :9002, env WEBHOOK_RUNNER_STATE_ADDR)")
+	rootCmd.Flags().StringVar(&serveOptsRoot.dataDir, "data-dir", "", "directory for KV state and the token secret (default: hooks-dir parent, env WEBHOOK_RUNNER_DATA_DIR)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.logFormat, "log-format", "", "log format: text or json (env WEBHOOK_RUNNER_LOG_FORMAT)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.hooksRepo, "hooks-repo", "", "Git URL to clone hooks from (env WEBHOOK_RUNNER_HOOKS_REPO)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.hooksBranch, "hooks-branch", "", "branch to track (env WEBHOOK_RUNNER_HOOKS_BRANCH)")

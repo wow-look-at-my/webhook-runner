@@ -51,6 +51,13 @@ type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 // Implementations typically push the GitHub "pending" commit status.
 type HookStartedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
+// KVInjector mints the per-hook bearer token injected into containers that
+// opt into the state store. It is a one-method seam (satisfied by *kv.Store)
+// so the runner needn't import the kv package's whole surface.
+type KVInjector interface {
+	Token(namespace string) string
+}
+
 // Runner launches docker containers and tracks the resulting runs.
 type Runner struct {
 	tracker  *runs.Tracker
@@ -61,6 +68,12 @@ type Runner struct {
 	secrets  *hooks.SecretsLoader
 	events   *events.Recorder
 	groups   *concurrency.Manager
+
+	// kv and kvAdvertise inject the state-store env into containers whose
+	// hook sets state: true. kv == nil (or an empty advertise URL) disables
+	// injection entirely.
+	kv          KVInjector
+	kvAdvertise string
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -79,6 +92,11 @@ type Options struct {
 	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
+
+	// KV mints per-hook state tokens; KVAdvertise is the base URL containers
+	// use to reach the state API. Both empty/nil disables KV injection.
+	KV          KVInjector
+	KVAdvertise string
 }
 
 // New constructs a Runner.
@@ -93,15 +111,17 @@ func New(opts Options) *Runner {
 		opts.TmpDir = os.TempDir()
 	}
 	return &Runner{
-		tracker:   opts.Tracker,
-		log:       opts.Logger,
-		tmpDir:    opts.TmpDir,
-		onStart:   opts.OnStart,
-		onFinish:  opts.OnFinish,
-		secrets:   opts.Secrets,
-		events:    opts.Events,
-		groups:    opts.Groups,
-		dockerBin: opts.Docker,
+		tracker:     opts.Tracker,
+		log:         opts.Logger,
+		tmpDir:      opts.TmpDir,
+		onStart:     opts.OnStart,
+		onFinish:    opts.OnFinish,
+		secrets:     opts.Secrets,
+		events:      opts.Events,
+		groups:      opts.Groups,
+		kv:          opts.KV,
+		kvAdvertise: opts.KVAdvertise,
+		dockerBin:   opts.Docker,
 	}
 }
 
@@ -246,6 +266,18 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
+	}
+	// State store: only opted-in hooks get a token + the host-gateway
+	// mapping, so non-stateful hooks gain no new host exposure. Injected
+	// among the reserved env entries (before secrets/hook env) so these keys
+	// can't be shadowed — ReservedEnvKey already covers them, but docker's
+	// last--e-wins makes ordering matter too.
+	if hook.State && r.kv != nil && r.kvAdvertise != "" {
+		args = append(args,
+			"--add-host=host.docker.internal:host-gateway",
+			"-e", "HOOK_KV_URL="+r.kvAdvertise,
+			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID),
+		)
 	}
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)

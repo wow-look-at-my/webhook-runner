@@ -153,16 +153,18 @@ async function refresh() {
     setBadge(false);
   }
   try {
-    const [hooks, runs, images, events] = await Promise.all([
+    const [hooks, runs, images, events, kv] = await Promise.all([
       fetchJSON("/hooks"),
       fetchJSON("/runs?max=50"),
       fetchJSON("/images"),
       fetchJSON("/events?max=100"),
+      fetchJSON("/kv"),
     ]);
     renderHooks(hooks);
     renderRuns(runs);
     renderImages(images);
     renderEvents(events);
+    renderKV(kv);
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
   } catch (e) {
@@ -244,6 +246,27 @@ function renderEvents(events) {
         el("td", { class: "event-time" }, fmtTime(ev.time)),
         el("td", null, el("span", { class: "kind " + ev.kind.replace(/\./g, "-") }, ev.kind)),
         el("td", null, ev.msg),
+      )
+    );
+  }
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function renderKV(namespaces) {
+  const tbody = document.querySelector("#kv-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("kv-empty").hidden = namespaces.length > 0;
+  for (const ns of namespaces) {
+    tbody.appendChild(
+      el("tr", null,
+        el("td", null, el("code", null, ns.namespace)),
+        el("td", null, String(ns.keys)),
+        el("td", null, fmtBytes(ns.bytes)),
       )
     );
   }

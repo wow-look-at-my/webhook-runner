@@ -12,6 +12,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
+	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
@@ -30,9 +31,11 @@ type Server struct {
 	onReload     func() error
 	hooksRepo    string
 	hookBaseURL  string
+	kv           *kv.Store
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
+	stateMux *http.ServeMux
 }
 
 // Options configure a Server.
@@ -71,6 +74,10 @@ type Options struct {
 	// "https://hooks.example.com"). Used by the dashboard to show the
 	// full _reload webhook URL. Optional.
 	HookBaseURL string
+
+	// KV is the persistent state store backing the state port and the
+	// admin /kv view. nil disables both (the routes report no namespaces).
+	KV *kv.Store
 }
 
 // New constructs a Server, registering routes on both muxes.
@@ -91,8 +98,10 @@ func New(opts Options) *Server {
 		onReload:     opts.OnReload,
 		hooksRepo:    opts.HooksRepo,
 		hookBaseURL:  opts.HookBaseURL,
+		kv:           opts.KV,
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
+		stateMux:     http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -103,6 +112,11 @@ func (s *Server) HookHandler() http.Handler { return s.hookMux }
 
 // AdminHandler returns the handler for the internal admin port.
 func (s *Server) AdminHandler() http.Handler { return s.adminMux }
+
+// StateHandler returns the handler for the internal state (KV) port. Its
+// audience is hook containers, authenticated per-hook by bearer token — kept
+// off the public hook port and separate from the admin surface.
+func (s *Server) StateHandler() http.Handler { return s.stateMux }
 
 func (s *Server) registerRoutes() {
 	// Hook port (public, exposed via tunnel).
@@ -126,7 +140,17 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /events", s.handleEvents)
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
+	s.adminMux.HandleFunc("GET /kv", s.handleKVStats)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
+
+	// State port (internal): hook containers reach their own namespace,
+	// authenticated by the per-hook bearer token the runner injects. The
+	// namespace comes from the verified token, never the URL.
+	s.stateMux.HandleFunc("GET /kv/{key}", s.withNamespace(s.handleKVGet))
+	s.stateMux.HandleFunc("PUT /kv/{key}", s.withNamespace(s.handleKVPut))
+	s.stateMux.HandleFunc("DELETE /kv/{key}", s.withNamespace(s.handleKVDelete))
+	s.stateMux.HandleFunc("GET /kv", s.withNamespace(s.handleKVList))
+	s.stateMux.HandleFunc("POST /kv/{key}/incr", s.withNamespace(s.handleKVIncr))
 }
 
 // runRequestContext returns a background context derived from the server
