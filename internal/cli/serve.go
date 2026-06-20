@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
+	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
@@ -24,13 +26,17 @@ import (
 type serveOptions struct {
 	addr            string
 	adminAddr       string
+	stateAddr       string
 	hooksDir        string
+	dataDir         string
 	logFormat       string
 	ghToken         string
 	hooksRepo       string
 	hooksBranch     string
 	hooksRepoSecret string
 	hookBaseURL     string
+	stateAdvertise  string
+	stateSecret     string
 }
 
 func applyServeEnv(o *serveOptions) {
@@ -40,8 +46,20 @@ func applyServeEnv(o *serveOptions) {
 	if o.adminAddr == "" {
 		o.adminAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADMIN_ADDR"), ":9001")
 	}
+	if o.stateAddr == "" {
+		o.stateAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_STATE_ADDR"), ":9002")
+	}
 	if o.hooksDir == "" {
 		o.hooksDir = os.Getenv("WEBHOOK_RUNNER_HOOKS_DIR")
+	}
+	if o.dataDir == "" {
+		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
+	}
+	if o.stateAdvertise == "" {
+		o.stateAdvertise = os.Getenv("WEBHOOK_RUNNER_STATE_ADVERTISE_URL")
+	}
+	if o.stateSecret == "" {
+		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
 	}
 	if o.logFormat == "" {
 		o.logFormat = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_LOG_FORMAT"), "text")
@@ -92,7 +110,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// persistence model as run history).
 	rec := events.NewRecorder(500)
 	rec.Record("server.started", "webhook-runner started", map[string]string{
-		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
+		"hook_addr": o.addr, "admin_addr": o.adminAddr, "state_addr": o.stateAddr, "hooks_dir": o.hooksDir,
 	})
 	// A containerized server whose temp dir isn't host-shared breaks every
 	// hook run (payload mounts resolve on the docker HOST) — detect the
@@ -104,6 +122,34 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// this process's environment.
 	secrets := hooks.NewSecretsLoader(os.Getenv("WEBHOOK_RUNNER_SOPS_BIN"))
 
+	// Persistent KV state store backing the state port. State lives under the
+	// data dir (default: alongside the hooks clone and deploy key) so it
+	// survives restarts; hooks opt in with "state": true. The secret signs
+	// per-hook namespace tokens — supply WEBHOOK_RUNNER_STATE_SECRET to share
+	// one across replicas, else it's generated and persisted.
+	dataDir := o.dataDir
+	if dataDir == "" {
+		dataDir = filepath.Dir(o.hooksDir)
+	}
+	stateSecret := []byte(o.stateSecret)
+	if len(stateSecret) == 0 {
+		s, err := kv.EnsureSecret(filepath.Join(dataDir, "state-secret"))
+		if err != nil {
+			return fmt.Errorf("state secret: %w", err)
+		}
+		stateSecret = s
+	}
+	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv")}, stateSecret, logger)
+	if err != nil {
+		return fmt.Errorf("state store: %w", err)
+	}
+	kvStore.StartSweeper()
+	defer kvStore.Close()
+	stateAdvertise := o.stateAdvertise
+	if stateAdvertise == "" {
+		stateAdvertise = defaultStateAdvertiseURL(o.stateAddr)
+	}
+
 	// Concurrency groups (concurrency.json at the hooks root) gate how many
 	// runs of a hook — or of several hooks sharing a group — execute at
 	// once; the rest queue. The manager starts empty and is populated by
@@ -111,11 +157,13 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	concurrencyMgr := concurrency.NewManager(nil)
 
 	rn := runner.New(runner.Options{
-		Tracker: tracker,
-		Logger:  logger,
-		Secrets: secrets,
-		Events:  rec,
-		Groups:  concurrencyMgr,
+		Tracker:     tracker,
+		Logger:      logger,
+		Secrets:     secrets,
+		Events:      rec,
+		Groups:      concurrencyMgr,
+		KV:          kvStore,
+		KVAdvertise: stateAdvertise,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -146,6 +194,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		OnReload:     onReload,
 		HooksRepo:    o.hooksRepo,
 		HookBaseURL:  o.hookBaseURL,
+		KV:           kvStore,
 	})
 
 	// Watcher runs for the lifetime of the server; its initial scan is what
@@ -169,12 +218,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		ReadHeaderTimeout: 15 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+	stateSrv := &http.Server{
+		Addr:              o.stateAddr,
+		Handler:           srv.StateHandler(),
+		ReadHeaderTimeout: 15 * time.Second,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
 
 	// Trap signals for graceful shutdown.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	httpErr := make(chan error, 2)
+	httpErr := make(chan error, 3)
 	go func() {
 		logger.Info("hook server listening", "addr", o.addr)
 		if err := hookSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -187,10 +242,17 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			httpErr <- fmt.Errorf("admin server: %w", err)
 		}
 	}()
+	go func() {
+		logger.Info("state server listening", "addr", o.stateAddr)
+		if err := stateSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			httpErr <- fmt.Errorf("state server: %w", err)
+		}
+	}()
 
 	attrs := []any{
 		"hook_addr", o.addr,
 		"admin_addr", o.adminAddr,
+		"state_addr", o.stateAddr,
 		"hooks_dir", o.hooksDir,
 		"github_status", gh.Enabled(),
 	}
@@ -217,6 +279,9 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("admin server shutdown", "err", err)
+	}
+	if err := stateSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("state server shutdown", "err", err)
 	}
 	cancelWatch()
 	rn.Wait()
@@ -302,4 +367,18 @@ func firstNonEmpty(parts ...string) string {
 		}
 	}
 	return ""
+}
+
+// defaultStateAdvertiseURL builds the URL hook containers use to reach the
+// state port, derived from the listen address's port. Containers resolve
+// host.docker.internal to the docker host via the --add-host the runner adds
+// for state-enabled hooks. Operators override it
+// (WEBHOOK_RUNNER_STATE_ADVERTISE_URL) when the server itself is
+// containerized or the port is remapped.
+func defaultStateAdvertiseURL(stateAddr string) string {
+	_, port, err := net.SplitHostPort(stateAddr)
+	if err != nil || port == "" {
+		port = "9002"
+	}
+	return "http://host.docker.internal:" + port
 }

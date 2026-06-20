@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
+	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -350,6 +351,16 @@ func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
 // behind it (admin port).
 func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.concurrency.Status())
+}
+
+// handleKVStats reports per-namespace key counts and byte totals for the
+// state store (admin port). It never exposes stored values.
+func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
+	if s.kv == nil {
+		writeJSON(w, http.StatusOK, []kv.NamespaceStat{})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.kv.Stats())
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {

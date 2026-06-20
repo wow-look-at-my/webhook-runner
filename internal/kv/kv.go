@@ -153,6 +153,10 @@ func (s *Store) load() error {
 	return nil
 }
 
+// MaxValueBytes is the configured per-value ceiling, exposed so the HTTP
+// layer can cap an incoming request body before buffering it.
+func (s *Store) MaxValueBytes() int { return s.cfg.MaxValueBytes }
+
 // Get returns a copy of the value for key in ns, or ok=false if it is absent
 // or expired. Expired entries are reclaimed by the sweeper, not here, so Get
 // stays read-locked.

@@ -80,6 +80,15 @@ type Hook struct {
 	// must poll /runs/{run_id} for completion. The query parameter
 	// ?wait=true on a request also forces synchronous behavior.
 	Synchronous bool `json:"synchronous,omitempty"`
+
+	// State, when true, opts the hook into the persistent KV store: the
+	// runner injects HOOK_KV_URL and HOOK_KV_TOKEN (a per-hook bearer token
+	// scoped to a namespace == this hook's ID) and adds a host-gateway
+	// mapping so the disposable container can reach the internal state API.
+	// The hook's data survives across its runs and across server restarts,
+	// isolated from every other hook. Omitted (the default) means no KV
+	// access and no extra host exposure.
+	State bool `json:"state,omitempty"`
 }
 
 // GitHubStatusConfig configures the optional GitHub commit status update
@@ -213,7 +222,8 @@ func (h *Hook) ContentHash() (string, error) {
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
 	switch k {
-	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID":
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID",
+		"HOOK_KV_URL", "HOOK_KV_TOKEN":
 		return true
 	}
 	return false
