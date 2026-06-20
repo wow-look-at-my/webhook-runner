@@ -49,6 +49,10 @@ hooks without restart.
   secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
   committed to the hooks repo (`secrets.sops.env`) or from the runner
   host's environment.
+- **Scheduled hooks**: a `"schedule"` interval (a Go duration) fires a hook
+  on a timer through the same run pipeline as an HTTP trigger, with
+  skip-if-already-running overlap protection and fire-on-startup. See
+  [Scheduled hooks](#scheduled-hooks).
 - **Concurrency**: no global queue, each request fires its own container.
 - **Dashboard**: read-only HTML view at `/` on the admin port showing the
   full internal state — loaded hooks, per-hook image status (built /
@@ -313,6 +317,53 @@ the activity feed whenever a run has to wait.
 
 The schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
+
+## Scheduled hooks
+
+A hook can fire itself on a timer, not just on an HTTP `POST`. Add a
+`schedule` (a Go duration) to its `hook.json`:
+
+```json
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "description": "fleet reconcile sweep",
+  "schedule": "5m",
+  "timeout": "10m"
+}
+```
+
+A scheduled run is dispatched through the **same pipeline** as an
+HTTP-triggered one — it is tracked, shown on the dashboard and `/runs`, gated
+by any `concurrency_group`, and gets the KV store when `state` is set. It
+receives a synthetic payload in `$HOOK_PAYLOAD_FILE`:
+
+```json
+{ "trigger": "schedule", "hook": "<id>", "time": "<RFC3339>" }
+```
+
+and an `X-Webhook-Runner-Schedule` request header, so the code can tell a
+timer fire from an HTTP caller.
+
+- **Overlap protection.** The scheduler **skips** a tick whenever a previous
+  run of the same hook is still in flight (pending or running), so a sweep
+  that runs longer than its interval never stacks copies of itself. A skip is
+  recorded as a `schedule.skipped` event; a fire as `schedule.fired`. For a
+  hook that should *serialize* rather than skip, add a `concurrency_group`
+  too.
+- **Startup / missed ticks.** On startup — and whenever a schedule is newly
+  added or its interval changes — the hook fires **immediately**, then every
+  interval thereafter. An unrelated hooks reload preserves an unchanged
+  schedule's next-fire time (no spurious re-fire). After a long pause
+  (a restart or deploy), the hook fires once and resumes one interval out
+  rather than bursting a backlog of missed ticks. Fire-immediately-on-start
+  is deliberate: a redeploy is exactly when a catch-up sweep is wanted, and
+  scheduled work is expected to be idempotent.
+
+`schedule` is a Go duration string (e.g. `"30s"`, `"5m"`, `"1h"`); the
+effective resolution is one second. Like `concurrency_group` and `state`, it
+is a newer field, so an older `webhook-runner` binary rejects a `hook.json`
+that sets it — deploy a runner that supports `schedule` before merging a hook
+that uses it.
 
 ## Encrypted secrets in the hooks repo (sops)
 

@@ -267,6 +267,22 @@ func (t *Tracker) New(hookID string) *Run {
 	return r
 }
 
+// HasActive reports whether the hook currently has a run that has not reached
+// a terminal status (pending or running). The scheduler uses it for
+// skip-if-already-running overlap protection so a sweep that outlasts its
+// interval cannot stack on itself. Lock ordering is tracker-then-run
+// (consistent with the rest of the package), so this can't deadlock.
+func (t *Tracker) HasActive(hookID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, r := range t.byHook[hookID] {
+		if !r.Status().Terminal() {
+			return true
+		}
+	}
+	return false
+}
+
 // Get returns the run with the given ID, or nil if absent or evicted.
 func (t *Tracker) Get(id string) *Run {
 	t.mu.RLock()
