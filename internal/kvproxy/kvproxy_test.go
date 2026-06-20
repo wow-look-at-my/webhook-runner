@@ -1,4 +1,4 @@
-package cli
+package kvproxy
 
 import (
 	"io"
@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestKVForwardProxy verifies the shim's TCP->Unix proxy: bytes written to a
-// TCP client come back from an echo server listening on the Unix socket.
-func TestKVForwardProxy(t *testing.T) {
+// TestServe verifies the TCP->Unix proxy: bytes written to a TCP client come
+// back from an echo server listening on the Unix socket.
+func TestServe(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "s.sock")
 	uln, err := net.Listen("unix", sock)
 	require.NoError(t, err)
@@ -27,20 +27,11 @@ func TestKVForwardProxy(t *testing.T) {
 		}
 	}()
 
-	tln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := Serve("127.0.0.1:0", sock)
 	require.NoError(t, err)
-	defer tln.Close()
-	go func() {
-		for {
-			c, err := tln.Accept()
-			if err != nil {
-				return
-			}
-			go proxyToSocket(c, sock)
-		}
-	}()
+	defer ln.Close()
 
-	conn, err := net.Dial("tcp", tln.Addr().String())
+	conn, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
 	defer conn.Close()
 	_, err = conn.Write([]byte("hello"))
@@ -50,4 +41,10 @@ func TestKVForwardProxy(t *testing.T) {
 	_, err = io.ReadFull(conn, buf)
 	require.NoError(t, err)
 	require.Equal(t, "hello", string(buf))
+}
+
+// TestServeBadAddr returns an error rather than panicking on a bad address.
+func TestServeBadAddr(t *testing.T) {
+	_, err := Serve("not-an-address", "/tmp/x.sock")
+	require.Error(t, err)
 }
