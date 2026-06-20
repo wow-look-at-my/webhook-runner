@@ -20,12 +20,12 @@ hooks without restart.
   behind authentication (e.g. Cloudflare Zero Trust).
 - **Stateful hooks (KV store)**: a hook can opt into a small persistent
   key/value store with `"state": true` — making webhook-runner almost a
-  simple serverless platform. The runner bind-mounts the KV API's Unix
-  socket into the container and injects `HOOK_KV_SOCKET`/`HOOK_KV_URL`/a
-  scoped `HOOK_KV_TOKEN`; the hook gets get/put/delete/list, atomic
-  increment, and per-key TTL over HTTP (`curl --unix-socket`). No
-  networking. Data is disk-backed (survives restarts), bounded, and
-  isolated per hook.
+  simple serverless platform. The hook reaches it at a plain
+  `http://localhost:9002` URL (`HOOK_KV_URL`) with a scoped `HOOK_KV_TOKEN` —
+  any HTTP client, no networking (webhook-runner injects a proxy shim that
+  bridges that port to an internal Unix socket). get/put/delete/list, atomic
+  increment, and per-key TTL. Data is disk-backed (survives restarts),
+  bounded, and isolated per hook.
 - **Git-backed hooks**: point at a Git repository with
   `WEBHOOK_RUNNER_HOOKS_REPO` and the server clones it on startup.
   Configure a GitHub push webhook to `POST /_reload` to auto-pull on push.
@@ -106,7 +106,8 @@ curl http://localhost:9001/runs/abqkr2f6mfjrtgsihpnz5rdgye
 The server listens on two TCP ports. The **hook port** (default `:9000`) should
 be publicly accessible (e.g. via a Cloudflare Tunnel). The **admin port**
 (default `:9001`) should be behind authentication (e.g. Cloudflare Zero Trust).
-The per-hook KV store is served on a **Unix socket** (see below), not a port.
+The per-hook KV store is reached by hooks at a plain `http://localhost:9002`
+URL (backed by an internal Unix socket; see below), not a public port.
 
 ### Hook port (`:9000`)
 
@@ -135,14 +136,16 @@ The per-hook KV store is served on a **Unix socket** (see below), not a port.
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
 | GET    | `/`                 | Dashboard.                                 |
 
-### State KV API (Unix socket)
+### State KV API (`http://localhost:9002` in state hooks)
 
-The per-hook KV store, consumed by hook containers over a **Unix socket** the
-runner bind-mounts into each state hook (`HOOK_KV_SOCKET`; no networking, never
-exposed on any port). Every request carries the bearer token the runner injects
-as `HOOK_KV_TOKEN` (`Authorization: Bearer <token>`); the namespace is derived
-from the token, never from the URL, so a hook can only ever reach its own data.
-Hooks call it as `curl --unix-socket "$HOOK_KV_SOCKET" "$HOOK_KV_URL/kv/..."`.
+The per-hook KV store, consumed by hook containers at a plain
+`http://localhost:9002` URL (`HOOK_KV_URL`). There is no network and no public
+port: webhook-runner serves the API on an internal Unix socket and injects a
+tiny proxy shim as the hook's entrypoint that bridges `localhost:9002` to it
+(see *Stateful hooks* below). Every request carries the bearer token the runner
+injects as `HOOK_KV_TOKEN` (`Authorization: Bearer <token>`); the namespace is
+derived from the token, never from the URL, so a hook can only ever reach its
+own data.
 
 | Method | Path             | Purpose                                                        |
 |--------|------------------|----------------------------------------------------------------|
@@ -188,31 +191,29 @@ key/value store — enough to count invocations, dedupe events, cache a token,
 or carry anything else across runs. This is what makes webhook-runner almost
 a simple serverless platform.
 
-When a state hook runs, the runner bind-mounts the KV API's Unix socket into
-the container (no networking) and injects three environment variables:
+When a state hook runs, the runner injects two environment variables (and a
+proxy shim as the container entrypoint that makes `localhost:9002` work):
 
-- `HOOK_KV_SOCKET` — path to the bind-mounted Unix socket.
-- `HOOK_KV_URL` — base URL to use with it (`http://localhost`).
+- `HOOK_KV_URL` — base URL of the KV API (`http://localhost:9002`).
 - `HOOK_KV_TOKEN` — a bearer token scoped to **this hook's** namespace.
 
-The hook makes HTTP calls over the socket:
+The hook just makes plain HTTP calls with any client:
 
 ```sh
 # Increment a counter and read the running total (atomic, race-free)
-curl -fsS --unix-socket "$HOOK_KV_SOCKET" -XPOST \
-  -H "Authorization: Bearer $HOOK_KV_TOKEN" "$HOOK_KV_URL/kv/hits/incr"
+curl -fsS -XPOST -H "Authorization: Bearer $HOOK_KV_TOKEN" "$HOOK_KV_URL/kv/hits/incr"
 # {"value":1}
 
 # Put a value with a 1-hour TTL, then read it back
-curl -fsS --unix-socket "$HOOK_KV_SOCKET" -XPUT -H "Authorization: Bearer $HOOK_KV_TOKEN" \
-  -H "X-KV-TTL: 3600" --data-binary @- "$HOOK_KV_URL/kv/last-seen" <<<"$COMMIT_SHA"
-curl -fsS --unix-socket "$HOOK_KV_SOCKET" \
-  -H "Authorization: Bearer $HOOK_KV_TOKEN" "$HOOK_KV_URL/kv/last-seen"
+curl -fsS -XPUT -H "Authorization: Bearer $HOOK_KV_TOKEN" -H "X-KV-TTL: 3600" \
+  --data-binary @- "$HOOK_KV_URL/kv/last-seen" <<<"$COMMIT_SHA"
+curl -fsS -H "Authorization: Bearer $HOOK_KV_TOKEN" "$HOOK_KV_URL/kv/last-seen"
 ```
 
-Any language works — point its HTTP client at the Unix socket (Node
-`http.request({ socketPath })`, Go a custom `DialContext`, Python
-`requests-unixsocket`, etc.).
+It's an ordinary HTTP endpoint, so any language's standard client works — no
+Unix-socket support needed. (Under the hood, webhook-runner serves the API on
+an internal Unix socket and sets its own binary as the hook's entrypoint to
+proxy `localhost:9002` to it, then runs the hook's real command.)
 
 Properties:
 
@@ -220,8 +221,8 @@ Properties:
   temp+rename) and survives server restarts.
 - **Isolated**: the namespace comes from the verified token, never the URL —
   a hook can only ever read and write its own data.
-- **Internal**: reached over a bind-mounted Unix socket — no network, no port,
-  nothing published to the host.
+- **Internal**: no network and no published port — the API is an internal Unix
+  socket reached only through the injected localhost proxy.
 - **Bounded**: per-value size, keys-per-hook, and namespace-count caps keep a
   runaway hook from exhausting disk (oversize writes get `413`).
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
@@ -232,10 +233,10 @@ See the State KV API table above for the full endpoint list. The admin port's
 
 > **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"state":
-> true` (older binaries reject unknown fields). The KV socket lives under
-> `TMPDIR`, which must be host-shared when the server runs in a container —
-> the same requirement payload files already have; see *Running the server in
-> a container*.
+> true` (older binaries reject unknown fields). The KV socket and the proxy
+> shim live under `TMPDIR`, which must be host-shared when the server runs in
+> a container — the same requirement payload files already have; see *Running
+> the server in a container*.
 
 ## hook.json reference
 
@@ -399,23 +400,23 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
 | `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`) and the token `state-secret`. Defaults alongside the hooks clone + deploy key. |
-| `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's Unix socket, bind-mounted into state hooks. Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
+| `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's internal Unix socket (the proxy shim bridges `localhost:9002` to it). Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
-| `TMPDIR`                          | `/tmp`                       | Where per-run payload/header files AND the KV socket are written before being bind-mounted into hook containers. Must be host-shared when the server itself runs in a container (below). |
+| `TMPDIR`                          | `/tmp`                       | Where per-run payload/header files AND the KV socket + proxy shim live before being bind-mounted into hook containers. Must be host-shared when the server itself runs in a container (below). |
 
 ### Running the server in a container
 
 The server shells out to the **host's** docker daemon (mount
-`/var/run/docker.sock`), and per-run payload/header files **and the KV state
-socket** are bind-mounted into hook containers **by host path**. A temp dir
-private to the server's container doesn't exist on the host, so docker
+`/var/run/docker.sock`), and per-run payload/header files **plus the KV socket
+and proxy shim** are bind-mounted into hook containers **by host path**. A temp
+dir private to the server's container doesn't exist on the host, so docker
 silently creates a *directory* at the mount source and every run fails reading
-its payload (`EISDIR`); the KV socket would likewise be unreachable. The server
-detects this topology at startup and records a `server.misconfigured` event on
-the dashboard unless `TMPDIR` is set.
+its payload (`EISDIR`); the KV socket/shim would likewise be unreachable. The
+server detects this topology at startup and records a `server.misconfigured`
+event on the dashboard unless `TMPDIR` is set.
 
 Share the temp dir with the host at the **same absolute path**, and declare
 it via `TMPDIR`:
@@ -455,9 +456,9 @@ set automatically:
 | `HOOK_HEADERS_FILE`  | Path to a JSON file `{"X-Header": ["value"], ...}`.     |
 | `HOOK_ID`            | The hook ID (folder name).                              |
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
-| `HOOK_KV_SOCKET`     | Path to the bind-mounted KV API Unix socket (`curl --unix-socket`). **Only for `state: true` hooks.** |
-| `HOOK_KV_URL`        | Base URL to use with the socket (`http://localhost`). **Only for `state: true` hooks.** |
+| `HOOK_KV_URL`        | Base URL of the KV API (`http://localhost:9002`) — use it with any HTTP client. **Only for `state: true` hooks.** |
 | `HOOK_KV_TOKEN`      | Bearer token scoped to this hook's KV namespace. **Only for `state: true` hooks.** |
+| `HOOK_KV_SOCKET`     | Internal: path the injected proxy shim bridges `HOOK_KV_URL` to. Hooks normally use `HOOK_KV_URL`. **Only for `state: true` hooks.** |
 
 Both files are bind-mounted read-only under `/var/run/webhook-runner/` —
 per-run *data*, never code. Hook code is immutable per run: it is baked
