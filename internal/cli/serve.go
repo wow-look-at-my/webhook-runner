@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,7 +27,6 @@ import (
 type serveOptions struct {
 	addr            string
 	adminAddr       string
-	stateAddr       string
 	hooksDir        string
 	dataDir         string
 	logFormat       string
@@ -35,7 +35,7 @@ type serveOptions struct {
 	hooksBranch     string
 	hooksRepoSecret string
 	hookBaseURL     string
-	stateAdvertise  string
+	stateSocket     string
 	stateSecret     string
 }
 
@@ -46,17 +46,14 @@ func applyServeEnv(o *serveOptions) {
 	if o.adminAddr == "" {
 		o.adminAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADMIN_ADDR"), ":9001")
 	}
-	if o.stateAddr == "" {
-		o.stateAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_STATE_ADDR"), ":9002")
-	}
 	if o.hooksDir == "" {
 		o.hooksDir = os.Getenv("WEBHOOK_RUNNER_HOOKS_DIR")
 	}
 	if o.dataDir == "" {
 		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
 	}
-	if o.stateAdvertise == "" {
-		o.stateAdvertise = os.Getenv("WEBHOOK_RUNNER_STATE_ADVERTISE_URL")
+	if o.stateSocket == "" {
+		o.stateSocket = os.Getenv("WEBHOOK_RUNNER_STATE_SOCKET")
 	}
 	if o.stateSecret == "" {
 		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
@@ -110,7 +107,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// persistence model as run history).
 	rec := events.NewRecorder(500)
 	rec.Record("server.started", "webhook-runner started", map[string]string{
-		"hook_addr": o.addr, "admin_addr": o.adminAddr, "state_addr": o.stateAddr, "hooks_dir": o.hooksDir,
+		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
 	})
 	// A containerized server whose temp dir isn't host-shared breaks every
 	// hook run (payload mounts resolve on the docker HOST) — detect the
@@ -145,9 +142,25 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	kvStore.StartSweeper()
 	defer kvStore.Close()
-	stateAdvertise := o.stateAdvertise
-	if stateAdvertise == "" {
-		stateAdvertise = defaultStateAdvertiseURL(o.stateAddr)
+
+	// The state KV API is served on a Unix socket (no networking). It must
+	// live in the same host-shared dir the runner mounts per-run files from
+	// (TMPDIR), so a sibling hook container resolves the same host path when
+	// the runner bind-mounts it in. os.TempDir() honors $TMPDIR and matches
+	// the runner's default tmp dir.
+	tmpDir := os.TempDir()
+	socketPath := o.stateSocket
+	if socketPath == "" {
+		socketPath = filepath.Join(tmpDir, "whr-state.sock")
+	}
+	// The KV proxy shim is webhook-runner's own (static) binary, copied to the
+	// host-shared tmp dir so the runner can bind-mount it into state hooks as
+	// their entrypoint — same host-shared-path requirement as the socket and
+	// payload files. It proxies http://localhost:9002 to the socket so hooks
+	// use a plain URL with any client.
+	shimPath := filepath.Join(tmpDir, "whr-shim")
+	if err := copyExecutable(shimPath); err != nil {
+		return fmt.Errorf("kv proxy shim: %w", err)
 	}
 
 	// Concurrency groups (concurrency.json at the hooks root) gate how many
@@ -157,13 +170,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	concurrencyMgr := concurrency.NewManager(nil)
 
 	rn := runner.New(runner.Options{
-		Tracker:     tracker,
-		Logger:      logger,
-		Secrets:     secrets,
-		Events:      rec,
-		Groups:      concurrencyMgr,
-		KV:          kvStore,
-		KVAdvertise: stateAdvertise,
+		Tracker:  tracker,
+		Logger:   logger,
+		TmpDir:   tmpDir,
+		Secrets:  secrets,
+		Events:   rec,
+		Groups:   concurrencyMgr,
+		KV:       kvStore,
+		KVSocket: socketPath,
+		KVShim:   shimPath,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -218,8 +233,19 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		ReadHeaderTimeout: 15 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+	// The state KV API listens on a Unix socket bind-mounted into state hooks,
+	// not a network port. Clear any stale socket left by a crashed prior run.
+	_ = os.Remove(socketPath)
+	stateLn, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("state socket %s: %w", socketPath, err)
+	}
+	// World-accessible so hooks running as non-root users can connect; the
+	// per-hook bearer token (not file perms) is what authorizes access.
+	if err := os.Chmod(socketPath, 0o666); err != nil {
+		logger.Warn("chmod state socket", "path", socketPath, "err", err)
+	}
 	stateSrv := &http.Server{
-		Addr:              o.stateAddr,
 		Handler:           srv.StateHandler(),
 		ReadHeaderTimeout: 15 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
@@ -243,8 +269,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 	}()
 	go func() {
-		logger.Info("state server listening", "addr", o.stateAddr)
-		if err := stateSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Info("state socket listening", "path", socketPath)
+		if err := stateSrv.Serve(stateLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			httpErr <- fmt.Errorf("state server: %w", err)
 		}
 	}()
@@ -252,7 +278,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	attrs := []any{
 		"hook_addr", o.addr,
 		"admin_addr", o.adminAddr,
-		"state_addr", o.stateAddr,
+		"state_socket", socketPath,
 		"hooks_dir", o.hooksDir,
 		"github_status", gh.Enabled(),
 	}
@@ -369,16 +395,32 @@ func firstNonEmpty(parts ...string) string {
 	return ""
 }
 
-// defaultStateAdvertiseURL builds the URL hook containers use to reach the
-// state port, derived from the listen address's port. Containers resolve
-// host.docker.internal to the docker host via the --add-host the runner adds
-// for state-enabled hooks. Operators override it
-// (WEBHOOK_RUNNER_STATE_ADVERTISE_URL) when the server itself is
-// containerized or the port is remapped.
-func defaultStateAdvertiseURL(stateAddr string) string {
-	_, port, err := net.SplitHostPort(stateAddr)
-	if err != nil || port == "" {
-		port = "9002"
+// copyExecutable copies the running binary to dst (0755) via temp+rename, so
+// it can be bind-mounted into hook containers as the KV proxy shim. The binary
+// is static (CGO disabled), so it runs in any hook base image.
+func copyExecutable(dst string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
 	}
-	return "http://host.docker.internal:" + port
+	in, err := os.Open(self)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
 }

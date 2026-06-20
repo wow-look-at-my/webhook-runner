@@ -20,7 +20,8 @@ internal/jsonc/            shared JSONC comment-stripping (hook.json + concurren
 internal/runner/           docker run dispatch + output streaming + image build/status
 internal/runs/             in-memory run tracker (bounded)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
-internal/kv/               disk-backed per-hook KV store (state port) + HMAC namespace tokens
+internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
+internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
 e2e/                       end-to-end test (shell script, requires Docker)
@@ -43,9 +44,9 @@ examples/hooks/            sample hook configs
   published to GitHub Pages and is what the `$schema` URL points at. Keep
   the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
-## Architecture: three ports
+## Architecture: two ports + a state socket
 
-The server listens on three ports:
+The server listens on two TCP ports plus a Unix socket:
 
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
   `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
@@ -54,13 +55,17 @@ The server listens on three ports:
   (per-hook image state), `/concurrency` (live per-group limit/active/
   waiting), `/kv` (read-only state-store stats: per-namespace key count and
   bytes, never values). Internal, behind Cloudflare Zero Trust.
-- **State port** (`:9002`): the per-hook KV store consumed by hook
-  containers — `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list), `POST
-  /kv/{key}/incr`. Internal (NOT on the tunnel); each request is
-  authenticated by the per-hook bearer token the runner injects, and the
-  namespace is derived from that token, never from the URL — so a hook can
-  only ever reach its own data. Backed by `internal/kv` (disk-backed under
-  the data dir; see below). The `Server` struct exposes `StateHandler()`
+- **State KV API** — served on a **Unix socket** (NOT a TCP port), default
+  `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
+  `POST /kv/{key}/incr`. Hooks don't touch the socket directly: the runner
+  injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
+  as the container entrypoint, so the hook reaches the API at a plain
+  `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
+  networking, no `--unix-socket`. Each request is authenticated by the per-hook
+  bearer token the runner injects, and the namespace is derived from that
+  token, never from the URL — so a hook can only ever reach its own data.
+  Backed by `internal/kv` (disk-backed under the data dir; see below). The
+  `Server` struct exposes `StateHandler()` (served on the socket listener)
   alongside `HookHandler()`/`AdminHandler()`.
   The dashboard's one-time webhook-setup instructions live in a
   collapsed `<details>`; the page is about live state (hooks, images,
@@ -190,7 +195,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   second, separate hook-only reload path — the registry and the
   `concurrency.Manager` must update atomically together or a hook can be
   registered before its group exists.
-- The per-hook KV store (`internal/kv`, the state port) is the first thing
+- The per-hook KV store (`internal/kv`, the state socket) is the first thing
   besides the hooks clone and the ssh deploy key that persists to disk. It
   lives under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
   place as the deploy key) as one `kv/<namespace>.json` per hook plus a
@@ -201,17 +206,25 @@ The companion repo is `wow-look-at-my/webhooks`.
   by a background sweeper (`StartSweeper`/`Close`); keep both.
 - A hook opts into the store with `state: true`. `state` is a new hook.json
   field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
-  same deploy-first rule as `concurrency_group`. The runner injects
-  `HOOK_KV_URL`/`HOOK_KV_TOKEN` (both `ReservedEnvKey`) and a
-  `host.docker.internal:host-gateway` mapping ONLY for state hooks, so
-  non-stateful hooks gain no new host exposure. The token is a stateless
-  HMAC over the hook ID (`kv.Token`/`VerifyToken`) — namespace == hook ID,
-  minted per run, nothing to store or expire.
-- State port reachability has the same containerized-server footgun as the
-  `TMPDIR` payload-mount hazard: `host.docker.internal:host-gateway` resolves
-  to the docker HOST. When webhook-runner itself runs in a container, the
-  state listener binds inside that container, so a hook container hitting
-  `host.docker.internal:9002` reaches the host where nothing listens unless
-  the server's state port is published (`-p 9002:9002`) AND
-  `WEBHOOK_RUNNER_STATE_ADVERTISE_URL` is set to a host-reachable URL. On the
-  host (the common case) the default advertise URL just works.
+  same deploy-first rule as `concurrency_group`. ONLY for state hooks, the
+  runner bind-mounts the KV socket + the proxy shim, sets the shim as the
+  container `--entrypoint`, and injects `HOOK_KV_SOCKET`, `HOOK_KV_URL`
+  (`http://localhost:9002`), and `HOOK_KV_TOKEN` (all `ReservedEnvKey`). The
+  token is a stateless HMAC over the hook ID (`kv.Token`/`VerifyToken`) —
+  namespace == hook ID, minted per run, nothing to store or expire.
+- State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
+  networking — Docker has no native TCP→unix-socket forward, so webhook-runner
+  runs the proxy itself. The KV server listens on a Unix socket at
+  `$TMPDIR/whr-state.sock` (chmod 0666 so non-root hook users can connect; the
+  bearer token, not file perms, is the real gate). For a state hook the runner
+  sets the container entrypoint to webhook-runner's own binary (copied to
+  `$TMPDIR/whr-shim` at startup by `copyExecutable`, bind-mounted in) invoked as
+  the hidden `kv-forward` subcommand; that shim (`internal/kvproxy`) proxies
+  `localhost:9002` → the bind-mounted socket, then execs the hook's real command
+  (reconstructed from the image's entrypoint+cmd via `imageCommand`, or
+  `hook.Command`). Both the socket and the shim MUST sit in the host-shared
+  `TMPDIR` (same requirement as payload mounts) — so it works identically
+  whether the server runs on the host or in a container. This was chosen after
+  host-gateway and a shared Docker network proved more fragile; the shim keeps
+  the hook's own networking intact (no netns sharing) and publishes no port.
+  `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
