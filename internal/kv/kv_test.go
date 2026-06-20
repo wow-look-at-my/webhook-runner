@@ -214,6 +214,39 @@ func TestToken(t *testing.T) {
 	}
 }
 
+func TestStats(t *testing.T) {
+	s := newStore(t)
+	require.NoError(t, s.Set("b", "k1", []byte("xx"), 0))
+	require.NoError(t, s.Set("a", "k1", []byte("y"), 0))
+	require.NoError(t, s.Set("a", "k2", []byte("zz"), 0))
+
+	stats := s.Stats()
+	require.Len(t, stats, 2)
+	// Sorted by namespace.
+	require.Equal(t, "a", stats[0].Namespace)
+	require.Equal(t, 2, stats[0].Keys)
+	require.Equal(t, 3, stats[0].Bytes)
+	require.Equal(t, "b", stats[1].Namespace)
+	require.Equal(t, 1, stats[1].Keys)
+}
+
+func TestEnsureSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "state-secret")
+	a, err := EnsureSecret(path)
+	require.NoError(t, err)
+	require.Len(t, a, 32)
+
+	// A second call returns the same persisted secret.
+	b, err := EnsureSecret(path)
+	require.NoError(t, err)
+	require.Equal(t, a, b)
+
+	// Persisted with owner-only permissions.
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
 func TestNoLingeringTempFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "kv")
 	s, err := New(Config{Dir: dir}, []byte("secret"), nil)
