@@ -89,6 +89,22 @@ type Hook struct {
 	// survives across its runs and across server restarts, isolated from
 	// every other hook. Omitted (the default) means no KV access.
 	State bool `json:"state,omitempty"`
+
+	// Schedule, when set, makes the scheduler fire this hook on a fixed
+	// interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger. A
+	// scheduled run is dispatched through the exact same pipeline as an
+	// HTTP-triggered one — tracked, gated by the hook's concurrency_group,
+	// KV-enabled, shown on the dashboard — with a synthetic payload that marks
+	// it as schedule-triggered. To stop a long sweep stacking on itself, the
+	// scheduler skips a tick whenever a previous run of the same hook is still
+	// in flight (skip-if-already-running). On startup (and when newly added or
+	// when its interval changes) the hook fires immediately, then every
+	// interval thereafter. Empty (the default) means HTTP-triggered only.
+	//
+	// Like state/concurrency_group, schedule is a newer hook.json field, so
+	// Parse's DisallowUnknownFields means old binaries reject it — deploy a
+	// webhook-runner that supports it before merging a hook that sets it.
+	Schedule string `json:"schedule,omitempty"`
 }
 
 // GitHubStatusConfig configures the optional GitHub commit status update
@@ -109,6 +125,20 @@ func (h *Hook) Timeout() time.Duration {
 	d, err := time.ParseDuration(h.TimeoutRaw)
 	if err != nil {
 		return DefaultTimeout
+	}
+	return d
+}
+
+// ScheduleInterval returns the parsed schedule duration, or 0 when the hook
+// is not scheduled. Validation has already happened at load time, so a parse
+// failure here is treated as "not scheduled" rather than panicking.
+func (h *Hook) ScheduleInterval() time.Duration {
+	if h.Schedule == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(h.Schedule)
+	if err != nil {
+		return 0
 	}
 	return d
 }
@@ -245,6 +275,15 @@ func (h *Hook) validate() error {
 		}
 		if d <= 0 {
 			return fmt.Errorf("timeout must be positive, got %s", d)
+		}
+	}
+	if h.Schedule != "" {
+		d, err := time.ParseDuration(h.Schedule)
+		if err != nil {
+			return fmt.Errorf("invalid schedule %q: %w", h.Schedule, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("schedule must be positive, got %s", d)
 		}
 	}
 	for k := range h.Env {

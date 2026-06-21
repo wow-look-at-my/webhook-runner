@@ -16,6 +16,7 @@ internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded read-only HTML dashboard
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager
+internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
 internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
 internal/runner/           docker run dispatch + output streaming + image build/status
 internal/runs/             in-memory run tracker (bounded)
@@ -187,14 +188,33 @@ The companion repo is `wow-look-at-my/webhooks`.
   token. `concurrency_group` is a new hook.json field (so `Parse`'s
   `DisallowUnknownFields` means old binaries reject it — same deploy-first
   rule as above), and `concurrency.json` has its own published schema.
-- Hooks AND concurrency groups reload together through one closure
-  (`buildLoadAndApply` in cli/serve.go), used by both the admin/webhook
-  reload and the filesystem watcher. The watcher is now `hooks.WatchFunc`
-  (takes an `onChange` callback; `hooks.Watch` is a thin back-compat
-  wrapper) and also fires on `concurrency.json` edits. Don't reintroduce a
-  second, separate hook-only reload path — the registry and the
-  `concurrency.Manager` must update atomically together or a hook can be
-  registered before its group exists.
+- Hooks AND concurrency groups AND schedules reload together through one
+  closure (`buildLoadAndApply` in cli/serve.go), used by both the
+  admin/webhook reload and the filesystem watcher. The watcher is now
+  `hooks.WatchFunc` (takes an `onChange` callback; `hooks.Watch` is a thin
+  back-compat wrapper) and also fires on `concurrency.json` edits. Don't
+  reintroduce a second, separate reload path — the registry, the
+  `concurrency.Manager`, and the `scheduler.Scheduler` must update
+  atomically together or a hook can be registered before its group exists
+  (or scheduled after it's been dropped).
+- The scheduler (`internal/scheduler`) fires hooks declaring a `schedule`
+  (a Go duration on `Hook`, validated in `hook.validate`) on a timer. Like
+  `concurrency.Manager` it is a **pure** component: it owns only timing and
+  takes a `Fire func(hookID)` callback, so it imports neither the runner nor
+  the registry/tracker and is tested with an injected clock. `cli/serve.go`
+  wires `Fire` to look the hook up in the registry, apply
+  **skip-if-already-running** via `tracker.HasActive` (overlap protection —
+  a long sweep must not stack on itself; this, not a concurrency group, is
+  the built-in guard), and call `rn.Start(context.Background(), …)` with a
+  synthetic schedule payload — so a scheduled run is a normal run (tracked,
+  group-gated, KV-enabled, on the dashboard) and emits
+  `schedule.fired`/`schedule.skipped` events. **Missed-tick policy:**
+  fire-immediately on first registration (startup, a newly added hook, or a
+  changed interval), preserve an unchanged schedule's next-fire across an
+  unrelated reload, and after a long pause fire once (no backlog burst) —
+  see `scheduler.Update`/`fireDue`. `schedule` is a new hook.json field, so
+  `Parse`'s `DisallowUnknownFields` means old binaries reject it: same
+  deploy-first rule as `concurrency_group`/`state`.
 - The per-hook KV store (`internal/kv`, the state socket) is the first thing
   besides the hooks clone and the ssh deploy key that persists to disk. It
   lives under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same

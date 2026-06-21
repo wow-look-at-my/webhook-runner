@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
+	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
 )
 
@@ -187,12 +189,42 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
-	// loadAndApply reloads hooks and concurrency groups together so the
-	// registry and the manager never drift: a hook referencing an
-	// undeclared group is rejected (not registered) rather than allowed to
-	// run unbounded. Both the filesystem watcher and the admin/webhook
-	// reload path go through this one function.
-	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, logger, rec)
+	// Scheduler: fires hooks declaring a "schedule" interval on a timer,
+	// through the very same run pipeline (so a scheduled run is tracked,
+	// concurrency-gated, KV-enabled, and shown on the dashboard like any
+	// other). Fire looks the hook up fresh each tick (it may have been
+	// reloaded/removed), applies skip-if-already-running overlap protection
+	// via the tracker, and dispatches with context.Background() like other
+	// async runs (so shutting down the scheduler never kills a live run).
+	sched := scheduler.New(scheduler.Options{
+		Fire: func(hookID string) {
+			h, ok := registry.Get(hookID)
+			if !ok {
+				return // schedule removed between the tick and now
+			}
+			if tracker.HasActive(hookID) {
+				logger.Info("scheduled run skipped; previous run still active", "hook", hookID)
+				rec.Record("schedule.skipped",
+					fmt.Sprintf("%s: previous scheduled run still in flight; skipping this tick", hookID),
+					map[string]string{"hook": hookID})
+				return
+			}
+			logger.Info("scheduled run firing", "hook", hookID, "schedule", h.Schedule)
+			rec.Record("schedule.fired",
+				fmt.Sprintf("%s: scheduled run starting (every %s)", hookID, h.Schedule),
+				map[string]string{"hook": hookID, "schedule": h.Schedule})
+			if _, err := rn.Start(context.Background(), h, schedulePayload(hookID), scheduleHeaders(hookID)); err != nil {
+				logger.Error("scheduled run failed to start", "hook", hookID, "err", err)
+			}
+		},
+	})
+
+	// loadAndApply reloads hooks, concurrency groups, and schedules together
+	// so the registry, the manager, and the scheduler never drift: a hook
+	// referencing an undeclared group is rejected (not registered) rather
+	// than allowed to run unbounded. Both the filesystem watcher and the
+	// admin/webhook reload path go through this one function.
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, logger, rec)
 
 	onReload := buildReloadFunc(repo, loadAndApply, rec)
 
@@ -213,13 +245,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	})
 
 	// Watcher runs for the lifetime of the server; its initial scan is what
-	// first populates the registry and concurrency manager.
+	// first populates the registry, concurrency manager, and scheduler.
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watchErr := make(chan error, 1)
 	go func() {
 		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadAndApply, logger)
 	}()
+
+	// Scheduler loop runs for the lifetime of the server too; it does nothing
+	// until the watcher's initial scan populates its schedule set, then fires
+	// due hooks each tick.
+	go sched.Run(watchCtx)
 
 	hookSrv := &http.Server{
 		Addr:              o.addr,
@@ -317,9 +354,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 // buildLoadAndApply returns the single reload routine shared by the
 // filesystem watcher and the admin/webhook reload path. It loads the hooks
 // and the concurrency-group config from disk, rejects hooks that reference
-// an undeclared group, then atomically updates the concurrency manager and
-// the registry.
-func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, logger *slog.Logger, rec *events.Recorder) func() {
+// an undeclared group, then atomically updates the concurrency manager, the
+// scheduler, and the registry. Folding the scheduler in here (rather than a
+// second reload path) keeps the registry and the set of scheduled hooks from
+// ever drifting apart.
+func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, logger *slog.Logger, rec *events.Recorder) func() {
 	return func() {
 		loaded, errs := hooks.LoadDir(hooksDir)
 
@@ -349,11 +388,23 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			rec.Record("hook.load_error", e.Error(), nil)
 		}
 
+		// Extract the per-hook schedules from the (post-rejection) set so a
+		// dropped hook is never scheduled.
+		schedules := make(map[string]time.Duration, len(loaded))
+		for id, h := range loaded {
+			if iv := h.ScheduleInterval(); iv > 0 {
+				schedules[id] = iv
+			}
+		}
+
 		mgr.Update(cfg)
+		if sched != nil {
+			sched.Update(schedules)
+		}
 		registry.Replace(loaded)
-		logger.Info("hooks reloaded", "count", len(loaded), "concurrency_groups", len(cfg.Groups))
+		logger.Info("hooks reloaded", "count", len(loaded), "concurrency_groups", len(cfg.Groups), "scheduled", len(schedules))
 		rec.Record("hooks.reloaded",
-			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d error(s)", len(loaded), len(cfg.Groups), len(errs)),
+			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d scheduled, %d error(s)", len(loaded), len(cfg.Groups), len(schedules), len(errs)),
 			nil)
 	}
 }
@@ -383,6 +434,27 @@ func newLogger(format string) *slog.Logger {
 		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
 	default:
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
+	}
+}
+
+// schedulePayload is the synthetic request body a scheduled run receives in
+// HOOK_PAYLOAD_FILE. It marks the run as schedule-triggered (vs an HTTP
+// caller) and carries the fire time, so a hook can tell the two apart.
+func schedulePayload(hookID string) []byte {
+	b, _ := json.Marshal(map[string]string{
+		"trigger": "schedule",
+		"hook":    hookID,
+		"time":    time.Now().UTC().Format(time.RFC3339),
+	})
+	return b
+}
+
+// scheduleHeaders are the synthetic request headers (written to
+// HOOK_HEADERS_FILE) for a scheduled run.
+func scheduleHeaders(hookID string) http.Header {
+	return http.Header{
+		"Content-Type":              []string{"application/json"},
+		"X-Webhook-Runner-Schedule": []string{hookID},
 	}
 }
 

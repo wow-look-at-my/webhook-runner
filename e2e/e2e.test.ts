@@ -101,9 +101,12 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 10);
+    assert.equal(hooks.length, 11);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    // The scheduled hook advertises its interval in the summary.
+    const scheduled = hooks.find((h: any) => h.id === "scheduled-hook");
+    assert.equal(scheduled.schedule, "3s", "scheduled-hook should report its schedule");
   });
 
   await test("GET /hooks not on hook port", async () => {
@@ -317,6 +320,27 @@ try {
     assert.equal(r.status, 200);
     const runs: any = await r.json();
     assert.ok(runs.length >= 2, `echo-test should have >= 2 runs, got ${runs.length}`);
+  });
+
+  await test("scheduled hook fires on a timer with no HTTP trigger", async () => {
+    // scheduled-hook declares schedule:"3s" and is never POSTed here — the
+    // scheduler fires it (immediately on startup, then every interval). Poll
+    // the admin run list until a successful scheduled run shows up.
+    const deadline = Date.now() + 20_000;
+    let run: any;
+    for (;;) {
+      const runs: any = await (await fetch(`${adminBase}/runs?hook=scheduled-hook`)).json();
+      run = (runs as any[]).find((x) => x.status === "success");
+      if (run) break;
+      if (Date.now() > deadline) throw new Error(`no successful scheduled-hook run appeared (got ${JSON.stringify(runs)})`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    // Full output (the list view truncates it) confirms the container ran and
+    // received the synthetic schedule-trigger payload.
+    const full: any = await (await fetch(`${adminBase}/runs/${run.id}`)).json();
+    const output = full.output.join("\n");
+    assert.ok(output.includes("scheduled-fired"), "scheduled run missing its container output");
+    assert.ok(output.includes('"trigger":"schedule"'), "scheduled run payload missing the schedule-trigger marker");
   });
 
   await test("dashboard collapses setup instructions by default", async () => {

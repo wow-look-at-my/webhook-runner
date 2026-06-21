@@ -52,6 +52,31 @@ func TestParseMinimal(t *testing.T) {
 	assert.Empty(t, h.Command)
 }
 
+func TestParseScheduleValid(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","schedule":"5m"}`)
+	require.Nil(t, err)
+	assert.Equal(t, "5m", h.Schedule)
+	assert.Equal(t, 5*time.Minute, h.ScheduleInterval())
+}
+
+func TestParseScheduleEmptyMeansUnscheduled(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.ScheduleInterval())
+}
+
+func TestParseScheduleInvalidDuration(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","schedule":"5 minutes"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "invalid schedule")
+}
+
+func TestParseScheduleMustBePositive(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","schedule":"0s"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "schedule must be positive")
+}
+
 func TestParseRequiresDockerfile(t *testing.T) {
 	dir := t.TempDir() // no Dockerfile
 	_, err := Parse("h", filepath.Join(dir, "hook.json"), []byte(`{}`))
