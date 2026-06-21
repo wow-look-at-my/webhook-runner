@@ -126,7 +126,12 @@ The companion repo is `wow-look-at-my/webhooks`.
 - Per-hook sops secrets (`hooks.SecretsLoader`, `secrets.sops.env`)
   decrypt by exec'ing the `sops` binary (`WEBHOOK_RUNNER_SOPS_BIN`
   overrides; key material like `SOPS_AGE_KEY_FILE` is plain sops config
-  on the service env), cached per file by mtime+size. Decrypted entries
+  on the service env), cached per file by mtime+size. The runtime image
+  (`Dockerfile`, alpine) bundles `sops` (and `age`) so the server can run
+  this exec in-container; the age *identity* is mounted at runtime via
+  `SOPS_AGE_KEY_FILE`, never baked in. The decrypt runs host-side in the
+  server process — the hook container only ever receives the plaintext
+  values as env vars, so hook images need nothing sops-related. Decrypted entries
   are also injected into the container env, with hook.json `env` winning
   on conflict (it's appended after, and docker keeps the last `-e`).
   Decrypt failures fail the run (status `error`) before the container
