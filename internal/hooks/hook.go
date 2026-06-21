@@ -82,12 +82,12 @@ type Hook struct {
 	Synchronous bool `json:"synchronous,omitempty"`
 
 	// State, when true, opts the hook into the persistent KV store: the
-	// runner injects HOOK_KV_URL and HOOK_KV_TOKEN (a per-hook bearer token
-	// scoped to a namespace == this hook's ID) and adds a host-gateway
-	// mapping so the disposable container can reach the internal state API.
-	// The hook's data survives across its runs and across server restarts,
-	// isolated from every other hook. Omitted (the default) means no KV
-	// access and no extra host exposure.
+	// runner bind-mounts the KV API's Unix socket into the container and
+	// injects HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN (a per-hook
+	// bearer token scoped to a namespace == this hook's ID), so the hook
+	// reaches the state API over that socket — no networking. The hook's data
+	// survives across its runs and across server restarts, isolated from
+	// every other hook. Omitted (the default) means no KV access.
 	State bool `json:"state,omitempty"`
 
 	// Schedule, when set, makes the scheduler fire this hook on a fixed
@@ -253,7 +253,7 @@ func (h *Hook) ContentHash() (string, error) {
 func ReservedEnvKey(k string) bool {
 	switch k {
 	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID",
-		"HOOK_KV_URL", "HOOK_KV_TOKEN":
+		"HOOK_KV_URL", "HOOK_KV_TOKEN", "HOOK_KV_SOCKET":
 		return true
 	}
 	return false

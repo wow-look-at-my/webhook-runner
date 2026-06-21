@@ -44,13 +44,14 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, HOOK_RUN_ID, and (for state hooks) HOOK_KV_URL and HOOK_KV_TOKEN are reserved.",
+      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, HOOK_RUN_ID, and (for state hooks) HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
           { "required": ["HOOK_HEADERS_FILE"] },
           { "required": ["HOOK_ID"] },
           { "required": ["HOOK_RUN_ID"] },
+          { "required": ["HOOK_KV_SOCKET"] },
           { "required": ["HOOK_KV_URL"] },
           { "required": ["HOOK_KV_TOKEN"] }
         ]
@@ -77,7 +78,7 @@
     "state": {
       "type": "boolean",
       "default": false,
-      "description": "When true, opt the hook into the persistent KV store. The runner injects HOOK_KV_URL and HOOK_KV_TOKEN (a per-hook bearer token whose namespace is this hook's ID) and adds a host.docker.internal:host-gateway mapping so the container can reach the internal state API. The hook's data persists across its runs and across server restarts, isolated from other hooks. Default: false (no KV access, no extra host exposure)."
+      "description": "When true, opt the hook into the persistent KV store. The runner injects HOOK_KV_URL (http://localhost:9002) and HOOK_KV_TOKEN (a per-hook bearer token whose namespace is this hook's ID), and a proxy shim entrypoint, so the hook reaches the state API at a plain localhost URL with any HTTP client (no networking, no published port). The hook's data persists across its runs and across server restarts, isolated from other hooks. Default: false (no KV access)."
     },
     "schedule": {
       "type": "string",
