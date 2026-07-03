@@ -32,7 +32,7 @@ import (
 type Config struct {
 	Dir           string        // directory holding one <namespace>.json per namespace
 	MaxValueBytes int           // per-value ceiling (default 64 KiB)
-	MaxKeysPerNS  int           // keys allowed in one namespace (default 1000)
+	MaxKeysPerNS  int           // keys allowed in one namespace (default 5000)
 	MaxNamespaces int           // distinct namespaces allowed (default 256)
 	SweepInterval time.Duration // how often the TTL sweeper runs (default 1m)
 }
@@ -100,7 +100,7 @@ func New(cfg Config, secret []byte, log *slog.Logger) (*Store, error) {
 		cfg.MaxValueBytes = 64 * 1024
 	}
 	if cfg.MaxKeysPerNS <= 0 {
-		cfg.MaxKeysPerNS = 1000
+		cfg.MaxKeysPerNS = 5000
 	}
 	if cfg.MaxNamespaces <= 0 {
 		cfg.MaxNamespaces = 256
