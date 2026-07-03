@@ -15,7 +15,10 @@
   </div>
 </header>
 
-<main>
+<!-- Two views share the page: the global overview, and a per-app drill-down
+     (an "app" is one hook, for now) selected by the #hook=<id> fragment.
+     dashboard.js toggles between them on hashchange — no server routing. -->
+<main id="overview-view">
   <section id="setup-section" hidden>
     <h2>Hooks repo</h2>
     <p id="setup-repo"></p>
@@ -71,6 +74,54 @@
     </table>
     <p id="events-empty" class="empty" hidden>Nothing yet.</p>
   </section>
+</main>
+
+<main id="app-view" hidden>
+  <p class="crumbs"><a href="#">&larr; All hooks</a></p>
+
+  <section id="app-head">
+    <h2 id="app-title"></h2>
+    <p id="app-desc"></p>
+    <p id="app-missing" class="empty" hidden>No such hook.</p>
+  </section>
+
+  <div id="app-body">
+    <div class="app-cards">
+      <section id="app-info-section">
+        <h2>Info</h2>
+        <dl id="app-info"></dl>
+      </section>
+      <section id="app-stats-section">
+        <h2>Run stats</h2>
+        <!-- Run history is memory-only and bounded, so these are
+             recent-window figures — the note names the window size. -->
+        <p id="app-stats-window" class="window-note"></p>
+        <dl id="app-stats"></dl>
+      </section>
+      <section id="app-image-section">
+        <h2>Image</h2>
+        <dl id="app-image"></dl>
+      </section>
+    </div>
+
+    <section id="app-runs-section">
+      <h2>Recent runs</h2>
+      <table id="app-runs-table">
+        <thead><tr><th>Started</th><th>Status</th><th>Duration</th><th>Exit</th><th>Run ID</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="app-runs-empty" class="empty" hidden>No runs yet.</p>
+    </section>
+
+    <section id="app-events-section">
+      <h2>Activity</h2>
+      <table id="app-events-table">
+        <thead><tr><th>Time</th><th>Kind</th><th>What happened</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="app-events-empty" class="empty" hidden>Nothing yet.</p>
+    </section>
+  </div>
 </main>
 
 <!-- Run detail opens as a modal so output is visible immediately, without
