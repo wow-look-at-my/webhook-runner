@@ -130,6 +130,7 @@ func (s *Server) registerRoutes() {
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
+	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)

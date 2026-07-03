@@ -329,12 +329,17 @@ func describePush(body []byte) string {
 }
 
 // handleEvents returns the activity feed, newest first (admin port).
+// ?hook={id} narrows it to one hook's slice, same convention as /runs.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	max := 200
 	if m := r.URL.Query().Get("max"); m != "" {
 		if n, err := strconv.Atoi(m); err == nil && n > 0 {
 			max = n
 		}
+	}
+	if hookID := r.URL.Query().Get("hook"); hookID != "" {
+		writeJSON(w, http.StatusOK, s.events.ListByHook(hookID, max))
+		return
 	}
 	writeJSON(w, http.StatusOK, s.events.List(max))
 }

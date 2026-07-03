@@ -68,3 +68,30 @@ func (r *Recorder) List(max int) []Event {
 	}
 	return out
 }
+
+// ListByHook returns up to max events whose "hook" field names the given
+// hook, newest first — the convention every hook-scoped recorder call
+// already follows. Events without that field (server-wide activity like
+// reloads and git pulls) never match. max <= 0 returns all retained matches.
+func (r *Recorder) ListByHook(hookID string, max int) []Event {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := r.total
+	if n > len(r.buf) {
+		n = len(r.buf)
+	}
+	out := make([]Event, 0, n)
+	for i := 1; i <= n; i++ {
+		if max > 0 && len(out) == max {
+			break
+		}
+		ev := r.buf[(r.next-i+len(r.buf))%len(r.buf)]
+		if ev.Fields["hook"] == hookID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
