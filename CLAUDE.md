@@ -51,11 +51,20 @@ The server listens on two TCP ports plus a Unix socket:
 
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
   `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`,
-  `/runs/{id}/cancel`, `/reload`, `/events` (activity feed), `/images`
-  (per-hook image state), `/concurrency` (live per-group limit/active/
-  waiting), `/kv` (read-only state-store stats: per-namespace key count and
-  bytes, never values). Internal, behind Cloudflare Zero Trust.
+- **Admin port** (`:9001`): dashboard, `/hooks`, `/hooks/{id}` (one hook's
+  drill-down: value-free config summary — api_key as a boolean, env var
+  names only, never any api_key/env/secret value — plus image state, KV
+  namespace stats, and run stats over the tracker's bounded window),
+  `/runs` (`?hook=` filters), `/runs/{id}/cancel`, `/reload`, `/events`
+  (activity feed; `?hook=` filters on the `hook` field every hook-scoped
+  event carries), `/images` (per-hook image state), `/concurrency` (live
+  per-group limit/active/waiting), `/kv` (read-only state-store stats:
+  per-namespace key count and bytes, never values). Internal, behind
+  Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment opens a
+  per-hook "app" page built on those endpoints — an app is exactly one
+  hook for now; grouping several hooks into one app is future work, which
+  is why `/hooks/{id}` keeps a hook-scoped shape a grouping layer could
+  aggregate.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
   `POST /kv/{key}/incr`. Hooks don't touch the socket directly: the runner
@@ -223,7 +232,11 @@ The companion repo is `wow-look-at-my/webhooks`.
   rolls the in-memory mutation back, so memory never diverges from disk —
   don't "optimize" by keeping an in-memory-only value on write failure or you
   break the survives-a-restart guarantee. TTL is enforced lazily on read AND
-  by a background sweeper (`StartSweeper`/`Close`); keep both.
+  by a background sweeper (`StartSweeper`/`Close`); keep both. The store is
+  bounded (64 KiB/value, 5000 keys/namespace, 256 namespaces by default —
+  zero-valued `kv.Config` fields fall back to these in `kv.New`);
+  `WEBHOOK_RUNNER_KV_MAX_KEYS` overrides the key cap, parsed in cli/serve.go
+  like the other WEBHOOK_RUNNER_* env options.
 - A hook opts into the store with `state: true`. `state` is a new hook.json
   field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
   same deploy-first rule as `concurrency_group`. ONLY for state hooks, the

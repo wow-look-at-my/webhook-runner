@@ -64,7 +64,11 @@ hooks without restart.
   instructions stay collapsed. Opening a run shows its output with a
   per-line timestamp column (the raw view) or per-turn times (the
   conversation view), plus a **Copy log** button that puts the whole
-  timestamped log on the clipboard.
+  timestamped log on the clipboard. Every hook also has its own
+  drill-down page (`/#hook={id}`, linked from the hooks list) with its
+  config summary, run stats over the recent in-memory window, image
+  state, runs, and activity slice — a per-"app" view, where an app is
+  one hook for now.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 
@@ -128,17 +132,18 @@ URL (backed by an internal Unix socket; see below), not a public port.
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200).                      |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max duration, last run) over the bounded in-memory run window. |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
-| GET    | `/runs`             | Recent runs across all hooks.              |
+| GET    | `/runs`             | Recent runs across all hooks; `?hook={id}` narrows to one hook. |
 | GET    | `/runs/{id}`        | Status + retained output for one run.      |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
-| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it. |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
-| GET    | `/`                 | Dashboard.                                 |
+| GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
 
 ### State KV API (`http://localhost:9002` in state hooks)
 
@@ -227,7 +232,8 @@ Properties:
   a hook can only ever read and write its own data.
 - **Internal**: no network and no published port — the API is an internal Unix
   socket reached only through the injected localhost proxy.
-- **Bounded**: per-value size, keys-per-hook, and namespace-count caps keep a
+- **Bounded**: per-value size, keys-per-hook (default 5000,
+  `WEBHOOK_RUNNER_KV_MAX_KEYS` overrides), and namespace-count caps keep a
   runaway hook from exhausting disk (oversize writes get `413`).
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
@@ -453,6 +459,7 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`) and the token `state-secret`. Defaults alongside the hooks clone + deploy key. |
 | `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's internal Unix socket (the proxy shim bridges `localhost:9002` to it). Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
+| `WEBHOOK_RUNNER_KV_MAX_KEYS`      | `5000`                       | Max keys in one hook's KV namespace. Positive integer; unset or invalid falls back to the default. |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |

@@ -177,6 +177,14 @@ func TestCaps(t *testing.T) {
 	require.Equal(t, ErrTooManyNS, s.Set("ns3", "k", []byte("x"), 0))
 }
 
+func TestDefaultLimits(t *testing.T) {
+	// Zero-valued limits fall back to the built-in defaults.
+	s := newStore(t)
+	require.Equal(t, 64*1024, s.cfg.MaxValueBytes)
+	require.Equal(t, 5000, s.cfg.MaxKeysPerNS)
+	require.Equal(t, 256, s.cfg.MaxNamespaces)
+}
+
 func TestBadNamespace(t *testing.T) {
 	s := newStore(t)
 	for _, ns := range []string{"", "../etc", "UPPER", "has/slash", ".hidden", "a.b"} {
