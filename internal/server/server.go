@@ -17,6 +17,15 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
+// VersionInfo identifies the running build. Version is the same string the
+// `webhook-runner version` command prints; Revision and Time are the VCS
+// commit and commit time Go stamped into the build, when available.
+type VersionInfo struct {
+	Version  string `json:"version"`
+	Revision string `json:"revision,omitempty"`
+	Time     string `json:"time,omitempty"`
+}
+
 // Server holds the shared state for both the hook and admin HTTP handlers.
 type Server struct {
 	registry     *hooks.Registry
@@ -32,6 +41,7 @@ type Server struct {
 	hooksRepo    string
 	hookBaseURL  string
 	kv           *kv.Store
+	version      VersionInfo
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -78,12 +88,20 @@ type Options struct {
 	// KV is the persistent state store backing the state port and the
 	// admin /kv view. nil disables both (the routes report no namespaces).
 	KV *kv.Store
+
+	// Version identifies the running build; it is reported by /health and
+	// /version on both ports. An empty Version falls back to "dev" (the
+	// same default the version command uses).
+	Version VersionInfo
 }
 
 // New constructs a Server, registering routes on both muxes.
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
+	}
+	if opts.Version.Version == "" {
+		opts.Version.Version = "dev"
 	}
 	s := &Server{
 		registry:     opts.Registry,
@@ -99,6 +117,7 @@ func New(opts Options) *Server {
 		hooksRepo:    opts.HooksRepo,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
+		version:      opts.Version,
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
 		stateMux:     http.NewServeMux(),
@@ -121,6 +140,7 @@ func (s *Server) StateHandler() http.Handler { return s.stateMux }
 func (s *Server) registerRoutes() {
 	// Hook port (public, exposed via tunnel).
 	s.hookMux.HandleFunc("GET /health", s.handleHealth)
+	s.hookMux.HandleFunc("GET /version", s.handleVersion)
 	s.hookMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.hookMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	if s.reloadSecret != "" {
@@ -129,6 +149,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)

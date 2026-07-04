@@ -239,6 +239,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 
 	onReload := buildReloadFunc(repo, loadAndApply, rec)
 
+	// The build identity served by /health, /version, and the dashboard —
+	// the same string the `version` command prints, so every surface
+	// reports one consistent answer to "which build is deployed?".
+	vcsRev, vcsTime := buildVCS()
+
 	srv := server.New(server.Options{
 		Registry:     registry,
 		Runner:       rn,
@@ -253,6 +258,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HooksRepo:    o.hooksRepo,
 		HookBaseURL:  o.hookBaseURL,
 		KV:           kvStore,
+		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	})
 
 	// Watcher runs for the lifetime of the server; its initial scan is what
@@ -324,6 +330,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}()
 
 	attrs := []any{
+		"version", versionString(),
 		"hook_addr", o.addr,
 		"admin_addr", o.adminAddr,
 		"state_socket", socketPath,

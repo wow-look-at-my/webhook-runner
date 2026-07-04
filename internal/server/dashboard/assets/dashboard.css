@@ -357,3 +357,12 @@ a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
 #events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
 #app-events-table tbody tr { cursor: default; }
+
+/* Build-identity footer: unobtrusive, but always answers "which build is
+   this host running?" (filled from GET /version by dashboard.js). */
+.site-footer {
+  padding: 1rem 2rem 1.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.site-footer #server-version { font-family: monospace; }

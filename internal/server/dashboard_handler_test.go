@@ -1,0 +1,85 @@
+package server
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/wow-look-at-my/webhook-runner/internal/server/dashboard"
+)
+
+func getDashboard(t *testing.T, s *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// index.html must never be cached (it is the deploy switch: it names the
+// current hashed asset URLs) and must actually reference them.
+func TestDashboardIndexNoCacheAndHashedRefs(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+	rec := getDashboard(t, s, "/")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
+
+	body := rec.Body.String()
+	assert.Contains(t, body, `"`+dashboard.CSS.HashedName+`"`, "index must reference the hashed CSS URL")
+	assert.Contains(t, body, `"`+dashboard.JS.HashedName+`"`, "index must reference the hashed JS URL")
+	assert.NotContains(t, body, `"dashboard.css"`, "bare CSS reference must be rewritten")
+	assert.NotContains(t, body, `"dashboard.js"`, "bare JS reference must be rewritten")
+}
+
+// The content-addressed URLs are immutable-cacheable: their content can
+// never change (a new build changes the hash, and with it the URL).
+func TestDashboardHashedAssetsImmutable(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+	for _, a := range []dashboard.Asset{dashboard.CSS, dashboard.JS} {
+		rec := getDashboard(t, s, "/"+a.HashedName)
+		require.Equal(t, http.StatusOK, rec.Code, a.HashedName)
+		assert.Equal(t, string(a.Body), rec.Body.String(), "hashed URL must serve the exact embedded bytes")
+		assert.Equal(t, "public, max-age=31536000, immutable", rec.Header().Get("Cache-Control"))
+		assert.Equal(t, `"`+a.Hash+`"`, rec.Header().Get("ETag"))
+		assert.Equal(t, a.ContentType, rec.Header().Get("Content-Type"))
+	}
+}
+
+// Conditional revalidation: If-None-Match against the ETag answers 304.
+func TestDashboardAssetConditionalGet(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/"+dashboard.CSS.HashedName, nil)
+	req.Header.Set("If-None-Match", `"`+dashboard.CSS.Hash+`"`)
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotModified, rec.Code)
+}
+
+// A hashed path with a stale/wrong hash must 404 — never serve current
+// content under an old URL, or an edge cache would keep it alive forever.
+func TestDashboardStaleHash404(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+	for _, p := range []string{"/dashboard.000000000000.css", "/dashboard.feedfacefeed.js"} {
+		rec := getDashboard(t, s, p)
+		require.Equal(t, http.StatusNotFound, rec.Code, p)
+	}
+}
+
+// The bare (pre-hashing) asset paths keep working for compat, but explicitly
+// no-cache: Cloudflare caches .css/.js by extension when the origin is
+// silent, which is exactly how the stale-assets incident happened.
+func TestDashboardBareAssetsNoCache(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+	for p, a := range map[string]dashboard.Asset{
+		"/dashboard.css": dashboard.CSS,
+		"/dashboard.js":  dashboard.JS,
+	} {
+		rec := getDashboard(t, s, p)
+		require.Equal(t, http.StatusOK, rec.Code, p)
+		assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"), p)
+		assert.Equal(t, string(a.Body), rec.Body.String(), p)
+	}
+}

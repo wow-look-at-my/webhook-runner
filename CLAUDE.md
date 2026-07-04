@@ -50,8 +50,12 @@ examples/hooks/            sample hook configs
 The server listens on two TCP ports plus a Unix socket:
 
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
-  `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/hooks`, `/hooks/{id}` (one hook's
+  `GET /health` (body carries the build version), `GET /version` (build
+  identity: version + VCS revision/time — the same string the `version`
+  command prints, plumbed from cli via `server.Options.Version`),
+  `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
+- **Admin port** (`:9001`): dashboard, `/version` (build identity, same as
+  the hook port's; the dashboard footer shows it), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
   names only, never any api_key/env/secret value — plus image state, KV
   namespace stats, and run stats over the tracker's bounded window),
@@ -64,7 +68,10 @@ The server listens on two TCP ports plus a Unix socket:
   per-hook "app" page built on those endpoints — an app is exactly one
   hook for now; grouping several hooks into one app is future work, which
   is why `/hooks/{id}` keeps a hook-scoped shape a grouping layer could
-  aggregate.
+  aggregate. Dashboard assets are content-addressed (`internal/server/
+  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js`, served
+  immutable; `/` and the bare asset paths are no-cache, stale hashes 404)
+  so an edge cache can never pair new HTML with stale assets.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
   `POST /kv/{key}/incr`. Hooks don't touch the socket directly: the runner
