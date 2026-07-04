@@ -221,12 +221,24 @@ function setBadge(ok) {
   b.classList.toggle("bad", !ok);
 }
 
+// The endpoint a hook is triggered on, shown as a path. Deliberately NOT a
+// full URL: this dashboard is served on the ADMIN port/hostname, while hooks
+// are served on the separate hook port -- a URL built from location.origin
+// looks copyable but points at the wrong host. The path is the part we know;
+// .copyable (user-select: all) keeps it one-click selectable.
+function triggerPath(id) {
+  return [
+    el("code", { class: "copyable" }, `/hook/${id}`),
+    " ",
+    el("span", { class: "port-note" }, "(on the hook port)"),
+  ];
+}
+
 function renderHooks(hooks) {
   const tbody = document.querySelector("#hooks-table tbody");
   tbody.innerHTML = "";
   document.getElementById("hooks-empty").hidden = hooks.length > 0;
   for (const h of hooks) {
-    const url = `${location.origin}/hook/${h.id}`;
     tbody.appendChild(
       el("tr", null,
         // Each hook is an "app": its ID links to the per-hook drill-down.
@@ -235,7 +247,7 @@ function renderHooks(hooks) {
             el("code", null, h.id))),
         el("td", null, h.description || ""),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
-        el("td", null, el("code", null, url)),
+        el("td", null, ...triggerPath(h.id)),
       )
     );
   }
@@ -367,14 +379,14 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-desc").textContent = info.description || "";
 
   fillDl(document.getElementById("app-info"), [
-    ["Trigger URL", el("code", null, `${location.origin}/hook/${info.id}`)],
+    ["Trigger path", triggerPath(info.id)],
     ["Mode", info.synchronous ? "sync" : "async"],
     ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
     ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
     ["Timeout", info.timeout],
     ["API key", info.api_key ? "configured" : "none"],
     ["Env vars", info.env_keys && info.env_keys.length
-      ? info.env_keys.map((k) => el("code", { class: "env-key" }, k))
+      ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
       : "none"],
     ["State (KV)", !info.state ? "off"
       : detail.kv ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
@@ -385,10 +397,10 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-stats-window").textContent =
     `Recent window: the last ≤${st.max_tracked} runs held in memory (resets on restart).`;
   const byStatus = Object.entries(st.by_status || {}).map(([k, n]) =>
-    el("span", { class: "status " + k }, `${k} ×${n} `));
+    el("span", { class: "status " + k }, `${k} ×${n}`));
   fillDl(document.getElementById("app-stats"), [
     ["Runs tracked", String(st.tracked)],
-    ["By status", byStatus.length ? byStatus : "—"],
+    ["By status", byStatus.length ? el("span", { class: "chips" }, ...byStatus) : "—"],
     ["Success rate", st.completed ? `${Math.round(st.success_rate * 100)}% of ${st.completed} completed` : "—"],
     ["Avg duration", st.completed ? fmtDuration(st.avg_duration_ms) : "—"],
     ["Max duration", st.completed ? fmtDuration(st.max_duration_ms) : "—"],
