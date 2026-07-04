@@ -612,10 +612,25 @@ async function loadConfig() {
   }
 }
 
+// One-shot footer stamp: which build is this host running? The tooltip
+// carries the VCS revision/commit time when the build has them.
+async function loadVersion() {
+  try {
+    const v = await fetchJSON("/version");
+    const span = document.getElementById("server-version");
+    if (!span || !v.version) return;
+    span.textContent = v.version;
+    if (v.revision) span.title = v.revision + (v.time ? " @ " + v.time : "");
+  } catch (e) {
+    console.error("loadVersion:", e);
+  }
+}
+
 // Switching between the overview and a per-app page re-renders immediately;
 // the poll keeps whichever view is active fresh.
 window.addEventListener("hashchange", refresh);
 
 loadConfig();
+loadVersion();
 refresh();
 setInterval(refresh, POLL_MS);

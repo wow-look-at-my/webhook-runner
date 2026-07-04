@@ -21,8 +21,21 @@ import (
 const MaxBodyBytes = 25 * 1024 * 1024
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
+	// The version rides along so a single probe answers both "is it up?"
+	// and "which build is this?" — status stays the first field for
+	// backward compatibility with anything matching on the raw body.
+	writeJSON(w, http.StatusOK, struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}{Status: "ok", Version: s.version.Version})
+}
+
+// handleVersion identifies the running build (same string the `version`
+// command prints, plus the VCS revision/time when the build has them).
+// Registered on both ports so the deployed build is checkable from either
+// side of the tunnel.
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.version)
 }
 
 func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {

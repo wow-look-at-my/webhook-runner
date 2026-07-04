@@ -45,3 +45,6 @@ jobs:
   publish-ghcr:
     needs: e2e
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
+    # The reusable workflow takes an optional `updater-webhook-secret` to push-notify docker-updater
+    # after publish; intentionally unwired (this org uses no GitHub Actions secrets -- the host
+    # updates via docker-updater's own digest polling). Pass the secret explicitly if that changes.

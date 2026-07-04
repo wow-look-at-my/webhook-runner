@@ -121,7 +121,8 @@ URL (backed by an internal Unix socket; see below), not a public port.
 
 | Method | Path                | Purpose                                    |
 |--------|---------------------|--------------------------------------------|
-| GET    | `/health`           | Liveness probe (200).                      |
+| GET    | `/health`           | Liveness probe (200). Body carries the build version: `{"status":"ok","version":"..."}`. |
+| GET    | `/version`          | Build identity: `{"version","revision","time"}` — the same string `webhook-runner version` prints, plus the VCS commit/time when the build has them. |
 | POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
@@ -130,7 +131,8 @@ URL (backed by an internal Unix socket; see below), not a public port.
 
 | Method | Path                | Purpose                                    |
 |--------|---------------------|--------------------------------------------|
-| GET    | `/health`           | Liveness probe (200).                      |
+| GET    | `/health`           | Liveness probe (200). Body carries the build version. |
+| GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
 | GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max duration, last run) over the bounded in-memory run window. |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
@@ -144,6 +146,14 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
 | GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
+
+The dashboard's static assets are content-addressed: the served index.html
+references `/dashboard.<hash>.css|.js` (hash of the embedded bytes), which are
+cacheable forever (`Cache-Control: immutable` + ETag) — a new build changes
+the URLs. `/`, the bare `/dashboard.css|.js` paths, and any stale-hash URL
+(404) are `no-cache`, so an edge cache (e.g. Cloudflare, which caches
+`.css`/`.js` by extension when the origin sends no cache headers) can never
+pair a new index.html with stale assets after a deploy.
 
 ### State KV API (`http://localhost:9002` in state hooks)
 
