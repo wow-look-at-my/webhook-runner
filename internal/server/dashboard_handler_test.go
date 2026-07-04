@@ -34,6 +34,25 @@ func TestDashboardIndexNoCacheAndHashedRefs(t *testing.T) {
 	assert.NotContains(t, body, `"dashboard.js"`, "bare JS reference must be rewritten")
 }
 
+// The per-hook drill-down view must be invisible on the plain overview.
+// Two halves, both load-bearing: the shipped markup carries the hidden
+// attribute (so the drill-down is hidden before dashboard.js runs), and the
+// CSS carries a [hidden]{display:none !important} guard — the hidden
+// attribute's UA rule loses to any author display: on the same element
+// (main { display: grid } is what regressed it), so without the guard the
+// drill-down renders, empty, stacked below the overview.
+func TestDashboardDrilldownHiddenOnOverview(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+	rec := getDashboard(t, s, "/")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Contains(t, rec.Body.String(), `<main id="app-view" hidden>`,
+		"initial markup must ship the drill-down view hidden")
+	css := string(dashboard.CSS.Body)
+	assert.Contains(t, css, "[hidden] { display: none !important; }",
+		"CSS must guard the hidden attribute against author display rules")
+}
+
 // The content-addressed URLs are immutable-cacheable: their content can
 // never change (a new build changes the hash, and with it the URL).
 func TestDashboardHashedAssetsImmutable(t *testing.T) {
