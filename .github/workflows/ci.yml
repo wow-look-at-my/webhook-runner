@@ -45,12 +45,6 @@ jobs:
   publish-ghcr:
     needs: e2e
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
-    secrets:
-      # Signs the "Notify docker-updater" webhook so the host redeploys the
-      # moment the image is pushed, instead of waiting for digest polling.
-      # Must match DOCKER_UPDATER_GITHUB_WEBHOOK_SECRET on the server. An
-      # explicit mapping is required — `secrets: inherit` cannot satisfy the
-      # hyphenated `updater-webhook-secret` name (GitHub secret names only
-      # allow [A-Za-z0-9_]). If the publish job still logs "no updater
-      # secret; skipping", the org/repo secret name below doesn't exist yet.
-      updater-webhook-secret: ${{ secrets.DOCKER_UPDATER_GITHUB_WEBHOOK_SECRET }}
+    # The reusable workflow takes an optional `updater-webhook-secret` to push-notify docker-updater
+    # after publish; intentionally unwired (this org uses no GitHub Actions secrets -- the host
+    # updates via docker-updater's own digest polling). Pass the secret explicitly if that changes.
