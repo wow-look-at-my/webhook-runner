@@ -92,6 +92,10 @@ type Run struct {
 	state  RunState
 	done   chan struct{}
 	cancel chan struct{}
+
+	// onFinish is copied from the tracker at New and immutable after —
+	// read without the mutex. See Tracker.SetOnFinish.
+	onFinish func(RunState)
 }
 
 // ID returns the run's stable ID.
@@ -180,7 +184,9 @@ func (r *Run) AppendOutput(line string) {
 }
 
 // Finish records the terminal state and closes the done channel. Calling
-// Finish more than once on the same run is a no-op for the second call.
+// Finish more than once on the same run is a no-op for the second call —
+// which is also what guarantees the tracker's OnFinish observer fires
+// exactly once per run.
 func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -195,6 +201,9 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	}
 	r.mu.Unlock()
 	close(r.done)
+	if r.onFinish != nil {
+		r.onFinish(r.Snapshot(-1))
+	}
 }
 
 // SetRunning marks the run as actively executing. Useful for the dashboard
@@ -230,6 +239,7 @@ type Tracker struct {
 	byID      map[string]*Run
 	byHook    map[string][]*Run
 	maxByHook int
+	onFinish  func(RunState)
 }
 
 // NewTracker returns an empty tracker.
@@ -239,6 +249,17 @@ func NewTracker() *Tracker {
 		byHook:    make(map[string][]*Run),
 		maxByHook: MaxRunsPerHook,
 	}
+}
+
+// SetOnFinish registers fn to be invoked exactly once per run — with a full
+// terminal snapshot, synchronously on the finishing goroutine — when the run
+// reaches a terminal status. Set it before the first New: runs created
+// earlier never see it. This is the persistence seam (the run store's
+// write-once-at-terminal hook) without the runs package knowing about disk.
+func (t *Tracker) SetOnFinish(fn func(RunState)) {
+	t.mu.Lock()
+	t.onFinish = fn
+	t.mu.Unlock()
 }
 
 // New starts tracking a fresh run for the given hook ID. The run begins
@@ -255,6 +276,7 @@ func (t *Tracker) New(hookID string) *Run {
 		cancel: make(chan struct{}),
 	}
 	t.mu.Lock()
+	r.onFinish = t.onFinish
 	t.byID[r.state.ID] = r
 	t.byHook[hookID] = append(t.byHook[hookID], r)
 	if extra := len(t.byHook[hookID]) - t.maxByHook; extra > 0 {
