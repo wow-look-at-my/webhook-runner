@@ -44,7 +44,14 @@ table { width: 100%; border-collapse: collapse; background: var(--panel); border
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
 th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; }
 tbody tr:last-child td { border-bottom: 0; }
-tbody tr:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
+/* Row hover/pointer affordances are OPT-IN: dashboard.js tags exactly the
+   rows it wires a click handler onto with class="clickable" (the runs
+   tables, and the STATE (KV) namespace/key drill-in). A blanket
+   `tbody tr:hover` rule here used to promise a click on EVERY table row and
+   needed a per-table cursor:default opt-out list below — which missed
+   #kv-table, giving the STATE rows a pointer cursor that did nothing.
+   Affordance now follows behavior: no handler, no pointer. */
+tbody tr.clickable:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
 code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }
 .badge {
   display: inline-block;
@@ -90,10 +97,10 @@ button, .btn {
 }
 button:hover, .btn:hover { filter: brightness(1.1); }
 
-/* Run detail modal: a large centered popup so output is readable without
-   scrolling the whole page. Native <dialog> gives us the backdrop, Escape
-   key, focus trapping and centering for free. */
-dialog#run-detail {
+/* Detail modals (run output, KV value): a large centered popup so content is
+   readable without scrolling the whole page. Native <dialog> gives us the
+   backdrop, Escape key, focus trapping and centering for free. */
+dialog#run-detail, dialog#kv-detail {
   width: min(92vw, 1100px);
   height: min(88vh, 900px);
   max-width: 92vw;
@@ -105,12 +112,16 @@ dialog#run-detail {
   color: var(--fg);
   box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
 }
-dialog#run-detail::backdrop {
+/* A KV value is usually small (64 KiB cap), so its modal sizes to content —
+   still capped so a big value scrolls inside its box, not the page. */
+dialog#kv-detail { height: auto; width: min(92vw, 900px); }
+dialog#kv-detail .modal-body { height: auto; max-height: calc(88vh - 2px); }
+dialog#run-detail::backdrop, dialog#kv-detail::backdrop {
   background: rgba(1, 4, 9, 0.7);
 }
 /* Lock the page behind the modal while it's open. showModal() makes the
    background inert but does NOT stop it from scrolling on its own. */
-html:has(dialog#run-detail[open]) { overflow: hidden; }
+html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: hidden; }
 .modal-body {
   display: flex;
   flex-direction: column;
@@ -205,6 +216,14 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  margin: 0;
+}
+/* KV value box: same contained scrolling, but content-sized (the modal-body's
+   max-height bounds it, so an oversized value shrinks this and scrolls). */
+#kv-detail-output {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   margin: 0;
 }
 /* Raw view. Self-sufficient box styling (background/border/padding) because
@@ -387,8 +406,15 @@ a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent
 .kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
 .event-time { white-space: nowrap; color: var(--muted); }
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
-#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
-#app-events-table tbody tr { cursor: default; }
+
+/* STATE (KV) drill-in: a namespace row toggles an inset key list; a key row
+   opens its value in the kv-detail modal. */
+.kv-caret { display: inline-block; width: 1.1em; color: var(--muted); font-size: 0.8em; }
+tr.kv-keys-row > td { padding: 0.4rem 0.75rem 0.75rem 1.9rem; background: rgba(1,4,9,0.35); }
+table.kv-keys-table { background: transparent; border: 1px solid var(--border); }
+table.kv-keys-table th, table.kv-keys-table td { font-size: 0.8rem; padding: 0.35rem 0.6rem; }
+.kv-keys-note { color: var(--muted); font-style: italic; font-size: 0.85rem; margin: 0.25rem 0 0; }
+.kv-expiry { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Build-identity footer: unobtrusive, but always answers "which build is
    this host running?" (filled from GET /version by dashboard.js). */

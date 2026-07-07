@@ -258,7 +258,9 @@ function renderRuns(rs) {
   tbody.innerHTML = "";
   document.getElementById("runs-empty").hidden = rs.length > 0;
   for (const r of rs) {
-    const tr = el("tr", { data: { runId: r.id } },
+    // class="clickable" is what grants the pointer/hover affordance in CSS:
+    // only rows that really have a click handler get it.
+    const tr = el("tr", { class: "clickable", data: { runId: r.id } },
       el("td", null, fmtTime(r.started)),
       el("td", null, el("code", null, r.hook_id)),
       el("td", { class: "status " + r.status }, r.status),
@@ -321,20 +323,163 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+// --- STATE (KV) drill-in ----------------------------------------------------
+//
+// A namespace row toggles an inset key list (value-free metadata from
+// GET /kv/{ns}); a key row opens the stored value (GET /kv/{ns}/{key}) in
+// the kv-detail modal. Expansion state lives in kvExpanded so it survives
+// the poll's re-render; each render re-fetches the expanded namespaces' key
+// lists, which is also what keeps the expiry countdowns ticking.
+
+const kvExpanded = new Set();
+const kvKeysCache = new Map(); // ns -> last key list (paint instantly, then refresh)
+let lastKVStats = [];
+
 function renderKV(namespaces) {
+  lastKVStats = namespaces;
   const tbody = document.querySelector("#kv-table tbody");
   tbody.innerHTML = "";
   document.getElementById("kv-empty").hidden = namespaces.length > 0;
   for (const ns of namespaces) {
-    tbody.appendChild(
-      el("tr", null,
-        el("td", null, el("code", null, ns.namespace)),
-        el("td", null, String(ns.keys)),
-        el("td", null, fmtBytes(ns.bytes)),
-      )
+    const open = kvExpanded.has(ns.namespace);
+    const tr = el("tr", { class: "clickable" },
+      el("td", null,
+        el("span", { class: "kv-caret" }, open ? "▾" : "▸"),
+        el("code", null, ns.namespace)),
+      el("td", null, String(ns.keys)),
+      el("td", null, fmtBytes(ns.bytes)),
     );
+    tr.addEventListener("click", () => {
+      if (!kvExpanded.delete(ns.namespace)) kvExpanded.add(ns.namespace);
+      renderKV(lastKVStats); // immediate toggle feedback; the poll keeps it fresh
+    });
+    tbody.appendChild(tr);
+    if (open) {
+      const cell = el("td", { colspan: "3" });
+      tbody.appendChild(el("tr", { class: "kv-keys-row" }, cell));
+      fillKVKeys(cell, ns.namespace);
+    }
   }
 }
+
+async function fillKVKeys(cell, ns) {
+  const cached = kvKeysCache.get(ns);
+  cell.appendChild(cached ? renderKVKeys(ns, cached) : el("p", { class: "kv-keys-note" }, "Loading…"));
+  try {
+    const data = await fetchJSON(`/kv/${encodeURIComponent(ns)}`);
+    kvKeysCache.set(ns, data);
+    if (!cell.isConnected) return; // a newer render replaced this row
+    cell.replaceChildren(renderKVKeys(ns, data));
+  } catch {
+    // 404: the namespace vanished between the stats poll and this fetch.
+    if (!cell.isConnected) return;
+    cell.replaceChildren(el("p", { class: "kv-keys-note" },
+      "Namespace not found — it may have just been emptied or removed."));
+  }
+}
+
+function renderKVKeys(ns, data) {
+  const keys = data.keys || [];
+  if (!keys.length) return el("p", { class: "kv-keys-note" }, "No keys.");
+  const tbody = el("tbody");
+  for (const k of keys) {
+    const tr = el("tr", { class: "clickable" },
+      el("td", null, el("code", null, k.key)),
+      el("td", null, fmtBytes(k.bytes)),
+      el("td", { class: "kv-expiry" }, fmtExpiry(k.expires_at)),
+    );
+    tr.addEventListener("click", () => showKVValue(ns, k));
+    tbody.appendChild(tr);
+  }
+  return el("table", { class: "kv-keys-table" },
+    el("thead", null, el("tr", null,
+      el("th", null, "Key"), el("th", null, "Size"), el("th", null, "Expires"))),
+    tbody,
+  );
+}
+
+// "in 4m 32s" countdown for a TTL'd key; an em dash for none. The 3s poll
+// re-renders the expanded list, which is what keeps this ticking down.
+function fmtExpiry(iso) {
+  if (!iso) return "—";
+  const ms = new Date(iso) - Date.now();
+  if (isNaN(ms)) return iso;
+  if (ms <= 0) return "expiring…";
+  return "in " + fmtDuration(ms);
+}
+
+// --- KV value modal ----------------------------------------------------------
+
+let currentKVValue = "";
+
+async function showKVValue(ns, keyStat) {
+  const dlg = document.getElementById("kv-detail");
+  document.getElementById("kv-detail-key").textContent = keyStat.key;
+  const out = document.getElementById("kv-detail-output");
+  out.replaceChildren();
+  currentKVValue = "";
+
+  const meta = [
+    ["Namespace", el("code", null, ns)],
+    ["Size", fmtBytes(keyStat.bytes)],
+  ];
+  if (keyStat.expires_at) {
+    meta.push(["Expires", `${fmtTime(keyStat.expires_at)} (${fmtExpiry(keyStat.expires_at)})`]);
+  }
+
+  let node;
+  try {
+    const res = await fetch(`/kv/${encodeURIComponent(ns)}/${encodeURIComponent(keyStat.key)}`);
+    if (res.status === 404) {
+      // Deleted or expired while the list was on screen: a friendly
+      // message, not a broken pane.
+      node = el("p", { class: "kv-keys-note" },
+        "Key not found — it expired or was deleted since the list loaded.");
+    } else if (!res.ok) {
+      node = el("p", { class: "kv-keys-note" }, `Failed to load value (HTTP ${res.status}).`);
+    } else {
+      const raw = await res.text();
+      currentKVValue = raw;
+      let display = raw;
+      // The server content-types a value that parses as JSON; pretty-print
+      // those, show everything else verbatim.
+      if ((res.headers.get("Content-Type") || "").startsWith("application/json")) {
+        try { display = JSON.stringify(JSON.parse(raw), null, 2); } catch { /* verbatim */ }
+        meta.push(["Type", "JSON"]);
+      } else {
+        meta.push(["Type", "text"]);
+      }
+      node = el("pre", { class: "raw-log" }, display === "" ? "(empty value)" : display);
+    }
+  } catch (e) {
+    node = el("p", { class: "kv-keys-note" }, "Failed to load value: " + e);
+  }
+
+  fillDl(document.getElementById("kv-detail-meta"), meta);
+  document.getElementById("kv-detail-copy").disabled = currentKVValue === "";
+  out.appendChild(node);
+  if (!dlg.open) dlg.showModal();
+}
+
+const kvDetailDialog = document.getElementById("kv-detail");
+document.getElementById("kv-detail-close").addEventListener("click", () => {
+  kvDetailDialog.close();
+});
+// Click outside the modal box (on the backdrop) closes it; Escape already does.
+kvDetailDialog.addEventListener("click", (e) => {
+  if (e.target === kvDetailDialog) kvDetailDialog.close();
+});
+const kvCopyBtn = document.getElementById("kv-detail-copy");
+kvCopyBtn.addEventListener("click", async () => {
+  if (!currentKVValue) return;
+  const ok = await copyToClipboard(currentKVValue); // always the RAW value, not the pretty-print
+  kvCopyBtn.textContent = ok ? "Copied!" : "Copy failed";
+  kvCopyBtn.classList.toggle("copied", ok);
+  setTimeout(() => {
+    kvCopyBtn.textContent = "Copy value";
+    kvCopyBtn.classList.remove("copied");
+  }, 1500);
+});
 
 // --- Per-app view (app == one hook) ----------------------------------------
 
@@ -432,7 +577,7 @@ function renderApp(detail, runs, events) {
   tbody.innerHTML = "";
   document.getElementById("app-runs-empty").hidden = runs.length > 0;
   for (const r of runs) {
-    const tr = el("tr", null,
+    const tr = el("tr", { class: "clickable" },
       el("td", null, fmtTime(r.started)),
       el("td", { class: "status " + r.status }, r.status),
       el("td", null, runDuration(r)),

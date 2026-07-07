@@ -428,6 +428,59 @@ func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.kv.Stats())
 }
 
+// handleKVKeys lists one namespace's keys with value-free metadata (admin
+// port): name, size, and expiry per live key, plus totals. Unknown
+// namespace is a 404. Note the exposure line here: the admin port never
+// serves CONFIG secrets (api_key/env values stay value-free everywhere),
+// but a hook's runtime KV DATA is the operator's to inspect — this listing
+// stays value-free, and /kv/{namespace}/{key} serves the stored value.
+func (s *Server) handleKVKeys(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	if s.kv == nil {
+		writeError(w, http.StatusNotFound, "no such namespace")
+		return
+	}
+	keys, ok := s.kv.Keys(ns)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no such namespace")
+		return
+	}
+	total := 0
+	for _, k := range keys {
+		total += k.Bytes
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Namespace  string       `json:"namespace"`
+		Keys       []kv.KeyStat `json:"keys"`
+		TotalKeys  int          `json:"total_keys"`
+		TotalBytes int          `json:"total_bytes"`
+	}{Namespace: ns, Keys: keys, TotalKeys: len(keys), TotalBytes: total})
+}
+
+// handleKVValue serves one stored value verbatim (admin port) — runtime KV
+// data, deliberately readable by the operator (unlike config secrets, which
+// no admin endpoint ever exposes). Content-Type is application/json when
+// the bytes parse as JSON, else text/plain. Missing or expired keys are a
+// 404 (same lazy-expiry rule as the state API's GET).
+func (s *Server) handleKVValue(w http.ResponseWriter, r *http.Request) {
+	if s.kv == nil {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+	v, ok := s.kv.Get(r.PathValue("namespace"), r.PathValue("key"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+	ct := "text/plain; charset=utf-8"
+	if json.Valid(v) {
+		ct = "application/json"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(v)
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	cfg := map[string]string{}
 	if s.hooksRepo != "" {

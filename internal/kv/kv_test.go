@@ -238,6 +238,38 @@ func TestStats(t *testing.T) {
 	require.Equal(t, 1, stats[1].Keys)
 }
 
+func TestKeys(t *testing.T) {
+	s := newStore(t)
+
+	// Unknown namespace: ok=false (the admin endpoint's 404).
+	_, ok := s.Keys("nope")
+	require.False(t, ok)
+
+	require.NoError(t, s.Set("ns", "b", []byte("xx"), 0))
+	require.NoError(t, s.Set("ns", "a", []byte("y"), time.Hour))
+	require.NoError(t, s.Set("ns", "gone", []byte("zzz"), 10*time.Millisecond))
+	time.Sleep(30 * time.Millisecond)
+
+	keys, ok := s.Keys("ns")
+	require.True(t, ok)
+	// Sorted by key, TTL-expired hidden.
+	require.Len(t, keys, 2)
+	require.Equal(t, "a", keys[0].Key)
+	require.Equal(t, 1, keys[0].Bytes)
+	require.NotNil(t, keys[0].ExpiresAt, "TTL'd key must carry its expiry")
+	require.True(t, keys[0].ExpiresAt.After(time.Now()))
+	require.Equal(t, "b", keys[1].Key)
+	require.Equal(t, 2, keys[1].Bytes)
+	require.Nil(t, keys[1].ExpiresAt, "no-TTL key must omit expiry")
+
+	// An existing namespace whose keys all expired is still ok=true, empty.
+	require.NoError(t, s.Set("empty", "k", []byte("v"), 10*time.Millisecond))
+	time.Sleep(30 * time.Millisecond)
+	keys, ok = s.Keys("empty")
+	require.True(t, ok)
+	require.Empty(t, keys)
+}
+
 func TestEnsureSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "state-secret")
 	a, err := EnsureSecret(path)

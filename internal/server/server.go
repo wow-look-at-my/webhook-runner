@@ -172,6 +172,11 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
 	s.adminMux.HandleFunc("GET /kv", s.handleKVStats)
+	// Per-namespace drill-in: the key list (value-free metadata) and single
+	// values. Admin-only on purpose — runtime KV data is the operator's to
+	// inspect (config secrets, by contrast, are never exposed anywhere).
+	s.adminMux.HandleFunc("GET /kv/{namespace}", s.handleKVKeys)
+	s.adminMux.HandleFunc("GET /kv/{namespace}/{key}", s.handleKVValue)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 
 	// State port (internal): hook containers reach their own namespace,

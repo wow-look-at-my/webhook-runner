@@ -45,6 +45,15 @@ type NamespaceStat struct {
 	Bytes     int    `json:"bytes"`
 }
 
+// KeyStat is value-free metadata for one key, surfaced by the admin
+// dashboard's per-namespace drill-in. ExpiresAt is nil for keys without a
+// TTL (omitted from JSON).
+type KeyStat struct {
+	Key       string     `json:"key"`
+	Bytes     int        `json:"bytes"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
 // Typed errors let the HTTP layer map failures onto status codes.
 var (
 	ErrValueTooLarge = errors.New("kv: value exceeds max size")
@@ -322,6 +331,35 @@ func (s *Store) Incr(ns, key string, delta int64, ttl time.Duration) (int64, err
 		return 0, err
 	}
 	return newVal, nil
+}
+
+// Keys returns value-free metadata for every live key in ns, sorted by key,
+// with ok=false when the namespace does not exist. Expired entries are
+// hidden here exactly as in Get/List (lazy expiry; the sweeper reclaims
+// them), so a key never appears past its TTL. An existing namespace whose
+// keys have all expired still reports ok=true with an empty slice.
+func (s *Store) Keys(ns string) ([]KeyStat, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.ns[ns]
+	if !ok {
+		return nil, false
+	}
+	now := time.Now()
+	stats := make([]KeyStat, 0, len(m))
+	for k, e := range m {
+		if e.expired(now) {
+			continue
+		}
+		ks := KeyStat{Key: k, Bytes: len(e.Value)}
+		if e.Expires != nil {
+			exp := *e.Expires
+			ks.ExpiresAt = &exp
+		}
+		stats = append(stats, ks)
+	}
+	sort.Slice(stats, func(i, j int) bool { return stats[i].Key < stats[j].Key })
+	return stats, true
 }
 
 // Stats returns a read-only, value-free summary of every namespace, sorted by
