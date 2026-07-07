@@ -113,8 +113,10 @@ dialog#run-detail, dialog#kv-detail {
   box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
 }
 /* A KV value is usually small (64 KiB cap), so its modal sizes to content —
-   still capped so a big value scrolls inside its box, not the page. */
-dialog#kv-detail { height: auto; width: min(92vw, 900px); }
+   still capped so a big value scrolls inside its box, not the page. Must be
+   fit-content, not auto: the UA's dialog:modal style pins both block insets
+   to 0, so an auto height stretches to the max instead of shrink-wrapping. */
+dialog#kv-detail { height: fit-content; width: min(92vw, 900px); }
 dialog#kv-detail .modal-body { height: auto; max-height: calc(88vh - 2px); }
 dialog#run-detail::backdrop, dialog#kv-detail::backdrop {
   background: rgba(1, 4, 9, 0.7);
