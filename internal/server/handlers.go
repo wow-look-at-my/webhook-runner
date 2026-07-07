@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -191,19 +192,38 @@ func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	run := s.tracker.Get(id)
-	if run == nil {
-		writeError(w, http.StatusNotFound, "no such run")
-		return
-	}
 	tail := -1
 	if t := r.URL.Query().Get("tail"); t != "" {
 		if n, err := strconv.Atoi(t); err == nil {
 			tail = n
 		}
 	}
-	snap := run.Snapshot(tail)
-	writeJSON(w, http.StatusOK, snap)
+	if run := s.tracker.Get(id); run != nil {
+		writeJSON(w, http.StatusOK, run.Snapshot(tail))
+		return
+	}
+	// The tracker window is bounded; fall back to the persisted history for
+	// runs it has evicted (or that finished before a restart).
+	if s.runstore != nil {
+		if snap, ok := s.runstore.Get(id); ok {
+			tailOutput(&snap, tail)
+			writeJSON(w, http.StatusOK, snap)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "no such run")
+}
+
+// tailOutput trims a persisted state's output to the requested tail length
+// (negative = full), the same contract as Run.Snapshot.
+func tailOutput(st *runs.RunState, tail int) {
+	if tail < 0 || tail >= len(st.Output) {
+		return
+	}
+	st.Output = st.Output[len(st.Output)-tail:]
+	if tail < len(st.OutputTimes) {
+		st.OutputTimes = st.OutputTimes[len(st.OutputTimes)-tail:]
+	}
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
@@ -213,24 +233,51 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	hookID := r.URL.Query().Get("hook")
+	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), max))
+}
 
-	var src []*runs.Run
+// mergedRuns is the /runs read path: live tracker runs (active + recent)
+// merged with the persisted completed history, deduped by run ID (the live
+// copy wins — for the same run it can never be older than the persisted
+// one), newest-first, capped at max. Output is never shipped in the list
+// view; clients fetch /runs/{id} for that.
+func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
+	var live []*runs.Run
 	if hookID != "" {
-		src = s.tracker.ListByHook(hookID, max)
+		live = s.tracker.ListByHook(hookID, max)
 	} else {
-		src = s.tracker.ListAll(max)
+		live = s.tracker.ListAll(max)
 	}
-	out := make([]runs.RunState, 0, len(src))
-	for _, r := range src {
-		// Don't ship full output in the list view; clients can fetch
-		// /runs/{id} for that.
-		s := r.Snapshot(0)
-		s.Output = nil
-		s.OutputTimes = nil
-		out = append(out, s)
+	out := make([]runs.RunState, 0, len(live))
+	seen := make(map[string]struct{}, len(live))
+	for _, r := range live {
+		snap := r.Snapshot(0)
+		snap.Output = nil
+		snap.OutputTimes = nil
+		out = append(out, snap)
+		seen[snap.ID] = struct{}{}
 	}
-	writeJSON(w, http.StatusOK, out)
+	if s.runstore != nil {
+		var persisted []runs.RunState
+		if hookID != "" {
+			persisted = s.runstore.ListByHook(hookID, max)
+		} else {
+			persisted = s.runstore.ListAll(max)
+		}
+		for _, st := range persisted {
+			if _, dup := seen[st.ID]; dup {
+				continue
+			}
+			out = append(out, st)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Started.After(out[j].Started)
+	})
+	if max > 0 && len(out) > max {
+		out = out[:max]
+	}
+	return out
 }
 
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>

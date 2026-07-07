@@ -23,6 +23,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
+	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
 )
@@ -41,6 +42,8 @@ type serveOptions struct {
 	stateSocket     string
 	stateSecret     string
 	kvMaxKeys       int
+	runRetention    time.Duration
+	runRetentionMax int
 }
 
 func applyServeEnv(o *serveOptions) {
@@ -67,6 +70,18 @@ func applyServeEnv(o *serveOptions) {
 		// store's built-in default.
 		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_KV_MAX_KEYS")); err == nil && n > 0 {
 			o.kvMaxKeys = n
+		}
+	}
+	if o.runRetention <= 0 {
+		// Go duration (e.g. "72h"); unset or unparseable falls back to the
+		// run store's built-in 48h default.
+		if d, err := time.ParseDuration(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION")); err == nil && d > 0 {
+			o.runRetention = d
+		}
+	}
+	if o.runRetentionMax <= 0 {
+		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX")); err == nil && n > 0 {
+			o.runRetentionMax = n
 		}
 	}
 	if o.logFormat == "" {
@@ -155,6 +170,36 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	kvStore.StartSweeper()
 	defer kvStore.Close()
+
+	// Persistent run history: every run is written to a single bbolt file
+	// under the data dir the moment it reaches a terminal status (the
+	// tracker's OnFinish seam), and the admin read endpoints merge it behind
+	// the live tracker — so completed runs survive restarts. A run still in
+	// flight at shutdown never completed and is not in the store. Retention
+	// is time-based (WEBHOOK_RUNNER_RUN_RETENTION, default 48h); the
+	// per-hook count cap (WEBHOOK_RUNNER_RUN_RETENTION_MAX) is only a disk
+	// safety net behind it.
+	runStore, err := runstore.Open(runstore.Config{
+		Path:       filepath.Join(dataDir, "runs.db"),
+		Retention:  o.runRetention,
+		MaxPerHook: o.runRetentionMax,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("run store: %w", err)
+	}
+	runStore.StartSweeper()
+	// Closed via defer, which runs after the shutdown path's rn.Wait() —
+	// so every in-flight run has recorded its terminal state first.
+	defer func() {
+		if err := runStore.Close(); err != nil {
+			logger.Warn("run store close", "err", err)
+		}
+	}()
+	tracker.SetOnFinish(func(st runs.RunState) {
+		if err := runStore.Record(st); err != nil {
+			logger.Error("persist finished run", "hook", st.HookID, "run", st.ID, "err", err)
+		}
+	})
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
@@ -258,6 +303,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HooksRepo:    o.hooksRepo,
 		HookBaseURL:  o.hookBaseURL,
 		KV:           kvStore,
+		RunStore:     runStore,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	})
 

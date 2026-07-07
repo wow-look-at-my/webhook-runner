@@ -195,6 +195,36 @@ func TestRequestCancel(t *testing.T) {
 	assert.Equal(t, StatusCancelled, r.Status())
 }
 
+// The OnFinish observer is the run store's write-once seam: it must fire
+// exactly once per run (Finish's once-guard), with the full terminal
+// snapshot including output.
+func TestOnFinishFiresOnceWithTerminalSnapshot(t *testing.T) {
+	tr := NewTracker()
+	var got []RunState
+	tr.SetOnFinish(func(st RunState) { got = append(got, st) })
+
+	r := tr.New("h")
+	r.AppendOutput("hello")
+	assert.Empty(t, got, "observer fired before the run finished")
+
+	r.Finish(StatusFailure, 2, "boom")
+	r.Finish(StatusSuccess, 0, "") // second Finish is a no-op — no second callback
+	require.Len(t, got, 1)
+	assert.Equal(t, r.ID(), got[0].ID)
+	assert.Equal(t, "h", got[0].HookID)
+	assert.Equal(t, StatusFailure, got[0].Status)
+	assert.Equal(t, 2, got[0].ExitCode)
+	assert.Equal(t, "boom", got[0].Error)
+	assert.False(t, got[0].Finished.IsZero())
+	assert.Equal(t, []string{"hello"}, got[0].Output)
+
+	// Runs created before SetOnFinish never see the callback.
+	tr2 := NewTracker()
+	early := tr2.New("h")
+	tr2.SetOnFinish(func(RunState) { t.Error("callback leaked to a pre-existing run") })
+	early.Finish(StatusSuccess, 0, "")
+}
+
 func TestStatusTerminal(t *testing.T) {
 	for _, s := range []Status{StatusSuccess, StatusFailure, StatusTimeout, StatusError, StatusCancelled} {
 		assert.True(t, s.Terminal(), string(s))

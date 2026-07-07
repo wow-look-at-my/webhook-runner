@@ -1,0 +1,473 @@
+// Package runstore persists completed runs to a single bbolt file so run
+// history survives server restarts. The in-memory tracker (internal/runs)
+// remains the source of truth for active runs and the freshest window; this
+// store is its durable, read-side complement: a run is written exactly once,
+// when it reaches a terminal status, and the admin endpoints read it back
+// merged behind the live tracker. Nothing is ever rehydrated into the
+// tracker. A run still in flight when the server stops never completed, so
+// it is never persisted — after a restart it exists nowhere.
+//
+// Retention is time-based (Config.Retention, the primary knob): expired runs
+// are hidden from reads lazily and reclaimed by the background sweeper. The
+// per-hook count cap (Config.MaxPerHook) is a coarse disk safety net behind
+// it, enforced oldest-first during the sweep.
+package runstore
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
+
+	"github.com/wow-look-at-my/webhook-runner/internal/runs"
+)
+
+// Defaults applied by Open for zero-valued Config fields.
+const (
+	DefaultRetention     = 48 * time.Hour
+	DefaultMaxPerHook    = 200_000
+	DefaultSweepInterval = 5 * time.Minute
+)
+
+// Config bounds the store. Zero values fall back to the defaults above.
+type Config struct {
+	Path          string        // bbolt database file (required)
+	Retention     time.Duration // completed runs older than this are dropped
+	MaxPerHook    int           // persisted-run cap per hook (disk safety net; Retention is the primary knob)
+	SweepInterval time.Duration // how often the GC sweeper runs
+}
+
+// Bucket layout. bytime and each per-hook bucket share the same
+// "<start-unix-nanos>-<run-id>" key (zero-padded, so lexicographic order is
+// chronological) — that shared time ordering is what makes range GC and
+// newest-first reads each a single cursor walk. The per-hook value carries
+// "<status> <finished-unix-nanos>" so stats aggregate from the index alone,
+// never deserializing per-run metadata blobs.
+var (
+	bucketMeta   = []byte("meta")   // run ID -> RunState JSON (output stripped)
+	bucketOutput = []byte("output") // run ID -> outputRecord JSON
+	bucketByTime = []byte("bytime") // time key -> hook ID
+	bucketByHook = []byte("byhook") // nested: hook ID -> bucket of time key -> summary value
+)
+
+// outputRecord keeps a run's captured output out of its metadata record so
+// list and stats reads never touch output blobs.
+type outputRecord struct {
+	Output      []string    `json:"output,omitempty"`
+	OutputTimes []time.Time `json:"output_times,omitempty"`
+}
+
+// Store is a bbolt-backed archive of terminal runs.
+type Store struct {
+	db  *bolt.DB
+	cfg Config
+	log *slog.Logger
+
+	stop      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// Open opens (creating as needed) the database file and its buckets.
+func Open(cfg Config, log *slog.Logger) (*Store, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	if cfg.Path == "" {
+		return nil, errors.New("runstore: Config.Path is required")
+	}
+	if cfg.Retention <= 0 {
+		cfg.Retention = DefaultRetention
+	}
+	if cfg.MaxPerHook <= 0 {
+		cfg.MaxPerHook = DefaultMaxPerHook
+	}
+	if cfg.SweepInterval <= 0 {
+		cfg.SweepInterval = DefaultSweepInterval
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o700); err != nil {
+		return nil, fmt.Errorf("runstore: create dir: %w", err)
+	}
+	// The flock timeout makes a second process holding the file fail fast
+	// instead of blocking startup forever.
+	db, err := bolt.Open(cfg.Path, 0o600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("runstore: open %s: %w", cfg.Path, err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		for _, b := range [][]byte{bucketMeta, bucketOutput, bucketByTime, bucketByHook} {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("runstore: init buckets: %w", err)
+	}
+	return &Store{db: db, cfg: cfg, log: log, stop: make(chan struct{})}, nil
+}
+
+// Retention returns the configured retention window.
+func (s *Store) Retention() time.Duration { return s.cfg.Retention }
+
+// Record persists one terminal run — metadata, indexes, and output — in a
+// single write transaction. Non-terminal states are rejected: active runs
+// live only in the tracker.
+func (s *Store) Record(st runs.RunState) error {
+	if !st.Status.Terminal() {
+		return fmt.Errorf("runstore: refusing to record non-terminal run %s (%s)", st.ID, st.Status)
+	}
+	key := timeKey(st.Started, st.ID)
+	out := outputRecord{Output: st.Output, OutputTimes: st.OutputTimes}
+	st.Output = nil
+	st.OutputTimes = nil
+	meta, err := json.Marshal(st)
+	if err != nil {
+		return fmt.Errorf("runstore: marshal run %s: %w", st.ID, err)
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketMeta).Put([]byte(st.ID), meta); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketByTime).Put(key, []byte(st.HookID)); err != nil {
+			return err
+		}
+		hb, err := tx.Bucket(bucketByHook).CreateBucketIfNotExists([]byte(st.HookID))
+		if err != nil {
+			return err
+		}
+		if err := hb.Put(key, summaryValue(st.Status, st.Finished)); err != nil {
+			return err
+		}
+		if len(out.Output) == 0 {
+			return nil
+		}
+		ob, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketOutput).Put([]byte(st.ID), ob)
+	})
+}
+
+// Get returns one persisted run with its captured output, or ok=false when
+// it is absent or past retention (expired entries are hidden here and
+// reclaimed by the sweeper, mirroring the kv store's lazy-expiry split).
+func (s *Store) Get(id string) (runs.RunState, bool) {
+	var st runs.RunState
+	found := false
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(bucketMeta).Get([]byte(id))
+		if raw == nil {
+			return nil
+		}
+		if err := json.Unmarshal(raw, &st); err != nil {
+			s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
+			return nil
+		}
+		if s.expired(st.Started, time.Now()) {
+			return nil
+		}
+		if oraw := tx.Bucket(bucketOutput).Get([]byte(id)); oraw != nil {
+			var out outputRecord
+			if err := json.Unmarshal(oraw, &out); err == nil {
+				st.Output = out.Output
+				st.OutputTimes = out.OutputTimes
+			}
+		}
+		found = true
+		return nil
+	})
+	return st, found
+}
+
+// ListAll returns persisted runs across all hooks, newest-first, without
+// output, capped at max (<=0 means no cap).
+func (s *Store) ListAll(max int) []runs.RunState {
+	var out []runs.RunState
+	now := time.Now()
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bucketMeta)
+		c := tx.Bucket(bucketByTime).Cursor()
+		for k, _ := c.Last(); k != nil; k, _ = c.Prev() {
+			if max > 0 && len(out) >= max {
+				break
+			}
+			started, id, ok := splitKey(k)
+			if !ok {
+				continue
+			}
+			// Keys are chronological, so the first expired one ends the walk.
+			if s.expired(started, now) {
+				break
+			}
+			raw := meta.Get([]byte(id))
+			if raw == nil {
+				continue
+			}
+			var st runs.RunState
+			if err := json.Unmarshal(raw, &st); err != nil {
+				s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
+				continue
+			}
+			out = append(out, st)
+		}
+		return nil
+	})
+	return out
+}
+
+// ListByHook returns one hook's persisted runs, newest-first, without
+// output, capped at max (<=0 means no cap).
+func (s *Store) ListByHook(hookID string, max int) []runs.RunState {
+	var out []runs.RunState
+	now := time.Now()
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		hb := tx.Bucket(bucketByHook).Bucket([]byte(hookID))
+		if hb == nil {
+			return nil
+		}
+		meta := tx.Bucket(bucketMeta)
+		c := hb.Cursor()
+		for k, _ := c.Last(); k != nil; k, _ = c.Prev() {
+			if max > 0 && len(out) >= max {
+				break
+			}
+			started, id, ok := splitKey(k)
+			if !ok {
+				continue
+			}
+			if s.expired(started, now) {
+				break
+			}
+			raw := meta.Get([]byte(id))
+			if raw == nil {
+				continue
+			}
+			var st runs.RunState
+			if err := json.Unmarshal(raw, &st); err != nil {
+				s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
+				continue
+			}
+			out = append(out, st)
+		}
+		return nil
+	})
+	return out
+}
+
+// SummariesByHook returns skeleton states (ID, HookID, Status, Started,
+// Finished — nothing else) for every retained run of one hook, newest-first.
+// It reads only the per-hook index (key + summary value), never metadata
+// blobs, so aggregating stats over a full retention window stays a single
+// cheap cursor walk even at the count cap.
+func (s *Store) SummariesByHook(hookID string) []runs.RunState {
+	var out []runs.RunState
+	now := time.Now()
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		hb := tx.Bucket(bucketByHook).Bucket([]byte(hookID))
+		if hb == nil {
+			return nil
+		}
+		c := hb.Cursor()
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			started, id, ok := splitKey(k)
+			if !ok {
+				continue
+			}
+			if s.expired(started, now) {
+				break
+			}
+			status, finished, ok := splitSummary(v)
+			if !ok {
+				continue
+			}
+			out = append(out, runs.RunState{
+				ID:       id,
+				HookID:   hookID,
+				Status:   status,
+				Started:  started,
+				Finished: finished,
+			})
+		}
+		return nil
+	})
+	return out
+}
+
+// StartSweeper launches the background GC. Lazy expiry already hides
+// out-of-retention runs from reads; the sweeper reclaims their disk and
+// enforces the per-hook count cap.
+func (s *Store) StartSweeper() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		t := time.NewTicker(s.cfg.SweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.stop:
+				return
+			case <-t.C:
+				n, err := s.sweep(time.Now())
+				if err != nil {
+					s.log.Error("runstore: sweep failed", "err", err)
+				} else if n > 0 {
+					s.log.Info("runstore: swept persisted runs", "removed", n)
+				}
+			}
+		}
+	}()
+}
+
+// sweep deletes runs older than Retention and, per hook, the oldest runs
+// beyond MaxPerHook, removing each victim from all four buckets in one
+// transaction. Victims are collected first and deleted after, so no bucket
+// is mutated mid-iteration.
+func (s *Store) sweep(now time.Time) (int, error) {
+	type victim struct {
+		key  []byte
+		hook []byte
+		id   string
+	}
+	removed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bucketMeta)
+		output := tx.Bucket(bucketOutput)
+		bytime := tx.Bucket(bucketByTime)
+		byhook := tx.Bucket(bucketByHook)
+
+		var victims []victim
+		// Time pass: bytime is chronological, so expired keys are a prefix.
+		c := bytime.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			started, id, ok := splitKey(k)
+			if !ok {
+				continue
+			}
+			if !s.expired(started, now) {
+				break
+			}
+			victims = append(victims, victim{
+				key:  append([]byte(nil), k...),
+				hook: append([]byte(nil), v...),
+				id:   id,
+			})
+		}
+		// Count-cap pass: per hook, everything below the newest MaxPerHook.
+		// The time pass hasn't deleted yet, but any overlap is harmless —
+		// deletes are idempotent.
+		hc := byhook.Cursor()
+		for name, val := hc.First(); name != nil; name, val = hc.Next() {
+			if val != nil {
+				continue // only sub-buckets live here
+			}
+			hb := byhook.Bucket(name)
+			excess := hb.Stats().KeyN - s.cfg.MaxPerHook
+			if excess <= 0 {
+				continue
+			}
+			hook := append([]byte(nil), name...)
+			cc := hb.Cursor()
+			for k, _ := cc.First(); k != nil && excess > 0; k, _ = cc.Next() {
+				_, id, ok := splitKey(k)
+				if !ok {
+					continue
+				}
+				victims = append(victims, victim{
+					key:  append([]byte(nil), k...),
+					hook: hook,
+					id:   id,
+				})
+				excess--
+			}
+		}
+
+		for _, v := range victims {
+			if err := meta.Delete([]byte(v.id)); err != nil {
+				return err
+			}
+			if err := output.Delete([]byte(v.id)); err != nil {
+				return err
+			}
+			if err := bytime.Delete(v.key); err != nil {
+				return err
+			}
+			if hb := byhook.Bucket(v.hook); hb != nil {
+				if err := hb.Delete(v.key); err != nil {
+					return err
+				}
+			}
+			removed++
+		}
+		return nil
+	})
+	return removed, err
+}
+
+// Close stops the sweeper and closes the database. Safe to call more than
+// once; only the first call does the work.
+func (s *Store) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		s.wg.Wait()
+		s.closeErr = s.db.Close()
+	})
+	return s.closeErr
+}
+
+// expired reports whether a run that started at the given time has fallen
+// out of the retention window (the boundary itself counts as expired, same
+// convention as the kv store's TTL).
+func (s *Store) expired(started, now time.Time) bool {
+	return !started.After(now.Add(-s.cfg.Retention))
+}
+
+// timeKey builds the shared chronological index key. Zero-padding the nanos
+// makes lexicographic order equal time order; the run-ID suffix de-collides
+// simultaneous starts and lets GC recover the ID without a metadata read.
+func timeKey(started time.Time, id string) []byte {
+	return []byte(fmt.Sprintf("%019d-%s", started.UnixNano(), id))
+}
+
+func splitKey(k []byte) (started time.Time, id string, ok bool) {
+	i := bytes.IndexByte(k, '-')
+	if i < 0 {
+		return time.Time{}, "", false
+	}
+	nanos, err := strconv.ParseInt(string(k[:i]), 10, 64)
+	if err != nil {
+		return time.Time{}, "", false
+	}
+	return time.Unix(0, nanos).UTC(), string(k[i+1:]), true
+}
+
+// summaryValue encodes the per-hook index value ("<status> <finished-nanos>").
+// Status tokens never contain spaces, so a plain cut decodes it.
+func summaryValue(status runs.Status, finished time.Time) []byte {
+	return []byte(fmt.Sprintf("%s %d", status, finished.UnixNano()))
+}
+
+func splitSummary(v []byte) (status runs.Status, finished time.Time, ok bool) {
+	st, rest, found := strings.Cut(string(v), " ")
+	if !found {
+		return "", time.Time{}, false
+	}
+	nanos, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return runs.Status(st), time.Unix(0, nanos).UTC(), true
+}

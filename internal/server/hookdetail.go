@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
@@ -21,7 +23,9 @@ type HookDetail struct {
 	// never values — same rule as /kv); absent when the store is off or
 	// holds nothing for this hook.
 	KV *kv.NamespaceStat `json:"kv,omitempty"`
-	// Stats cover the tracker's bounded in-memory window, not lifetime.
+	// Stats cover the live tracker window merged with the persisted run
+	// history when a run store is configured (Stats.Retention names the
+	// persisted window then); tracker-only otherwise. Never lifetime.
 	Stats runs.HookRunStats `json:"stats"`
 }
 
@@ -62,8 +66,8 @@ func hookInfo(h *hooks.Hook) HookInfo {
 
 // handleHookDetail returns one hook's drill-down JSON (admin port): the
 // value-free config summary, image state, its KV namespace stats, and run
-// stats over the bounded recent window. A pure read — an unknown ID is a
-// plain 404, same semantics as /runs/{id}.
+// stats over the merged window. A pure read — an unknown ID is a plain 404,
+// same semantics as /runs/{id}.
 func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	h, ok := s.registry.Get(id)
@@ -74,7 +78,7 @@ func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 	detail := HookDetail{
 		Info:  hookInfo(h),
 		Image: s.runner.ImageStatus([]*hooks.Hook{h})[0],
-		Stats: s.tracker.StatsByHook(id),
+		Stats: s.mergedStats(id),
 	}
 	if s.kv != nil {
 		for _, ns := range s.kv.Stats() {
@@ -86,4 +90,50 @@ func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// mergedStats aggregates one hook's runs over the live tracker window merged
+// with the persisted history, deduped by run ID like mergedRuns. Persisted
+// entries come from the store's summary index (status + start/finish only) —
+// exactly the fields the aggregation reads — so a full retention window is
+// one cursor walk, never a metadata scan.
+func (s *Server) mergedStats(hookID string) runs.HookRunStats {
+	if s.runstore == nil {
+		return s.tracker.StatsByHook(hookID)
+	}
+	live := s.tracker.ListByHook(hookID, 0)
+	states := make([]runs.RunState, 0, len(live))
+	seen := make(map[string]struct{}, len(live))
+	for _, r := range live {
+		snap := r.Snapshot(0)
+		snap.Output = nil
+		snap.OutputTimes = nil
+		states = append(states, snap)
+		seen[snap.ID] = struct{}{}
+	}
+	for _, st := range s.runstore.SummariesByHook(hookID) {
+		if _, dup := seen[st.ID]; dup {
+			continue
+		}
+		states = append(states, st)
+	}
+	stats := runs.ComputeStats(states)
+	stats.MaxTracked = runs.MaxRunsPerHook
+	stats.Retention = compactDuration(s.runstore.Retention())
+	return stats
+}
+
+// compactDuration renders a duration the way an operator would write it:
+// time.Duration.String()'s trailing zero units dropped ("48h0m0s" → "48h"),
+// but only when the remainder is still a valid duration tail — "30s" must
+// not collapse to "3".
+func compactDuration(d time.Duration) string {
+	s := d.String()
+	for _, suf := range []string{"0s", "0m"} {
+		t := strings.TrimSuffix(s, suf)
+		if t != s && t != "" && (strings.HasSuffix(t, "h") || strings.HasSuffix(t, "m")) {
+			s = t
+		}
+	}
+	return s
 }

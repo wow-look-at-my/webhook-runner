@@ -394,8 +394,9 @@ function renderApp(detail, runs, events) {
   ]);
 
   const st = detail.stats;
-  document.getElementById("app-stats-window").textContent =
-    `Recent window: the last ≤${st.max_tracked} runs held in memory (resets on restart).`;
+  document.getElementById("app-stats-window").textContent = st.retention
+    ? `Window: live runs plus completed runs persisted for the last ${st.retention} (survives restarts; runs in flight during a restart are lost).`
+    : `Recent window: the last ≤${st.max_tracked} runs held in memory (resets on restart).`;
   const byStatus = Object.entries(st.by_status || {}).map(([k, n]) =>
     el("span", { class: "status " + k }, `${k} ×${n}`));
   fillDl(document.getElementById("app-stats"), [

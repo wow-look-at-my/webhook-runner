@@ -66,9 +66,16 @@ hooks without restart.
   conversation view), plus a **Copy log** button that puts the whole
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
-  config summary, run stats over the recent in-memory window, image
-  state, runs, and activity slice — a per-"app" view, where an app is
-  one hook for now.
+  config summary, run stats, image state, runs, and activity slice — a
+  per-"app" view, where an app is one hook for now.
+- **Persistent run history**: completed runs are written once, at their
+  terminal status, to a single bbolt file under the data dir; `/runs`,
+  `/runs/{id}`, and the drill-down stats serve the live tracker merged
+  with that history, so runs and their output survive restarts.
+  Time-based retention (default 48h, `WEBHOOK_RUNNER_RUN_RETENTION`)
+  with a per-hook count cap as a disk safety net
+  (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`). Runs still in flight during a
+  restart never completed and are not in the store.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 
@@ -134,11 +141,11 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max duration, last run) over the bounded in-memory run window. |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max duration, last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
-| GET    | `/runs`             | Recent runs across all hooks; `?hook={id}` narrows to one hook. |
-| GET    | `/runs/{id}`        | Status + retained output for one run.      |
+| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). |
+| GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
@@ -466,10 +473,12 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_HOOK_BASE_URL`    | (none)                       | Public base URL of the hook port (e.g. `https://hooks.example.com`). Shown in the dashboard setup instructions. |
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
-| `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`) and the token `state-secret`. Defaults alongside the hooks clone + deploy key. |
+| `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`), the token `state-secret`, and the run history (`runs.db`). Defaults alongside the hooks clone + deploy key. |
 | `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's internal Unix socket (the proxy shim bridges `localhost:9002` to it). Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
 | `WEBHOOK_RUNNER_KV_MAX_KEYS`      | `5000`                       | Max keys in one hook's KV namespace. Positive integer; unset or invalid falls back to the default. |
+| `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
+| `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
@@ -591,5 +600,11 @@ go-toolchain
   and deploy tooling like docker-updater can gate updates on it.
 - No CGO. The binary is `go build -o webhook-runner ./cmd/webhook-runner`
   with `CGO_ENABLED=0`.
-- No persistence: run history is in memory only and bounded
-  per-hook (50 most recent) and per-run (last 500 lines of output).
+- Run history persists: completed runs (metadata + captured output) are
+  written to a single bbolt file (`<data-dir>/runs.db`) the moment they
+  finish and survive restarts — `WEBHOOK_RUNNER_RUN_RETENTION` (default
+  48h) is the primary retention knob, with a per-hook count cap
+  (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`, default 200000) as a disk safety
+  net. The live tracker stays in memory and bounded (50 most recent per
+  hook, last 2000 lines of output per run); a run still in flight during
+  a restart never completed and is not in the store.

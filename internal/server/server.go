@@ -15,6 +15,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
+	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 )
 
 // VersionInfo identifies the running build. Version is the same string the
@@ -41,6 +42,7 @@ type Server struct {
 	hooksRepo    string
 	hookBaseURL  string
 	kv           *kv.Store
+	runstore     *runstore.Store
 	version      VersionInfo
 
 	hookMux  *http.ServeMux
@@ -89,6 +91,12 @@ type Options struct {
 	// admin /kv view. nil disables both (the routes report no namespaces).
 	KV *kv.Store
 
+	// RunStore is the persisted completed-run history. When set, /runs,
+	// /runs/{id}, and /hooks/{id} serve the live tracker merged with it
+	// (deduped by run ID, newest-first); nil keeps the old memory-only
+	// behavior.
+	RunStore *runstore.Store
+
 	// Version identifies the running build; it is reported by /health and
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
@@ -117,6 +125,7 @@ func New(opts Options) *Server {
 		hooksRepo:    opts.HooksRepo,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
+		runstore:     opts.RunStore,
 		version:      opts.Version,
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
