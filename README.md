@@ -67,7 +67,9 @@ hooks without restart.
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
   config summary, run stats, image state, runs, and activity slice — a
-  per-"app" view, where an app is one hook for now.
+  per-"app" view, where an app is one hook for now. The STATE (KV)
+  section drills in too: click a namespace for its key list (sizes,
+  expiry countdowns), click a key to view and copy its stored value.
 - **Persistent run history**: completed runs are written once, at their
   terminal status, to a single bbolt file under the data dir; `/runs`,
   `/runs/{id}`, and the drill-down stats serve the live tracker merged
@@ -152,6 +154,8 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
+| GET    | `/kv/{namespace}`   | One namespace's key list, value-free: `{key, bytes, expires_at?}` per live key (sorted, TTL-expired hidden) plus `total_keys`/`total_bytes`. `404` for an unknown namespace. |
+| GET    | `/kv/{namespace}/{key}` | The stored value, verbatim (`Content-Type: application/json` when it parses as JSON, else `text/plain`). `404` if absent or expired. Runtime KV **data** is deliberately operator-readable here — in contrast to config **secrets** (api_key/env values), which no admin endpoint ever exposes. |
 | GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
 
 The dashboard's static assets are content-addressed: the served index.html
@@ -255,8 +259,11 @@ Properties:
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
 
-See the State KV API table above for the full endpoint list. The admin port's
-`GET /kv` shows per-hook key counts and byte totals (never values).
+See the State KV API table above for the full endpoint list. On the admin
+port, `GET /kv` shows per-hook key counts and byte totals, `GET /kv/{hook}`
+lists a hook's keys (name, size, expiry — no values), and
+`GET /kv/{hook}/{key}` reads a stored value; the dashboard's STATE (KV) rows
+drill into all three (click a namespace for its keys, a key for its value).
 
 > **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"state":

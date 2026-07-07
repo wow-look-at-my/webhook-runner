@@ -66,8 +66,16 @@ The server listens on two TCP ports plus a Unix socket:
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/images` (per-hook image state), `/concurrency` (live
   per-group limit/active/waiting), `/kv` (read-only state-store stats:
-  per-namespace key count and bytes, never values). Internal, behind
-  Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment opens a
+  per-namespace key count and bytes, never values), `/kv/{namespace}`
+  (that namespace's key list — key, bytes, expiry; still value-free; 404
+  for an unknown namespace), `/kv/{namespace}/{key}` (the stored value,
+  served raw with `application/json` when it parses as JSON, else
+  `text/plain`; 404 when absent/expired). NOTE the exposure distinction:
+  the admin port never serves config SECRETS (api_key/env values stay
+  value-free everywhere), but runtime KV DATA is deliberately
+  operator-readable — that is the point of the drill-in. The dashboard's
+  STATE (KV) rows use these (click a namespace for its keys, a key for
+  its value). Internal, behind Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment opens a
   per-hook "app" page built on those endpoints — an app is exactly one
   hook for now; grouping several hooks into one app is future work, which
   is why `/hooks/{id}` keeps a hook-scoped shape a grouping layer could
