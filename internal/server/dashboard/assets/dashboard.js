@@ -381,11 +381,15 @@ async function refreshApp(id) {
     renderAppMissing(id);
     return;
   }
-  const [runs, events] = await Promise.all([
+  const [runs, events, kvKeys] = await Promise.all([
     fetchJSON(`/runs?hook=${enc}&max=50`),
     fetchJSON(`/events?hook=${enc}&max=100`),
+    // The KV namespace listing exists only for state:true hooks
+    // (namespace == hook ID); skip the fetch entirely otherwise.
+    detail.info.state ? fetchJSON(`/kv/${enc}`) : Promise.resolve(null),
   ]);
   renderApp(detail, runs, events);
+  await renderAppKV(detail.info, kvKeys);
 }
 
 function renderAppMissing(id) {
@@ -485,6 +489,86 @@ function renderApp(detail, runs, events) {
   }
 
   renderEventRows("app-events-table", "app-events-empty", events);
+}
+
+// --- Per-app State (KV) inspection -----------------------------------------
+//
+// For state:true hooks the app page lists the hook's KV keys (name, size,
+// TTL remaining) from GET /kv/{namespace} and, on click, fetches
+// GET /kv/{namespace}/{key} to show the stored value — pretty-printed when
+// it parses as JSON, raw text otherwise, base64 for binary. The open value
+// row is re-fetched on every poll so it tracks live state; everything is
+// rendered via el()'s text nodes, so arbitrary stored bytes can never
+// inject markup.
+
+let appKVOpenKey = null; // key whose value row is expanded, or null
+let appKVHook = null; // which hook the expansion belongs to
+
+function fmtTTL(seconds) {
+  if (seconds == null) return "—";
+  return fmtDuration(seconds * 1000);
+}
+
+async function renderAppKV(info, listing) {
+  const section = document.getElementById("app-kv-section");
+  section.hidden = !info.state;
+  if (!info.state) return;
+  if (appKVHook !== info.id) {
+    // Switched to a different hook's page: collapse any open value row.
+    appKVHook = info.id;
+    appKVOpenKey = null;
+  }
+  const keys = (listing && listing.keys) || [];
+  const tbody = document.querySelector("#app-kv-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("app-kv-empty").hidden = keys.length > 0;
+  for (const k of keys) {
+    const open = appKVOpenKey === k.key;
+    const tr = el("tr", { class: open ? "kv-open" : "" },
+      el("td", null, el("code", null, k.key)),
+      el("td", null, fmtBytes(k.size)),
+      el("td", null, fmtTTL(k.ttl_seconds)),
+    );
+    tr.addEventListener("click", () => {
+      appKVOpenKey = open ? null : k.key;
+      refresh();
+    });
+    tbody.appendChild(tr);
+    if (open) tbody.appendChild(await kvValueRow(info.id, k.key));
+  }
+}
+
+// The expanded row under a clicked key: metadata line + the value itself.
+// A fetch failure is rendered into the row (e.g. the key expired between
+// the listing and the click), never swallowed.
+async function kvValueRow(hookId, key) {
+  const td = el("td", { colspan: "3" });
+  const row = el("tr", { class: "kv-value-row" }, td);
+  try {
+    const e = await fetchJSON(
+      `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
+    const meta = [fmtBytes(e.size)];
+    if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
+    let body;
+    if (e.value_utf8 != null) {
+      body = e.value_utf8;
+      try {
+        body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
+        meta.push("JSON");
+      } catch {
+        meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
+      }
+    } else {
+      body = e.value_base64;
+      meta.push("binary (shown base64)");
+    }
+    td.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
+    td.appendChild(el("pre", { class: "kv-value" }, body === "" ? "(empty value)" : body));
+  } catch (err) {
+    td.appendChild(el("div", { class: "kv-value-meta kv-value-error" },
+      `failed to load value: ${err.message}`));
+  }
+  return row;
 }
 
 // A run ID that opens the same output modal the runs tables use.

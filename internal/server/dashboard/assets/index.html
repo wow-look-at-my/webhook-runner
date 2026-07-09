@@ -118,6 +118,20 @@
       <p id="app-runs-empty" class="empty" hidden>No runs yet.</p>
     </section>
 
+    <!-- Only shown for state:true hooks. Lists the hook's KV keys (from
+         GET /kv/{namespace}); clicking a key fetches and shows its stored
+         value. The admin port deliberately exposes values — it is
+         operator-only; the public hook port never serves them. -->
+    <section id="app-kv-section" hidden>
+      <h2>State (KV)</h2>
+      <p class="window-note">Click a key to view its stored value.</p>
+      <table id="app-kv-table">
+        <thead><tr><th>Key</th><th>Size</th><th>TTL remaining</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="app-kv-empty" class="empty" hidden>No state stored yet.</p>
+    </section>
+
     <section id="app-events-section">
       <h2>Activity</h2>
       <table id="app-events-table">

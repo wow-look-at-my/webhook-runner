@@ -19,9 +19,10 @@ import (
 type HookDetail struct {
 	Info  HookInfo           `json:"info"`
 	Image runner.ImageStatus `json:"image"`
-	// KV is the hook's state-store namespace summary (key count + bytes,
-	// never values — same rule as /kv); absent when the store is off or
-	// holds nothing for this hook.
+	// KV is the hook's state-store namespace summary (key count + bytes —
+	// this endpoint stays value-free like the bare /kv stats; keys and
+	// values live behind /kv/{namespace}[/{key}], see kvadmin.go); absent
+	// when the store is off or holds nothing for this hook.
 	KV *kv.NamespaceStat `json:"kv,omitempty"`
 	// Stats cover the live tracker window merged with the persisted run
 	// history when a run store is configured (Stats.Retention names the

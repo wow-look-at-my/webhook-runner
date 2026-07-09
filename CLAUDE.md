@@ -66,12 +66,27 @@ The server listens on two TCP ports plus a Unix socket:
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/images` (per-hook image state), `/concurrency` (live
   per-group limit/active/waiting), `/kv` (read-only state-store stats:
-  per-namespace key count and bytes, never values). Internal, behind
-  Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment opens a
-  per-hook "app" page built on those endpoints — an app is exactly one
-  hook for now; grouping several hooks into one app is future work, which
-  is why `/hooks/{id}` keeps a hook-scoped shape a grouping layer could
-  aggregate. Dashboard assets are content-addressed (`internal/server/
+  per-namespace key count and bytes — shape unchanged, still value-free),
+  `/kv/{namespace}` (one namespace's keys, sorted, `?prefix=` filters:
+  name, size, and `expires_at` + remaining `ttl_seconds` when a TTL is
+  set — the entry model tracks nothing else, so no created/updated
+  stamps), and `/kv/{namespace}/{key}` (one entry **including its
+  value**: `value_base64` always, `value_utf8` when the bytes are valid
+  UTF-8; 404 on absent-or-expired via the same lazy-expiry rule as the
+  state API). Exposing values on `/kv/{namespace}/{key}` is a
+  **deliberate reversal** of the original "never values" stance, made at
+  the operator's explicit request — the admin port is operator-only
+  behind Zero Trust; the hook port and `/hooks/{id}` stay value-free
+  (`/hooks/{id}`'s KV field remains the count/bytes summary). Internal,
+  behind Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment
+  opens a per-hook "app" page built on those endpoints — an app is
+  exactly one hook for now; grouping several hooks into one app is
+  future work, which is why `/hooks/{id}` keeps a hook-scoped shape a
+  grouping layer could aggregate. For `state: true` hooks that app page
+  renders a "State (KV)" section: the key table (name, size, TTL
+  remaining) with click-through to the stored value (pretty-printed when
+  it parses as JSON, base64 for binary; text-node rendering, so stored
+  bytes can't inject markup). Dashboard assets are content-addressed (`internal/server/
   dashboard` rewrites index.html to `/dashboard.<hash>.css|.js`, served
   immutable; `/` and the bare asset paths are no-cache, stale hashes 404)
   so an edge cache can never pair new HTML with stale assets.
@@ -292,7 +307,14 @@ The companion repo is `wow-look-at-my/webhooks`.
   hook plus a `state-secret` file. Writes are atomic (temp+rename) and a persist failure
   rolls the in-memory mutation back, so memory never diverges from disk —
   don't "optimize" by keeping an in-memory-only value on write failure or you
-  break the survives-a-restart guarantee. TTL is enforced lazily on read AND
+  break the survives-a-restart guarantee. A rolled-back write is loud
+  end-to-end: the store returns the error, the state API surfaces it as a
+  500 (body carries the reason), and the server logs it and records a
+  `kv.write_failed` event on the activity feed (`Server.writeKVError` in
+  internal/server/state.go) — never a quiet degrade. (The sweeper's persist
+  failures are log-only inside `internal/kv` — it has no events.Recorder,
+  and an expired-entry cleanup failing to flush is invisible to reads
+  either way.) TTL is enforced lazily on read AND
   by a background sweeper (`StartSweeper`/`Close`); keep both. The store is
   bounded (64 KiB/value, 5000 keys/namespace, 256 namespaces by default —
   zero-valued `kv.Config` fields fall back to these in `kv.New`);
