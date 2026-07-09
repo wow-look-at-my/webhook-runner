@@ -20,7 +20,10 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-// DefaultTimeout is applied when a hook does not specify one explicitly.
+// DefaultTimeout is applied when a hook does not specify one explicitly:
+// five minutes of no container output kills the run (timeout is
+// activity-based — see Hook.TimeoutRaw), so every hook has hang protection
+// by default.
 const DefaultTimeout = 5 * time.Minute
 
 // DockerfileName is the file every hook must ship next to its hook.json:
@@ -47,13 +50,25 @@ type Hook struct {
 	// Tests are argv arrays run by `webhook-runner test` in this hook's
 	// built image, so tests exercise the exact baked code. They never run
 	// when the hook is triggered.
-	Tests           [][]string          `json:"tests,omitempty"`
-	Networks        []string            `json:"networks,omitempty"`
-	Volumes         []string            `json:"volumes,omitempty"`
-	Env             map[string]string   `json:"env,omitempty"`
-	User            string              `json:"user,omitempty"`
-	Workdir         string              `json:"workdir,omitempty"`
-	TimeoutRaw      string              `json:"timeout,omitempty"`
+	Tests    [][]string        `json:"tests,omitempty"`
+	Networks []string          `json:"networks,omitempty"`
+	Volumes  []string          `json:"volumes,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	User     string            `json:"user,omitempty"`
+	Workdir  string            `json:"workdir,omitempty"`
+
+	// TimeoutRaw bounds a run by ACTIVITY, not wall clock: the run is killed
+	// only once its container has produced NO output (stdout or stderr) for
+	// this long. Any output byte resets the clock, so a hook that keeps
+	// logging progress runs as long as it needs, while one that has gone
+	// silent is reaped. There is no absolute processing ceiling. The clock
+	// arms only once the concurrency-group slot is acquired and the
+	// container launches, so a queued run never times out while it waits
+	// (see runner.execute). Empty means DefaultTimeout (5 minutes of
+	// silence). A kill ends the run as status "timeout" with the error
+	// "timed out after <d> (no output)".
+	TimeoutRaw string `json:"timeout,omitempty"`
+
 	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
 
@@ -115,9 +130,9 @@ type GitHubStatusConfig struct {
 	TargetURL string `json:"target_url,omitempty"`
 }
 
-// Timeout returns the parsed timeout, falling back to DefaultTimeout when
-// not set. Validation has already happened at load time, so the parse here
-// cannot fail.
+// Timeout returns the parsed no-output (activity) timeout, falling back to
+// DefaultTimeout when not set. Validation has already happened at load
+// time, so the parse here cannot fail.
 func (h *Hook) Timeout() time.Duration {
 	if h.TimeoutRaw == "" {
 		return DefaultTimeout

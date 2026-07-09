@@ -19,7 +19,8 @@ internal/concurrency/      named concurrency groups (central concurrency.json) +
 internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
 internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
 internal/runner/           docker run dispatch + output streaming + image build/status
-internal/runs/             in-memory run tracker (bounded)
+internal/runs/             in-memory run tracker (bounded) + the OnFinish persistence seam
+internal/runstore/         bbolt-backed persistent completed-run history (48h retention, GC sweeper)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
@@ -58,8 +59,10 @@ The server listens on two TCP ports plus a Unix socket:
   the hook port's; the dashboard footer shows it), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
   names only, never any api_key/env/secret value — plus image state, KV
-  namespace stats, and run stats over the tracker's bounded window),
-  `/runs` (`?hook=` filters), `/runs/{id}/cancel`, `/reload`, `/events`
+  namespace stats, and run stats over the live tracker window merged with
+  the persisted run history; `stats.retention` labels that window),
+  `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
+  newest-first), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/images` (per-hook image state), `/concurrency` (live
   per-group limit/active/waiting), `/kv` (read-only state-store stats:
@@ -92,7 +95,8 @@ The server listens on two TCP ports plus a Unix socket:
   last one names an unresolvable `${NAME}` api_key reference, logged to
   the feed but never to the 401 body) and the runner (image builds, run
   lifecycle, `env.unresolved` when an env reference expands to nothing)
-  — memory only, like run history. Rejections are events on purpose:
+  — memory only (run history, by contrast, persists completed runs via
+  `internal/runstore`; see below). Rejections are events on purpose:
   the dashboard must be able to answer "did you receive anything?".
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
@@ -185,15 +189,39 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
-- The run `timeout` bounds **only container processing**. In
-  `runner.execute` the timeout `context.WithTimeout` is created *after*
-  secrets decrypt, image build, and (crucially) after the concurrency-group
-  slot is acquired — never at the top. A run waiting in a group's queue
-  stays `pending` with no timeout running; if you move the `WithTimeout`
-  back up, queued runs start timing out while they wait, which is the exact
-  bug this avoids. `run.SetRunning()` (pending→running) still fires only
-  once the container launches, so the dashboard shows queued runs as
-  `pending`.
+- The run `timeout` is **activity-based, not wall-clock**: it kills a run
+  only when the container has produced **no output** (stdout or stderr) for
+  that long — "time out after N minutes of no activity". There is **no
+  absolute processing ceiling anymore**: a run that keeps logging runs as
+  long as it needs (the semantics exists because a healthy 47-part
+  map-reduce run logging every ≤45s was killed by its 15m wall-clock
+  `timeout`, while silence — not runtime — is the actual failure signal).
+  Any output **byte** resets the clock: the runner wraps the pipe read side
+  in a `touchReader` (internal/runner/watchdog.go), so even a long line
+  without a newline counts. `DefaultTimeout` (5m) still applies when a hook
+  omits `timeout` — now meaning 5 minutes of *silence*, so every hook keeps
+  hang protection by default. The implementing `idleWatchdog` keeps the old
+  arming rule: `Arm()` is called only after secrets decrypt, image build,
+  and (crucially) the concurrency-group slot acquisition, once `cmd.Start`
+  succeeded — a queued run stays `pending` with no clock ticking, and an
+  unarmed watchdog never fires (that invariant is unit-tested; keep it).
+  A timeout kill reuses the docker-kill-by-name path and ends the run as
+  status `timeout` with error `timed out after <d> (no output)`; the
+  `run.finished` event message carries that reason. `run.SetRunning()`
+  (pending→running) still fires only once the container launches, so the
+  dashboard shows queued runs as `pending` — and it stamps
+  `RunState.StartedAt`, the queue-wait/processing split point (`started` in
+  JSON stays the QUEUED/accepted instant for compatibility; waited =
+  StartedAt−Started, duration = Finished−StartedAt, and a zero StartedAt
+  means the run never started). The **sync hold** is the one place
+  `hook.Timeout()` is still read as wall clock (`parseWaitParams` /
+  `handleTrigger` in internal/server/handlers.go): a held HTTP response
+  can't wait on activity, so the hold is a *response* bound, never a run
+  bound — a chatty run legitimately outlives it and the response degrades
+  to the async 202 while the run continues. (The short-lived `idle_timeout`
+  field from #30 is REMOVED — `timeout` itself is the idle limit now, and
+  `DisallowUnknownFields` means a hook.json still setting `idle_timeout`
+  fails to load; nothing merged ever set it.)
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared
@@ -231,11 +259,37 @@ The companion repo is `wow-look-at-my/webhooks`.
   see `scheduler.Update`/`fireDue`. `schedule` is a new hook.json field, so
   `Parse`'s `DisallowUnknownFields` means old binaries reject it: same
   deploy-first rule as `concurrency_group`/`state`.
-- The per-hook KV store (`internal/kv`, the state socket) is the first thing
-  besides the hooks clone and the ssh deploy key that persists to disk. It
-  lives under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
-  place as the deploy key) as one `kv/<namespace>.json` per hook plus a
-  `state-secret` file. Writes are atomic (temp+rename) and a persist failure
+- Run history persists (`internal/runstore`): a single bbolt file at
+  `<data-dir>/runs.db` (pure Go, no CGO). A run is written **exactly once, at
+  terminal status**, through the tracker's OnFinish seam
+  (`runs.Tracker.SetOnFinish`, wired in cli/serve.go — Finish's once-guard is
+  what makes the write exactly-once, and Finish fires on *every* runner path,
+  so the runner needed no changes). Nothing is ever rehydrated into the
+  tracker: the store is read-side only, merged behind the live tracker by
+  `/runs`, `/runs/{id}` (fallback for evicted runs), and `/hooks/{id}` stats
+  (deduped by run ID, live wins). A run in flight during a restart never
+  completed and exists nowhere afterwards — that's by design, don't "fix" it.
+  Retention is time-based (`WEBHOOK_RUNNER_RUN_RETENTION`, default 48h, the
+  primary knob) with a per-hook count cap
+  (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`, default 200000) as a coarse disk
+  safety net; like kv, expiry is lazy on reads AND swept in the background —
+  keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`,
+  where the nanos are the QUEUED/accepted time — leave the key format
+  alone), so GC and newest-first reads are single cursor walks; the per-hook
+  index *value* carries `"<status> <finished-nanos> <startedat-nanos>"`
+  (third field = processing start, `0` = never started) so `SummariesByHook`
+  (the stats path) never deserializes metadata blobs — don't change one side
+  of that format without the other, and keep `splitSummary` accepting the
+  legacy two-field `"<status> <finished-nanos>"` form: pre-upgrade rows read
+  back with a zero StartedAt, their duration falls back to Finished−Started
+  (queued-inclusive), and they are excluded from the wait stats. The
+  deferred `runStore.Close()` runs after
+  `rn.Wait()`, so every in-flight run records its terminal state before the
+  DB closes — keep that ordering.
+- The per-hook KV store (`internal/kv`, the state socket) also persists to
+  disk, under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
+  place as the deploy key and `runs.db`) as one `kv/<namespace>.json` per
+  hook plus a `state-secret` file. Writes are atomic (temp+rename) and a persist failure
   rolls the in-memory mutation back, so memory never diverges from disk —
   don't "optimize" by keeping an in-memory-only value on write failure or you
   break the survives-a-restart guarantee. TTL is enforced lazily on read AND

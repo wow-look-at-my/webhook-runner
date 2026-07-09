@@ -68,7 +68,7 @@
     "timeout": {
       "type": "string",
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
-      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"). Default: 5m."
+      "description": "Kill the run after this long with no container output; any output resets the clock. Applied per run after its concurrency slot is acquired. Default: 5m."
     },
     "synchronous": {
       "type": "boolean",

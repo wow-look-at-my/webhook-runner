@@ -37,6 +37,10 @@ hooks without restart.
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
+- **Activity-based timeout**: `timeout` kills a run only after it has
+  produced no output for that long (any output byte resets the clock) —
+  so long-but-chatty work survives while hung work is reaped. See
+  [Timeouts](#timeouts).
 - **Immutable hook code**: every hook ships a `Dockerfile` next to its
   `hook.json` and runs an image webhook-runner builds from the hook
   directory, tagged by content hash — code is baked in, a hooks-repo pull
@@ -66,9 +70,20 @@ hooks without restart.
   conversation view), plus a **Copy log** button that puts the whole
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
-  config summary, run stats over the recent in-memory window, image
-  state, runs, and activity slice — a per-"app" view, where an app is
-  one hook for now.
+  config summary, run stats, image state, runs, and activity slice — a
+  per-"app" view, where an app is one hook for now. Run timing is split
+  into queue wait and processing time: the runs table shows when a run
+  was queued, how long it **Waited** for its concurrency slot, and a
+  **Duration** that covers container time only, and the stats keep
+  avg/max wait separate from avg/max duration.
+- **Persistent run history**: completed runs are written once, at their
+  terminal status, to a single bbolt file under the data dir; `/runs`,
+  `/runs/{id}`, and the drill-down stats serve the live tracker merged
+  with that history, so runs and their output survive restarts.
+  Time-based retention (default 48h, `WEBHOOK_RUNNER_RUN_RETENTION`)
+  with a per-hook count cap as a disk safety net
+  (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`). Runs still in flight during a
+  restart never completed and are not in the store.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 
@@ -134,11 +149,11 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max duration, last run) over the bounded in-memory run window. |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
-| GET    | `/runs`             | Recent runs across all hooks; `?hook={id}` narrows to one hook. |
-| GET    | `/runs/{id}`        | Status + retained output for one run.      |
+| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
+| GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
@@ -294,14 +309,46 @@ Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
 untouched. Expansion never happens at load/validate time, so CI validation
 needs neither the production environment nor any decryption keys.
 
+## Timeouts
+
+One per-hook knob, `timeout` (default `5m`), and it is **activity-based,
+not wall-clock**: the run is killed only once its container has produced
+**no output** (stdout or stderr) for that long. Any output byte resets the
+clock, so a hook that keeps logging progress runs as long as it needs —
+there is **no absolute processing ceiling** — while one that has gone
+silent is reaped within `timeout` of its last output. The kill goes through
+`docker kill`, ends the run with status `timeout`, and carries the error
+message `timed out after <d> (no output)` (in `/runs/{id}` and the
+activity feed).
+
+This semantics exists because wall-clock ceilings kill healthy work: a
+47-part map-reduce hook that logged every ≤45s was cut down mid-progress
+by its 15-minute total timeout, while a genuinely hung run and a healthy
+long run are indistinguishable by wall clock alone. Silence is the actual
+failure signal — so `"timeout": "15m"` now means "kill it after 15 minutes
+of no activity", which lets the long healthy run finish and still reaps a
+hung one promptly.
+
+The clock arms **at container launch**: never while the run is queued
+behind a [concurrency group](#concurrency-groups), decrypting secrets, or
+building its image — a queued run cannot time out.
+
+For synchronous requests (`?wait=true` or `"synchronous": true`), the
+hook's `timeout` value also serves as the default bound on how long the
+server holds the HTTP response open. That hold is necessarily wall-clock —
+a response can't wait on activity — and it bounds only the **response**,
+never the run: a run that outlives it degrades to the async `202` and
+keeps running in the background.
+
 ## Concurrency groups
 
 By default a hook runs with unbounded concurrency: every accepted request
 spawns its container immediately. When a burst arrives — or several hooks
 share one scarce backend (a single local model server, a rate-limited API)
 — that means many containers competing at once, and, worse, **every run's
-timeout starts counting the moment it is accepted**, so runs that are really
-just *waiting* can time out before they ever do work.
+timeout clock is live from container launch** while a run stuck waiting for
+the backend produces no output — so runs that are really just *waiting* can
+time out before they ever do work.
 
 Concurrency groups fix both. A group is a named slot pool with a limit; at
 most `limit` runs in the group execute at once and the rest **queue**
@@ -338,7 +385,11 @@ hooks may share a group — the limit applies across all of them, so two
 different hooks that both call the same backend take turns. Omit
 `concurrency_group` for unbounded concurrency. Watch live utilization on the
 admin port's `/concurrency` endpoint, and a `run.queued` event appears in
-the activity feed whenever a run has to wait.
+the activity feed whenever a run has to wait. Queue time is also reported
+separately from processing time everywhere run timing shows up — the
+dashboard's Waited/Duration columns, `started`/`started_at` on `/runs`, and
+the per-hook avg/max wait vs duration stats — so a run stuck behind a busy
+group never reads as a slow run.
 
 The schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
@@ -466,10 +517,12 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_HOOK_BASE_URL`    | (none)                       | Public base URL of the hook port (e.g. `https://hooks.example.com`). Shown in the dashboard setup instructions. |
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
-| `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`) and the token `state-secret`. Defaults alongside the hooks clone + deploy key. |
+| `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`), the token `state-secret`, and the run history (`runs.db`). Defaults alongside the hooks clone + deploy key. |
 | `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's internal Unix socket (the proxy shim bridges `localhost:9002` to it). Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
 | `WEBHOOK_RUNNER_KV_MAX_KEYS`      | `5000`                       | Max keys in one hook's KV namespace. Positive integer; unset or invalid falls back to the default. |
+| `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
+| `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
@@ -591,5 +644,11 @@ go-toolchain
   and deploy tooling like docker-updater can gate updates on it.
 - No CGO. The binary is `go build -o webhook-runner ./cmd/webhook-runner`
   with `CGO_ENABLED=0`.
-- No persistence: run history is in memory only and bounded
-  per-hook (50 most recent) and per-run (last 500 lines of output).
+- Run history persists: completed runs (metadata + captured output) are
+  written to a single bbolt file (`<data-dir>/runs.db`) the moment they
+  finish and survive restarts — `WEBHOOK_RUNNER_RUN_RETENTION` (default
+  48h) is the primary retention knob, with a per-hook count cap
+  (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`, default 200000) as a disk safety
+  net. The live tracker stays in memory and bounded (50 most recent per
+  hook, last 2000 lines of output per run); a run still in flight during
+  a restart never completed and is not in the store.

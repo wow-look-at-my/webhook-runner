@@ -135,6 +135,9 @@ func TestRunnerFailure(t *testing.T) {
 	assert.Equal(t, 3, run.ExitCode())
 }
 
+// A run producing no output for longer than its timeout is killed —
+// `timeout` is activity-based, so this silent sleeper dies at 100ms even
+// though nothing bounds its total runtime.
 func TestRunnerTimeout(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
@@ -163,6 +166,7 @@ func TestRunnerTimeout(t *testing.T) {
 	r.Wait()
 
 	assert.Equal(t, runs.StatusTimeout, run.Status())
+	assert.Contains(t, run.Error(), "no output")
 }
 
 func TestRunnerStartHookCallback(t *testing.T) {
@@ -551,6 +555,9 @@ func waitStatus(t *testing.T, run *runs.Run, want runs.Status, timeout time.Dura
 // feature: a second run sharing a limit-1 group queues behind the first
 // (staying "pending", not "running") and its timeout clock only starts once
 // it actually runs — so it does not time out while waiting in the queue.
+// This is also the integration proof of the watchdog arming rule: the
+// (activity-based) timeout arms only at container launch, so a queued run
+// never ticks.
 func TestRunnerConcurrencyGroupQueuesAndDefersTimeout(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)

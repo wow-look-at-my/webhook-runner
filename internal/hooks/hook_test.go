@@ -52,6 +52,14 @@ func TestParseMinimal(t *testing.T) {
 	assert.Empty(t, h.Command)
 }
 
+// Omitting timeout falls back to DefaultTimeout — every hook keeps hang
+// protection (5 minutes of silence) by default.
+func TestTimeoutDefaultsWhenOmitted(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, DefaultTimeout, h.Timeout())
+}
+
 func TestParseScheduleValid(t *testing.T) {
 	h, err := parseInDir(t, `{"$schema":"s","schedule":"5m"}`)
 	require.Nil(t, err)
@@ -99,12 +107,16 @@ func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
 		// Go validation only checks that $schema is present (non-empty);
 		// json-validator enforces it points at the published schema.
-		"missing schema":          `{"command":["x"]}`,
-		"image is not a field":    `{"$schema":"s","image":"alpine"}`,
-		"reserved env":            `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"empty test command":      `{"$schema":"s","tests":[["ok"],[]]}`,
-		"bad timeout":             `{"$schema":"s","timeout":"banana"}`,
-		"negative timeout":        `{"$schema":"s","timeout":"-1s"}`,
+		"missing schema":       `{"command":["x"]}`,
+		"image is not a field": `{"$schema":"s","image":"alpine"}`,
+		"reserved env":         `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"empty test command":   `{"$schema":"s","tests":[["ok"],[]]}`,
+		"bad timeout":          `{"$schema":"s","timeout":"banana"}`,
+		"negative timeout":     `{"$schema":"s","timeout":"-1s"}`,
+		// idle_timeout was removed when timeout itself became activity-based;
+		// DisallowUnknownFields makes a hook.json that still sets it fail to
+		// load (acceptable: nothing merged ever set it).
+		"idle_timeout removed":    `{"$schema":"s","idle_timeout":"5m"}`,
 		"github_status nocontext": `{"$schema":"s","github_status":{"enabled":true}}`,
 		"unknown field":           `{"$schema":"s","frobnicate":true}`,
 		"api_key+secret":          `{"$schema":"s","api_key":"k","secret":"s"}`,

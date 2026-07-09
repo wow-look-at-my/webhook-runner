@@ -268,8 +268,8 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// any actual processing. When a hook (or several hooks sharing a group)
 	// is flooded, the excess runs wait here — staying "pending", not
 	// "running" — instead of all launching containers at once. The timeout
-	// is deliberately NOT started yet: a run must not burn its budget while
-	// sitting in the queue.
+	// watchdog is deliberately NOT armed yet: a run must not burn its
+	// budget while sitting in the queue.
 	release, acquired, qErr := r.acquireSlot(hook, run)
 	if qErr != nil {
 		// An undeclared group is a misconfiguration; fail closed rather
@@ -291,12 +291,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	defer release()
-
-	// The timeout clock starts now — we hold a slot and are about to launch
-	// — so it bounds only real container processing, never the time spent
-	// decrypting secrets, building the image, or queued behind other runs.
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()
 
@@ -447,24 +441,40 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	stderrW.Close()
 	run.SetRunning()
 
-	var streamWG sync.WaitGroup
-	streamWG.Add(2)
-	go r.streamPipe(&streamWG, stdoutR, hook.ID, run, "stdout")
-	go r.streamPipe(&streamWG, stderrR, hook.ID, run, "stderr")
-
-	// Watch for timeout (ctx) and explicit cancel requests in parallel
-	// with cmd.Wait. Either one kills the container by name. A cancel
-	// requested before this goroutine started selects immediately (the
-	// channel is already closed), so the pre-start race is covered.
 	timedOut := make(chan struct{})
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
+
+	// The timeout watchdog arms NOW — only after the concurrency slot was
+	// acquired and the container actually launched, so a queued run never
+	// ticks — and any output byte on either stream resets it via the
+	// touchReader wrappers. The timeout is activity-based: it fires only
+	// after `timeout` of NO output, so a run that keeps logging progress
+	// runs as long as it needs (there is no absolute wall-clock ceiling),
+	// while one that has gone silent is killed.
+	wd := newIdleWatchdog(timeout, time.Now)
+	wd.Arm()
+	silent := wd.Watch(stopWatcher)
+	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
+	stderr := &touchReader{r: stderrR, touch: wd.Touch}
+
+	var streamWG sync.WaitGroup
+	streamWG.Add(2)
+	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
+	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
+
+	// Watch for the no-output timeout, parent-context cancellation, and
+	// explicit cancel requests in parallel with cmd.Wait. Any one kills the
+	// container by name. A cancel requested before this goroutine started
+	// selects immediately (the channel is already closed), so the pre-start
+	// race is covered.
 	go func() {
 		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				close(timedOut)
-			}
+		case <-silent:
+			close(timedOut)
+		case <-parent.Done():
+			// Parent cancelled (e.g. the caller tearing down): kill the
+			// container and let cmd.Wait's error shape the terminal status.
 		case <-run.Cancelled():
 			close(cancelled)
 		case <-stopWatcher:
@@ -485,20 +495,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	// In the normal case the process has exited and its pipe ends
 	// are closed, so streamWG.Wait returns immediately. On a kill
-	// (timeout or cancel), orphaned child processes (e.g. the real
-	// docker container's descendants) can keep the write end open;
-	// force-close the read ends so the scanner goroutines unblock.
-	select {
-	case <-timedOut:
-		stdoutR.Close()
-		stderrR.Close()
-	default:
+	// (timeout or cancel), orphaned child processes (e.g. the real docker
+	// container's descendants) can keep the write end open; force-close
+	// the read ends so the scanner goroutines unblock.
+	killedByWatcher := false
+	for _, ch := range []chan struct{}{timedOut, cancelled} {
 		select {
-		case <-cancelled:
-			stdoutR.Close()
-			stderrR.Close()
+		case <-ch:
+			killedByWatcher = true
 		default:
 		}
+	}
+	if killedByWatcher {
+		stdoutR.Close()
+		stderrR.Close()
 	}
 	streamWG.Wait()
 
@@ -523,10 +533,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		if exitCode == 0 {
 			exitCode = -1
 		}
-		errMsg = fmt.Sprintf("timed out after %s", timeout)
+		// The message names the activity semantics: the run died for going
+		// silent, not for running long.
+		errMsg = fmt.Sprintf("timed out after %s (no output)", timeout)
 	default:
 	}
-	// Checked after timeout so an explicit cancel takes precedence when
+	// Checked after the timeout so an explicit cancel takes precedence when
 	// both raced to kill the container.
 	select {
 	case <-cancelled:
@@ -540,14 +552,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	r.events.Record("run.finished", fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode),
+	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
+	if status == runs.StatusTimeout && errMsg != "" {
+		// Carry the reason ("timed out after <d> (no output)") so the
+		// activity feed shows what killed the run.
+		finishedMsg += ": " + errMsg
+	}
+	r.events.Record("run.finished", finishedMsg,
 		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
 }
 
-func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.ReadCloser, hookID string, run *runs.Run, stream string) {
+func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run *runs.Run, stream string) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(rc)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
