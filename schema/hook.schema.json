@@ -44,13 +44,16 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, and HOOK_RUN_ID are reserved.",
+      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, HOOK_RUN_ID, and (for state hooks) HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
           { "required": ["HOOK_HEADERS_FILE"] },
           { "required": ["HOOK_ID"] },
-          { "required": ["HOOK_RUN_ID"] }
+          { "required": ["HOOK_RUN_ID"] },
+          { "required": ["HOOK_KV_SOCKET"] },
+          { "required": ["HOOK_KV_URL"] },
+          { "required": ["HOOK_KV_TOKEN"] }
         ]
       }
     },
@@ -65,12 +68,26 @@
     "timeout": {
       "type": "string",
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
-      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"). Default: 5m."
+      "description": "Kill the run after this long with no container output; any output resets the clock. Applied per run after its concurrency slot is acquired. Default: 5m."
     },
     "synchronous": {
       "type": "boolean",
       "default": false,
       "description": "When true, the server holds the HTTP response open until the container exits. Default: false (returns 202 immediately)."
+    },
+    "state": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, opt the hook into the persistent KV store. The runner injects HOOK_KV_URL (http://localhost:9002) and HOOK_KV_TOKEN (a per-hook bearer token whose namespace is this hook's ID), and a proxy shim entrypoint, so the hook reaches the state API at a plain localhost URL with any HTTP client (no networking, no published port). The hook's data persists across its runs and across server restarts, isolated from other hooks. Default: false (no KV access)."
+    },
+    "schedule": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
+      "description": "Go duration (e.g. \"5m\", \"1h\") to fire this hook on a fixed interval, in addition to any HTTP trigger. A scheduled run goes through the same pipeline as an HTTP-triggered one (tracked, gated by concurrency_group, KV-enabled, shown on the dashboard) with a synthetic payload marking it schedule-triggered. On startup, and whenever the schedule is newly added or its interval changes, the hook fires immediately, then every interval; the scheduler skips a tick while a previous run of the same hook is still in flight (skip-if-already-running). Omit for HTTP-triggered only."
+    },
+    "concurrency_group": {
+      "type": "string",
+      "description": "Name of a concurrency group declared in concurrency.json at the hooks root. At most that group's limit of runs (counted across every hook sharing the group) execute at once; the rest queue as 'pending' with their timeout not yet counting. Referencing a group not declared in concurrency.json is a load/validation error. Omit for unbounded concurrency."
     },
     "extra_docker_args": {
       "type": "array",

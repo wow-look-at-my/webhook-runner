@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -40,6 +41,14 @@ import (
 const (
 	mountedPayload = "/var/run/webhook-runner/payload"
 	mountedHeaders = "/var/run/webhook-runner/headers.json"
+	// mountedStateSocket is where a state hook's container sees the KV API's
+	// Unix socket (bind-mounted from the host-shared tmp dir).
+	mountedStateSocket = "/run/webhook-runner/state.sock"
+	// mountedShim is where the container sees webhook-runner's own binary,
+	// bind-mounted in and set as the entrypoint of a state hook: it proxies
+	// HOOK_KV_URL (http://localhost:9002) to the Unix socket, then execs the
+	// hook's real command, so hooks use a plain URL with any HTTP client.
+	mountedShim = "/run/webhook-runner/whr-shim"
 )
 
 // HookFinishedFunc is invoked once the container exits (or fails to
@@ -50,6 +59,13 @@ type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 // Implementations typically push the GitHub "pending" commit status.
 type HookStartedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
+// KVInjector mints the per-hook bearer token injected into containers that
+// opt into the state store. It is a one-method seam (satisfied by *kv.Store)
+// so the runner needn't import the kv package's whole surface.
+type KVInjector interface {
+	Token(namespace string) string
+}
+
 // Runner launches docker containers and tracks the resulting runs.
 type Runner struct {
 	tracker  *runs.Tracker
@@ -59,6 +75,17 @@ type Runner struct {
 	onFinish HookFinishedFunc
 	secrets  *hooks.SecretsLoader
 	events   *events.Recorder
+	groups   *concurrency.Manager
+
+	// kv, kvSocket, and kvShim inject state-store access into containers whose
+	// hook sets state: true. kv == nil (or an empty socket/shim path) disables
+	// injection. kvSocket is the host path of the KV API's Unix socket and
+	// kvShim is the host path of webhook-runner's own binary; both are
+	// bind-mounted in, and the shim (set as the container entrypoint) proxies
+	// localhost:9002 to the socket so the hook uses a plain http URL.
+	kv       KVInjector
+	kvSocket string
+	kvShim   string
 
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
@@ -76,6 +103,15 @@ type Options struct {
 	Docker   string               // docker binary path; "" = "docker"
 	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
+	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
+
+	// KV mints per-hook state tokens; KVSocket is the host path of the KV
+	// API's Unix socket and KVShim is the host path of webhook-runner's own
+	// binary (the in-container proxy entrypoint), both bind-mounted into
+	// state-hook containers. KV nil or either path empty disables KV injection.
+	KV       KVInjector
+	KVSocket string
+	KVShim   string
 }
 
 // New constructs a Runner.
@@ -97,8 +133,39 @@ func New(opts Options) *Runner {
 		onFinish:  opts.OnFinish,
 		secrets:   opts.Secrets,
 		events:    opts.Events,
+		groups:    opts.Groups,
+		kv:        opts.KV,
+		kvSocket:  opts.KVSocket,
+		kvShim:    opts.KVShim,
 		dockerBin: opts.Docker,
 	}
+}
+
+// imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
+// CMD, or ENTRYPOINT plus hookCommand when the hook overrides the command — via
+// docker inspect. State hooks set the KV shim as the container entrypoint, so
+// the shim must be handed the original command to exec after starting the proxy.
+func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
+	out, err := exec.Command(dockerBin, "inspect", image,
+		"--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}").Output()
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	var entrypoint, cmd []string
+	_ = json.Unmarshal([]byte(parts[0]), &entrypoint)
+	if len(parts) > 1 {
+		_ = json.Unmarshal([]byte(parts[1]), &cmd)
+	}
+	tail := hookCommand
+	if len(tail) == 0 {
+		tail = cmd
+	}
+	argv := append(append([]string{}, entrypoint...), tail...)
+	if len(argv) == 0 {
+		return nil, errors.New("image declares no entrypoint or cmd and the hook sets no command")
+	}
+	return argv, nil
 }
 
 // Wait blocks until all in-flight runs have finished. Useful for tests
@@ -133,8 +200,6 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
 	timeout := hook.Timeout()
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -199,6 +264,34 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	default:
 	}
 
+	// Queue: reserve a slot in the hook's concurrency group before doing
+	// any actual processing. When a hook (or several hooks sharing a group)
+	// is flooded, the excess runs wait here — staying "pending", not
+	// "running" — instead of all launching containers at once. The timeout
+	// watchdog is deliberately NOT armed yet: a run must not burn its
+	// budget while sitting in the queue.
+	release, acquired, qErr := r.acquireSlot(hook, run)
+	if qErr != nil {
+		// An undeclared group is a misconfiguration; fail closed rather
+		// than silently running unbounded.
+		r.events.Record("run.misconfigured", fmt.Sprintf("%s run %s: %v", hook.ID, run.ID(), qErr),
+			map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
+		run.Finish(runs.StatusError, -1, qErr.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	if !acquired {
+		// Cancelled while waiting in the queue.
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	defer release()
+
 	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{
@@ -210,6 +303,25 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
+	}
+	// State store: opted-in hooks reach the KV API at a plain
+	// http://localhost:9002 URL. The runner bind-mounts the KV Unix socket and
+	// webhook-runner's own binary, sets the binary as the container entrypoint
+	// (the shim) — it proxies that port to the socket, then execs the hook's
+	// real command — so there's no networking and any HTTP client works. Only
+	// state hooks get the mounts + token. Injected among the reserved env
+	// entries (before secrets/hook env) so these keys can't be shadowed —
+	// ReservedEnvKey already covers them, but docker's last--e-wins matters too.
+	stateForwarding := hook.State && r.kv != nil && r.kvSocket != "" && r.kvShim != ""
+	if stateForwarding {
+		args = append(args,
+			"--entrypoint", mountedShim,
+			"-v", r.kvShim+":"+mountedShim+":ro",
+			"-v", r.kvSocket+":"+mountedStateSocket,
+			"-e", "HOOK_KV_SOCKET="+mountedStateSocket,
+			"-e", "HOOK_KV_URL=http://localhost:9002",
+			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID),
+		)
 	}
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
@@ -234,6 +346,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		for _, name := range missing {
 			r.log.Warn("hook env references unset variable",
 				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
+			// Also surface it on the dashboard: a hook silently running with
+			// an empty secret (e.g. an AI key that never resolved) looks
+			// healthy from the outside while every run fails downstream.
+			r.events.Record("env.unresolved",
+				hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
+				map[string]string{"hook": hook.ID, "run": run.ID()})
 		}
 		args = append(args, "-e", k+"="+expanded)
 	}
@@ -245,8 +363,26 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	args = append(args, hook.ExtraDockerArgs...)
 	args = append(args, image)
-	// With no command override, the image's CMD/ENTRYPOINT runs.
-	args = append(args, hook.Command...)
+	if stateForwarding {
+		// The shim is the entrypoint; hand it the command the image would have
+		// run (its ENTRYPOINT+CMD, or hook.Command when set) to exec after
+		// starting the proxy.
+		childArgv, err := imageCommand(r.dockerBin, image, hook.Command)
+		if err != nil {
+			r.events.Record("image.inspect_failed", fmt.Sprintf("inspect %s for %s failed: %v", image, hook.ID, err),
+				map[string]string{"hook": hook.ID, "run": run.ID()})
+			run.Finish(runs.StatusError, -1, fmt.Sprintf("inspect image command: %v", err))
+			if r.onFinish != nil {
+				r.onFinish(hook, run, payload)
+			}
+			return
+		}
+		args = append(args, "kv-forward")
+		args = append(args, childArgv...)
+	} else {
+		// With no command override, the image's CMD/ENTRYPOINT runs.
+		args = append(args, hook.Command...)
+	}
 
 	r.log.Info("hook starting",
 		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
@@ -305,24 +441,40 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	stderrW.Close()
 	run.SetRunning()
 
-	var streamWG sync.WaitGroup
-	streamWG.Add(2)
-	go r.streamPipe(&streamWG, stdoutR, hook.ID, run, "stdout")
-	go r.streamPipe(&streamWG, stderrR, hook.ID, run, "stderr")
-
-	// Watch for timeout (ctx) and explicit cancel requests in parallel
-	// with cmd.Wait. Either one kills the container by name. A cancel
-	// requested before this goroutine started selects immediately (the
-	// channel is already closed), so the pre-start race is covered.
 	timedOut := make(chan struct{})
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
+
+	// The timeout watchdog arms NOW — only after the concurrency slot was
+	// acquired and the container actually launched, so a queued run never
+	// ticks — and any output byte on either stream resets it via the
+	// touchReader wrappers. The timeout is activity-based: it fires only
+	// after `timeout` of NO output, so a run that keeps logging progress
+	// runs as long as it needs (there is no absolute wall-clock ceiling),
+	// while one that has gone silent is killed.
+	wd := newIdleWatchdog(timeout, time.Now)
+	wd.Arm()
+	silent := wd.Watch(stopWatcher)
+	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
+	stderr := &touchReader{r: stderrR, touch: wd.Touch}
+
+	var streamWG sync.WaitGroup
+	streamWG.Add(2)
+	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
+	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
+
+	// Watch for the no-output timeout, parent-context cancellation, and
+	// explicit cancel requests in parallel with cmd.Wait. Any one kills the
+	// container by name. A cancel requested before this goroutine started
+	// selects immediately (the channel is already closed), so the pre-start
+	// race is covered.
 	go func() {
 		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				close(timedOut)
-			}
+		case <-silent:
+			close(timedOut)
+		case <-parent.Done():
+			// Parent cancelled (e.g. the caller tearing down): kill the
+			// container and let cmd.Wait's error shape the terminal status.
 		case <-run.Cancelled():
 			close(cancelled)
 		case <-stopWatcher:
@@ -343,20 +495,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	// In the normal case the process has exited and its pipe ends
 	// are closed, so streamWG.Wait returns immediately. On a kill
-	// (timeout or cancel), orphaned child processes (e.g. the real
-	// docker container's descendants) can keep the write end open;
-	// force-close the read ends so the scanner goroutines unblock.
-	select {
-	case <-timedOut:
-		stdoutR.Close()
-		stderrR.Close()
-	default:
+	// (timeout or cancel), orphaned child processes (e.g. the real docker
+	// container's descendants) can keep the write end open; force-close
+	// the read ends so the scanner goroutines unblock.
+	killedByWatcher := false
+	for _, ch := range []chan struct{}{timedOut, cancelled} {
 		select {
-		case <-cancelled:
-			stdoutR.Close()
-			stderrR.Close()
+		case <-ch:
+			killedByWatcher = true
 		default:
 		}
+	}
+	if killedByWatcher {
+		stdoutR.Close()
+		stderrR.Close()
 	}
 	streamWG.Wait()
 
@@ -381,10 +533,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		if exitCode == 0 {
 			exitCode = -1
 		}
-		errMsg = fmt.Sprintf("timed out after %s", timeout)
+		// The message names the activity semantics: the run died for going
+		// silent, not for running long.
+		errMsg = fmt.Sprintf("timed out after %s (no output)", timeout)
 	default:
 	}
-	// Checked after timeout so an explicit cancel takes precedence when
+	// Checked after the timeout so an explicit cancel takes precedence when
 	// both raced to kill the container.
 	select {
 	case <-cancelled:
@@ -398,14 +552,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	r.events.Record("run.finished", fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode),
+	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
+	if status == runs.StatusTimeout && errMsg != "" {
+		// Carry the reason ("timed out after <d> (no output)") so the
+		// activity feed shows what killed the run.
+		finishedMsg += ": " + errMsg
+	}
+	r.events.Record("run.finished", finishedMsg,
 		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
 }
 
-func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.ReadCloser, hookID string, run *runs.Run, stream string) {
+func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run *runs.Run, stream string) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(rc)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -419,6 +579,21 @@ func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.ReadCloser, hookID string,
 		r.log.Warn("output scanner error",
 			"hook", hookID, "run", run.ID(), "stream", stream, "err", err)
 	}
+}
+
+// acquireSlot reserves a concurrency-group slot for the run, recording a
+// one-time "queued" activity event the moment the run actually has to wait
+// (not when it gets a slot immediately). A hook with no concurrency_group
+// returns instantly with a no-op release. The returned release must be
+// called exactly once when the run finishes.
+func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, err error) {
+	return r.groups.Acquire(hook.ConcurrencyGroup, run.Cancelled(), func() {
+		r.log.Info("hook run queued",
+			"hook", hook.ID, "run", run.ID(), "group", hook.ConcurrencyGroup)
+		r.events.Record("run.queued",
+			fmt.Sprintf("%s run %s queued on concurrency group %q", hook.ID, run.ID(), hook.ConcurrencyGroup),
+			map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
+	})
 }
 
 func (r *Runner) killContainer(name string) {

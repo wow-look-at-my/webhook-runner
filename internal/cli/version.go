@@ -36,3 +36,22 @@ func versionString() string {
 	}
 	return version
 }
+
+// buildVCS returns the VCS revision and commit time Go stamped into the
+// build (empty when built without VCS metadata, e.g. from a source
+// tarball). It supplements versionString for the HTTP /version endpoints.
+func buildVCS() (revision, at string) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", ""
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.time":
+			at = s.Value
+		}
+	}
+	return revision, at
+}

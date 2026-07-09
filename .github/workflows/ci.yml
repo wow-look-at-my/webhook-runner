@@ -40,8 +40,11 @@ jobs:
           file: e2e/e2e.test.ts
 
   # Builds the Dockerfile from the prebuilt go-build artifact and pushes
-  # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The
-  # deployed compose pulls this image and docker-updater watches its digest.
+  # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The deployed
+  # compose pulls this image; the push notifies docker-updater (GitHub package webhook).
   publish-ghcr:
     needs: e2e
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
+    # The reusable workflow's optional `updater-webhook-secret` notify is intentionally unwired:
+    # docker-updater is notified by the container push itself (GitHub package webhook on the GHCR
+    # push), so the CI-side notify is redundant here. Pass `updater-webhook-secret` if that ever changes.

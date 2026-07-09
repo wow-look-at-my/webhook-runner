@@ -31,6 +31,10 @@ func writeMockDocker(t *testing.T, dir string) string {
 	return path
 }
 
+// testVersion is the build identity newTestServer injects, so tests can
+// assert /health and /version report exactly what the server was given.
+var testVersion = VersionInfo{Version: "v1.2.3-test", Revision: "abcdef123456", Time: "2026-07-04T00:00:00Z"}
+
 func newTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *runner.Runner) {
 	t.Helper()
 	dir := t.TempDir()
@@ -50,6 +54,7 @@ func newTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *runn
 		Runner:   rn,
 		Tracker:  tr,
 		Logger:   logger,
+		Version:  testVersion,
 	})
 	return s, reg, tr, rn
 }
