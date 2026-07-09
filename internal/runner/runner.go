@@ -200,6 +200,7 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
 	timeout := hook.Timeout()
+	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -391,7 +392,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 
 	r.log.Info("hook starting",
-		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
+		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout, "idle_timeout", idleTimeout)
 	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, run.ID(), image),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
@@ -447,24 +448,43 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	stderrW.Close()
 	run.SetRunning()
 
-	var streamWG sync.WaitGroup
-	streamWG.Add(2)
-	go r.streamPipe(&streamWG, stdoutR, hook.ID, run, "stdout")
-	go r.streamPipe(&streamWG, stderrR, hook.ID, run, "stderr")
-
-	// Watch for timeout (ctx) and explicit cancel requests in parallel
-	// with cmd.Wait. Either one kills the container by name. A cancel
-	// requested before this goroutine started selects immediately (the
-	// channel is already closed), so the pre-start race is covered.
 	timedOut := make(chan struct{})
+	idled := make(chan struct{})
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
+
+	// The idle watchdog (if the hook sets idle_timeout) arms NOW — after the
+	// concurrency slot was acquired and the container actually launched, the
+	// same rule as the total-timeout clock above — and any output byte on
+	// either stream resets it via the touchReader wrappers.
+	var stdout, stderr io.Reader = stdoutR, stderrR
+	var idleFired <-chan struct{} // nil (never selected) when no idle_timeout is set
+	if idleTimeout > 0 {
+		wd := newIdleWatchdog(idleTimeout, time.Now)
+		wd.Arm()
+		idleFired = wd.Watch(stopWatcher)
+		stdout = &touchReader{r: stdout, touch: wd.Touch}
+		stderr = &touchReader{r: stderr, touch: wd.Touch}
+	}
+
+	var streamWG sync.WaitGroup
+	streamWG.Add(2)
+	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
+	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
+
+	// Watch for the total timeout (ctx), the idle watchdog, and explicit
+	// cancel requests in parallel with cmd.Wait. Any one kills the container
+	// by name. A cancel requested before this goroutine started selects
+	// immediately (the channel is already closed), so the pre-start race is
+	// covered.
 	go func() {
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				close(timedOut)
 			}
+		case <-idleFired:
+			close(idled)
 		case <-run.Cancelled():
 			close(cancelled)
 		case <-stopWatcher:
@@ -485,20 +505,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	// In the normal case the process has exited and its pipe ends
 	// are closed, so streamWG.Wait returns immediately. On a kill
-	// (timeout or cancel), orphaned child processes (e.g. the real
-	// docker container's descendants) can keep the write end open;
-	// force-close the read ends so the scanner goroutines unblock.
-	select {
-	case <-timedOut:
-		stdoutR.Close()
-		stderrR.Close()
-	default:
+	// (total timeout, idle timeout, or cancel), orphaned child processes
+	// (e.g. the real docker container's descendants) can keep the write end
+	// open; force-close the read ends so the scanner goroutines unblock.
+	killedByWatcher := false
+	for _, ch := range []chan struct{}{timedOut, idled, cancelled} {
 		select {
-		case <-cancelled:
-			stdoutR.Close()
-			stderrR.Close()
+		case <-ch:
+			killedByWatcher = true
 		default:
 		}
+	}
+	if killedByWatcher {
+		stdoutR.Close()
+		stderrR.Close()
 	}
 	streamWG.Wait()
 
@@ -526,7 +546,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		errMsg = fmt.Sprintf("timed out after %s", timeout)
 	default:
 	}
-	// Checked after timeout so an explicit cancel takes precedence when
+	// The idle kill is a timeout too, but its message names the idle
+	// semantics so an operator can tell "went silent" from "hit the
+	// absolute ceiling". (The watcher closes at most one of these channels,
+	// so the two timeout cases never race each other.)
+	select {
+	case <-idled:
+		status = runs.StatusTimeout
+		if exitCode == 0 {
+			exitCode = -1
+		}
+		errMsg = fmt.Sprintf("idle timeout after %s (no output)", idleTimeout)
+	default:
+	}
+	// Checked after the timeouts so an explicit cancel takes precedence when
 	// both raced to kill the container.
 	select {
 	case <-cancelled:
@@ -540,14 +573,20 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	r.events.Record("run.finished", fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode),
+	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
+	if status == runs.StatusTimeout && errMsg != "" {
+		// Name the reason: "idle timeout ... (no output)" vs "timed out
+		// after ...", so the activity feed distinguishes the two kills.
+		finishedMsg += ": " + errMsg
+	}
+	r.events.Record("run.finished", finishedMsg,
 		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
 }
 
-func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.ReadCloser, hookID string, run *runs.Run, stream string) {
+func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run *runs.Run, stream string) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(rc)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)

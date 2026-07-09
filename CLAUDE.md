@@ -197,7 +197,27 @@ The companion repo is `wow-look-at-my/webhooks`.
   back up, queued runs start timing out while they wait, which is the exact
   bug this avoids. `run.SetRunning()` (pending→running) still fires only
   once the container launches, so the dashboard shows queued runs as
-  `pending`.
+  `pending` — and it stamps `RunState.StartedAt`, the queue-wait/processing
+  split point (`started` in JSON stays the QUEUED/accepted instant for
+  compatibility; waited = StartedAt−Started, duration = Finished−StartedAt,
+  and a zero StartedAt means the run never started).
+- `idle_timeout` (optional, independent of `timeout`) kills a run only when
+  its container produces **no output** (stdout or stderr) for that long —
+  the progress-aware timeout for hooks whose healthy runtime varies (added
+  after a 47-part map-reduce run logging every ≤45s was killed by a 15m
+  wall-clock `timeout`). Any output **byte** resets the clock: the runner
+  wraps the pipe read side in a `touchReader` (internal/runner/watchdog.go),
+  so even a long line without a newline counts. The `idleWatchdog` follows
+  the **same arming rule** as `timeout`: `Arm()` is called only after the
+  concurrency slot is acquired and `cmd.Start` succeeded — a queued run must
+  never idle out, and an unarmed watchdog never fires (that invariant is
+  unit-tested; keep it). An idle kill reuses the docker-kill-by-name path and
+  ends the run as status `timeout` with the distinguishable error
+  `idle timeout after <d> (no output)` (the total ceiling says "timed out
+  after <d>"); the `run.finished` event message carries that reason. Like
+  `state`/`concurrency_group`/`schedule`, `idle_timeout` is a newer hook.json
+  field — old binaries reject it (`DisallowUnknownFields`), so deploy
+  webhook-runner before any hook sets it.
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared
@@ -249,11 +269,17 @@ The companion repo is `wow-look-at-my/webhooks`.
   primary knob) with a per-hook count cap
   (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`, default 200000) as a coarse disk
   safety net; like kv, expiry is lazy on reads AND swept in the background —
-  keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`), so
-  GC and newest-first reads are single cursor walks; the per-hook index
-  *value* carries `"<status> <finished-nanos>"` so `SummariesByHook` (the
-  stats path) never deserializes metadata blobs — don't change one side of
-  that format without the other. The deferred `runStore.Close()` runs after
+  keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`,
+  where the nanos are the QUEUED/accepted time — leave the key format
+  alone), so GC and newest-first reads are single cursor walks; the per-hook
+  index *value* carries `"<status> <finished-nanos> <startedat-nanos>"`
+  (third field = processing start, `0` = never started) so `SummariesByHook`
+  (the stats path) never deserializes metadata blobs — don't change one side
+  of that format without the other, and keep `splitSummary` accepting the
+  legacy two-field `"<status> <finished-nanos>"` form: pre-upgrade rows read
+  back with a zero StartedAt, their duration falls back to Finished−Started
+  (queued-inclusive), and they are excluded from the wait stats. The
+  deferred `runStore.Close()` runs after
   `rn.Wait()`, so every in-flight run records its terminal state before the
   DB closes — keep that ordering.
 - The per-hook KV store (`internal/kv`, the state socket) also persists to

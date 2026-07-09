@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
@@ -217,6 +218,99 @@ func TestSweepEnforcesPerHookCap(t *testing.T) {
 	}
 	assert.Len(t, s.ListAll(0), 4)
 	assert.Len(t, s.ListByHook("small", 0), 1)
+}
+
+// StartedAt round-trips through both the metadata blob and the summary
+// index — for a run that started, and for one that never did (zero value).
+func TestRecordRoundTripsStartedAt(t *testing.T) {
+	s := newStore(t, Config{})
+	base := time.Now().UTC().Add(-10 * time.Minute)
+
+	started := state("aaaaaaaaaaaaaaaaaaaaaaaaas", "h", runs.StatusSuccess, base)
+	started.StartedAt = base.Add(90 * time.Second) // queued 90s, then launched
+	require.NoError(t, s.Record(started))
+
+	// Cancelled while queued: terminal with a zero StartedAt.
+	never := state("bbbbbbbbbbbbbbbbbbbbbbbbbn", "h", runs.StatusCancelled, base.Add(time.Minute))
+	require.NoError(t, s.Record(never))
+
+	got, ok := s.Get(started.ID)
+	require.True(t, ok)
+	assert.True(t, got.StartedAt.Equal(started.StartedAt))
+	got, ok = s.Get(never.ID)
+	require.True(t, ok)
+	assert.True(t, got.StartedAt.IsZero(), "a never-started run must read back with a zero StartedAt")
+
+	// The summary index carries the same split without touching metadata,
+	// and the list read path (the /runs merge) exposes it too.
+	for name, states := range map[string][]runs.RunState{
+		"summaries": s.SummariesByHook("h"),
+		"list":      s.ListByHook("h", 0),
+	} {
+		require.Len(t, states, 2, name)
+		byID := map[string]runs.RunState{states[0].ID: states[0], states[1].ID: states[1]}
+		assert.True(t, byID[started.ID].StartedAt.Equal(started.StartedAt), name)
+		assert.True(t, byID[never.ID].StartedAt.IsZero(), name)
+	}
+}
+
+// splitSummary accepts both index-value generations: the current three-field
+// form (third field 0 = never started) and the legacy two-field form written
+// before the queue-wait/processing split.
+func TestSplitSummaryLegacyAndNew(t *testing.T) {
+	now := time.Now().UTC().Truncate(0)
+	launch := now.Add(-time.Minute)
+
+	// New form, started.
+	st, fin, startedAt, ok := splitSummary(summaryValue(runs.StatusSuccess, now, launch))
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusSuccess, st)
+	assert.True(t, fin.Equal(now))
+	assert.True(t, startedAt.Equal(launch))
+
+	// New form, never started: the third field is written as 0.
+	st, fin, startedAt, ok = splitSummary(summaryValue(runs.StatusCancelled, now, time.Time{}))
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusCancelled, st)
+	assert.True(t, fin.Equal(now))
+	assert.True(t, startedAt.IsZero())
+
+	// Legacy two-field form (pre-upgrade rows): still parses; StartedAt is
+	// zero, so its duration falls back to Finished−Started downstream and it
+	// is excluded from wait stats.
+	st, fin, startedAt, ok = splitSummary(fmt.Appendf(nil, "timeout %d", now.UnixNano()))
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusTimeout, st)
+	assert.True(t, fin.Equal(now))
+	assert.True(t, startedAt.IsZero())
+
+	// Garbage is rejected.
+	for _, v := range []string{"", "success", "success notanumber", "success 123 notanumber"} {
+		_, _, _, ok := splitSummary([]byte(v))
+		assert.False(t, ok, "value %q must not parse", v)
+	}
+}
+
+// A pre-upgrade database row (legacy two-field index value) still surfaces
+// through SummariesByHook — with StartedAt zero — rather than being dropped.
+func TestSummariesTolerateLegacyIndexValues(t *testing.T) {
+	s := newStore(t, Config{})
+	st := state("cccccccccccccccccccccccccl", "h", runs.StatusSuccess, time.Now().UTC().Add(-time.Minute))
+	require.NoError(t, s.Record(st))
+
+	// Rewrite the index value in place to the legacy two-field form.
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		hb := tx.Bucket(bucketByHook).Bucket([]byte("h"))
+		k, _ := hb.Cursor().First()
+		return hb.Put(append([]byte(nil), k...), fmt.Appendf(nil, "%s %d", st.Status, st.Finished.UnixNano()))
+	}))
+
+	sums := s.SummariesByHook("h")
+	require.Len(t, sums, 1)
+	assert.Equal(t, st.ID, sums[0].ID)
+	assert.Equal(t, runs.StatusSuccess, sums[0].Status)
+	assert.True(t, sums[0].Finished.Equal(st.Finished))
+	assert.True(t, sums[0].StartedAt.IsZero())
 }
 
 // Summaries come from the index alone but must agree with the metadata on

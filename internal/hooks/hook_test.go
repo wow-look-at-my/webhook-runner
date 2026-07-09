@@ -52,6 +52,33 @@ func TestParseMinimal(t *testing.T) {
 	assert.Empty(t, h.Command)
 }
 
+func TestParseIdleTimeoutValid(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5m","timeout":"90m"}`)
+	require.Nil(t, err)
+	assert.Equal(t, "5m", h.IdleTimeoutRaw)
+	assert.Equal(t, 5*time.Minute, h.IdleTimeout())
+	// Independent knobs: the total ceiling is untouched by the idle limit.
+	assert.Equal(t, 90*time.Minute, h.Timeout())
+}
+
+func TestParseIdleTimeoutEmptyMeansNoIdleLimit(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.IdleTimeout())
+}
+
+func TestParseIdleTimeoutInvalidDuration(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5 minutes"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "invalid idle_timeout")
+}
+
+func TestParseIdleTimeoutMustBePositive(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","idle_timeout":"-1s"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "idle_timeout must be positive")
+}
+
 func TestParseScheduleValid(t *testing.T) {
 	h, err := parseInDir(t, `{"$schema":"s","schedule":"5m"}`)
 	require.Nil(t, err)
