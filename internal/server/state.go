@@ -80,7 +80,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns string) 
 		return
 	}
 	if err := s.kv.Set(ns, r.PathValue("key"), body, ttl); err != nil {
-		writeKVError(w, err)
+		s.writeKVError(w, ns, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -88,7 +88,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns string) 
 
 func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, ns string) {
 	if err := s.kv.Delete(ns, r.PathValue("key")); err != nil {
-		writeKVError(w, err)
+		s.writeKVError(w, ns, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -124,7 +124,7 @@ func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns string)
 	}
 	n, err := s.kv.Incr(ns, r.PathValue("key"), delta, ttl)
 	if err != nil {
-		writeKVError(w, err)
+		s.writeKVError(w, ns, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"value": n})
@@ -151,8 +151,14 @@ func parseTTL(r *http.Request) (time.Duration, error) {
 	return time.Duration(secs) * time.Second, nil
 }
 
-// writeKVError maps the store's typed errors onto HTTP status codes.
-func writeKVError(w http.ResponseWriter, err error) {
+// writeKVError maps the store's typed errors onto HTTP status codes. The
+// typed errors are the caller's fault; anything else is an internal store
+// failure — in practice a failed disk persist, after which the store has
+// already rolled the in-memory mutation back. Those must be loud end-to-end:
+// the hook gets a 5xx carrying the reason (its write did NOT happen), the
+// server log gets the error, and the activity feed gets a kv.write_failed
+// event so the dashboard can answer "are state writes failing?".
+func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 	switch {
 	case errors.Is(err, kv.ErrValueTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
@@ -163,6 +169,9 @@ func writeKVError(w http.ResponseWriter, err error) {
 	case errors.Is(err, kv.ErrBadNamespace):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, "state store error")
+		s.log.Error("kv: state write failed", "ns", ns, "err", err)
+		s.events.Record("kv.write_failed", ns+": state write failed (rolled back): "+err.Error(),
+			map[string]string{"hook": ns})
+		writeError(w, http.StatusInternalServerError, "state store error: "+err.Error())
 	}
 }

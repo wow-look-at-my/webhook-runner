@@ -70,8 +70,11 @@ hooks without restart.
   conversation view), plus a **Copy log** button that puts the whole
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
-  config summary, run stats, image state, runs, and activity slice — a
-  per-"app" view, where an app is one hook for now. Run timing is split
+  config summary, run stats, image state, runs, activity slice, and —
+  for `state: true` hooks — a **State (KV)** section listing the hook's
+  stored keys (size, TTL remaining) where clicking a key shows its
+  stored value (pretty-printed when it's JSON) — a per-"app" view,
+  where an app is one hook for now. Run timing is split
   into queue wait and processing time: the runs table shows when a run
   was queued, how long it **Waited** for its concurrency slot, and a
   **Duration** that covers container time only, and the stats keep
@@ -159,7 +162,9 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
-| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
+| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total (no values at this level; shape unchanged for existing consumers). |
+| GET    | `/kv/{namespace}`   | List one namespace's keys (namespace == hook ID): per key its name, value size in bytes, and — when a TTL is set — `expires_at` (absolute) plus `ttl_seconds` (remaining); both absent for keys without a TTL. Sorted by key; `?prefix=` filters. Unknown/empty namespaces list as empty. |
+| GET    | `/kv/{namespace}/{key}` | Read one entry: the metadata above **plus the stored value** — `value_base64` always, `value_utf8` additionally when the bytes are valid UTF-8. `404` when absent **or expired** (the same lazy-expiry rule the state API applies). The key is one path segment: URL-encode it (`%2F` for `/`, `%23` for `#`). |
 | GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
 
 The dashboard's static assets are content-addressed: the served index.html
@@ -263,8 +268,16 @@ Properties:
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
 
-See the State KV API table above for the full endpoint list. The admin port's
-`GET /kv` shows per-hook key counts and byte totals (never values).
+See the State KV API table above for the full endpoint list. On the admin
+port, `GET /kv` shows per-hook key counts and byte totals, and the inspection
+routes `GET /kv/{namespace}` / `GET /kv/{namespace}/{key}` list a hook's keys
+(with sizes and TTLs) and read stored **values** — also surfaced on the
+dashboard as a *State (KV)* section on each state hook's page (click a key to
+view its value). Exposing values on the admin port is deliberate: whatever a
+hook stores becomes readable there, so keep that port operator-only (Zero
+Trust — the same trust the un-authenticated `/reload` and run cancellation
+already assume). Values never appear on the public hook port, and
+`/hooks/{id}` stays value-free.
 
 > **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"state":

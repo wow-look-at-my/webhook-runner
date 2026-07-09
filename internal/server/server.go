@@ -172,6 +172,9 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
 	s.adminMux.HandleFunc("GET /kv", s.handleKVStats)
+	// State inspection (deliberately value-bearing — see kvadmin.go).
+	s.adminMux.HandleFunc("GET /kv/{namespace}", s.handleKVNamespace)
+	s.adminMux.HandleFunc("GET /kv/{namespace}/{key}", s.handleKVEntry)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 
 	// State port (internal): hook containers reach their own namespace,
