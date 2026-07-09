@@ -189,35 +189,39 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
-- The run `timeout` bounds **only container processing**. In
-  `runner.execute` the timeout `context.WithTimeout` is created *after*
-  secrets decrypt, image build, and (crucially) after the concurrency-group
-  slot is acquired — never at the top. A run waiting in a group's queue
-  stays `pending` with no timeout running; if you move the `WithTimeout`
-  back up, queued runs start timing out while they wait, which is the exact
-  bug this avoids. `run.SetRunning()` (pending→running) still fires only
-  once the container launches, so the dashboard shows queued runs as
-  `pending` — and it stamps `RunState.StartedAt`, the queue-wait/processing
-  split point (`started` in JSON stays the QUEUED/accepted instant for
-  compatibility; waited = StartedAt−Started, duration = Finished−StartedAt,
-  and a zero StartedAt means the run never started).
-- `idle_timeout` (optional, independent of `timeout`) kills a run only when
-  its container produces **no output** (stdout or stderr) for that long —
-  the progress-aware timeout for hooks whose healthy runtime varies (added
-  after a 47-part map-reduce run logging every ≤45s was killed by a 15m
-  wall-clock `timeout`). Any output **byte** resets the clock: the runner
-  wraps the pipe read side in a `touchReader` (internal/runner/watchdog.go),
-  so even a long line without a newline counts. The `idleWatchdog` follows
-  the **same arming rule** as `timeout`: `Arm()` is called only after the
-  concurrency slot is acquired and `cmd.Start` succeeded — a queued run must
-  never idle out, and an unarmed watchdog never fires (that invariant is
-  unit-tested; keep it). An idle kill reuses the docker-kill-by-name path and
-  ends the run as status `timeout` with the distinguishable error
-  `idle timeout after <d> (no output)` (the total ceiling says "timed out
-  after <d>"); the `run.finished` event message carries that reason. Like
-  `state`/`concurrency_group`/`schedule`, `idle_timeout` is a newer hook.json
-  field — old binaries reject it (`DisallowUnknownFields`), so deploy
-  webhook-runner before any hook sets it.
+- The run `timeout` is **activity-based, not wall-clock**: it kills a run
+  only when the container has produced **no output** (stdout or stderr) for
+  that long — "time out after N minutes of no activity". There is **no
+  absolute processing ceiling anymore**: a run that keeps logging runs as
+  long as it needs (the semantics exists because a healthy 47-part
+  map-reduce run logging every ≤45s was killed by its 15m wall-clock
+  `timeout`, while silence — not runtime — is the actual failure signal).
+  Any output **byte** resets the clock: the runner wraps the pipe read side
+  in a `touchReader` (internal/runner/watchdog.go), so even a long line
+  without a newline counts. `DefaultTimeout` (5m) still applies when a hook
+  omits `timeout` — now meaning 5 minutes of *silence*, so every hook keeps
+  hang protection by default. The implementing `idleWatchdog` keeps the old
+  arming rule: `Arm()` is called only after secrets decrypt, image build,
+  and (crucially) the concurrency-group slot acquisition, once `cmd.Start`
+  succeeded — a queued run stays `pending` with no clock ticking, and an
+  unarmed watchdog never fires (that invariant is unit-tested; keep it).
+  A timeout kill reuses the docker-kill-by-name path and ends the run as
+  status `timeout` with error `timed out after <d> (no output)`; the
+  `run.finished` event message carries that reason. `run.SetRunning()`
+  (pending→running) still fires only once the container launches, so the
+  dashboard shows queued runs as `pending` — and it stamps
+  `RunState.StartedAt`, the queue-wait/processing split point (`started` in
+  JSON stays the QUEUED/accepted instant for compatibility; waited =
+  StartedAt−Started, duration = Finished−StartedAt, and a zero StartedAt
+  means the run never started). The **sync hold** is the one place
+  `hook.Timeout()` is still read as wall clock (`parseWaitParams` /
+  `handleTrigger` in internal/server/handlers.go): a held HTTP response
+  can't wait on activity, so the hold is a *response* bound, never a run
+  bound — a chatty run legitimately outlives it and the response degrades
+  to the async 202 while the run continues. (The short-lived `idle_timeout`
+  field from #30 is REMOVED — `timeout` itself is the idle limit now, and
+  `DisallowUnknownFields` means a hook.json still setting `idle_timeout`
+  fails to load; nothing merged ever set it.)
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared

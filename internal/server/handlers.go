@@ -99,7 +99,12 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Synchronous: hold the connection until done or sync timeout.
+	// Synchronous: hold the connection until done or sync timeout. The hold
+	// is a RESPONSE bound (wall-clock), not a run bound: the run's own
+	// `timeout` is activity-based, so a run that keeps producing output can
+	// legitimately outlive the syncTimeout value — when that happens the
+	// response degrades to the async 202 below and the run continues
+	// untouched in the background.
 	select {
 	case <-run.Done():
 	case <-time.After(syncTimeout):
@@ -284,7 +289,11 @@ func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
 // query parameters and merges them with the hook's Synchronous setting.
 //
 // Returns the desired sync mode and the maximum time we'll hold the HTTP
-// response open before degrading to a background-running 202.
+// response open before degrading to a background-running 202. The default
+// hold is the hook's Timeout() value, but reinterpreted as WALL CLOCK: a
+// held response can't wait on "activity", so while the run's timeout bounds
+// inactivity, the hold bounds the response itself — a chatty run may outlive
+// it, in which case the caller gets the 202 and polls /runs/{id}.
 func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout time.Duration, err error) {
 	q := r.URL.Query()
 	sync = hook.Synchronous

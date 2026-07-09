@@ -7,19 +7,18 @@ import (
 )
 
 // idleWatchdog fires when a run's container produces no output for longer
-// than a configured limit — the progress-aware complement to the total run
-// timeout. A hook that keeps logging is making forward progress and may run
-// right up to its absolute ceiling; one that has gone silent for the whole
-// idle limit is stuck and gets killed.
+// than a configured limit. It is what implements the hook `timeout`, which
+// is activity-based: a hook that keeps logging is making forward progress
+// and may run indefinitely (there is no absolute wall-clock ceiling); one
+// that has gone silent for the whole limit is stuck and gets killed.
 //
 // Like the scheduler, the decision logic is pure and takes an injected clock
 // (now), so it is unit-testable without sleeping: Arm/Touch/check hold every
 // decision, and Watch is a thin timer loop around check.
 //
-// The idle clock follows the SAME arming rule as the total timeout (see
-// execute): the watchdog is armed only after the concurrency-group slot is
-// acquired and the container has actually launched. An unarmed watchdog
-// never fires, whatever the clock says — a queued run cannot idle out.
+// The watchdog is armed only after the concurrency-group slot is acquired
+// and the container has actually launched (see execute). An unarmed watchdog
+// never fires, whatever the clock says — a queued run cannot time out.
 type idleWatchdog struct {
 	limit time.Duration
 	now   func() time.Time
@@ -39,7 +38,7 @@ func newIdleWatchdog(limit time.Duration, now func() time.Time) *idleWatchdog {
 	return &idleWatchdog{limit: limit, now: now, fired: make(chan struct{})}
 }
 
-// Arm starts the idle clock. Called at container launch — never earlier, so
+// Arm starts the clock. Called at container launch — never earlier, so
 // secrets decryption, the image build, and queue time can't count as silence.
 func (w *idleWatchdog) Arm() {
 	w.mu.Lock()

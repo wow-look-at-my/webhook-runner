@@ -37,10 +37,10 @@ hooks without restart.
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
-- **Two kinds of timeout**: `timeout` is the absolute processing ceiling;
-  `idle_timeout` kills a run only when it stops producing output (any
-  output byte resets it) — so long-but-chatty work survives while hung
-  work is reaped. See [Timeouts](#timeouts).
+- **Activity-based timeout**: `timeout` kills a run only after it has
+  produced no output for that long (any output byte resets the clock) —
+  so long-but-chatty work survives while hung work is reaped. See
+  [Timeouts](#timeouts).
 - **Immutable hook code**: every hook ships a `Dockerfile` next to its
   `hook.json` and runs an image webhook-runner builds from the hook
   directory, tagged by content hash — code is baked in, a hooks-repo pull
@@ -149,7 +149,7 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout and idle timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
 | GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
@@ -311,32 +311,34 @@ needs neither the production environment nor any decryption keys.
 
 ## Timeouts
 
-Two independent per-hook limits, both optional, both killing the container
-via `docker kill` with run status `timeout`:
+One per-hook knob, `timeout` (default `5m`), and it is **activity-based,
+not wall-clock**: the run is killed only once its container has produced
+**no output** (stdout or stderr) for that long. Any output byte resets the
+clock, so a hook that keeps logging progress runs as long as it needs —
+there is **no absolute processing ceiling** — while one that has gone
+silent is reaped within `timeout` of its last output. The kill goes through
+`docker kill`, ends the run with status `timeout`, and carries the error
+message `timed out after <d> (no output)` (in `/runs/{id}` and the
+activity feed).
 
-- **`timeout`** (default `5m`) — the **absolute processing ceiling**: the
-  run is killed once it has been processing this long, regardless of what
-  it is doing. Error message: `timed out after <d>`.
-- **`idle_timeout`** (no default — omit for no idle limit) — the
-  **progress-aware limit**: the run is killed only once the container has
-  produced **no output** (stdout or stderr) for this long. Any output byte
-  resets the idle clock, so a hook that keeps logging progress can run all
-  the way to its absolute ceiling, while one that has gone silent is
-  reaped quickly. Error message: `idle timeout after <d> (no output)` —
-  distinguishable from the total-timeout kill in `/runs/{id}` and the
-  activity feed.
+This semantics exists because wall-clock ceilings kill healthy work: a
+47-part map-reduce hook that logged every ≤45s was cut down mid-progress
+by its 15-minute total timeout, while a genuinely hung run and a healthy
+long run are indistinguishable by wall clock alone. Silence is the actual
+failure signal — so `"timeout": "15m"` now means "kill it after 15 minutes
+of no activity", which lets the long healthy run finish and still reaps a
+hung one promptly.
 
-Both clocks start **at container launch**: never while the run is queued
+The clock arms **at container launch**: never while the run is queued
 behind a [concurrency group](#concurrency-groups), decrypting secrets, or
-building its image. Set both for long-but-chatty work — e.g. a model-calling
-hook that logs every few seconds but whose total runtime varies wildly:
-`"timeout": "90m", "idle_timeout": "5m"` kills a hung run within 5 minutes
-without ever cutting down a healthy one mid-progress.
+building its image — a queued run cannot time out.
 
-> **Deploy-first:** like `state`/`concurrency_group`/`schedule`,
-> `idle_timeout` is a newer `hook.json` field, so an older `webhook-runner`
-> binary rejects a hook that sets it — deploy a runner that supports it
-> before merging such a hook.
+For synchronous requests (`?wait=true` or `"synchronous": true`), the
+hook's `timeout` value also serves as the default bound on how long the
+server holds the HTTP response open. That hold is necessarily wall-clock —
+a response can't wait on activity — and it bounds only the **response**,
+never the run: a run that outlives it degrades to the async `202` and
+keeps running in the background.
 
 ## Concurrency groups
 
@@ -344,14 +346,14 @@ By default a hook runs with unbounded concurrency: every accepted request
 spawns its container immediately. When a burst arrives — or several hooks
 share one scarce backend (a single local model server, a rate-limited API)
 — that means many containers competing at once, and, worse, **every run's
-timeout starts counting the moment it is accepted**, so runs that are really
-just *waiting* can time out before they ever do work.
+timeout clock is live from container launch** while a run stuck waiting for
+the backend produces no output — so runs that are really just *waiting* can
+time out before they ever do work.
 
 Concurrency groups fix both. A group is a named slot pool with a limit; at
 most `limit` runs in the group execute at once and the rest **queue**
 (staying `pending`, not `running`). A queued run's `timeout` clock does not
-start until it actually begins processing (nor does its `idle_timeout`
-clock) — queue time is never counted.
+start until it actually begins processing — queue time is never counted.
 
 Unlike GitHub Actions' free-form `concurrency:` expression, the set of valid
 groups is **declared centrally** so names can't drift: put a
