@@ -198,6 +198,23 @@ The companion repo is `wow-look-at-my/webhooks`.
   bug this avoids. `run.SetRunning()` (pending→running) still fires only
   once the container launches, so the dashboard shows queued runs as
   `pending`.
+- `idle_timeout` (optional, independent of `timeout`) kills a run only when
+  its container produces **no output** (stdout or stderr) for that long —
+  the progress-aware timeout for hooks whose healthy runtime varies (added
+  after a 47-part map-reduce run logging every ≤45s was killed by a 15m
+  wall-clock `timeout`). Any output **byte** resets the clock: the runner
+  wraps the pipe read side in a `touchReader` (internal/runner/watchdog.go),
+  so even a long line without a newline counts. The `idleWatchdog` follows
+  the **same arming rule** as `timeout`: `Arm()` is called only after the
+  concurrency slot is acquired and `cmd.Start` succeeded — a queued run must
+  never idle out, and an unarmed watchdog never fires (that invariant is
+  unit-tested; keep it). An idle kill reuses the docker-kill-by-name path and
+  ends the run as status `timeout` with the distinguishable error
+  `idle timeout after <d> (no output)` (the total ceiling says "timed out
+  after <d>"); the `run.finished` event message carries that reason. Like
+  `state`/`concurrency_group`/`schedule`, `idle_timeout` is a newer hook.json
+  field — old binaries reject it (`DisallowUnknownFields`), so deploy
+  webhook-runner before any hook sets it.
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared

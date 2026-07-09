@@ -37,6 +37,10 @@ hooks without restart.
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
+- **Two kinds of timeout**: `timeout` is the absolute processing ceiling;
+  `idle_timeout` kills a run only when it stops producing output (any
+  output byte resets it) — so long-but-chatty work survives while hung
+  work is reaped. See [Timeouts](#timeouts).
 - **Immutable hook code**: every hook ships a `Dockerfile` next to its
   `hook.json` and runs an image webhook-runner builds from the hook
   directory, tagged by content hash — code is baked in, a hooks-repo pull
@@ -301,6 +305,35 @@ Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
 untouched. Expansion never happens at load/validate time, so CI validation
 needs neither the production environment nor any decryption keys.
 
+## Timeouts
+
+Two independent per-hook limits, both optional, both killing the container
+via `docker kill` with run status `timeout`:
+
+- **`timeout`** (default `5m`) — the **absolute processing ceiling**: the
+  run is killed once it has been processing this long, regardless of what
+  it is doing. Error message: `timed out after <d>`.
+- **`idle_timeout`** (no default — omit for no idle limit) — the
+  **progress-aware limit**: the run is killed only once the container has
+  produced **no output** (stdout or stderr) for this long. Any output byte
+  resets the idle clock, so a hook that keeps logging progress can run all
+  the way to its absolute ceiling, while one that has gone silent is
+  reaped quickly. Error message: `idle timeout after <d> (no output)` —
+  distinguishable from the total-timeout kill in `/runs/{id}` and the
+  activity feed.
+
+Both clocks start **at container launch**: never while the run is queued
+behind a [concurrency group](#concurrency-groups), decrypting secrets, or
+building its image. Set both for long-but-chatty work — e.g. a model-calling
+hook that logs every few seconds but whose total runtime varies wildly:
+`"timeout": "90m", "idle_timeout": "5m"` kills a hung run within 5 minutes
+without ever cutting down a healthy one mid-progress.
+
+> **Deploy-first:** like `state`/`concurrency_group`/`schedule`,
+> `idle_timeout` is a newer `hook.json` field, so an older `webhook-runner`
+> binary rejects a hook that sets it — deploy a runner that supports it
+> before merging such a hook.
+
 ## Concurrency groups
 
 By default a hook runs with unbounded concurrency: every accepted request
@@ -313,7 +346,8 @@ just *waiting* can time out before they ever do work.
 Concurrency groups fix both. A group is a named slot pool with a limit; at
 most `limit` runs in the group execute at once and the rest **queue**
 (staying `pending`, not `running`). A queued run's `timeout` clock does not
-start until it actually begins processing — queue time is never counted.
+start until it actually begins processing (nor does its `idle_timeout`
+clock) — queue time is never counted.
 
 Unlike GitHub Actions' free-form `concurrency:` expression, the set of valid
 groups is **declared centrally** so names can't drift: put a
