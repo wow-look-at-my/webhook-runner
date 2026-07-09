@@ -11,6 +11,14 @@
   --panel: #161b22;
 }
 * { box-sizing: border-box; }
+/* The hidden attribute only hides via the UA stylesheet's [hidden]
+   { display: none }, and ANY author display: on the same element beats a
+   UA declaration in the cascade -- main { display: grid } below was
+   un-hiding <main id="app-view" hidden> (the drill-down rendered, empty,
+   below the overview), #app-body { display: grid } broke the 404 path's
+   hide, and .view-toggle { display: inline-flex } the modal's toggle.
+   This guard makes hidden always win; keep it above any display rules. */
+[hidden] { display: none !important; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   margin: 0;
@@ -303,6 +311,67 @@ details#setup-details {
 }
 details#setup-details summary { cursor: pointer; color: var(--muted); }
 details#setup-details[open] summary { margin-bottom: 0.5rem; }
+/* Per-app (per-hook) drill-down view. */
+.crumbs { margin: 0; font-size: 0.875rem; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+#app-head h2 {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 1.3rem;
+  color: var(--fg);
+  margin: 0 0 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere; /* a long hook id must wrap, not widen the page */
+}
+#app-head p { margin: 0; color: var(--muted); }
+/* Same section rhythm as the overview main, which #app-body's children
+   would otherwise lose (grid gap doesn't reach grandchildren). */
+#app-body { display: grid; gap: 2rem; }
+.app-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+  align-items: start;
+}
+.app-cards dl {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0;
+}
+/* Long unbreakable values (trigger paths, image tags, run ids, env var
+   names) must wrap INSIDE their card. Without this they escape: a <dd>'s
+   inline content has no soft-wrap opportunity inside a long token, so the
+   line overflows the fixed-width card sideways -- and because grid items
+   paint atomically in DOM order, the NEXT card's opaque panel paints over
+   the escaped text (the "INFO collides with RUN STATS / caption struck
+   through" bug). overflow-wrap: anywhere adds break points inside long
+   tokens (and, unlike break-word, also shrinks min-content, so a long
+   value can't blow the track sizing either); min-width: 0 stops grid
+   min-content propagation from widening the cards themselves. */
+.app-cards > section, .app-cards dd { min-width: 0; }
+.app-cards dd { overflow-wrap: anywhere; }
+/* Same hazard in the tables (image tags, run ids, on-disk lists): the
+   table clips overflow (border-radius), so an unwrappable cell value is
+   silently truncated instead of wrapped. */
+td { overflow-wrap: anywhere; }
+.window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
+a.hook-link { text-decoration: none; }
+a.hook-link code { color: var(--accent); }
+a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
+a.run-link { text-decoration: none; }
+a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+/* A row of <code> chips (env var names, per-status counts): adjacent inline
+   chips have NO whitespace between them, i.e. no soft-wrap opportunity at
+   all -- the row is one unbreakable line. A wrapping flex row breaks
+   BETWEEN chips instead of overflowing the card. */
+.chips { display: flex; flex-wrap: wrap; gap: 0.25rem 0.35rem; }
+/* "(on the hook port)" after a trigger path: hooks are served on the hook
+   port/hostname, not this admin page's origin. */
+.port-note { color: var(--muted); font-size: 0.8em; }
+
 .kind {
   display: inline-block;
   padding: 0.05rem 0.5rem;
@@ -318,4 +387,14 @@ details#setup-details[open] summary { margin-bottom: 0.5rem; }
 .kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
 .event-time { white-space: nowrap; color: var(--muted); }
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
-#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr { cursor: default; }
+#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
+#app-events-table tbody tr { cursor: default; }
+
+/* Build-identity footer: unobtrusive, but always answers "which build is
+   this host running?" (filled from GET /version by dashboard.js). */
+.site-footer {
+  padding: 1rem 2rem 1.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.site-footer #server-version { font-family: monospace; }

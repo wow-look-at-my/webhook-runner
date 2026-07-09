@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
+	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
 )
@@ -39,6 +41,9 @@ type serveOptions struct {
 	hookBaseURL     string
 	stateSocket     string
 	stateSecret     string
+	kvMaxKeys       int
+	runRetention    time.Duration
+	runRetentionMax int
 }
 
 func applyServeEnv(o *serveOptions) {
@@ -59,6 +64,25 @@ func applyServeEnv(o *serveOptions) {
 	}
 	if o.stateSecret == "" {
 		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
+	}
+	if o.kvMaxKeys <= 0 {
+		// Positive integers only; unset or unparseable falls back to the
+		// store's built-in default.
+		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_KV_MAX_KEYS")); err == nil && n > 0 {
+			o.kvMaxKeys = n
+		}
+	}
+	if o.runRetention <= 0 {
+		// Go duration (e.g. "72h"); unset or unparseable falls back to the
+		// run store's built-in 48h default.
+		if d, err := time.ParseDuration(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION")); err == nil && d > 0 {
+			o.runRetention = d
+		}
+	}
+	if o.runRetentionMax <= 0 {
+		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX")); err == nil && n > 0 {
+			o.runRetentionMax = n
+		}
 	}
 	if o.logFormat == "" {
 		o.logFormat = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_LOG_FORMAT"), "text")
@@ -126,6 +150,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// survives restarts; hooks opt in with "state": true. The secret signs
 	// per-hook namespace tokens — supply WEBHOOK_RUNNER_STATE_SECRET to share
 	// one across replicas, else it's generated and persisted.
+	// WEBHOOK_RUNNER_KV_MAX_KEYS overrides the per-namespace key cap (zero
+	// here means kv.New applies its built-in default).
 	dataDir := o.dataDir
 	if dataDir == "" {
 		dataDir = filepath.Dir(o.hooksDir)
@@ -138,12 +164,42 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 		stateSecret = s
 	}
-	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv")}, stateSecret, logger)
+	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv"), MaxKeysPerNS: o.kvMaxKeys}, stateSecret, logger)
 	if err != nil {
 		return fmt.Errorf("state store: %w", err)
 	}
 	kvStore.StartSweeper()
 	defer kvStore.Close()
+
+	// Persistent run history: every run is written to a single bbolt file
+	// under the data dir the moment it reaches a terminal status (the
+	// tracker's OnFinish seam), and the admin read endpoints merge it behind
+	// the live tracker — so completed runs survive restarts. A run still in
+	// flight at shutdown never completed and is not in the store. Retention
+	// is time-based (WEBHOOK_RUNNER_RUN_RETENTION, default 48h); the
+	// per-hook count cap (WEBHOOK_RUNNER_RUN_RETENTION_MAX) is only a disk
+	// safety net behind it.
+	runStore, err := runstore.Open(runstore.Config{
+		Path:       filepath.Join(dataDir, "runs.db"),
+		Retention:  o.runRetention,
+		MaxPerHook: o.runRetentionMax,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("run store: %w", err)
+	}
+	runStore.StartSweeper()
+	// Closed via defer, which runs after the shutdown path's rn.Wait() —
+	// so every in-flight run has recorded its terminal state first.
+	defer func() {
+		if err := runStore.Close(); err != nil {
+			logger.Warn("run store close", "err", err)
+		}
+	}()
+	tracker.SetOnFinish(func(st runs.RunState) {
+		if err := runStore.Record(st); err != nil {
+			logger.Error("persist finished run", "hook", st.HookID, "run", st.ID, "err", err)
+		}
+	})
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
@@ -228,6 +284,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 
 	onReload := buildReloadFunc(repo, loadAndApply, rec)
 
+	// The build identity served by /health, /version, and the dashboard —
+	// the same string the `version` command prints, so every surface
+	// reports one consistent answer to "which build is deployed?".
+	vcsRev, vcsTime := buildVCS()
+
 	srv := server.New(server.Options{
 		Registry:     registry,
 		Runner:       rn,
@@ -242,6 +303,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HooksRepo:    o.hooksRepo,
 		HookBaseURL:  o.hookBaseURL,
 		KV:           kvStore,
+		RunStore:     runStore,
+		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	})
 
 	// Watcher runs for the lifetime of the server; its initial scan is what
@@ -313,6 +376,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}()
 
 	attrs := []any{
+		"version", versionString(),
 		"hook_addr", o.addr,
 		"admin_addr", o.adminAddr,
 		"state_socket", socketPath,

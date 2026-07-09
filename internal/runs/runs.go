@@ -53,9 +53,22 @@ const MaxRunsPerHook = 50
 // Use Run.Snapshot to obtain a stable copy; Run owns the canonical state
 // behind a mutex and never exposes RunState by reference.
 type RunState struct {
-	ID       string    `json:"id"`
-	HookID   string    `json:"hook_id"`
-	Started  time.Time `json:"started"`
+	ID     string `json:"id"`
+	HookID string `json:"hook_id"`
+
+	// Started is when the run was accepted and began tracking — the moment
+	// it was QUEUED, before any concurrency-group wait. The JSON name
+	// predates the queue-wait/processing split and is kept for
+	// compatibility; read it as "queued". Queue wait = StartedAt − Started.
+	Started time.Time `json:"started"`
+
+	// StartedAt is when the container actually launched — the
+	// pending→running transition stamped by SetRunning. Zero means the run
+	// never started (cancelled or failed while still pending/queued), and
+	// runs persisted before this field existed also read back as zero.
+	// Processing time = Finished − StartedAt.
+	StartedAt time.Time `json:"started_at,omitzero"`
+
 	Finished time.Time `json:"finished,omitempty"`
 	Status   Status    `json:"status"`
 	ExitCode int       `json:"exit_code"`
@@ -92,6 +105,10 @@ type Run struct {
 	state  RunState
 	done   chan struct{}
 	cancel chan struct{}
+
+	// onFinish is copied from the tracker at New and immutable after —
+	// read without the mutex. See Tracker.SetOnFinish.
+	onFinish func(RunState)
 }
 
 // ID returns the run's stable ID.
@@ -100,7 +117,8 @@ func (r *Run) ID() string { return r.state.ID }
 // HookID returns the hook ID this run belongs to.
 func (r *Run) HookID() string { return r.state.HookID }
 
-// Started returns the time the run was created (immutable after New).
+// Started returns the time the run was created, i.e. accepted and queued
+// (immutable after New). See StartedAt for when processing actually began.
 func (r *Run) Started() time.Time { return r.state.Started }
 
 // Status returns the current lifecycle status.
@@ -180,7 +198,9 @@ func (r *Run) AppendOutput(line string) {
 }
 
 // Finish records the terminal state and closes the done channel. Calling
-// Finish more than once on the same run is a no-op for the second call.
+// Finish more than once on the same run is a no-op for the second call —
+// which is also what guarantees the tracker's OnFinish observer fires
+// exactly once per run.
 func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -195,16 +215,31 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	}
 	r.mu.Unlock()
 	close(r.done)
+	if r.onFinish != nil {
+		r.onFinish(r.Snapshot(-1))
+	}
 }
 
-// SetRunning marks the run as actively executing. Useful for the dashboard
-// to differentiate "queued" from "spawned".
+// SetRunning marks the run as actively executing and stamps StartedAt — the
+// zero point of the processing clock, splitting queue wait (Started→here)
+// from processing time (here→Finished). Useful for the dashboard to
+// differentiate "queued" from "spawned".
 func (r *Run) SetRunning() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state.Status == StatusPending {
 		r.state.Status = StatusRunning
+		r.state.StartedAt = time.Now().UTC()
 	}
+}
+
+// StartedAt returns when the container actually launched (pending→running),
+// or the zero time while the run is still pending — and forever, for a run
+// that never started.
+func (r *Run) StartedAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.StartedAt
 }
 
 // LastLines returns up to n trailing lines of output.
@@ -230,6 +265,7 @@ type Tracker struct {
 	byID      map[string]*Run
 	byHook    map[string][]*Run
 	maxByHook int
+	onFinish  func(RunState)
 }
 
 // NewTracker returns an empty tracker.
@@ -239,6 +275,17 @@ func NewTracker() *Tracker {
 		byHook:    make(map[string][]*Run),
 		maxByHook: MaxRunsPerHook,
 	}
+}
+
+// SetOnFinish registers fn to be invoked exactly once per run — with a full
+// terminal snapshot, synchronously on the finishing goroutine — when the run
+// reaches a terminal status. Set it before the first New: runs created
+// earlier never see it. This is the persistence seam (the run store's
+// write-once-at-terminal hook) without the runs package knowing about disk.
+func (t *Tracker) SetOnFinish(fn func(RunState)) {
+	t.mu.Lock()
+	t.onFinish = fn
+	t.mu.Unlock()
 }
 
 // New starts tracking a fresh run for the given hook ID. The run begins
@@ -255,6 +302,7 @@ func (t *Tracker) New(hookID string) *Run {
 		cancel: make(chan struct{}),
 	}
 	t.mu.Lock()
+	r.onFinish = t.onFinish
 	t.byID[r.state.ID] = r
 	t.byHook[hookID] = append(t.byHook[hookID], r)
 	if extra := len(t.byHook[hookID]) - t.maxByHook; extra > 0 {

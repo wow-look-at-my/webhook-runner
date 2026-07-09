@@ -42,6 +42,74 @@ function fmtClock(s) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+function fmtDuration(ms) {
+  if (ms == null || ms < 0 || isNaN(ms)) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${Math.round(s % 60)}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+// Is a timestamp field actually set? A Go zero time can marshal as a
+// real-looking "0001-01-01T00:00:00Z", so "present" means parseable AND
+// after the epoch — not merely truthy.
+function tsPresent(s) {
+  if (!s) return false;
+  const d = new Date(s);
+  return !isNaN(d) && d.getTime() > 0;
+}
+
+// Queue wait: accepted (r.started — "queued") until the container launched
+// (r.started_at). A pending run ticks live; a run whose launch was never
+// recorded (history persisted before the wait/processing split, or a run
+// that never started) shows an em-dash.
+function runWaited(r) {
+  const queued = new Date(r.started);
+  if (isNaN(queued)) return "";
+  if (tsPresent(r.started_at)) return fmtDuration(new Date(r.started_at) - queued);
+  if (r.status === "pending") return fmtDuration(Date.now() - queued) + "…";
+  return "—";
+}
+
+// Processing time only: container launch (r.started_at) → finish, ticking
+// live while running. A pending run has no duration yet. Without a
+// started_at, statuses that imply the container ran (legacy history from
+// before the split) fall back to the old queued-inclusive span; a
+// cancelled/error run may never have started, so it shows an em-dash rather
+// than counting queue time as processing.
+function runDuration(r) {
+  if (tsPresent(r.started_at)) {
+    const startedAt = new Date(r.started_at);
+    if (tsPresent(r.finished)) return fmtDuration(new Date(r.finished) - startedAt);
+    return fmtDuration(Date.now() - startedAt) + "…";
+  }
+  if (r.status === "pending") return "—";
+  const ranStatuses = ["success", "failure", "timeout"];
+  if (tsPresent(r.finished) && ranStatuses.includes(r.status)) {
+    return fmtDuration(new Date(r.finished) - new Date(r.started));
+  }
+  return "—";
+}
+
+// --- Views: the global overview vs the per-app (per-hook) drill-down ------
+//
+// The fragment #hook=<id> selects the app view; anything else shows the
+// overview. Hash routing keeps the page a single embedded document with no
+// server-side routes, and hashchange gives back/forward for free.
+
+function currentHookId() {
+  const m = location.hash.match(/^#hook=(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function setView(hookId) {
+  document.getElementById("overview-view").hidden = !!hookId;
+  document.getElementById("app-view").hidden = !hookId;
+  document.title = hookId ? `webhook-runner — ${hookId}` : "webhook-runner";
+}
+
 // --- Run output: render the model's log as a conversation -----------------
 //
 // Hooks like pr-describe echo their model I/O into the run log, delimited by
@@ -152,19 +220,25 @@ async function refresh() {
   } catch {
     setBadge(false);
   }
+  const hookId = currentHookId();
+  setView(hookId);
   try {
-    const [hooks, runs, images, events, kv] = await Promise.all([
-      fetchJSON("/hooks"),
-      fetchJSON("/runs?max=50"),
-      fetchJSON("/images"),
-      fetchJSON("/events?max=100"),
-      fetchJSON("/kv"),
-    ]);
-    renderHooks(hooks);
-    renderRuns(runs);
-    renderImages(images);
-    renderEvents(events);
-    renderKV(kv);
+    if (hookId) {
+      await refreshApp(hookId);
+    } else {
+      const [hooks, runs, images, events, kv] = await Promise.all([
+        fetchJSON("/hooks"),
+        fetchJSON("/runs?max=50"),
+        fetchJSON("/images"),
+        fetchJSON("/events?max=100"),
+        fetchJSON("/kv"),
+      ]);
+      renderHooks(hooks);
+      renderRuns(runs);
+      renderImages(images);
+      renderEvents(events);
+      renderKV(kv);
+    }
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
   } catch (e) {
@@ -179,18 +253,33 @@ function setBadge(ok) {
   b.classList.toggle("bad", !ok);
 }
 
+// The endpoint a hook is triggered on, shown as a path. Deliberately NOT a
+// full URL: this dashboard is served on the ADMIN port/hostname, while hooks
+// are served on the separate hook port -- a URL built from location.origin
+// looks copyable but points at the wrong host. The path is the part we know;
+// .copyable (user-select: all) keeps it one-click selectable.
+function triggerPath(id) {
+  return [
+    el("code", { class: "copyable" }, `/hook/${id}`),
+    " ",
+    el("span", { class: "port-note" }, "(on the hook port)"),
+  ];
+}
+
 function renderHooks(hooks) {
   const tbody = document.querySelector("#hooks-table tbody");
   tbody.innerHTML = "";
   document.getElementById("hooks-empty").hidden = hooks.length > 0;
   for (const h of hooks) {
-    const url = `${location.origin}/hook/${h.id}`;
     tbody.appendChild(
       el("tr", null,
-        el("td", null, el("code", null, h.id)),
+        // Each hook is an "app": its ID links to the per-hook drill-down.
+        el("td", null,
+          el("a", { href: "#hook=" + encodeURIComponent(h.id), class: "hook-link" },
+            el("code", null, h.id))),
         el("td", null, h.description || ""),
-        el("td", null, h.synchronous ? "sync" : "async"),
-        el("td", null, el("code", null, url)),
+        el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
+        el("td", null, ...triggerPath(h.id)),
       )
     );
   }
@@ -236,10 +325,13 @@ function renderImages(images) {
   }
 }
 
-function renderEvents(events) {
-  const tbody = document.querySelector("#events-table tbody");
+// Fills an events table body; shared by the overview feed and the per-app
+// slice (same columns, different tables). events may be null (nil recorder).
+function renderEventRows(tableId, emptyId, events) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
   tbody.innerHTML = "";
-  document.getElementById("events-empty").hidden = events.length > 0;
+  events = events || [];
+  document.getElementById(emptyId).hidden = events.length > 0;
   for (const ev of events) {
     tbody.appendChild(
       el("tr", null,
@@ -249,6 +341,10 @@ function renderEvents(events) {
       )
     );
   }
+}
+
+function renderEvents(events) {
+  renderEventRows("events-table", "events-empty", events);
 }
 
 function fmtBytes(n) {
@@ -272,18 +368,153 @@ function renderKV(namespaces) {
   }
 }
 
+// --- Per-app view (app == one hook) ----------------------------------------
+
+async function refreshApp(id) {
+  const enc = encodeURIComponent(id);
+  let detail;
+  try {
+    detail = await fetchJSON(`/hooks/${enc}`);
+  } catch {
+    // 404: not loaded (deleted, or a stale link). Anything else transient
+    // lands here too; the next poll retries.
+    renderAppMissing(id);
+    return;
+  }
+  const [runs, events] = await Promise.all([
+    fetchJSON(`/runs?hook=${enc}&max=50`),
+    fetchJSON(`/events?hook=${enc}&max=100`),
+  ]);
+  renderApp(detail, runs, events);
+}
+
+function renderAppMissing(id) {
+  document.getElementById("app-title").textContent = id;
+  document.getElementById("app-desc").textContent = "";
+  document.getElementById("app-missing").hidden = false;
+  document.getElementById("app-body").hidden = true;
+}
+
+function fillDl(dl, rows) {
+  dl.innerHTML = "";
+  for (const [k, v] of rows) {
+    dl.appendChild(el("dt", null, k));
+    dl.appendChild(el("dd", null, ...(Array.isArray(v) ? v : [v])));
+  }
+}
+
+function renderApp(detail, runs, events) {
+  const info = detail.info;
+  document.getElementById("app-missing").hidden = true;
+  document.getElementById("app-body").hidden = false;
+  document.getElementById("app-title").textContent = info.id;
+  document.getElementById("app-desc").textContent = info.description || "";
+
+  fillDl(document.getElementById("app-info"), [
+    ["Trigger path", triggerPath(info.id)],
+    ["Mode", info.synchronous ? "sync" : "async"],
+    ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
+    ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
+    ["Timeout", `${info.timeout} without output`],
+    ["API key", info.api_key ? "configured" : "none"],
+    ["Env vars", info.env_keys && info.env_keys.length
+      ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
+      : "none"],
+    ["State (KV)", !info.state ? "off"
+      : detail.kv ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
+      : "on — no data yet"],
+  ]);
+
+  const st = detail.stats;
+  document.getElementById("app-stats-window").textContent = st.retention
+    ? `Window: live runs plus completed runs persisted for the last ${st.retention} (survives restarts; runs in flight during a restart are lost).`
+    : `Recent window: the last ≤${st.max_tracked} runs held in memory (resets on restart).`;
+  const byStatus = Object.entries(st.by_status || {}).map(([k, n]) =>
+    el("span", { class: "status " + k }, `${k} ×${n}`));
+  fillDl(document.getElementById("app-stats"), [
+    ["Runs tracked", String(st.tracked)],
+    ["By status", byStatus.length ? el("span", { class: "chips" }, ...byStatus) : "—"],
+    ["Success rate", st.completed ? `${Math.round(st.success_rate * 100)}% of ${st.completed} completed` : "—"],
+    // Durations are processing-only (container launch → finish); queue wait
+    // is its own pair of figures. wait_sampled counts the completed runs
+    // that recorded a launch time — 0 means no wait data (e.g. only history
+    // from before the split), not a zero wait.
+    ["Avg duration", st.completed ? fmtDuration(st.avg_duration_ms) : "—"],
+    ["Max duration", st.completed ? fmtDuration(st.max_duration_ms) : "—"],
+    ["Avg wait", st.wait_sampled ? fmtDuration(st.avg_wait_ms) : "—"],
+    ["Max wait", st.wait_sampled ? fmtDuration(st.max_wait_ms) : "—"],
+    ["Last run", st.last_run
+      ? [
+          el("span", { class: "status " + st.last_run.status }, st.last_run.status),
+          " at " + fmtTime(st.last_run.started) + " — ",
+          runLink(st.last_run.id),
+        ]
+      : "—"],
+  ]);
+
+  const im = detail.image;
+  let state;
+  if (im.error) state = el("span", { class: "badge bad" }, "error: " + im.error);
+  else if (im.built) state = el("span", { class: "badge ok" }, "built");
+  else state = el("span", { class: "badge warn" }, "will build on next run");
+  const others = (im.images || [])
+    .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .join(", ");
+  fillDl(document.getElementById("app-image"), [
+    ["Current tag", el("code", null, im.tag || "-")],
+    ["State", state],
+    ["On disk", others || "none"],
+  ]);
+
+  const tbody = document.querySelector("#app-runs-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("app-runs-empty").hidden = runs.length > 0;
+  for (const r of runs) {
+    // Queued = accepted; Waited = queue time until launch (live for pending
+    // runs); Duration = processing only (live while running).
+    const tr = el("tr", null,
+      el("td", null, fmtTime(r.started)),
+      el("td", { class: "status " + r.status }, r.status),
+      el("td", null, runWaited(r)),
+      el("td", null, runDuration(r)),
+      el("td", null, String(r.exit_code)),
+      el("td", null, el("code", null, r.id)),
+    );
+    tr.addEventListener("click", () => showRun(r.id));
+    tbody.appendChild(tr);
+  }
+
+  renderEventRows("app-events-table", "app-events-empty", events);
+}
+
+// A run ID that opens the same output modal the runs tables use.
+function runLink(id) {
+  const a = el("a", { href: "#", class: "run-link" }, el("code", null, id));
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    showRun(id);
+  });
+  return a;
+}
+
 async function showRun(id) {
   try {
     const r = await fetchJSON(`/runs/${id}`);
     document.getElementById("run-detail-id").textContent = r.id;
     const dl = document.getElementById("run-detail-meta");
     dl.innerHTML = "";
+    // Queued→Started is the concurrency-group wait; Started→Finished is the
+    // actual container time — kept separate so a long queue never reads as
+    // a slow run.
     const rows = [
       ["Hook", r.hook_id],
       ["Status", r.status],
       ["Exit code", String(r.exit_code)],
-      ["Started", fmtTime(r.started)],
-      ["Finished", r.finished ? fmtTime(r.finished) : "-"],
+      ["Queued", fmtTime(r.started)],
+      ["Started", tsPresent(r.started_at) ? fmtTime(r.started_at) : "—"],
+      ["Finished", tsPresent(r.finished) ? fmtTime(r.finished) : "—"],
+      ["Waited", runWaited(r)],
+      ["Duration", runDuration(r)],
     ];
     if (r.error) rows.push(["Error", r.error]);
     for (const [k, v] of rows) {
@@ -441,6 +672,25 @@ async function loadConfig() {
   }
 }
 
+// One-shot footer stamp: which build is this host running? The tooltip
+// carries the VCS revision/commit time when the build has them.
+async function loadVersion() {
+  try {
+    const v = await fetchJSON("/version");
+    const span = document.getElementById("server-version");
+    if (!span || !v.version) return;
+    span.textContent = v.version;
+    if (v.revision) span.title = v.revision + (v.time ? " @ " + v.time : "");
+  } catch (e) {
+    console.error("loadVersion:", e);
+  }
+}
+
+// Switching between the overview and a per-app page re-renders immediately;
+// the poll keeps whichever view is active fresh.
+window.addEventListener("hashchange", refresh);
+
 loadConfig();
+loadVersion();
 refresh();
 setInterval(refresh, POLL_MS);
