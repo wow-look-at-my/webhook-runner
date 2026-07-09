@@ -198,8 +198,20 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 	return run, nil
 }
 
+// runContext returns the context bounding container processing: the parent
+// with the hook's absolute timeout applied, or — when the hook sets no
+// timeout (0) — a plain cancellable child with NO deadline, so an uncapped
+// run is bounded only by its idle_timeout (if set), an explicit cancel, or
+// the container exiting. Parent cancellation still propagates either way.
+func runContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
+}
+
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
-	timeout := hook.Timeout()
+	timeout := hook.Timeout()         // 0 = no absolute ceiling
 	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
 
 	// A cancel that arrives while the run is still pending skips the
@@ -296,7 +308,9 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// The timeout clock starts now — we hold a slot and are about to launch
 	// — so it bounds only real container processing, never the time spent
 	// decrypting secrets, building the image, or queued behind other runs.
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	// A hook with no timeout gets NO deadline at all: the run is bounded
+	// only by its idle_timeout (if set) or by the container exiting.
+	ctx, cancel := runContext(parent, timeout)
 	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()

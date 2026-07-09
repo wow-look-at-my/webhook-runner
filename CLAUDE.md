@@ -190,17 +190,27 @@ The companion repo is `wow-look-at-my/webhooks`.
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
 - The run `timeout` bounds **only container processing**. In
-  `runner.execute` the timeout `context.WithTimeout` is created *after*
+  `runner.execute` the timeout context (`runContext`) is created *after*
   secrets decrypt, image build, and (crucially) after the concurrency-group
   slot is acquired — never at the top. A run waiting in a group's queue
-  stays `pending` with no timeout running; if you move the `WithTimeout`
+  stays `pending` with no timeout running; if you move the context creation
   back up, queued runs start timing out while they wait, which is the exact
   bug this avoids. `run.SetRunning()` (pending→running) still fires only
   once the container launches, so the dashboard shows queued runs as
   `pending` — and it stamps `RunState.StartedAt`, the queue-wait/processing
   split point (`started` in JSON stays the QUEUED/accepted instant for
   compatibility; waited = StartedAt−Started, duration = Finished−StartedAt,
-  and a zero StartedAt means the run never started).
+  and a zero StartedAt means the run never started). `timeout` is
+  **optional with no default**: omitted means NO absolute ceiling —
+  `runContext` arms no deadline (a plain cancellable child, so parent
+  cancellation still kills), and the run is bounded only by `idle_timeout`,
+  if set. A hook that omits both runs until it exits — deliberately the
+  operator's call, no nanny validation. Older binaries applied a 5m
+  `DefaultTimeout` to a timeout-less hook (they still *validate* it fine —
+  absence was always legal — they just cap the run), so deploy the runner
+  first when the uncapped semantics matter. `parseWaitParams` separately
+  bounds the synchronous HTTP hold at `defaultSyncHold` (5m) for uncapped
+  hooks — that degrades the *response* to a 202, never kills the run.
 - `idle_timeout` (optional, independent of `timeout`) kills a run only when
   its container produces **no output** (stdout or stderr) for that long —
   the progress-aware timeout for hooks whose healthy runtime varies (added

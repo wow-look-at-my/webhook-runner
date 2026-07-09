@@ -104,7 +104,9 @@ func TestHookDetailDefaultsAndNoKV(t *testing.T) {
 
 	var got HookDetail
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.Equal(t, hooks.DefaultTimeout.String(), got.Info.Timeout)
+	// No timeout in the hook means no absolute ceiling — reported as empty
+	// (omitted), not as some default.
+	assert.Empty(t, got.Info.Timeout)
 	assert.False(t, got.Info.APIKey)
 	assert.Empty(t, got.Info.EnvKeys)
 	assert.Nil(t, got.KV)

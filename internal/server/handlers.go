@@ -280,6 +280,12 @@ func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
 	return out
 }
 
+// defaultSyncHold bounds how long a synchronous request is held open when
+// the hook declares no timeout of its own: an uncapped run must not hold the
+// HTTP connection indefinitely, so after this long the request degrades to a
+// background-running 202 (the run itself is untouched). ?timeout= overrides.
+const defaultSyncHold = 5 * time.Minute
+
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>
 // query parameters and merges them with the hook's Synchronous setting.
 //
@@ -298,6 +304,9 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 	}
 
 	syncTimeout = hook.Timeout()
+	if syncTimeout <= 0 {
+		syncTimeout = defaultSyncHold
+	}
 	if v := q.Get("timeout"); v != "" {
 		d, perr := time.ParseDuration(v)
 		if perr != nil {

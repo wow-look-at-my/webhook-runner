@@ -40,10 +40,12 @@ type HookInfo struct {
 	Schedule         string `json:"schedule,omitempty"`
 	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 	State            bool   `json:"state,omitempty"`
-	// Timeout is the effective run timeout (hook.json's or the default).
-	Timeout string `json:"timeout"`
+	// Timeout is the absolute run ceiling, when the hook sets one (empty =
+	// no absolute ceiling; the run is bounded by idle_timeout, if set, or
+	// runs until it exits).
+	Timeout string `json:"timeout,omitempty"`
 	// IdleTimeout is the no-output kill limit, when the hook sets one
-	// (empty = no idle limit; only the total timeout applies).
+	// (empty = no idle limit; only the total timeout applies, if any).
 	IdleTimeout string   `json:"idle_timeout,omitempty"`
 	APIKey      bool     `json:"api_key"`
 	EnvKeys     []string `json:"env_keys,omitempty"`
@@ -57,8 +59,10 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		Schedule:         h.Schedule,
 		ConcurrencyGroup: h.ConcurrencyGroup,
 		State:            h.State,
-		Timeout:          h.Timeout().String(),
 		APIKey:           h.APIKey != "",
+	}
+	if d := h.Timeout(); d > 0 {
+		info.Timeout = d.String()
 	}
 	if d := h.IdleTimeout(); d > 0 {
 		info.IdleTimeout = d.String()

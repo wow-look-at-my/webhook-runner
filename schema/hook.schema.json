@@ -68,7 +68,7 @@
     "timeout": {
       "type": "string",
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
-      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"): the absolute processing ceiling, counted from container launch regardless of output. Default: 5m."
+      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"): the absolute processing ceiling, counted from container launch regardless of output. Omit for no absolute ceiling; pair with idle_timeout so a hung run still dies (a hook that omits both runs until it exits)."
     },
     "idle_timeout": {
       "type": "string",

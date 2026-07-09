@@ -52,6 +52,16 @@ func TestParseMinimal(t *testing.T) {
 	assert.Empty(t, h.Command)
 }
 
+func TestParseTimeoutAbsentMeansNoCeiling(t *testing.T) {
+	// timeout is optional: a hook that omits it passes validation and has
+	// NO absolute run ceiling — Timeout() == 0, which runner.execute reads
+	// as "arm no deadline" (the run is bounded only by idle_timeout, if
+	// set, or by the container exiting).
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.Timeout())
+}
+
 func TestParseIdleTimeoutValid(t *testing.T) {
 	h, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5m","timeout":"90m"}`)
 	require.Nil(t, err)

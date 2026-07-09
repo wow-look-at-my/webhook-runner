@@ -415,7 +415,7 @@ function renderApp(detail, runs, events) {
     ["Mode", info.synchronous ? "sync" : "async"],
     ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
     ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
-    ["Timeout", info.timeout],
+    ["Timeout", info.timeout || "none (no absolute ceiling)"],
     ["Idle timeout", info.idle_timeout ? `${info.idle_timeout} without output` : "—"],
     ["API key", info.api_key ? "configured" : "none"],
     ["Env vars", info.env_keys && info.env_keys.length
