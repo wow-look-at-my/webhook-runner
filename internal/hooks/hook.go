@@ -20,7 +20,10 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-// DefaultTimeout is applied when a hook does not specify one explicitly.
+// DefaultTimeout is applied when a hook does not specify one explicitly:
+// five minutes of no container output kills the run (timeout is
+// activity-based — see Hook.TimeoutRaw), so every hook has hang protection
+// by default.
 const DefaultTimeout = 5 * time.Minute
 
 // DockerfileName is the file every hook must ship next to its hook.json:
@@ -47,31 +50,24 @@ type Hook struct {
 	// Tests are argv arrays run by `webhook-runner test` in this hook's
 	// built image, so tests exercise the exact baked code. They never run
 	// when the hook is triggered.
-	Tests      [][]string        `json:"tests,omitempty"`
-	Networks   []string          `json:"networks,omitempty"`
-	Volumes    []string          `json:"volumes,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	User       string            `json:"user,omitempty"`
-	Workdir    string            `json:"workdir,omitempty"`
-	TimeoutRaw string            `json:"timeout,omitempty"`
+	Tests    [][]string        `json:"tests,omitempty"`
+	Networks []string          `json:"networks,omitempty"`
+	Volumes  []string          `json:"volumes,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	User     string            `json:"user,omitempty"`
+	Workdir  string            `json:"workdir,omitempty"`
 
-	// IdleTimeoutRaw, when set, kills a run once its container has produced
-	// NO output (stdout or stderr) for this long — a progress-aware timeout
-	// for hooks whose healthy runtime varies too much for a tight total
-	// ceiling (a hook that logs progress every few seconds may legitimately
-	// run for an hour). Any output byte resets the idle clock. It follows
-	// the same arming rule as timeout: the clock starts only once the
-	// concurrency-group slot is acquired and the container launches, so a
-	// queued run never idles out (see runner.execute). Independent of
-	// timeout — both may be set, and whichever fires first kills the run
-	// with status "timeout" (an idle kill carries a distinguishable
-	// "idle timeout ... (no output)" message). Empty means no idle limit.
-	//
-	// Like state/concurrency_group/schedule, idle_timeout is a newer
-	// hook.json field, so Parse's DisallowUnknownFields means old binaries
-	// reject it — deploy a webhook-runner that supports it before merging a
-	// hook that sets it.
-	IdleTimeoutRaw string `json:"idle_timeout,omitempty"`
+	// TimeoutRaw bounds a run by ACTIVITY, not wall clock: the run is killed
+	// only once its container has produced NO output (stdout or stderr) for
+	// this long. Any output byte resets the clock, so a hook that keeps
+	// logging progress runs as long as it needs, while one that has gone
+	// silent is reaped. There is no absolute processing ceiling. The clock
+	// arms only once the concurrency-group slot is acquired and the
+	// container launches, so a queued run never times out while it waits
+	// (see runner.execute). Empty means DefaultTimeout (5 minutes of
+	// silence). A kill ends the run as status "timeout" with the error
+	// "timed out after <d> (no output)".
+	TimeoutRaw string `json:"timeout,omitempty"`
 
 	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
@@ -134,9 +130,9 @@ type GitHubStatusConfig struct {
 	TargetURL string `json:"target_url,omitempty"`
 }
 
-// Timeout returns the parsed timeout, falling back to DefaultTimeout when
-// not set. Validation has already happened at load time, so the parse here
-// cannot fail.
+// Timeout returns the parsed no-output (activity) timeout, falling back to
+// DefaultTimeout when not set. Validation has already happened at load
+// time, so the parse here cannot fail.
 func (h *Hook) Timeout() time.Duration {
 	if h.TimeoutRaw == "" {
 		return DefaultTimeout
@@ -144,21 +140,6 @@ func (h *Hook) Timeout() time.Duration {
 	d, err := time.ParseDuration(h.TimeoutRaw)
 	if err != nil {
 		return DefaultTimeout
-	}
-	return d
-}
-
-// IdleTimeout returns the parsed idle timeout, or 0 when the hook sets none
-// (no idle limit — silence is bounded only by the total timeout). Validation
-// has already happened at load time, so a parse failure here is treated as
-// "no idle limit" rather than panicking.
-func (h *Hook) IdleTimeout() time.Duration {
-	if h.IdleTimeoutRaw == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(h.IdleTimeoutRaw)
-	if err != nil {
-		return 0
 	}
 	return d
 }
@@ -309,15 +290,6 @@ func (h *Hook) validate() error {
 		}
 		if d <= 0 {
 			return fmt.Errorf("timeout must be positive, got %s", d)
-		}
-	}
-	if h.IdleTimeoutRaw != "" {
-		d, err := time.ParseDuration(h.IdleTimeoutRaw)
-		if err != nil {
-			return fmt.Errorf("invalid idle_timeout %q: %w", h.IdleTimeoutRaw, err)
-		}
-		if d <= 0 {
-			return fmt.Errorf("idle_timeout must be positive, got %s", d)
 		}
 	}
 	if h.Schedule != "" {

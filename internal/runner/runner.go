@@ -200,7 +200,6 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
 	timeout := hook.Timeout()
-	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -269,8 +268,8 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// any actual processing. When a hook (or several hooks sharing a group)
 	// is flooded, the excess runs wait here — staying "pending", not
 	// "running" — instead of all launching containers at once. The timeout
-	// is deliberately NOT started yet: a run must not burn its budget while
-	// sitting in the queue.
+	// watchdog is deliberately NOT armed yet: a run must not burn its
+	// budget while sitting in the queue.
 	release, acquired, qErr := r.acquireSlot(hook, run)
 	if qErr != nil {
 		// An undeclared group is a misconfiguration; fail closed rather
@@ -292,12 +291,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	defer release()
-
-	// The timeout clock starts now — we hold a slot and are about to launch
-	// — so it bounds only real container processing, never the time spent
-	// decrypting secrets, building the image, or queued behind other runs.
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()
 
@@ -392,7 +385,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 
 	r.log.Info("hook starting",
-		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout, "idle_timeout", idleTimeout)
+		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
 	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, run.ID(), image),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
@@ -449,42 +442,39 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.SetRunning()
 
 	timedOut := make(chan struct{})
-	idled := make(chan struct{})
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
 
-	// The idle watchdog (if the hook sets idle_timeout) arms NOW — after the
-	// concurrency slot was acquired and the container actually launched, the
-	// same rule as the total-timeout clock above — and any output byte on
-	// either stream resets it via the touchReader wrappers.
-	var stdout, stderr io.Reader = stdoutR, stderrR
-	var idleFired <-chan struct{} // nil (never selected) when no idle_timeout is set
-	if idleTimeout > 0 {
-		wd := newIdleWatchdog(idleTimeout, time.Now)
-		wd.Arm()
-		idleFired = wd.Watch(stopWatcher)
-		stdout = &touchReader{r: stdout, touch: wd.Touch}
-		stderr = &touchReader{r: stderr, touch: wd.Touch}
-	}
+	// The timeout watchdog arms NOW — only after the concurrency slot was
+	// acquired and the container actually launched, so a queued run never
+	// ticks — and any output byte on either stream resets it via the
+	// touchReader wrappers. The timeout is activity-based: it fires only
+	// after `timeout` of NO output, so a run that keeps logging progress
+	// runs as long as it needs (there is no absolute wall-clock ceiling),
+	// while one that has gone silent is killed.
+	wd := newIdleWatchdog(timeout, time.Now)
+	wd.Arm()
+	silent := wd.Watch(stopWatcher)
+	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
+	stderr := &touchReader{r: stderrR, touch: wd.Touch}
 
 	var streamWG sync.WaitGroup
 	streamWG.Add(2)
 	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
 	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
 
-	// Watch for the total timeout (ctx), the idle watchdog, and explicit
-	// cancel requests in parallel with cmd.Wait. Any one kills the container
-	// by name. A cancel requested before this goroutine started selects
-	// immediately (the channel is already closed), so the pre-start race is
-	// covered.
+	// Watch for the no-output timeout, parent-context cancellation, and
+	// explicit cancel requests in parallel with cmd.Wait. Any one kills the
+	// container by name. A cancel requested before this goroutine started
+	// selects immediately (the channel is already closed), so the pre-start
+	// race is covered.
 	go func() {
 		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				close(timedOut)
-			}
-		case <-idleFired:
-			close(idled)
+		case <-silent:
+			close(timedOut)
+		case <-parent.Done():
+			// Parent cancelled (e.g. the caller tearing down): kill the
+			// container and let cmd.Wait's error shape the terminal status.
 		case <-run.Cancelled():
 			close(cancelled)
 		case <-stopWatcher:
@@ -505,11 +495,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	// In the normal case the process has exited and its pipe ends
 	// are closed, so streamWG.Wait returns immediately. On a kill
-	// (total timeout, idle timeout, or cancel), orphaned child processes
-	// (e.g. the real docker container's descendants) can keep the write end
-	// open; force-close the read ends so the scanner goroutines unblock.
+	// (timeout or cancel), orphaned child processes (e.g. the real docker
+	// container's descendants) can keep the write end open; force-close
+	// the read ends so the scanner goroutines unblock.
 	killedByWatcher := false
-	for _, ch := range []chan struct{}{timedOut, idled, cancelled} {
+	for _, ch := range []chan struct{}{timedOut, cancelled} {
 		select {
 		case <-ch:
 			killedByWatcher = true
@@ -543,23 +533,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		if exitCode == 0 {
 			exitCode = -1
 		}
-		errMsg = fmt.Sprintf("timed out after %s", timeout)
+		// The message names the activity semantics: the run died for going
+		// silent, not for running long.
+		errMsg = fmt.Sprintf("timed out after %s (no output)", timeout)
 	default:
 	}
-	// The idle kill is a timeout too, but its message names the idle
-	// semantics so an operator can tell "went silent" from "hit the
-	// absolute ceiling". (The watcher closes at most one of these channels,
-	// so the two timeout cases never race each other.)
-	select {
-	case <-idled:
-		status = runs.StatusTimeout
-		if exitCode == 0 {
-			exitCode = -1
-		}
-		errMsg = fmt.Sprintf("idle timeout after %s (no output)", idleTimeout)
-	default:
-	}
-	// Checked after the timeouts so an explicit cancel takes precedence when
+	// Checked after the timeout so an explicit cancel takes precedence when
 	// both raced to kill the container.
 	select {
 	case <-cancelled:
@@ -575,8 +554,8 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
 	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
 	if status == runs.StatusTimeout && errMsg != "" {
-		// Name the reason: "idle timeout ... (no output)" vs "timed out
-		// after ...", so the activity feed distinguishes the two kills.
+		// Carry the reason ("timed out after <d> (no output)") so the
+		// activity feed shows what killed the run.
 		finishedMsg += ": " + errMsg
 	}
 	r.events.Record("run.finished", finishedMsg,

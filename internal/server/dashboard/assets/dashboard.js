@@ -415,8 +415,7 @@ function renderApp(detail, runs, events) {
     ["Mode", info.synchronous ? "sync" : "async"],
     ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
     ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
-    ["Timeout", info.timeout],
-    ["Idle timeout", info.idle_timeout ? `${info.idle_timeout} without output` : "—"],
+    ["Timeout", `${info.timeout} without output`],
     ["API key", info.api_key ? "configured" : "none"],
     ["Env vars", info.env_keys && info.env_keys.length
       ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
