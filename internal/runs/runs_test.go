@@ -97,6 +97,33 @@ func TestSetRunningOnlyFromPending(t *testing.T) {
 	assert.Equal(t, StatusSuccess, r.Status())
 }
 
+// SetRunning stamps StartedAt exactly once, at the pending→running
+// transition — the queue-wait/processing split point. A run that never
+// starts keeps a zero StartedAt.
+func TestSetRunningStampsStartedAt(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	assert.True(t, r.StartedAt().IsZero(), "a pending run has not started")
+	assert.True(t, r.Snapshot(0).StartedAt.IsZero())
+
+	r.SetRunning()
+	startedAt := r.StartedAt()
+	require.False(t, startedAt.IsZero(), "SetRunning must stamp StartedAt")
+	assert.False(t, startedAt.Before(r.Started()), "processing cannot begin before the run was queued")
+
+	r.SetRunning() // ineffective second call must not restamp
+	assert.True(t, r.StartedAt().Equal(startedAt))
+
+	r.Finish(StatusSuccess, 0, "")
+	assert.True(t, r.Snapshot(0).StartedAt.Equal(startedAt))
+
+	// Cancelled while pending: never started, StartedAt stays zero through
+	// the terminal snapshot (the dashboard shows no duration for it).
+	never := tr.New("h")
+	never.Finish(StatusCancelled, -1, "cancelled before start")
+	assert.True(t, never.Snapshot(0).StartedAt.IsZero())
+}
+
 func TestTrackerListAll(t *testing.T) {
 	tr := NewTracker()
 	tr.New("a")

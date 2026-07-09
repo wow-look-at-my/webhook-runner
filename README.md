@@ -71,7 +71,11 @@ hooks without restart.
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
   config summary, run stats, image state, runs, and activity slice — a
-  per-"app" view, where an app is one hook for now.
+  per-"app" view, where an app is one hook for now. Run timing is split
+  into queue wait and processing time: the runs table shows when a run
+  was queued, how long it **Waited** for its concurrency slot, and a
+  **Duration** that covers container time only, and the stats keep
+  avg/max wait separate from avg/max duration.
 - **Persistent run history**: completed runs are written once, at their
   terminal status, to a single bbolt file under the data dir; `/runs`,
   `/runs/{id}`, and the drill-down stats serve the live tracker merged
@@ -145,10 +149,10 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max duration, last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout and idle timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
-| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). |
+| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
 | GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
@@ -379,7 +383,11 @@ hooks may share a group — the limit applies across all of them, so two
 different hooks that both call the same backend take turns. Omit
 `concurrency_group` for unbounded concurrency. Watch live utilization on the
 admin port's `/concurrency` endpoint, and a `run.queued` event appears in
-the activity feed whenever a run has to wait.
+the activity feed whenever a run has to wait. Queue time is also reported
+separately from processing time everywhere run timing shows up — the
+dashboard's Waited/Duration columns, `started`/`started_at` on `/runs`, and
+the per-hook avg/max wait vs duration stats — so a run stuck behind a busy
+group never reads as a slow run.
 
 The schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.

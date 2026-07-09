@@ -50,8 +50,10 @@
 
   <section id="runs-section">
     <h2>Recent runs</h2>
+    <!-- The first column is when the run was ACCEPTED (queued) — a run may
+         wait for a concurrency-group slot before it actually starts. -->
     <table id="runs-table">
-      <thead><tr><th>Started</th><th>Hook</th><th>Status</th><th>Exit</th><th>Run ID</th></tr></thead>
+      <thead><tr><th>Queued</th><th>Hook</th><th>Status</th><th>Exit</th><th>Run ID</th></tr></thead>
       <tbody></tbody>
     </table>
     <p id="runs-empty" class="empty" hidden>No runs yet.</p>
@@ -106,8 +108,11 @@
 
     <section id="app-runs-section">
       <h2>Recent runs</h2>
+      <!-- Waited = queue time (accepted → container launch, live for pending
+           runs); Duration = processing time only. Kept separate so a run
+           stuck behind a concurrency group never reads as a slow run. -->
       <table id="app-runs-table">
-        <thead><tr><th>Started</th><th>Status</th><th>Duration</th><th>Exit</th><th>Run ID</th></tr></thead>
+        <thead><tr><th>Queued</th><th>Status</th><th>Waited</th><th>Duration</th><th>Exit</th><th>Run ID</th></tr></thead>
         <tbody></tbody>
       </table>
       <p id="app-runs-empty" class="empty" hidden>No runs yet.</p>

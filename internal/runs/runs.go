@@ -53,9 +53,22 @@ const MaxRunsPerHook = 50
 // Use Run.Snapshot to obtain a stable copy; Run owns the canonical state
 // behind a mutex and never exposes RunState by reference.
 type RunState struct {
-	ID       string    `json:"id"`
-	HookID   string    `json:"hook_id"`
-	Started  time.Time `json:"started"`
+	ID     string `json:"id"`
+	HookID string `json:"hook_id"`
+
+	// Started is when the run was accepted and began tracking — the moment
+	// it was QUEUED, before any concurrency-group wait. The JSON name
+	// predates the queue-wait/processing split and is kept for
+	// compatibility; read it as "queued". Queue wait = StartedAt − Started.
+	Started time.Time `json:"started"`
+
+	// StartedAt is when the container actually launched — the
+	// pending→running transition stamped by SetRunning. Zero means the run
+	// never started (cancelled or failed while still pending/queued), and
+	// runs persisted before this field existed also read back as zero.
+	// Processing time = Finished − StartedAt.
+	StartedAt time.Time `json:"started_at,omitzero"`
+
 	Finished time.Time `json:"finished,omitempty"`
 	Status   Status    `json:"status"`
 	ExitCode int       `json:"exit_code"`
@@ -104,7 +117,8 @@ func (r *Run) ID() string { return r.state.ID }
 // HookID returns the hook ID this run belongs to.
 func (r *Run) HookID() string { return r.state.HookID }
 
-// Started returns the time the run was created (immutable after New).
+// Started returns the time the run was created, i.e. accepted and queued
+// (immutable after New). See StartedAt for when processing actually began.
 func (r *Run) Started() time.Time { return r.state.Started }
 
 // Status returns the current lifecycle status.
@@ -206,14 +220,26 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	}
 }
 
-// SetRunning marks the run as actively executing. Useful for the dashboard
-// to differentiate "queued" from "spawned".
+// SetRunning marks the run as actively executing and stamps StartedAt — the
+// zero point of the processing clock, splitting queue wait (Started→here)
+// from processing time (here→Finished). Useful for the dashboard to
+// differentiate "queued" from "spawned".
 func (r *Run) SetRunning() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state.Status == StatusPending {
 		r.state.Status = StatusRunning
+		r.state.StartedAt = time.Now().UTC()
 	}
+}
+
+// StartedAt returns when the container actually launched (pending→running),
+// or the zero time while the run is still pending — and forever, for a run
+// that never started.
+func (r *Run) StartedAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.StartedAt
 }
 
 // LastLines returns up to n trailing lines of output.
