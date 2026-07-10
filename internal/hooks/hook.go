@@ -35,8 +35,10 @@ const LegacySignatureHeader = "X-Hub-Signature-256"
 const DefaultAPIKeyHeader = "X-API-Key"
 
 // Script configures a hook to run a script file from the hook directory
-// instead of requiring inline image/command. The interpreter determines
-// the default Docker image and command.
+// without spelling out the command: the interpreter determines it
+// (e.g. "tsx <file>"). The script is baked into the hook's image like all
+// hook code, so the interpreter must be installed in that image. An
+// explicit Command overrides the derived one.
 type Script struct {
 	File        string   `json:"file"`
 	Interpreter string   `json:"interpreter"`
