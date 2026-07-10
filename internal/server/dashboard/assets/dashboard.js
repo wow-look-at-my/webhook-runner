@@ -98,11 +98,30 @@ function runDuration(r) {
 // The fragment #hook=<id> selects the app view; anything else shows the
 // overview. Hash routing keeps the page a single embedded document with no
 // server-side routes, and hashchange gives back/forward for free.
+// An optional &kv=1 suffix (what the overview's State (KV) links append)
+// additionally lands the app view scrolled to its State (KV) section.
+// Hook IDs are always encodeURIComponent'd into the fragment, so a literal
+// "&" in an ID can never be mistaken for the parameter separator.
 
 function currentHookId() {
-  const m = location.hash.match(/^#hook=(.+)$/);
+  const m = location.hash.match(/^#hook=([^&]+)/);
   return m ? decodeURIComponent(m[1]) : null;
 }
+
+// The fragment for a hook's app page; kv: true additionally lands it on the
+// State (KV) key/value browser (consumed as a one-shot scroll by renderAppKV).
+function hookHref(id, opts) {
+  return "#hook=" + encodeURIComponent(id) + (opts && opts.kv ? "&kv=1" : "");
+}
+
+function hashWantsKV() {
+  return /^#hook=[^&]+&kv=1$/.test(location.hash);
+}
+
+// One-shot: armed when a navigation lands with &kv=1, consumed by the first
+// app render — the poll must never re-scroll a page the operator has since
+// scrolled elsewhere.
+let pendingKVScroll = hashWantsKV();
 
 function setView(hookId) {
   document.getElementById("overview-view").hidden = !!hookId;
@@ -237,7 +256,7 @@ async function refresh() {
       renderRuns(runs);
       renderImages(images);
       renderEvents(events);
-      renderKV(kv);
+      renderKV(kv, new Set(hooks.map((h) => h.id)));
     }
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
@@ -275,7 +294,7 @@ function renderHooks(hooks) {
       el("tr", null,
         // Each hook is an "app": its ID links to the per-hook drill-down.
         el("td", null,
-          el("a", { href: "#hook=" + encodeURIComponent(h.id), class: "hook-link" },
+          el("a", { href: hookHref(h.id), class: "hook-link" },
             el("code", null, h.id))),
         el("td", null, h.description || ""),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
@@ -353,14 +372,22 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function renderKV(namespaces) {
+function renderKV(namespaces, loadedHookIDs) {
   const tbody = document.querySelector("#kv-table tbody");
   tbody.innerHTML = "";
   document.getElementById("kv-empty").hidden = namespaces.length > 0;
   for (const ns of namespaces) {
+    // Namespace == hook ID, so each row links to that hook's app page,
+    // landed on its State (KV) key/value browser. A namespace with no
+    // loaded hook of that name (orphaned data from a removed/renamed hook)
+    // stays plain text — never a dead link.
+    const name = el("code", null, ns.namespace);
     tbody.appendChild(
       el("tr", null,
-        el("td", null, el("code", null, ns.namespace)),
+        el("td", null, loadedHookIDs.has(ns.namespace)
+          ? el("a", { href: hookHref(ns.namespace, { kv: true }), class: "hook-link",
+              title: "view this hook's stored keys and values" }, name)
+          : el("span", { title: "no loaded hook with this ID" }, name)),
         el("td", null, String(ns.keys)),
         el("td", null, fmtBytes(ns.bytes)),
       )
@@ -425,8 +452,9 @@ function renderApp(detail, runs, events) {
       ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
       : "none"],
     ["State (KV)", !info.state ? "off"
-      : detail.kv ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
-      : "on — no data yet"],
+      : kvSectionLink(detail.kv
+        ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
+        : "on — no data yet")],
   ]);
 
   const st = detail.stats;
@@ -509,9 +537,26 @@ function fmtTTL(seconds) {
   return fmtDuration(seconds * 1000);
 }
 
+// The Info card's State (KV) summary line jumps down to the key/value
+// browser. A click handler rather than a real fragment href: an
+// "#app-kv-section" href would replace the #hook= fragment and route
+// back to the overview.
+function kvSectionLink(text) {
+  const a = el("a", { href: "#", class: "kv-jump", title: "view stored keys and values below" }, text);
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    document.getElementById("app-kv-section").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  return a;
+}
+
 async function renderAppKV(info, listing) {
   const section = document.getElementById("app-kv-section");
   section.hidden = !info.state;
+  // Consume the one-shot &kv=1 landing scroll even for a state-less hook,
+  // so it can never fire on a later poll of some other page.
+  const wantScroll = pendingKVScroll;
+  pendingKVScroll = false;
   if (!info.state) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
@@ -536,6 +581,7 @@ async function renderAppKV(info, listing) {
     tbody.appendChild(tr);
     if (open) tbody.appendChild(await kvValueRow(info.id, k.key));
   }
+  if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // The expanded row under a clicked key: metadata line + the value itself.
@@ -771,8 +817,12 @@ async function loadVersion() {
 }
 
 // Switching between the overview and a per-app page re-renders immediately;
-// the poll keeps whichever view is active fresh.
-window.addEventListener("hashchange", refresh);
+// the poll keeps whichever view is active fresh. Navigation is also what
+// (re-)arms the one-shot State (KV) landing scroll.
+window.addEventListener("hashchange", () => {
+  pendingKVScroll = hashWantsKV();
+  refresh();
+});
 
 loadConfig();
 loadVersion();
