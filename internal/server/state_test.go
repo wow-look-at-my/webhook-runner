@@ -41,7 +41,7 @@ func stateReq(t *testing.T, s *Server, method, target, token string, body io.Rea
 
 func TestStateRoundTrip(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{})
-	tok := store.Token("my-hook")
+	tok := store.Token("my-hook", "run1")
 
 	require.Equal(t, http.StatusNotFound, stateReq(t, s, "GET", "/kv/foo", tok, nil).Code)
 
@@ -62,7 +62,7 @@ func TestStateRoundTrip(t *testing.T) {
 
 func TestStateIncr(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{})
-	tok := store.Token("h")
+	tok := store.Token("h", "run1")
 
 	first := stateReq(t, s, "POST", "/kv/c/incr", tok, nil)
 	require.Equal(t, http.StatusOK, first.Code)
@@ -79,7 +79,7 @@ func TestStateIncr(t *testing.T) {
 
 func TestStateAuth(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{})
-	tok := store.Token("h")
+	tok := store.Token("h", "run1")
 
 	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "GET", "/kv/foo", "", nil).Code)
 	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "GET", "/kv/foo", "h.deadbeef", nil).Code)
@@ -89,12 +89,12 @@ func TestStateAuth(t *testing.T) {
 	require.NoError(t, store.Set("h", "secret", []byte("v"), 0))
 	require.Equal(t, http.StatusOK, stateReq(t, s, "GET", "/kv/secret", tok, nil).Code)
 	require.Equal(t, http.StatusNotFound,
-		stateReq(t, s, "GET", "/kv/secret", store.Token("other"), nil).Code)
+		stateReq(t, s, "GET", "/kv/secret", store.Token("other", "run1"), nil).Code)
 }
 
 func TestStateTTL(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{})
-	tok := store.Token("h")
+	tok := store.Token("h", "run1")
 
 	require.Equal(t, http.StatusNoContent,
 		stateReq(t, s, "PUT", "/kv/temp?ttl=60", tok, strings.NewReader("v")).Code)
@@ -113,7 +113,7 @@ func TestStateTTL(t *testing.T) {
 
 func TestStateValueTooLarge(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{MaxValueBytes: 4})
-	tok := store.Token("h")
+	tok := store.Token("h", "run1")
 	rr := stateReq(t, s, "PUT", "/kv/big", tok, strings.NewReader("123456789"))
 	require.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
 }
@@ -147,4 +147,51 @@ func TestAdminKVStatsNilStore(t *testing.T) {
 	admin(s).ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.Equal(t, "[]", strings.TrimSpace(rr.Body.String()))
+}
+
+func TestStateLockAcquireRelease(t *testing.T) {
+	s, store := newStateServer(t, kv.Config{})
+	runA := store.Token("h", "run-a")
+	runB := store.Token("h", "run-b")
+
+	// Take it (no body: the server default backstop TTL applies).
+	got := stateReq(t, s, "POST", "/kv/lease/acquire", runA, nil)
+	require.Equal(t, http.StatusOK, got.Code)
+	require.Contains(t, got.Body.String(), `"run-a"`)
+	require.Contains(t, got.Body.String(), `"expires_at"`)
+
+	// Same run re-acquires idempotently; another run gets 409.
+	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/lease/acquire", runA, strings.NewReader(`{"ttl_seconds": 60}`)).Code)
+	require.Equal(t, http.StatusConflict, stateReq(t, s, "POST", "/kv/lease/acquire", runB, nil).Code)
+
+	// Only the owner can release: another run 409, the owner 204, then 404.
+	require.Equal(t, http.StatusConflict, stateReq(t, s, "POST", "/kv/lease/release", runB, nil).Code)
+	require.Equal(t, http.StatusNoContent, stateReq(t, s, "POST", "/kv/lease/release", runA, nil).Code)
+	require.Equal(t, http.StatusNotFound, stateReq(t, s, "POST", "/kv/lease/release", runA, nil).Code)
+
+	// Freed: the other run can take it now.
+	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/lease/acquire", runB, nil).Code)
+}
+
+func TestStateLockAcquireValidation(t *testing.T) {
+	s, store := newStateServer(t, kv.Config{})
+	tok := store.Token("h", "run-a")
+
+	for _, body := range []string{`{"ttl_seconds": 0}`, `{"ttl_seconds": -5}`, `{"ttl_seconds": 3601}`, `not json`} {
+		rr := stateReq(t, s, "POST", "/kv/l/acquire", tok, strings.NewReader(body))
+		require.Equalf(t, http.StatusBadRequest, rr.Code, "body=%q", body)
+	}
+	// An empty JSON object is fine — the default TTL applies.
+	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/l/acquire", tok, strings.NewReader(`{}`)).Code)
+
+	// Locks require authentication like every other state route.
+	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "POST", "/kv/l/acquire", "", nil).Code)
+	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "POST", "/kv/l/release", "h.bogus", nil).Code)
+}
+
+func TestStateLockNamespaceIsolation(t *testing.T) {
+	s, store := newStateServer(t, kv.Config{})
+	// The same key name in two namespaces is two independent locks.
+	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/l/acquire", store.Token("h1", "run-a"), nil).Code)
+	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/l/acquire", store.Token("h2", "run-b"), nil).Code)
 }

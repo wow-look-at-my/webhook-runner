@@ -16,7 +16,7 @@ import (
 
 type fakeKV struct{ token string }
 
-func (f fakeKV) Token(string) string { return f.token }
+func (f fakeKV) Token(string, string) string { return f.token }
 
 func stateHook(t *testing.T, dir, id string, state bool) *hooks.Hook {
 	t.Helper()

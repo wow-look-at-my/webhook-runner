@@ -187,7 +187,7 @@ func TestStateWriteFailureIsLoud(t *testing.T) {
 	require.NoError(t, err)
 	rec := events.NewRecorder(16)
 	s := New(Options{Logger: logger, KV: store, Events: rec})
-	tok := store.Token("h")
+	tok := store.Token("h", "run1")
 
 	// Sabotage persistence: remove the store's directory out from under it,
 	// so the next write's temp-file creation fails (works even as root,
