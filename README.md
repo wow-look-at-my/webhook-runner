@@ -24,8 +24,9 @@ hooks without restart.
   `http://localhost:9002` URL (`HOOK_KV_URL`) with a scoped `HOOK_KV_TOKEN` —
   any HTTP client, no networking (webhook-runner injects a proxy shim that
   bridges that port to an internal Unix socket). get/put/delete/list, atomic
-  increment, and per-key TTL. Data is disk-backed (survives restarts),
-  bounded, and isolated per hook.
+  increment, per-key TTL, and run-owned cooperative locks (acquire/release,
+  auto-freed when the holding run ends). Data is disk-backed (survives
+  restarts), bounded, and isolated per hook.
 - **Git-backed hooks**: point at a Git repository with
   `WEBHOOK_RUNNER_HOOKS_REPO` and the server clones it on startup.
   Configure a GitHub push webhook to `POST /_reload` to auto-pull on push.
@@ -193,6 +194,8 @@ own data.
 | DELETE | `/kv/{key}`      | Remove a key (idempotent `204`).                               |
 | GET    | `/kv`            | List the caller's keys: `{"keys":[...]}` (sorted, non-expired). |
 | POST   | `/kv/{key}/incr` | Atomically add to an integer counter. Optional body `{"delta":N}` (default `+1`) and TTL as for PUT. Returns `{"value":<int64>}`; `409` if the existing value isn't an integer. |
+| POST   | `/kv/{key}/acquire` | Take the cooperative lock named `{key}`, owned by the **calling run** (the identity in the token — no client-side owner tokens). `200` `{"run_id","acquired_at","expires_at"}` when this run took or already held it (idempotent); `409` when another live run holds it (nothing is mutated). Optional body `{"ttl_seconds": 1..3600}` sets the secondary backstop expiry (default 15m). The **primary** release is automatic: when the holding run finishes — success, error, timeout, or cancel — the runner frees all its locks. Locks are in-memory (a restart starts lock-free; no run survives a restart anyway) and separate from stored values: GET/PUT/DELETE on the same key touch the value, never the lock. |
+| POST   | `/kv/{key}/release` | Release early, before the run ends (optional hygiene). `204` released; `404` not held (absent or expired); `409` held by a different run — ownership is verified server-side from the token. |
 
 ### Sync vs async
 
@@ -267,6 +270,12 @@ Properties:
   runaway hook from exhausting disk (oversize writes get `413`).
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
+- **Locks**: `acquire`/`release` give same-hook runs a race-free mutual
+  exclusion primitive without any of the GET-then-PUT races a client-side
+  lock would have. A lock belongs to the acquiring **run**, and the runner
+  releases everything a run still holds the moment it terminates — for any
+  reason — so a crashed or killed holder can never wedge a lock (a generous
+  TTL backstop exists purely as a belt against bugs).
 
 See the State KV API table above for the full endpoint list. On the admin
 port, `GET /kv` shows per-hook key counts and byte totals, and the inspection

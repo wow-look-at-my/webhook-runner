@@ -16,13 +16,26 @@ import (
 // maxIncrBody caps the tiny JSON body of an increment request.
 const maxIncrBody = 512
 
+// maxLockBody caps the tiny JSON body of a lock acquire request.
+const maxLockBody = 512
+
+// Explicit lock TTL bounds (whole seconds). The TTL is a SECONDARY backstop
+// — run-finish release is the primary mechanism — so the range only keeps
+// callers from disabling the belt entirely (0/negative) or arming one so far
+// out it stops being a backstop.
+const (
+	minLockTTLSeconds = 1
+	maxLockTTLSeconds = 3600
+)
+
 // nsHandler is a state-port handler that has already had its caller's
-// namespace resolved from the bearer token.
-type nsHandler func(w http.ResponseWriter, r *http.Request, ns string)
+// namespace and run identity resolved from the bearer token.
+type nsHandler func(w http.ResponseWriter, r *http.Request, ns, runID string)
 
 // withNamespace authenticates a state-port request by its bearer token and
-// resolves the namespace from it — never from the URL — so a hook can only
-// ever touch its own data. Every state route goes through this.
+// resolves the namespace — and the calling run's identity — from it, never
+// from the URL: a hook can only ever touch its own data, and the lock verbs
+// know which run is asking without any client-managed owner tokens.
 func (s *Server) withNamespace(next nsHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.kv == nil {
@@ -34,12 +47,12 @@ func (s *Server) withNamespace(next nsHandler) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		ns, ok := s.kv.VerifyToken(tok)
+		ns, runID, ok := s.kv.VerifyToken(tok)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next(w, r, ns)
+		next(w, r, ns, runID)
 	}
 }
 
@@ -52,7 +65,7 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	v, ok := s.kv.Get(ns, r.PathValue("key"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "key not found")
@@ -63,7 +76,7 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, ns string) 
 	_, _ = w.Write(v)
 }
 
-func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(s.kv.MaxValueBytes())+1))
 	if err != nil {
 		var maxErr *http.MaxBytesError
@@ -86,7 +99,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns string) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	if err := s.kv.Delete(ns, r.PathValue("key")); err != nil {
 		s.writeKVError(w, ns, err)
 		return
@@ -94,11 +107,11 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, ns strin
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleKVList(w http.ResponseWriter, _ *http.Request, ns string) {
+func (s *Server) handleKVList(w http.ResponseWriter, _ *http.Request, ns, _ string) {
 	writeJSON(w, http.StatusOK, map[string][]string{"keys": s.kv.List(ns)})
 }
 
-func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxIncrBody))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
@@ -128,6 +141,59 @@ func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns string)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"value": n})
+}
+
+// handleKVAcquire is the cooperative lock take: atomic under the store's
+// lock-table mutex, owned by the CALLING RUN (the identity in the bearer
+// token — there are no client-managed owner tokens). 200 when this run took
+// or already held the lock (idempotent re-acquire); 409 when another live
+// run holds it (nothing is mutated — in particular the holder's backstop
+// expiry is never restamped by a contender). Optional body
+// {"ttl_seconds": N} sets the secondary backstop expiry; absent, the store
+// default applies (run-finish release is the primary mechanism either way).
+func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, runID string) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLockBody))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	ttl := time.Duration(0) // 0 = the store's DefaultLockTTL
+	if len(bytes.TrimSpace(body)) > 0 {
+		var req struct {
+			TTLSeconds *int `json:"ttl_seconds"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+			return
+		}
+		if req.TTLSeconds != nil {
+			if *req.TTLSeconds < minLockTTLSeconds || *req.TTLSeconds > maxLockTTLSeconds {
+				writeError(w, http.StatusBadRequest,
+					"invalid ttl_seconds: must be "+strconv.Itoa(minLockTTLSeconds)+".."+strconv.Itoa(maxLockTTLSeconds))
+				return
+			}
+			ttl = time.Duration(*req.TTLSeconds) * time.Second
+		}
+	}
+	info, err := s.kv.AcquireLock(ns, r.PathValue("key"), runID, ttl)
+	if err != nil {
+		s.writeKVError(w, ns, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// handleKVRelease frees a lock the calling run holds (early release — the
+// runner also frees everything a run still holds when it finishes). The
+// owner check is server-side, from the token's run identity: 204 released,
+// 404 not held (absent or already expired), 409 held by another run. Any
+// request body is ignored — there is nothing a caller could need to say.
+func (s *Server) handleKVRelease(w http.ResponseWriter, r *http.Request, ns, runID string) {
+	if err := s.kv.ReleaseLock(ns, r.PathValue("key"), runID); err != nil {
+		s.writeKVError(w, ns, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // parseTTL reads the optional TTL from the X-KV-TTL header or the ?ttl= query
@@ -166,6 +232,12 @@ func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, kv.ErrNotInteger):
 		writeError(w, http.StatusConflict, err.Error())
+	// Lock contention/ownership outcomes are normal control flow for the
+	// caller (409/404), never write failures — no log, no event.
+	case errors.Is(err, kv.ErrLockHeld):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, kv.ErrLockNotHeld):
+		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, kv.ErrBadNamespace):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
