@@ -112,6 +112,13 @@ type Store struct {
 
 	secret []byte // HMAC key for namespace tokens (see token.go)
 
+	// Cooperative run-owned locks (see lock.go). Deliberately in-memory only
+	// — a lock's lifecycle is bounded by its holding run, and no run survives
+	// a restart — and under its own mutex, so lock verbs never contend with
+	// entry persistence.
+	lockMu sync.Mutex
+	locks  map[string]map[string]lockEntry
+
 	stop      chan struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
@@ -144,6 +151,7 @@ func New(cfg Config, secret []byte, log *slog.Logger) (*Store, error) {
 	}
 	s := &Store{
 		ns:     make(map[string]map[string]entry),
+		locks:  make(map[string]map[string]lockEntry),
 		cfg:    cfg,
 		log:    log,
 		secret: secret,
@@ -439,6 +447,7 @@ func (s *Store) StartSweeper() {
 }
 
 func (s *Store) sweep() {
+	s.reapExpiredLocks()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()

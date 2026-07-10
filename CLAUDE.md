@@ -92,7 +92,9 @@ The server listens on two TCP ports plus a Unix socket:
   so an edge cache can never pair new HTML with stale assets.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
-  `POST /kv/{key}/incr`. Hooks don't touch the socket directly: the runner
+  `POST /kv/{key}/incr`, and the run-owned cooperative locks
+  `POST /kv/{key}/acquire` / `POST /kv/{key}/release` (see the lock bullet
+  under "Things easy to get wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
   `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
@@ -335,8 +337,38 @@ The companion repo is `wow-look-at-my/webhooks`.
   runner bind-mounts the KV socket + the proxy shim, sets the shim as the
   container `--entrypoint`, and injects `HOOK_KV_SOCKET`, `HOOK_KV_URL`
   (`http://localhost:9002`), and `HOOK_KV_TOKEN` (all `ReservedEnvKey`). The
-  token is a stateless HMAC over the hook ID (`kv.Token`/`VerifyToken`) —
-  namespace == hook ID, minted per run, nothing to store or expire.
+  token is a stateless HMAC over the hook ID AND the run ID
+  (`kv.Token(ns, runID)`/`VerifyToken` returning both) — namespace == hook
+  ID, minted per run, nothing to store or expire. The run identity in the
+  token is what binds cooperative locks to their holding run; the retired
+  two-part (namespace-only) format no longer verifies, which is fine
+  because tokens never outlive their run.
+- Cooperative locks (`internal/kv/lock.go`, `POST /kv/{key}/acquire` /
+  `/release`) are **owned by run instances, not by client-managed tokens**:
+  the state token carries the run ID, acquire/release are atomic under the
+  lock table's own mutex (the compare-and-set/compare-and-delete a hook
+  could never build from GET+PUT), and the **primary** release mechanism is
+  the run tracker's OnFinish seam — `server.RunFinishCallback` (wired in
+  cli/serve.go; it lives in internal/server, beside the lock handlers, so
+  the cli package stays test-free) calls `kv.ReleaseRunLocks(runID)`
+  BEFORE the runstore write, so a run
+  that ends for ANY reason (success, error, timeout kill, cancel — Finish
+  fires exactly once on every terminal path) drops all its locks even if
+  the history write fails; leftovers surface as a `lock.released_on_finish`
+  event. The TTL is a SECONDARY backstop only (default `kv.DefaultLockTTL`
+  15m, explicit `ttl_seconds` 1..3600) against a release-path bug — never
+  the liveness story — and a CONTENDED acquire mutates nothing (in
+  particular it never restamps the holder's expiry, so contenders can't
+  keep a dead lock alive). The table is **in-memory on purpose**: no run
+  survives a server restart, so a restart correctly starts lock-free —
+  don't "fix" that by persisting locks. Locks are NOT entries: they never
+  appear in GET/PUT/DELETE/list, the namespace files, or the admin KV
+  views; the same key string can hold a value and a lock independently.
+  Same-run re-acquire is idempotent (refreshes the backstop, keeps
+  acquiredAt); cross-run release is refused server-side (409). Deploy-first
+  rule as usual: hooks that call acquire/release need this runner deployed
+  first — older runners 404 the routes (hooks should treat 404/405 as
+  "primitive unavailable" and degrade, not wedge).
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at

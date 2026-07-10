@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -196,28 +197,34 @@ func TestBadNamespace(t *testing.T) {
 
 func TestToken(t *testing.T) {
 	s := newStore(t)
-	tok := s.Token("my-hook")
-	ns, ok := s.VerifyToken(tok)
+	tok := s.Token("my-hook", "run123")
+	ns, runID, ok := s.VerifyToken(tok)
 	require.True(t, ok)
 	require.Equal(t, "my-hook", ns)
+	require.Equal(t, "run123", runID)
 
 	// Tampered MAC.
-	_, ok = s.VerifyToken(tok + "x")
+	_, _, ok = s.VerifyToken(tok + "x")
 	require.False(t, ok)
 
 	// Cross-namespace forgery: keep a valid MAC but swap the namespace.
-	_, ok = s.VerifyToken("other" + tok[len("my-hook"):])
+	_, _, ok = s.VerifyToken("other" + tok[len("my-hook"):])
+	require.False(t, ok)
+
+	// Cross-run forgery: keep a valid MAC but swap the run identity (a hook
+	// must not be able to release another run's locks by editing its token).
+	_, _, ok = s.VerifyToken("my-hook.run999." + strings.SplitN(tok, ".", 3)[2])
 	require.False(t, ok)
 
 	// Different secret.
 	other, err := New(Config{Dir: filepath.Join(t.TempDir(), "kv")}, []byte("other-secret"), nil)
 	require.NoError(t, err)
-	_, ok = other.VerifyToken(tok)
+	_, _, ok = other.VerifyToken(tok)
 	require.False(t, ok)
 
-	// Garbage.
-	for _, bad := range []string{"", "no-dot", "ns.", ".mac", "ns.not-base64!!"} {
-		_, ok = s.VerifyToken(bad)
+	// Garbage — including the retired two-part (no run identity) format.
+	for _, bad := range []string{"", "no-dot", "ns.", ".mac", "ns.not-base64!!", "ns.mac", "ns.run.", "ns..mac", ".run.mac"} {
+		_, _, ok = s.VerifyToken(bad)
 		assert.Falsef(t, ok, "bad=%q", bad)
 	}
 }
