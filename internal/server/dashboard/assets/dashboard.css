@@ -382,13 +382,30 @@ a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent
   color: var(--muted);
   white-space: nowrap;
 }
-.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed { background: rgba(248,81,73,0.15); color: var(--failure); }
+.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started, .kind.hook-enabled, .kind.concurrency-override_cleared { background: rgba(63,185,80,0.15); color: var(--success); }
+.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed, .kind.hook-disabled_rejected, .kind.override-write_failed, .kind.override-invalid { background: rgba(248,81,73,0.15); color: var(--failure); }
 .kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
+/* Operator kill-switch activity: amber — deliberate operator state, not
+   an error, but worth spotting in the feed. */
+.kind.hook-disabled, .kind.concurrency-overridden, .kind.override-orphaned { background: rgba(210,153,34,0.15); color: var(--running); }
 .event-time { white-space: nowrap; color: var(--muted); }
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
 #events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
-#app-events-table tbody tr { cursor: default; }
+#app-events-table tbody tr, #concurrency-table tbody tr { cursor: default; }
+
+/* Operator kill-switch controls: compact in-table buttons; "danger" marks
+   the destructive direction (disabling a hook). */
+.toggle-btn {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 5px;
+}
+.toggle-btn.danger, #app-toggle.danger { background: var(--failure); }
+.row-actions { white-space: nowrap; }
+.row-actions .badge, .row-actions .toggle-btn { margin-right: 0.4rem; }
+.row-actions :last-child { margin-right: 0; }
+.app-title-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.app-title-row h2 { margin: 0; }
 
 /* Per-app State (KV) inspection: key rows are clickable and expand into a
    value row beneath them; the value row itself is not clickable. */

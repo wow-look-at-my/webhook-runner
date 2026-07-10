@@ -32,8 +32,11 @@
 
   <section id="hooks-section">
     <h2>Hooks</h2>
+    <!-- Status is the operator kill switch: a disabled hook stays loaded
+         but rejects deliveries (503) and skips scheduled runs. The toggle
+         flips it via POST /hooks/{id}/disable|enable. -->
     <table id="hooks-table">
-      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Endpoint</th></tr></thead>
+      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Status</th><th>Endpoint</th></tr></thead>
       <tbody></tbody>
     </table>
     <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
@@ -46,6 +49,20 @@
       <tbody></tbody>
     </table>
     <p id="images-empty" class="empty" hidden>No hooks loaded.</p>
+  </section>
+
+  <section id="concurrency-section">
+    <h2>Concurrency groups</h2>
+    <!-- Declared = the limit in concurrency.json; Effective = what gates
+         runs right now (an operator override wins and survives reloads
+         and restarts). Override… PUTs /concurrency/{group}/limit; Revert
+         DELETEs it. A 0 limit is rejected server-side — disable the
+         group's hooks instead. -->
+    <table id="concurrency-table">
+      <thead><tr><th>Group</th><th>Declared</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
   </section>
 
   <section id="runs-section">
@@ -82,7 +99,13 @@
   <p class="crumbs"><a href="#">&larr; All hooks</a></p>
 
   <section id="app-head">
-    <h2 id="app-title"></h2>
+    <!-- The badge + toggle mirror the overview's Status column: the
+         operator kill switch for this one hook. -->
+    <div class="app-title-row">
+      <h2 id="app-title"></h2>
+      <span id="app-disabled-badge" class="badge bad" hidden>DISABLED by operator</span>
+      <button id="app-toggle" class="toggle-btn" hidden>Disable hook</button>
+    </div>
     <p id="app-desc"></p>
     <p id="app-missing" class="empty" hidden>No such hook.</p>
   </section>
