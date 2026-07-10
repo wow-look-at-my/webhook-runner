@@ -1,6 +1,16 @@
-import { createServer } from "node:net";
-import { createHmac } from "node:crypto";
-import assert from "node:assert/strict";
+// Dynamic imports, not import declarations: the CI typescript action wraps
+// this file in an async function body, where top-level `import` is a syntax
+// error (TS1232). Dynamic import works there and under plain `node` alike,
+// and shadowing the action's injected `path`/`child_process` globals keeps
+// the file self-contained for local runs.
+const { createServer } = await import("node:net");
+const { createHmac } = await import("node:crypto");
+// Explicitly annotated: tsc requires assertion-function call targets
+// (assert.ok and friends) to have a declared type (TS2775).
+const assertNs = await import("node:assert/strict");
+const assert: typeof assertNs.default = assertNs.default;
+const path = await import("node:path");
+const child_process = await import("node:child_process");
 
 const BINARY = path.join("build", "webhook-runner");
 const HOOKS_DIR = path.join("e2e", "hooks");
@@ -53,11 +63,24 @@ async function test(name: string, fn: () => Promise<void>) {
 }
 
 child_process.execSync("docker pull alpine:latest", { stdio: "inherit" });
+// Drop any hook images left by earlier runs so the build path (and its
+// image.built event) is actually exercised, not skipped via cache.
+try {
+  child_process.execSync(
+    "docker image ls --filter=reference='whr-hook/*' --format '{{.Repository}}:{{.Tag}}' | xargs -r docker rmi -f",
+    { stdio: "ignore" },
+  );
+} catch {}
 
 const port = await freePort();
 const adminPort = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const adminBase = `http://127.0.0.1:${adminPort}`;
+// hostenv-hook's hook.json references ${E2E_HOST_VAR}; the server process
+// (spawned below, inheriting this env) expands it at container start.
+process.env.E2E_HOST_VAR = "host-says-hi";
+// sops-hook's secrets.sops.env decrypts with the committed test-only age key.
+process.env.SOPS_AGE_KEY_FILE = path.resolve("e2e", "age-test-key.txt");
 const proc = child_process.spawn(
   BINARY,
   ["--addr", `:${port}`, "--admin-addr", `:${adminPort}`, HOOKS_DIR],
@@ -78,9 +101,12 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 6);
+    assert.equal(hooks.length, 11);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "echo-test", "env-hook", "fail-hook", "mount-hook", "secure-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    // The scheduled hook advertises its interval in the summary.
+    const scheduled = hooks.find((h: any) => h.id === "scheduled-hook");
+    assert.equal(scheduled.schedule, "3s", "scheduled-hook should report its schedule");
   });
 
   await test("GET /hooks not on hook port", async () => {
@@ -203,6 +229,80 @@ try {
     assert.ok(output.includes("Content-Type"), "missing headers");
   });
 
+  await test("Dockerfile hook: code is baked into a locally built image", async () => {
+    // First run builds the image (content-hash tag), then runs its CMD —
+    // hook.json declares neither image nor command.
+    const r = await fetch(`${base}/hook/dockerfile-hook?wait=true`, { method: "POST", body: "{}" });
+    assert.equal(r.status, 200);
+    const run: any = await r.json();
+    assert.equal(run.status, "success");
+    assert.ok(run.output.join("\n").includes("hello-from-baked-image"), "missing baked file content");
+  });
+
+  await test("env ${VAR} expands from the runner host", async () => {
+    const r = await fetch(`${base}/hook/hostenv-hook?wait=true`, { method: "POST", body: "{}" });
+    assert.equal(r.status, 200);
+    const run: any = await r.json();
+    assert.ok(run.output.join("\n").includes("fromhost=host-says-hi"), "missing expanded host env value");
+  });
+
+  await test("sops secrets: injected env, ${NAME} reference, and api_key all decrypt", async () => {
+    // SOPS_HOOK_KEY lives only inside the encrypted secrets.sops.env.
+    const r = await fetch(`${base}/hook/sops-hook?wait=true`, {
+      method: "POST",
+      headers: { "X-API-Key": "sops-sesame-77" },
+      body: "{}",
+    });
+    assert.equal(r.status, 200);
+    const run: any = await r.json();
+    const output = run.output.join("\n");
+    assert.ok(output.includes("msg=hello-from-sops"), "missing injected secret");
+    assert.ok(output.includes("ref=sops-ref-value"), "missing ${NAME}-referenced secret");
+  });
+
+  await test("sops secrets: wrong api_key rejected", async () => {
+    const r = await fetch(`${base}/hook/sops-hook`, {
+      method: "POST",
+      headers: { "X-API-Key": "wrong" },
+      body: "{}",
+    });
+    assert.equal(r.status, 401);
+  });
+
+  await test("cancel kills an in-flight run", async () => {
+    const trigger = await fetch(`${base}/hook/sleep-hook`, { method: "POST", body: "{}" });
+    assert.equal(trigger.status, 202);
+    const { run_id } = (await trigger.json()) as any;
+    // Wait until the container has demonstrably started (its first echo
+    // arrived), so docker kill has a real container to hit.
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const s: any = await (await fetch(`${adminBase}/runs/${run_id}`)).json();
+      if ((s.output ?? []).join("\n").includes("sleeping")) break;
+      if (Date.now() > deadline) throw new Error(`run never produced output (status ${s.status})`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const c = await fetch(`${base}/hook/sleep-hook/cancel/${run_id}`, { method: "POST" });
+    assert.equal(c.status, 202);
+    const result = await pollRun(adminBase, run_id);
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.cancel_requested, true);
+  });
+
+  await test("cancel of a finished run returns 409", async () => {
+    const trigger = await fetch(`${base}/hook/echo-test?wait=true`, { method: "POST", body: "{}" });
+    const run: any = await trigger.json();
+    const c = await fetch(`${base}/hook/echo-test/cancel/${run.id}`, { method: "POST" });
+    assert.equal(c.status, 409);
+  });
+
+  await test("cancel with a wrong hook id returns 404", async () => {
+    const trigger = await fetch(`${base}/hook/echo-test?wait=true`, { method: "POST", body: "{}" });
+    const run: any = await trigger.json();
+    const c = await fetch(`${base}/hook/env-hook/cancel/${run.id}`, { method: "POST" });
+    assert.equal(c.status, 404);
+  });
+
   await test("GET /runs/nonexistent returns 404 (admin port)", async () => {
     const r = await fetch(`${adminBase}/runs/nonexistent`);
     assert.equal(r.status, 404);
@@ -221,9 +321,84 @@ try {
     const runs: any = await r.json();
     assert.ok(runs.length >= 2, `echo-test should have >= 2 runs, got ${runs.length}`);
   });
+
+  await test("scheduled hook fires on a timer with no HTTP trigger", async () => {
+    // scheduled-hook declares schedule:"3s" and is never POSTed here — the
+    // scheduler fires it (immediately on startup, then every interval). Poll
+    // the admin run list until a successful scheduled run shows up.
+    const deadline = Date.now() + 20_000;
+    let run: any;
+    for (;;) {
+      const runs: any = await (await fetch(`${adminBase}/runs?hook=scheduled-hook`)).json();
+      run = (runs as any[]).find((x) => x.status === "success");
+      if (run) break;
+      if (Date.now() > deadline) throw new Error(`no successful scheduled-hook run appeared (got ${JSON.stringify(runs)})`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    // Full output (the list view truncates it) confirms the container ran and
+    // received the synthetic schedule-trigger payload.
+    const full: any = await (await fetch(`${adminBase}/runs/${run.id}`)).json();
+    const output = full.output.join("\n");
+    assert.ok(output.includes("scheduled-fired"), "scheduled run missing its container output");
+    assert.ok(output.includes('"trigger":"schedule"'), "scheduled run payload missing the schedule-trigger marker");
+  });
+
+  await test("dashboard collapses setup instructions by default", async () => {
+    const r = await fetch(`${adminBase}/`);
+    assert.equal(r.status, 200);
+    const html = await r.text();
+    assert.ok(html.includes("<details"), "setup instructions should sit inside <details>");
+    assert.ok(!html.includes("<details open"), "details must start collapsed");
+    assert.ok(html.includes("Activity"), "activity section missing");
+    assert.ok(html.includes("Images"), "images section missing");
+  });
+
+  await test("GET /images reports built hook images (admin port)", async () => {
+    const r = await fetch(`${adminBase}/images`);
+    assert.equal(r.status, 200);
+    const images: any = await r.json();
+    const df = images.find((i: any) => i.hook_id === "dockerfile-hook");
+    assert.ok(df, "dockerfile-hook missing from /images");
+    assert.ok(df.tag.startsWith("whr-hook/dockerfile-hook:"), `unexpected tag ${df.tag}`);
+    assert.equal(df.built, true);
+    assert.ok((df.images || []).some((i: any) => i.current), "current image not listed on disk");
+  });
+
+  await test("GET /events shows builds, runs, and reloads (admin port)", async () => {
+    const rel = await fetch(`${adminBase}/reload`, { method: "POST" });
+    assert.equal(rel.status, 200);
+    const r = await fetch(`${adminBase}/events`);
+    assert.equal(r.status, 200);
+    const events: any = await r.json();
+    const kinds = new Set(events.map((e: any) => e.kind));
+    for (const want of ["server.started", "image.built", "run.started", "run.finished", "reload.requested", "hooks.reloaded"]) {
+      assert.ok(kinds.has(want), `missing ${want} event (got ${[...kinds].join(", ")})`);
+    }
+  });
+
+  await test("GET /events not on hook port", async () => {
+    const r = await fetch(`${base}/events`);
+    assert.equal(r.status, 404);
+  });
 } finally {
   proc.kill();
 }
+
+// The `test` subcommand needs no server: it loads the hooks dir itself and
+// runs each hook's declared "tests" commands in that hook's image.
+await test("webhook-runner test runs declared hook tests", async () => {
+  const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
+  assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.ok(r.stdout.includes("built-tests-ok"), "missing built-image test output");
+  assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
+});
+
+await test("webhook-runner test fails when a hook's test fails", async () => {
+  const r = child_process.spawnSync(BINARY, ["test", path.join("e2e", "failing-tests")], { encoding: "utf8" });
+  assert.notEqual(r.status, 0, "should exit non-zero");
+  assert.ok(r.stdout.includes("deliberate-test-failure"), "missing failing test output");
+  assert.ok(r.stderr.includes("bad-hook"), "stderr should name the failing hook");
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

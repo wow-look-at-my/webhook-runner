@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -14,7 +15,7 @@ import (
 func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) error {
 	switch {
 	case hook.APIKey != "":
-		return checkAPIKey(hook, r)
+		return s.checkAPIKey(hook, r)
 	case hook.PublicKey != "":
 		return checkPublicKey(hook, r, body)
 	case hook.Secret != "":
@@ -24,9 +25,38 @@ func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) er
 	}
 }
 
-func checkAPIKey(hook *hooks.Hook, r *http.Request) error {
+func (s *Server) checkAPIKey(hook *hooks.Hook, r *http.Request) error {
+	// api_key may reference a secret as ${NAME} — resolved from the hook's
+	// sops secrets file first, then the host environment — so the real key
+	// never lives in the hooks repo as plaintext. Expanded per request
+	// (decryption is cached by the loader), and failing closed: an
+	// unresolvable or empty reference must never degrade to "no auth".
+	var secrets map[string]string
+	if s.secrets != nil {
+		var err error
+		secrets, err = s.secrets.Load(hook)
+		if err != nil {
+			s.log.Error("hook secrets unavailable for api_key check", "hook", hook.ID, "err", err)
+			return errors.New("server misconfigured: hook secrets unavailable")
+		}
+	}
+	want, missing := hooks.ExpandEnvRefs(hook.APIKey, hooks.SecretsFirstLookup(secrets))
+	if want == "" {
+		// Every caller is about to get a 401 because of *server-side* config,
+		// not bad credentials. Name the broken reference where the operator
+		// looks (log + dashboard event) — but keep the 401 body generic; an
+		// anonymous caller gets no config detail.
+		if len(missing) > 0 {
+			s.log.Error("hook api_key reference unresolvable; denying all callers",
+				"hook", hook.ID, "missing", missing)
+			s.events.Record("hook.misconfigured",
+				hook.ID+": api_key reference ${"+strings.Join(missing, "}, ${")+"} did not resolve (secrets.sops.env / host env); all callers are denied",
+				map[string]string{"hook": hook.ID})
+		}
+		return errors.New("api key not configured on the server")
+	}
 	got := r.Header.Get(hook.APIKeyHdr())
-	if subtle.ConstantTimeCompare([]byte(got), []byte(hook.APIKey)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 		return errors.New("invalid api key")
 	}
 	return nil

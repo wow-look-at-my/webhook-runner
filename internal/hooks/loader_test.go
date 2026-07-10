@@ -5,25 +5,26 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func writeHook(t *testing.T, root, id, body string) {
 	t.Helper()
 	dir := filepath.Join(root, id)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"), []byte(body), 0o644))
 }
 
 func TestLoadDir(t *testing.T) {
 	root := t.TempDir()
-	writeHook(t, root, "good", `{"image":"alpine","command":["x"]}`)
-	writeHook(t, root, "broken", `{"image":"alpine"}`) // missing command
+	writeHook(t, root, "good", `{"$schema":"s","command":["x"]}`)
+	writeHook(t, root, "broken", `{"$schema":"s","image":"alpine"}`) // image is no longer a field
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "no-hook"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "stray.txt"), []byte("ignore me"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".hidden"), 0o755))
-	writeHook(t, root, ".hidden", `{"image":"alpine","command":["x"]}`)
+	writeHook(t, root, ".hidden", `{"command":["x"]}`)
 
 	hooks, errs := LoadDir(root)
 	assert.Len(t, hooks, 1)
@@ -44,8 +45,8 @@ func TestLoadOne(t *testing.T) {
 	root := t.TempDir()
 	writeHook(t, root, "deploy", `{
 		// pretty
+		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "Deploy",
-		"image": "alpine",
 		"command": ["echo"]
 	}`)
 	h, err := LoadOne(root, "deploy")

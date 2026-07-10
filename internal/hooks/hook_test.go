@@ -8,29 +8,88 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
+// parseInDir parses a hook.json document inside a fresh hook directory
+// that ships the mandatory Dockerfile.
+func parseInDir(t *testing.T, doc string) (*Hook, error) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName), []byte("FROM alpine\n"), 0o644))
+	return Parse("h", filepath.Join(dir, "hook.json"), []byte(doc))
+}
+
 func TestParseValid(t *testing.T) {
-	doc := []byte(`{
+	doc := `{
 		// description supports JSONC comments
+		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "deploy",
-		"image": "alpine:3.20",
 		"command": ["sh", "-c", "echo hi"],
+		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
 		"timeout": "30s",
 		"env": {"FOO": "bar"},
 		"github_status": { "enabled": true, "context": "ci/deploy" }
-	}`)
-	h, err := Parse("deploy-frontend", "/some/path/hook.json", doc)
+	}`
+	h, err := parseInDir(t, doc)
 	require.Nil(t, err)
 
-	assert.Equal(t, "deploy-frontend", h.ID)
+	assert.Equal(t, "h", h.ID)
+	assert.Equal(t, [][]string{{"sh", "-c", "true"}, {"node", "--test", "x.test.ts"}}, h.Tests)
 
 	got := h.Timeout()
 	assert.Equal(t, 30*time.Second, got)
 
 	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
+}
+
+func TestParseMinimal(t *testing.T) {
+	// Command is optional: the image's CMD (from the Dockerfile) runs.
+	// $schema is the only required field.
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Empty(t, h.Command)
+}
+
+// Omitting timeout falls back to DefaultTimeout — every hook keeps hang
+// protection (5 minutes of silence) by default.
+func TestTimeoutDefaultsWhenOmitted(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, DefaultTimeout, h.Timeout())
+}
+
+func TestParseScheduleValid(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","schedule":"5m"}`)
+	require.Nil(t, err)
+	assert.Equal(t, "5m", h.Schedule)
+	assert.Equal(t, 5*time.Minute, h.ScheduleInterval())
+}
+
+func TestParseScheduleEmptyMeansUnscheduled(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.ScheduleInterval())
+}
+
+func TestParseScheduleInvalidDuration(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","schedule":"5 minutes"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "invalid schedule")
+}
+
+func TestParseScheduleMustBePositive(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","schedule":"0s"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "schedule must be positive")
+}
+
+func TestParseRequiresDockerfile(t *testing.T) {
+	dir := t.TempDir() // no Dockerfile
+	_, err := Parse("h", filepath.Join(dir, "hook.json"), []byte(`{}`))
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "Dockerfile")
 }
 
 func TestAPIKeyHdrDefault(t *testing.T) {
@@ -44,28 +103,56 @@ func TestSigHeaderLegacyDefault(t *testing.T) {
 
 }
 
-func TestParseRejectsMissingFields(t *testing.T) {
+func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
-		"missing image":		`{"command":["x"]}`,
-		"missing command":		`{"image":"alpine"}`,
-		"empty command":		`{"image":"alpine","command":[]}`,
-		"reserved env":			`{"image":"alpine","command":["x"],"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"bad timeout":			`{"image":"alpine","command":["x"],"timeout":"banana"}`,
-		"negative timeout":		`{"image":"alpine","command":["x"],"timeout":"-1s"}`,
-		"github_status nocontext":	`{"image":"alpine","command":["x"],"github_status":{"enabled":true}}`,
-		"unknown field":		`{"image":"alpine","command":["x"],"frobnicate":true}`,
-		"api_key+secret":		`{"image":"alpine","command":["x"],"api_key":"k","secret":"s"}`,
-		"public_key+secret":		`{"image":"alpine","command":["x"],"public_key":"k","secret":"s"}`,
-		"api_key+public_key":		`{"image":"alpine","command":["x"],"api_key":"k","public_key":"k"}`,
-		"bad public_key":		`{"image":"alpine","command":["x"],"public_key":"not-a-key"}`,
+		// Go validation only checks that $schema is present (non-empty);
+		// json-validator enforces it points at the published schema.
+		"missing schema":       `{"command":["x"]}`,
+		"image is not a field": `{"$schema":"s","image":"alpine"}`,
+		"reserved env":         `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"empty test command":   `{"$schema":"s","tests":[["ok"],[]]}`,
+		"bad timeout":          `{"$schema":"s","timeout":"banana"}`,
+		"negative timeout":     `{"$schema":"s","timeout":"-1s"}`,
+		// idle_timeout was removed when timeout itself became activity-based;
+		// DisallowUnknownFields makes a hook.json that still sets it fail to
+		// load (acceptable: nothing merged ever set it).
+		"idle_timeout removed":    `{"$schema":"s","idle_timeout":"5m"}`,
+		"github_status nocontext": `{"$schema":"s","github_status":{"enabled":true}}`,
+		"unknown field":           `{"$schema":"s","frobnicate":true}`,
+		"api_key+secret":          `{"$schema":"s","api_key":"k","secret":"s"}`,
+		"public_key+secret":       `{"$schema":"s","public_key":"k","secret":"s"}`,
+		"api_key+public_key":      `{"$schema":"s","api_key":"k","public_key":"k"}`,
+		"bad public_key":          `{"$schema":"s","public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse("h", "p", []byte(doc))
+			_, err := parseInDir(t, doc)
 			require.NotNil(t, err)
 
 		})
 	}
+}
+
+func TestContentHash(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("two"), 0o644))
+	h := &Hook{ID: "h", SourcePath: filepath.Join(dir, "hook.json")}
+
+	first, err := h.ContentHash()
+	require.NoError(t, err)
+	again, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.Equal(t, first, again, "hash must be deterministic")
+	assert.Len(t, first, 16)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed"), 0o644))
+	changed, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, changed, "content change must change the hash")
+
+	_, err = (&Hook{ID: "nodisk"}).ContentHash()
+	require.Error(t, err)
 }
 
 func TestStripComments(t *testing.T) {
@@ -99,90 +186,72 @@ func makeScriptHookDir(t *testing.T, scriptName, scriptContent string) (hookDir,
 	hookDir = filepath.Join(root, "my-hook")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(hookDir, scriptName), []byte(scriptContent), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine:3.20\n"), 0o644))
 	hookJSON = filepath.Join(hookDir, "hook.json")
 	return hookDir, hookJSON
 }
 
+const testSchema = `"$schema":"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json"`
+
 func TestScriptResolveBash(t *testing.T) {
-	hookDir, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash\necho hi")
-	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash"}}`)
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash\necho hi")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, DefaultScriptImage, h.Image)
-	assert.Equal(t, []string{"bash", "/opt/hook/run.sh"}, h.Command)
-	assert.Contains(t, h.Volumes, hookDir+":/opt/hook:ro")
+	assert.Equal(t, []string{"bash", "run.sh"}, h.Command)
 }
 
 func TestScriptResolvePwsh(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.ps1", "Write-Host hi")
-	doc := []byte(`{"script":{"file":"run.ps1","interpreter":"pwsh"}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.ps1","interpreter":"pwsh"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, DefaultScriptImage, h.Image)
-	assert.Equal(t, []string{"pwsh", "-File", "/opt/hook/run.ps1"}, h.Command)
+	assert.Equal(t, []string{"pwsh", "-File", "run.ps1"}, h.Command)
 }
 
 func TestScriptResolveNode(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "index.js", "console.log('hi')")
-	doc := []byte(`{"script":{"file":"index.js","interpreter":"node"}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"index.js","interpreter":"node"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, DefaultScriptImage, h.Image)
-	assert.Equal(t, []string{"node", "/opt/hook/index.js"}, h.Command)
+	assert.Equal(t, []string{"node", "index.js"}, h.Command)
 }
 
 func TestScriptResolveTsx(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "handler.ts", "console.log('hi')")
-	doc := []byte(`{"script":{"file":"handler.ts","interpreter":"tsx"}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"handler.ts","interpreter":"tsx"}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, DefaultScriptImage, h.Image)
-	assert.Equal(t, []string{"tsx", "/opt/hook/handler.ts"}, h.Command)
+	assert.Equal(t, []string{"tsx", "handler.ts"}, h.Command)
 }
 
 func TestScriptWithArgs(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
-	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash","args":["--verbose","--dry-run"]}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash","args":["--verbose","--dry-run"]}}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"bash", "/opt/hook/run.sh", "--verbose", "--dry-run"}, h.Command)
-}
-
-func TestScriptImageOverride(t *testing.T) {
-	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
-	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash"},"image":"alpine:3.20"}`)
-	h, err := Parse("my-hook", hookJSON, doc)
-	require.NoError(t, err)
-	assert.Equal(t, "alpine:3.20", h.Image)
-	assert.Equal(t, []string{"bash", "/opt/hook/run.sh"}, h.Command)
+	assert.Equal(t, []string{"bash", "run.sh", "--verbose", "--dry-run"}, h.Command)
 }
 
 func TestScriptCommandOverride(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
-	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash"},"command":["sh","/opt/hook/run.sh"]}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"},"command":["sh","run.sh"]}`)
 	h, err := Parse("my-hook", hookJSON, doc)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"sh", "/opt/hook/run.sh"}, h.Command)
-}
-
-func TestScriptVolumesAppended(t *testing.T) {
-	hookDir, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
-	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash"},"volumes":["/data:/data:ro"]}`)
-	h, err := Parse("my-hook", hookJSON, doc)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"/data:/data:ro", hookDir + ":/opt/hook:ro"}, h.Volumes)
+	assert.Equal(t, []string{"sh", "run.sh"}, h.Command)
 }
 
 func TestScriptRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	hookDir := filepath.Join(root, "my-hook")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	outside := filepath.Join(root, "evil.sh")
 	require.NoError(t, os.WriteFile(outside, []byte("rm -rf /"), 0o755))
 	require.NoError(t, os.Symlink(outside, filepath.Join(hookDir, "run.sh")))
 
 	hookJSON := filepath.Join(hookDir, "hook.json")
-	doc := []byte(`{"script":{"file":"run.sh","interpreter":"bash"}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"}}`)
 	_, err := Parse("my-hook", hookJSON, doc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolves outside hook directory")
@@ -192,9 +261,10 @@ func TestScriptRejectsMissingFile(t *testing.T) {
 	root := t.TempDir()
 	hookDir := filepath.Join(root, "my-hook")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	hookJSON := filepath.Join(hookDir, "hook.json")
 
-	doc := []byte(`{"script":{"file":"nope.sh","interpreter":"bash"}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"nope.sh","interpreter":"bash"}}`)
 	_, err := Parse("my-hook", hookJSON, doc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope.sh")
@@ -202,7 +272,7 @@ func TestScriptRejectsMissingFile(t *testing.T) {
 
 func TestScriptRejectsBadInterpreter(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.rb", "puts 'hi'")
-	doc := []byte(`{"script":{"file":"run.rb","interpreter":"ruby"}}`)
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.rb","interpreter":"ruby"}}`)
 	_, err := Parse("my-hook", hookJSON, doc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported")
@@ -211,8 +281,8 @@ func TestScriptRejectsBadInterpreter(t *testing.T) {
 func TestScriptRejectsMissingFields(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
 	cases := map[string]string{
-		"missing file":        `{"script":{"interpreter":"bash"}}`,
-		"missing interpreter": `{"script":{"file":"run.sh"}}`,
+		"missing file":        `{` + testSchema + `,"script":{"interpreter":"bash"}}`,
+		"missing interpreter": `{` + testSchema + `,"script":{"file":"run.sh"}}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

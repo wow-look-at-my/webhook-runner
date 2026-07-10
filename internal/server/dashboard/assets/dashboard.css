@@ -11,6 +11,14 @@
   --panel: #161b22;
 }
 * { box-sizing: border-box; }
+/* The hidden attribute only hides via the UA stylesheet's [hidden]
+   { display: none }, and ANY author display: on the same element beats a
+   UA declaration in the cascade -- main { display: grid } below was
+   un-hiding <main id="app-view" hidden> (the drill-down rendered, empty,
+   below the overview), #app-body { display: grid } broke the 404 path's
+   hide, and .view-toggle { display: inline-flex } the modal's toggle.
+   This guard makes hidden always win; keep it above any display rules. */
+[hidden] { display: none !important; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   margin: 0;
@@ -48,6 +56,7 @@ code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radiu
 }
 .badge.ok { background: rgba(63,185,80,0.15); color: var(--success); }
 .badge.bad { background: rgba(248,81,73,0.15); color: var(--failure); }
+.badge.warn { background: rgba(210,153,34,0.15); color: var(--running); }
 .status { font-weight: 500; }
 .status.success { color: var(--success); }
 .status.failure, .status.error, .status.timeout { color: var(--failure); }
@@ -80,8 +89,323 @@ button, .btn {
   display: inline-block;
 }
 button:hover, .btn:hover { filter: brightness(1.1); }
-#setup-section .setup-repo { font-size: 0.9rem; }
+
+/* Run detail modal: a large centered popup so output is readable without
+   scrolling the whole page. Native <dialog> gives us the backdrop, Escape
+   key, focus trapping and centering for free. */
+dialog#run-detail {
+  width: min(92vw, 1100px);
+  height: min(88vh, 900px);
+  max-width: 92vw;
+  max-height: 88vh;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
+}
+dialog#run-detail::backdrop {
+  background: rgba(1, 4, 9, 0.7);
+}
+/* Lock the page behind the modal while it's open. showModal() makes the
+   background inert but does NOT stop it from scrolling on its own. */
+html:has(dialog#run-detail[open]) { overflow: hidden; }
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.modal-body h3 {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.modal-close {
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0 0.5rem;
+  border-radius: 6px;
+}
+.modal-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+  filter: none;
+}
+/* Output header: "Output" label on the left, view toggle on the right. */
+.output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.75rem 0 0.5rem;
+}
+.output-head h3 { margin: 0; }
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.view-toggle button {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-radius: 0;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.view-toggle button:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+.view-toggle button.active { background: var(--accent); color: #fff; }
+/* Toggle + copy button share the right side of the output header. */
+.output-actions { display: flex; align-items: center; gap: 0.5rem; }
+/* Understated ghost button (not the big primary blue) next to the toggle. */
+.copy-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.copy-btn:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+.copy-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.copy-btn:disabled:hover { background: transparent; color: var(--muted); }
+.copy-btn.copied { border-color: var(--success); color: var(--success); }
+
+/* Output fills the remaining modal height and scrolls inside the box,
+   overriding the global pre { max-height: 50vh }. The conversation view
+   stacks one card per turn; the raw view is a single <pre>. */
+#run-detail-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* Keep wheel/touch scrolling inside this box -- don't chain to the page
+     behind the modal when reaching the top/bottom of the output. */
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+}
+/* Raw view. Self-sufficient box styling (background/border/padding) because
+   it renders as a <div> of timestamped rows, not a <pre> that would inherit
+   the global pre styling -- though the "(no output)" placeholder is still a
+   <pre class="raw-log"> and must look the same. */
+.raw-log {
+  margin: 0;
+  /* Take natural content height and let #run-detail-output scroll, instead of
+     being shrunk to fit (flex children default to flex-shrink: 1). */
+  flex-shrink: 0;
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  max-height: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* One log line: a non-selectable timestamp gutter + the line text. */
+.log-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+.log-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+}
+.log-text { white-space: pre-wrap; word-break: break-word; }
+.turn {
+  /* Without this, the flex column shrinks every card to fit the box height and
+     overflow: hidden clips its body to a squished sliver -- and because nothing
+     overflows, the box never scrolls so the wheel scrolls the page instead. */
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.turn-system { border-left-color: var(--running); }
+.turn-user { border-left-color: var(--accent); }
+.turn-assistant { border-left-color: var(--success); }
+.turn-log { border-left-color: var(--pending); }
+.turn-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
+}
+.role-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+.role-system { background: rgba(210, 153, 34, 0.18); color: var(--running); }
+.role-user { background: rgba(47, 129, 247, 0.18); color: var(--accent); }
+.role-assistant { background: rgba(63, 185, 80, 0.18); color: var(--success); }
+.role-log { background: rgba(125, 133, 144, 0.18); color: var(--muted); }
+.turn-label { font-size: 0.75rem; color: var(--muted); }
+/* Pushed to the far right of the turn header: when this turn began. */
+.turn-time {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.turn-body {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#setup-section #setup-repo { font-size: 0.9rem; margin: 0 0 0.5rem; }
 #setup-section a:not(.btn) { color: var(--accent); text-decoration: none; }
 #setup-section a:not(.btn):hover { text-decoration: underline; }
 #setup-section dl { margin: 0.75rem 0; }
 .copyable { user-select: all; }
+details#setup-details {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+details#setup-details summary { cursor: pointer; color: var(--muted); }
+details#setup-details[open] summary { margin-bottom: 0.5rem; }
+/* Per-app (per-hook) drill-down view. */
+.crumbs { margin: 0; font-size: 0.875rem; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+#app-head h2 {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 1.3rem;
+  color: var(--fg);
+  margin: 0 0 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere; /* a long hook id must wrap, not widen the page */
+}
+#app-head p { margin: 0; color: var(--muted); }
+/* Same section rhythm as the overview main, which #app-body's children
+   would otherwise lose (grid gap doesn't reach grandchildren). */
+#app-body { display: grid; gap: 2rem; }
+.app-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+  align-items: start;
+}
+.app-cards dl {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0;
+}
+/* Long unbreakable values (trigger paths, image tags, run ids, env var
+   names) must wrap INSIDE their card. Without this they escape: a <dd>'s
+   inline content has no soft-wrap opportunity inside a long token, so the
+   line overflows the fixed-width card sideways -- and because grid items
+   paint atomically in DOM order, the NEXT card's opaque panel paints over
+   the escaped text (the "INFO collides with RUN STATS / caption struck
+   through" bug). overflow-wrap: anywhere adds break points inside long
+   tokens (and, unlike break-word, also shrinks min-content, so a long
+   value can't blow the track sizing either); min-width: 0 stops grid
+   min-content propagation from widening the cards themselves. */
+.app-cards > section, .app-cards dd { min-width: 0; }
+.app-cards dd { overflow-wrap: anywhere; }
+/* Same hazard in the tables (image tags, run ids, on-disk lists): the
+   table clips overflow (border-radius), so an unwrappable cell value is
+   silently truncated instead of wrapped. */
+td { overflow-wrap: anywhere; }
+.window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
+a.hook-link { text-decoration: none; }
+a.hook-link code { color: var(--accent); }
+a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
+a.run-link { text-decoration: none; }
+a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+/* A row of <code> chips (env var names, per-status counts): adjacent inline
+   chips have NO whitespace between them, i.e. no soft-wrap opportunity at
+   all -- the row is one unbreakable line. A wrapping flex row breaks
+   BETWEEN chips instead of overflowing the card. */
+.chips { display: flex; flex-wrap: wrap; gap: 0.25rem 0.35rem; }
+/* "(on the hook port)" after a trigger path: hooks are served on the hook
+   port/hostname, not this admin page's origin. */
+.port-note { color: var(--muted); font-size: 0.8em; }
+
+.kind {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-family: monospace;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started { background: rgba(63,185,80,0.15); color: var(--success); }
+.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed { background: rgba(248,81,73,0.15); color: var(--failure); }
+.kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
+.event-time { white-space: nowrap; color: var(--muted); }
+.images-on-disk { color: var(--muted); font-size: 0.8rem; }
+#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
+#app-events-table tbody tr { cursor: default; }
+
+/* Per-app State (KV) inspection: key rows are clickable and expand into a
+   value row beneath them; the value row itself is not clickable. */
+#app-kv-table tr.kv-open td { border-bottom: 0; }
+#app-kv-table tr.kv-value-row { cursor: default; }
+#app-kv-table tr.kv-value-row:hover { background: transparent; }
+.kv-value-meta { color: var(--muted); font-size: 0.75rem; margin: 0.1rem 0 0.4rem; }
+.kv-value-error { color: var(--failure); }
+/* The value <pre> lives inside a table cell; keep it compact and let long
+   tokens (hashes, base64) wrap instead of widening the table. */
+pre.kv-value { margin: 0 0 0.35rem; max-height: 40vh; word-break: break-word; }
+
+/* Build-identity footer: unobtrusive, but always answers "which build is
+   this host running?" (filled from GET /version by dashboard.js). */
+.site-footer {
+  padding: 1rem 2rem 1.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.site-footer #server-version { font-family: monospace; }

@@ -1,5 +1,5 @@
 {
-  "image": "alpine:latest",
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "command": ["echo", "apikey-ok"],
   "api_key": "e2e-test-key-42",
   "timeout": "60s"
