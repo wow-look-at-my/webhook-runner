@@ -13,6 +13,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
@@ -43,6 +44,7 @@ type Server struct {
 	hookBaseURL  string
 	kv           *kv.Store
 	runstore     *runstore.Store
+	overrides    *overrides.Store
 	version      VersionInfo
 
 	hookMux  *http.ServeMux
@@ -97,6 +99,12 @@ type Options struct {
 	// behavior.
 	RunStore *runstore.Store
 
+	// Overrides is the operator kill-switch store: per-hook disable
+	// switches (deliveries 503, scheduled runs skipped) and concurrency
+	// limit overrides, persisted under the data dir. nil disables the
+	// override endpoints (reads treat every hook as enabled).
+	Overrides *overrides.Store
+
 	// Version identifies the running build; it is reported by /health and
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
@@ -126,6 +134,7 @@ func New(opts Options) *Server {
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
 		runstore:     opts.RunStore,
+		overrides:    opts.Overrides,
 		version:      opts.Version,
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
@@ -161,6 +170,12 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)
+	// Operator kill switch (see overrides.go): flip a hook off/on, override
+	// a concurrency group's limit live. Admin-port-only by design.
+	s.adminMux.HandleFunc("POST /hooks/{id}/disable", s.handleHookDisable)
+	s.adminMux.HandleFunc("POST /hooks/{id}/enable", s.handleHookEnable)
+	s.adminMux.HandleFunc("PUT /concurrency/{group}/limit", s.handleConcurrencyOverrideSet)
+	s.adminMux.HandleFunc("DELETE /concurrency/{group}/limit", s.handleConcurrencyOverrideClear)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)
