@@ -195,7 +195,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			logger.Warn("run store close", "err", err)
 		}
 	}()
-	tracker.SetOnFinish(runFinishCallback(kvStore, runStore.Record, rec, logger))
+	tracker.SetOnFinish(server.RunFinishCallback(kvStore, runStore.Record, rec, logger))
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
@@ -466,34 +466,6 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 		rec.Record("hooks.reloaded",
 			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d scheduled, %d error(s)", len(loaded), len(cfg.Groups), len(schedules), len(errs)),
 			nil)
-	}
-}
-
-// runFinishCallback builds the tracker's OnFinish observer — the exactly-
-// once-per-run finish seam (it fires on EVERY terminal path: success, error,
-// timeout kill, cancel). It does two things, in a deliberate order:
-//
-//  1. Free every cooperative lock the finished run still holds
-//     (kv.ReleaseRunLocks) — the PRIMARY lock-release mechanism: a run that
-//     crashed, timed out, was cancelled, or just forgot still drops its
-//     locks the moment it terminates. Leftovers are logged and recorded as a
-//     lock.released_on_finish event (silent when zero — normal runs release
-//     explicitly).
-//  2. Persist the run to history (the runstore write-once seam).
-//
-// Lock release comes FIRST and is independent of the history write, so a
-// runstore error can never leave a dead run's locks held.
-func runFinishCallback(kvStore *kv.Store, record func(runs.RunState) error, rec *events.Recorder, logger *slog.Logger) func(runs.RunState) {
-	return func(st runs.RunState) {
-		if n := kvStore.ReleaseRunLocks(st.ID); n > 0 {
-			logger.Info("released leftover run locks", "hook", st.HookID, "run", st.ID, "count", n)
-			rec.Record("lock.released_on_finish",
-				fmt.Sprintf("%s: run %s finished still holding %d lock(s) — released", st.HookID, st.ID, n),
-				map[string]string{"hook": st.HookID})
-		}
-		if err := record(st); err != nil {
-			logger.Error("persist finished run", "hook", st.HookID, "run", st.ID, "err", err)
-		}
 	}
 }
 

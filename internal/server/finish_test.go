@@ -1,4 +1,4 @@
-package cli
+package server
 
 import (
 	"errors"
@@ -30,7 +30,7 @@ func TestRunFinishReleasesLocks(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := events.NewRecorder(10)
 	var recorded []runs.RunState
-	tracker.SetOnFinish(runFinishCallback(store, func(st runs.RunState) error {
+	tracker.SetOnFinish(RunFinishCallback(store, func(st runs.RunState) error {
 		recorded = append(recorded, st)
 		return nil
 	}, rec, logger))
@@ -72,7 +72,7 @@ func TestRunFinishReleasesLocks(t *testing.T) {
 func TestRunFinishReleasesLocksEvenWhenHistoryWriteFails(t *testing.T) {
 	store, tracker := newFinishFixture(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tracker.SetOnFinish(runFinishCallback(store, func(runs.RunState) error {
+	tracker.SetOnFinish(RunFinishCallback(store, func(runs.RunState) error {
 		return errors.New("disk full")
 	}, nil, logger)) // nil recorder: the events ring is nil-safe by contract
 
@@ -91,7 +91,7 @@ func TestRunFinishQuietWhenNoLeftovers(t *testing.T) {
 	store, tracker := newFinishFixture(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := events.NewRecorder(10)
-	tracker.SetOnFinish(runFinishCallback(store, func(runs.RunState) error { return nil }, rec, logger))
+	tracker.SetOnFinish(RunFinishCallback(store, func(runs.RunState) error { return nil }, rec, logger))
 
 	run := tracker.New("my-hook")
 	_, err := store.AcquireLock("my-hook", "lease", run.ID(), 0)

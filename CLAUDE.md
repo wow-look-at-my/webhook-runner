@@ -339,8 +339,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   the state token carries the run ID, acquire/release are atomic under the
   lock table's own mutex (the compare-and-set/compare-and-delete a hook
   could never build from GET+PUT), and the **primary** release mechanism is
-  the run tracker's OnFinish seam — `runFinishCallback` in cli/serve.go
-  calls `kv.ReleaseRunLocks(runID)` BEFORE the runstore write, so a run
+  the run tracker's OnFinish seam — `server.RunFinishCallback` (wired in
+  cli/serve.go; it lives in internal/server, beside the lock handlers, so
+  the cli package stays test-free) calls `kv.ReleaseRunLocks(runID)`
+  BEFORE the runstore write, so a run
   that ends for ANY reason (success, error, timeout kill, cancel — Finish
   fires exactly once on every terminal path) drops all its locks even if
   the history write fails; leftovers surface as a `lock.released_on_finish`
