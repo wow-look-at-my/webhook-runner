@@ -172,6 +172,9 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
 	s.adminMux.HandleFunc("GET /kv", s.handleKVStats)
+	// State inspection (deliberately value-bearing — see kvadmin.go).
+	s.adminMux.HandleFunc("GET /kv/{namespace}", s.handleKVNamespace)
+	s.adminMux.HandleFunc("GET /kv/{namespace}/{key}", s.handleKVEntry)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 
 	// State port (internal): hook containers reach their own namespace,
@@ -182,6 +185,11 @@ func (s *Server) registerRoutes() {
 	s.stateMux.HandleFunc("DELETE /kv/{key}", s.withNamespace(s.handleKVDelete))
 	s.stateMux.HandleFunc("GET /kv", s.withNamespace(s.handleKVList))
 	s.stateMux.HandleFunc("POST /kv/{key}/incr", s.withNamespace(s.handleKVIncr))
+	// Cooperative run-owned locks: atomic acquire/release bound to the run
+	// identity in the token (internal/kv/lock.go). Lock state is separate
+	// from the entries the routes above serve.
+	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
+	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
 }
 
 // runRequestContext returns a background context derived from the server

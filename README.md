@@ -24,8 +24,9 @@ hooks without restart.
   `http://localhost:9002` URL (`HOOK_KV_URL`) with a scoped `HOOK_KV_TOKEN` —
   any HTTP client, no networking (webhook-runner injects a proxy shim that
   bridges that port to an internal Unix socket). get/put/delete/list, atomic
-  increment, and per-key TTL. Data is disk-backed (survives restarts),
-  bounded, and isolated per hook.
+  increment, per-key TTL, and run-owned cooperative locks (acquire/release,
+  auto-freed when the holding run ends). Data is disk-backed (survives
+  restarts), bounded, and isolated per hook.
 - **Git-backed hooks**: point at a Git repository with
   `WEBHOOK_RUNNER_HOOKS_REPO` and the server clones it on startup.
   Configure a GitHub push webhook to `POST /_reload` to auto-pull on push.
@@ -70,8 +71,11 @@ hooks without restart.
   conversation view), plus a **Copy log** button that puts the whole
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
-  config summary, run stats, image state, runs, and activity slice — a
-  per-"app" view, where an app is one hook for now. Run timing is split
+  config summary, run stats, image state, runs, activity slice, and —
+  for `state: true` hooks — a **State (KV)** section listing the hook's
+  stored keys (size, TTL remaining) where clicking a key shows its
+  stored value (pretty-printed when it's JSON) — a per-"app" view,
+  where an app is one hook for now. Run timing is split
   into queue wait and processing time: the runs table shows when a run
   was queued, how long it **Waited** for its concurrency slot, and a
   **Duration** that covers container time only, and the stats keep
@@ -159,7 +163,9 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
-| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
+| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total (no values at this level; shape unchanged for existing consumers). |
+| GET    | `/kv/{namespace}`   | List one namespace's keys (namespace == hook ID): per key its name, value size in bytes, and — when a TTL is set — `expires_at` (absolute) plus `ttl_seconds` (remaining); both absent for keys without a TTL. Sorted by key; `?prefix=` filters. Unknown/empty namespaces list as empty. |
+| GET    | `/kv/{namespace}/{key}` | Read one entry: the metadata above **plus the stored value** — `value_base64` always, `value_utf8` additionally when the bytes are valid UTF-8. `404` when absent **or expired** (the same lazy-expiry rule the state API applies). The key is one path segment: URL-encode it (`%2F` for `/`, `%23` for `#`). |
 | GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
 
 The dashboard's static assets are content-addressed: the served index.html
@@ -188,6 +194,8 @@ own data.
 | DELETE | `/kv/{key}`      | Remove a key (idempotent `204`).                               |
 | GET    | `/kv`            | List the caller's keys: `{"keys":[...]}` (sorted, non-expired). |
 | POST   | `/kv/{key}/incr` | Atomically add to an integer counter. Optional body `{"delta":N}` (default `+1`) and TTL as for PUT. Returns `{"value":<int64>}`; `409` if the existing value isn't an integer. |
+| POST   | `/kv/{key}/acquire` | Take the cooperative lock named `{key}`, owned by the **calling run** (the identity in the token — no client-side owner tokens). `200` `{"run_id","acquired_at","expires_at"}` when this run took or already held it (idempotent); `409` when another live run holds it (nothing is mutated). Optional body `{"ttl_seconds": 1..3600}` sets the secondary backstop expiry (default 15m). The **primary** release is automatic: when the holding run finishes — success, error, timeout, or cancel — the runner frees all its locks. Locks are in-memory (a restart starts lock-free; no run survives a restart anyway) and separate from stored values: GET/PUT/DELETE on the same key touch the value, never the lock. |
+| POST   | `/kv/{key}/release` | Release early, before the run ends (optional hygiene). `204` released; `404` not held (absent or expired); `409` held by a different run — ownership is verified server-side from the token. |
 
 ### Sync vs async
 
@@ -262,9 +270,23 @@ Properties:
   runaway hook from exhausting disk (oversize writes get `413`).
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
+- **Locks**: `acquire`/`release` give same-hook runs a race-free mutual
+  exclusion primitive without any of the GET-then-PUT races a client-side
+  lock would have. A lock belongs to the acquiring **run**, and the runner
+  releases everything a run still holds the moment it terminates — for any
+  reason — so a crashed or killed holder can never wedge a lock (a generous
+  TTL backstop exists purely as a belt against bugs).
 
-See the State KV API table above for the full endpoint list. The admin port's
-`GET /kv` shows per-hook key counts and byte totals (never values).
+See the State KV API table above for the full endpoint list. On the admin
+port, `GET /kv` shows per-hook key counts and byte totals, and the inspection
+routes `GET /kv/{namespace}` / `GET /kv/{namespace}/{key}` list a hook's keys
+(with sizes and TTLs) and read stored **values** — also surfaced on the
+dashboard as a *State (KV)* section on each state hook's page (click a key to
+view its value). Exposing values on the admin port is deliberate: whatever a
+hook stores becomes readable there, so keep that port operator-only (Zero
+Trust — the same trust the un-authenticated `/reload` and run cancellation
+already assume). Values never appear on the public hook port, and
+`/hooks/{id}` stays value-free.
 
 > **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"state":

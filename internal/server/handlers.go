@@ -428,7 +428,9 @@ func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleKVStats reports per-namespace key counts and byte totals for the
-// state store (admin port). It never exposes stored values.
+// state store (admin port). This level stays value-free (and its shape is
+// stable for existing consumers); keys and values are inspectable one level
+// down via /kv/{namespace} and /kv/{namespace}/{key} (see kvadmin.go).
 func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
 	if s.kv == nil {
 		writeJSON(w, http.StatusOK, []kv.NamespaceStat{})
