@@ -59,7 +59,14 @@ hooks without restart.
   skip-if-already-running overlap protection and fire-on-startup. See
   [Scheduled hooks](#scheduled-hooks).
 - **Concurrency**: no global queue, each request fires its own container.
-- **Dashboard**: read-only HTML view at `/` on the admin port showing the
+- **Operator kill switch**: disable any hook from the dashboard — deliveries
+  are rejected with a loud `503` and scheduled runs are skipped until it is
+  re-enabled — and override any concurrency group's limit live (declared vs
+  effective always visible). Both are operational state persisted under the
+  data dir: they survive restarts **and** hooks-repo reloads, and every flip
+  is an activity event. See
+  [Operational overrides](#operational-overrides-the-kill-switch).
+- **Dashboard**: HTML view at `/` on the admin port showing the
   full internal state — loaded hooks, per-hook image status (built /
   will-build-next-run, images on disk), recent runs, and a live activity
   feed (GitHub push webhooks received, git pulls, reloads, load errors,
@@ -142,8 +149,8 @@ URL (backed by an internal Unix socket; see below), not a public port.
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version: `{"status":"ok","version":"..."}`. |
 | GET    | `/version`          | Build identity: `{"version","revision","time"}` — the same string `webhook-runner version` prints, plus the VCS commit/time when the build has them. |
-| POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. |
-| POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). |
+| POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. `503 {"error":"hook disabled by operator"}` while the hook's [kill switch](#operational-overrides-the-kill-switch) is flipped. |
+| POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). Works for disabled hooks too — cancelling is stopping work. |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
 
 ### Admin port (`:9001`)
@@ -152,17 +159,21 @@ URL (backed by an internal Unix socket; see below), not a public port.
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
-| GET    | `/hooks`            | List loaded hooks (id + description).      |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
-| POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
+| GET    | `/hooks`            | List loaded hooks (id + description + `disabled`, the operator kill-switch state — a disabled hook stays loaded and listed). |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), the operator kill-switch state (`disabled`), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
+| POST   | `/hooks/{id}/disable` | Flip a hook's [kill switch](#operational-overrides-the-kill-switch) off: deliveries are rejected (`503`) and scheduled runs skipped until re-enabled. Idempotent; `404` for unknown hooks; persisted before the response (a persist failure is a loud `500` with nothing half-applied). |
+| POST   | `/hooks/{id}/enable`  | Flip it back on. Idempotent; `404` for unknown hooks. |
+| POST   | `/hook/{id}`        | Trigger a hook (also available here; a disabled hook is `503` here too — re-enable it to run it). |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
 | GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
 | GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
-| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), unresolved env references (`env.unresolved`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
-| GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
+| GET    | `/concurrency`      | Live state of every declared concurrency group: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it. |
+| PUT    | `/concurrency/{group}/limit` | Override a group's limit live: body `{"limit": N}`, `N >= 1` (`0` is rejected — it would deadlock queued runs; to stop a group's hooks entirely, disable the hooks). `404` for undeclared groups. The swap is safe with runs in flight, and the override survives reloads and restarts until deleted. |
+| DELETE | `/concurrency/{group}/limit` | Remove the override; the declared limit takes effect again. Idempotent; also accepts a group that is no longer declared but still has a stored (orphaned) override. |
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total (no values at this level; shape unchanged for existing consumers). |
 | GET    | `/kv/{namespace}`   | List one namespace's keys (namespace == hook ID): per key its name, value size in bytes, and — when a TTL is set — `expires_at` (absolute) plus `ttl_seconds` (remaining); both absent for keys without a TTL. Sorted by key; `?prefix=` filters. Unknown/empty namespaces list as empty. |
 | GET    | `/kv/{namespace}/{key}` | Read one entry: the metadata above **plus the stored value** — `value_base64` always, `value_utf8` additionally when the bytes are valid UTF-8. `404` when absent **or expired** (the same lazy-expiry rule the state API applies). The key is one path segment: URL-encode it (`%2F` for `/`, `%23` for `#`). |
@@ -415,6 +426,42 @@ group never reads as a slow run.
 
 The schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
+
+## Operational overrides (the kill switch)
+
+When a hook runs away — a retry storm, a sweep flooding an org with PRs —
+the operator needs to stop it **now**, not after a config PR merges and
+reloads. The dashboard (and the admin API behind it) has a big red switch
+for exactly that:
+
+- **Disable a hook**: the toggle on the hook list / per-hook page (or
+  `POST /hooks/{id}/disable`). Deliveries are rejected with a loud, distinct
+  `503 {"error":"hook disabled by operator"}` (never a silent drop or a
+  confusable 404/401), scheduled runs are skipped with a `schedule.skipped`
+  event, and every rejected delivery lands on the activity feed
+  (`hook.disabled_rejected`). The hook stays loaded — config, image state,
+  and run history intact — only dispatch is gated. In-flight runs are not
+  killed (cancel them from the dashboard if needed; cancellation still
+  works while disabled). `POST /hooks/{id}/enable` flips it back.
+- **Override a concurrency limit**: the Override/Revert controls in the
+  dashboard's concurrency section (or `PUT`/`DELETE
+  /concurrency/{group}/limit`). The new limit takes effect immediately —
+  runs already holding slots finish normally; new runs are gated by the
+  override. `/concurrency` and the dashboard always show **declared vs
+  effective** so an active override is visible at a glance. A limit of `0`
+  is rejected: it would leave queued runs blocked forever — to stop a
+  group's hooks entirely, disable the hooks.
+
+Overrides are **operational state, not hooks-repo config**: they persist in
+`<data-dir>/overrides.json` (atomic writes; a failed write is a `500` and
+nothing is half-applied) and survive both server **restarts** and hooks-repo
+**reloads** — a config push can never silently un-disable a hook or revert a
+limit override. If a reload removes the hook/group an override points at,
+the override is kept inert and announced once on the activity feed
+(`override.orphaned`); it re-applies automatically if the target comes back.
+Every flip is an activity event (`hook.disabled`, `hook.enabled`,
+`concurrency.overridden`, `concurrency.override_cleared`), so the feed
+answers "who turned this off, and when?".
 
 ## Scheduled hooks
 

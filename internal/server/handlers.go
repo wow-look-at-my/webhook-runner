@@ -39,8 +39,21 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.version)
 }
 
+// hookListEntry is one row of GET /hooks: the registry summary plus the
+// operator kill-switch state (disabled hooks stay loaded and listed —
+// only their dispatch is gated).
+type hookListEntry struct {
+	hooks.Summary
+	Disabled bool `json:"disabled"`
+}
+
 func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.registry.List())
+	list := s.registry.List()
+	out := make([]hookListEntry, 0, len(list))
+	for _, sum := range list {
+		out = append(out, hookListEntry{Summary: sum, Disabled: s.overrides.HookDisabled(sum.ID)})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +66,20 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		s.events.Record("hook.unknown", "trigger for unknown hook "+id+" from "+r.RemoteAddr,
 			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
+		return
+	}
+
+	// The operator kill switch gates DISPATCH only: the hook stays loaded
+	// (image state, config, runs all intact) but no new run starts — not
+	// even from the admin port (re-enable it to run it). Checked before the
+	// body/auth so a runaway caller is cut off at minimal cost, and
+	// answered with a deliberately distinct, loud 503 (a 404/401 would read
+	// as a routing or key problem).
+	if s.overrides.HookDisabled(id) {
+		s.events.Record("hook.disabled_rejected",
+			hook.ID+": delivery rejected — hook is disabled by operator (from "+r.RemoteAddr+")",
+			map[string]string{"hook": hook.ID})
+		writeError(w, http.StatusServiceUnavailable, "hook disabled by operator")
 		return
 	}
 
@@ -133,7 +160,9 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 // hook (for api_key hooks the body is irrelevant; for signature hooks the
 // signature covers whatever body the caller sent). The response is 202 —
 // cancellation is a request: the run reaches "cancelled" once the runner
-// has actually killed the container.
+// has actually killed the container. Deliberately NOT gated by the
+// operator kill switch: cancelling a disabled hook's in-flight runs is
+// stopping work, which is what disabling is for.
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
