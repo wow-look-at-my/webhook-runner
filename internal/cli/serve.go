@@ -197,11 +197,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			logger.Warn("run store close", "err", err)
 		}
 	}()
-	tracker.SetOnFinish(func(st runs.RunState) {
-		if err := runStore.Record(st); err != nil {
-			logger.Error("persist finished run", "hook", st.HookID, "run", st.ID, "err", err)
-		}
-	})
+	tracker.SetOnFinish(server.RunFinishCallback(kvStore, runStore.Record, rec, logger))
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
