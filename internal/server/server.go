@@ -185,6 +185,11 @@ func (s *Server) registerRoutes() {
 	s.stateMux.HandleFunc("DELETE /kv/{key}", s.withNamespace(s.handleKVDelete))
 	s.stateMux.HandleFunc("GET /kv", s.withNamespace(s.handleKVList))
 	s.stateMux.HandleFunc("POST /kv/{key}/incr", s.withNamespace(s.handleKVIncr))
+	// Cooperative run-owned locks: atomic acquire/release bound to the run
+	// identity in the token (internal/kv/lock.go). Lock state is separate
+	// from the entries the routes above serve.
+	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
+	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
 }
 
 // runRequestContext returns a background context derived from the server

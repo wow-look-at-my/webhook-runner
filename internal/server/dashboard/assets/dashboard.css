@@ -37,7 +37,10 @@ header {
 }
 header h1 { margin: 0; font-size: 1.25rem; }
 .meta { color: var(--muted); font-size: 0.875rem; display: flex; gap: 0.75rem; align-items: center; }
-main { padding: 1.5rem 2rem; display: grid; gap: 2rem; max-width: 1200px; }
+/* Full width on purpose: a max-width cap here left the right ~25% of a
+   wide screen blank while the tables squeezed (and mid-word-wrapped their
+   ids) on the left. The padding is the breathing room. */
+main { padding: 1.5rem 2rem; display: grid; gap: 2rem; }
 section h2 { margin: 0 0 0.75rem; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 section h3 { margin: 1rem 0 0.5rem; font-size: 0.875rem; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
@@ -357,6 +360,17 @@ details#setup-details[open] summary { margin-bottom: 0.5rem; }
    table clips overflow (border-radius), so an unwrappable cell value is
    silently truncated instead of wrapped. */
 td { overflow-wrap: anywhere; }
+/* ...but identifiers are tokens, not prose. Every table renders ids in
+   <code> (hook ids, run ids, image tags, KV namespaces/keys, trigger
+   paths), and letting those break mid-word produced "github/-api" and
+   "requir/ed-/builds". Pin them to one line: an auto table column never
+   shrinks below its widest unbreakable content, so the id column just
+   claims its width and the prose columns (Description, event messages,
+   on-disk lists) absorb the squeeze by wrapping instead. Timestamps in
+   the runs tables get the same pin the activity feed's .event-time
+   already has -- a date broken mid-number reads just as badly. */
+td code { white-space: nowrap; }
+#runs-table td:first-child, #app-runs-table td:first-child { white-space: nowrap; }
 .window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
 a.hook-link { text-decoration: none; }
 a.hook-link code { color: var(--accent); }
