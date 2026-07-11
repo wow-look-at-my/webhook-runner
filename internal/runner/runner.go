@@ -59,11 +59,14 @@ type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 // Implementations typically push the GitHub "pending" commit status.
 type HookStartedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
-// KVInjector mints the per-hook bearer token injected into containers that
-// opt into the state store. It is a one-method seam (satisfied by *kv.Store)
-// so the runner needn't import the kv package's whole surface.
+// KVInjector mints the per-run bearer token injected into containers that
+// opt into the state store — bound to both the hook's namespace and THIS
+// run's identity, which is what lets the state API attribute cooperative
+// locks to their holding run (and the finish seam free them). It is a
+// one-method seam (satisfied by *kv.Store) so the runner needn't import the
+// kv package's whole surface.
 type KVInjector interface {
-	Token(namespace string) string
+	Token(namespace, runID string) string
 }
 
 // Runner launches docker containers and tracks the resulting runs.
@@ -320,7 +323,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			"-v", r.kvSocket+":"+mountedStateSocket,
 			"-e", "HOOK_KV_SOCKET="+mountedStateSocket,
 			"-e", "HOOK_KV_URL=http://localhost:9002",
-			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID),
+			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
 		)
 	}
 	for _, n := range hook.Networks {
