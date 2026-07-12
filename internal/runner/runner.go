@@ -478,6 +478,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// while one that has gone silent is killed.
 	wd := newIdleWatchdog(timeout, time.Now)
 	wd.Arm()
+	// Declared waits (the state API's POST /wait) count as activity: hand
+	// the run a handle to this watchdog so an in-flight wait keeps touching
+	// it — an announced sleep is forward progress, not silence. Touches on
+	// a finished run are harmless, so this is never deregistered.
+	run.SetActivityTouch(wd.Touch)
 	silent := wd.Watch(stopWatcher)
 	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
 	stderr := &touchReader{r: stderrR, touch: wd.Touch}
@@ -571,15 +576,21 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			exitCode = -1
 		}
 		errMsg = "cancelled"
+		// A cancel can carry an explanation — e.g. a lock steal naming its
+		// displacer — which belongs in run history, not just the moment.
+		if reason := run.CancelReason(); reason != "" {
+			errMsg = reason
+		}
 	default:
 	}
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
 	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
-	if status == runs.StatusTimeout && errMsg != "" {
-		// Carry the reason ("timed out after <d> (no output)") so the
-		// activity feed shows what killed the run.
+	if errMsg != "" && (status == runs.StatusTimeout ||
+		(status == runs.StatusCancelled && errMsg != "cancelled")) {
+		// Carry the reason (a timeout's "no output" verdict, a cancel's
+		// steal explanation) so the activity feed shows what killed the run.
 		finishedMsg += ": " + errMsg
 	}
 	r.events.Record("run.finished", finishedMsg,

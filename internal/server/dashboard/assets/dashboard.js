@@ -93,6 +93,47 @@ function runDuration(r) {
   return "—";
 }
 
+// What a run is currently paused on (r.waiting_on), rendered inline on the
+// run row. Kind "wait" is a declared sleep (POST /wait) — "waiting Ns:
+// reason", remaining time computed client-side from `until` so it counts
+// down on the poll cadence (clamped to 0s when it just elapsed). Kind
+// "lock" is a blocked acquire — it names the contended key and exactly who
+// holds it (run + hook).
+function waitNote(r) {
+  const w = r.waiting_on;
+  if (!w) return null;
+  if (w.kind === "lock") {
+    const holder = w.holder_run_id
+      ? `${shortId(w.holder_run_id)}${w.holder_hook_id ? ` (${w.holder_hook_id})` : ""}`
+      : "unknown";
+    return el("span", { class: "wait-note", title: w.holder_run_id || "" },
+      `waiting on lock ${w.key} held by ${holder}`);
+  }
+  if (!tsPresent(w.until)) return null;
+  const left = new Date(w.until) - Date.now();
+  const t = left > 0 ? fmtDuration(left) : "0s";
+  return el("span", { class: "wait-note" },
+    `waiting ${t}${w.reason ? ": " + w.reason : ""}`);
+}
+
+// The holder-side note: runs currently blocked on locks THIS run holds
+// (r.waiters, derived server-side). The tooltip lists exactly who waits on
+// which key.
+function waitersNote(r) {
+  const ws = r.waiters;
+  if (!ws || !ws.length) return null;
+  return el("span", { class: "wait-note", title: ws.map(waiterText).join("\n") },
+    `${ws.length} waiting on this run's lock${ws.length > 1 ? "s" : ""}`);
+}
+
+function shortId(id) {
+  return id && id.length > 10 ? id.slice(0, 10) + "…" : id || "";
+}
+
+function waiterText(x) {
+  return `${shortId(x.run_id)} (${x.hook_id})${x.key ? ` → lock ${x.key}` : ""}`;
+}
+
 // --- Views: the global overview vs the per-app (per-hook) drill-down ------
 //
 // The fragment #hook=<id> selects the app view; anything else shows the
@@ -407,7 +448,7 @@ function renderRuns(rs) {
     const tr = el("tr", { data: { runId: r.id } },
       el("td", null, fmtTime(r.started)),
       el("td", null, el("code", null, r.hook_id)),
-      el("td", { class: "status " + r.status }, r.status),
+      el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
       el("td", null, String(r.exit_code)),
       el("td", null, el("code", null, r.id)),
     );
@@ -614,7 +655,7 @@ function renderApp(detail, runs, events) {
     // runs); Duration = processing only (live while running).
     const tr = el("tr", null,
       el("td", null, fmtTime(r.started)),
-      el("td", { class: "status " + r.status }, r.status),
+      el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
       el("td", null, runWaited(r)),
       el("td", null, runDuration(r)),
       el("td", null, String(r.exit_code)),
@@ -736,6 +777,14 @@ async function showRun(id) {
       ["Waited", runWaited(r)],
       ["Duration", runDuration(r)],
     ];
+    // A live pause gets its own row (same text as the run-row note): a
+    // declared sleep, or the lock (and holder) a blocked acquire waits on.
+    const wn = waitNote(r);
+    if (wn) rows.push(["Waiting", wn]);
+    // The holder-side view: who is blocked on locks this run holds.
+    if (r.waiters && r.waiters.length) {
+      rows.push(["Lock waiters", r.waiters.map(waiterText).join("; ")]);
+    }
     if (r.error) rows.push(["Error", r.error]);
     for (const [k, v] of rows) {
       dl.appendChild(el("dt", null, k));

@@ -71,6 +71,15 @@ code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radiu
 /* Distinct on purpose: a skipped run is "no work was done", not a pale
    success or a soft failure — it must read as its own state at a glance. */
 .status.skipped { color: var(--skipped); }
+/* Inline "waiting Ns: reason" note on a run row — the run is inside a
+   declared wait (POST /wait on the state API), sleeping on purpose. */
+.wait-note {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--muted);
+}
 .empty { color: var(--muted); font-style: italic; padding: 1rem; }
 pre {
   background: #010409;
