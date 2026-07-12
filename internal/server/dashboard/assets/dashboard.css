@@ -43,7 +43,9 @@ header h1 { margin: 0; font-size: 1.25rem; }
 main { padding: 1.5rem 2rem; display: grid; gap: 2rem; }
 section h2 { margin: 0 0 0.75rem; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 section h3 { margin: 1rem 0 0.5rem; font-size: 0.875rem; color: var(--muted); }
-table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
+/* Tables size to their content: a wide table may grow up to the viewport
+   (max-width caps it there), but a sparse one must not stretch to fill it. */
+table { width: auto; max-width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
 th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; }
 tbody tr:last-child td { border-bottom: 0; }
@@ -440,3 +442,44 @@ pre.kv-value { margin: 0 0 0.35rem; max-height: 40vh; word-break: break-word; }
   font-size: 0.75rem;
 }
 .site-footer #server-version { font-family: monospace; }
+
+/* --- Runs timeline (the primary runs view; timeline.js + <timeline-view>) ---
+   The generic canvas component ships its own dark defaults; these overrides
+   pin its --timeline-* theme to the dashboard palette so the plot, tooltip
+   and chrome read as one page. The demoted runs table sits below it behind
+   the "Show table" toggle. */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.section-head h2 { margin: 0; }
+/* A quiet secondary control — the accent-blue button base would shout. */
+.table-toggle {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.table-toggle:hover { color: var(--fg); filter: none; background: rgba(255,255,255,0.1); }
+timeline-view {
+  --timeline-bg: var(--panel);
+  --timeline-fg: var(--fg);
+  --timeline-muted: var(--muted);
+  --timeline-grid: rgba(230, 237, 243, 0.05);
+  --timeline-hairline: rgba(230, 237, 243, 0.09);
+  --timeline-row-tint: rgba(255, 255, 255, 0.012);
+  --timeline-now: var(--accent);
+  --timeline-emphasis: var(--failure);
+  --timeline-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --timeline-tooltip-bg: rgba(22, 27, 34, 0.97);
+  --timeline-tooltip-fg: var(--fg);
+  height: 420px;
+  min-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}

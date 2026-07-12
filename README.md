@@ -105,12 +105,24 @@ graph LR
   [Operational overrides](#operational-overrides-the-kill-switch).
 - **Dashboard**: HTML view at `/` on the admin port showing the
   full internal state — loaded hooks, per-hook image status (built /
-  will-build-next-run, images on disk), recent runs, and a live activity
+  will-build-next-run, images on disk), runs, and a live activity
   feed (GitHub push webhooks received, git pulls, reloads, load errors,
   image builds, run lifecycle — and rejected requests: unknown hook ids,
   denied auth, unresolvable `${NAME}` references in `api_key`/`env`, so
   "did you receive anything?" always has an answer). One-time setup
-  instructions stay collapsed. Opening a run shows its output with a
+  instructions stay collapsed. The **primary runs view is a realtime
+  swimlane timeline** (a canvas `<timeline-view>`, one lane per hook with
+  a stable hue per hook): each run's queue wait draws as a dim lead-in
+  ahead of its processing time, declared waits and blocked lock acquires
+  hatch (with a connector from the waiter to the lock's holder when the
+  runner reports one), failures are unmissable, cancelled runs render
+  hollow, and instant runs become diamond pips. It follows "now" live;
+  wheel/drag pans, ctrl/cmd+wheel (or pinch) zooms, and dragging into the
+  past auto-loads history via `/runs?before=` until retention runs out
+  (an explicit "history ends here" boundary). Clicking a bar opens the
+  run's output modal, clicking a lane label opens that hook's page, and
+  the classic runs table stays available behind a "Show table" toggle.
+  Opening a run shows its output with a
   per-line timestamp column (the raw view) or per-turn times (the
   conversation view), plus a **Copy log** button that puts the whole
   timestamped log on the clipboard. Every hook also has its own
@@ -202,10 +214,11 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | POST   | `/hooks/{id}/enable`  | Flip it back on. Idempotent; `404` for unknown hooks. |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here; a disabled hook is `503` here too — re-enable it to run it). |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
-| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
+| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). `?before=<RFC3339 timestamp>` (fractional seconds optional) pages into history: only runs queued **strictly before** that instant — pass the oldest `started` you already hold as the next cursor, so consecutive pages tile with no gap or overlap (a malformed value is a `400`; omitted means unpaged). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
 | GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
+| GET    | `/config`           | Dashboard setup info: `hooks_repo`, `hook_base_url`, `reload_secret` (each only when set), plus `run_retention` — the persisted run-history window as a compact duration (e.g. `48h`), i.e. how far back `/runs?before=` paging can ever reach — present only when the run store is configured. |
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), unresolved env references (`env.unresolved`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it. |
@@ -217,12 +230,17 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
 
 The dashboard's static assets are content-addressed: the served index.html
-references `/dashboard.<hash>.css|.js` (hash of the embedded bytes), which are
-cacheable forever (`Cache-Control: immutable` + ETag) — a new build changes
-the URLs. `/`, the bare `/dashboard.css|.js` paths, and any stale-hash URL
-(404) are `no-cache`, so an edge cache (e.g. Cloudflare, which caches
-`.css`/`.js` by extension when the origin sends no cache headers) can never
-pair a new index.html with stale assets after a deploy.
+references `/dashboard.<hash>.css|.js` and `/timeline.<hash>.js` (hash of the
+embedded bytes), which are cacheable forever (`Cache-Control: immutable` +
+ETag) — a new build changes the URLs. `/`, the bare
+`/dashboard.css|.js`/`/timeline.js` paths, and any stale-hash URL (404) are
+`no-cache`, so an edge cache (e.g. Cloudflare, which caches `.css`/`.js` by
+extension when the origin sends no cache headers) can never pair a new
+index.html with stale assets after a deploy. `timeline.js` is **generated**
+(TypeScript compiled by ts0 via `go generate` — see
+[Dashboard TypeScript](#dashboard-typescript)) but committed, so `go:embed`
+works on a fresh clone; CI regenerates it and fails on any diff, so the
+committed bundle can never go stale.
 
 ### State KV API (`http://localhost:9002` in state hooks)
 
@@ -754,8 +772,32 @@ running it from the repo root handles `go mod tidy`, tests, coverage,
 and a binary build.
 
 ```sh
-go-toolchain
+go-toolchain --generate 65524d6e099d
 ```
+
+The `--generate` flag approves the repo's one `//go:generate` directive (the
+dashboard TypeScript build, below). The hash is over the directive's text —
+if the directive changes, a bare `go-toolchain` run prints the new hash to
+approve.
+
+### Dashboard TypeScript
+
+The dashboard's runs timeline is TypeScript under
+`internal/server/dashboard/ts/` — `timeline.ts` (the webhook-runner adapter)
+plus the vendored generic `<timeline-view>` component from
+[js-snippets](https://github.com/wow-look-at-my/js-snippets) under
+`ts/vendor/` (pinned to a commit; fix component bugs upstream and re-copy,
+never edit the vendored files). [ts0](https://github.com/wow-look-at-my/ts0)
+type-checks (strict `tsc`, an unskippable gate) and bundles it into
+`internal/server/dashboard/assets/timeline.js` per `ts0.json`.
+
+To change the timeline: edit files under `ts/`, run
+`go generate ./internal/server/dashboard` (or the `go-toolchain --generate`
+invocation above, which does it as part of the build — Node 22+ required),
+and commit the regenerated `assets/timeline.js` together with the source.
+**Never edit `assets/timeline.js` by hand** — it carries a DO-NOT-EDIT
+banner, and CI rebuilds it and fails on any difference from the committed
+bytes.
 
 ## Notes
 

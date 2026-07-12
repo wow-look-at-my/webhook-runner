@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline TypeScript (adapter + vendored <timeline-view> from js-snippets) that go:generate compiles via ts0 into the committed assets/timeline.js
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -90,8 +90,20 @@ The server listens on two TCP ports plus a Unix socket:
   renders a "State (KV)" section: the key table (name, size, TTL
   remaining) with click-through to the stored value (pretty-printed when
   it parses as JSON, base64 for binary; text-node rendering, so stored
-  bytes can't inject markup). Dashboard assets are content-addressed (`internal/server/
-  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js`, served
+  bytes can't inject markup). The overview's PRIMARY runs view is a
+  realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
+  hook, hue per hook): queue wait as a dim lead-in segment, declared
+  waits/blocked locks hatched (connector to the lock holder), failures
+  emphasized, cancelled hollow, instant runs as pips; wheel/drag
+  pan + zoom, and panning into the past pages `/runs?before=` history
+  down to retention (`/config`'s `run_retention` labels the boundary).
+  A bar click opens the run modal, a lane-label click opens `#hook={id}`,
+  and the old runs table stays behind a persisted "Show table" toggle.
+  waiting_on/waiters and unknown statuses are feature-detected, so the
+  timeline works against servers with or without first-class waits.
+  Dashboard assets are content-addressed (`internal/server/
+  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js` +
+  `/timeline.<hash>.js`, served
   immutable; `/` and the bare asset paths are no-cache, stale hashes 404)
   so an edge cache can never pair new HTML with stale assets.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
@@ -330,7 +342,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   safety net; like kv, expiry is lazy on reads AND swept in the background —
   keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`,
   where the nanos are the QUEUED/accepted time — leave the key format
-  alone), so GC and newest-first reads are single cursor walks; the per-hook
+  alone), so GC and newest-first reads are single cursor walks — including
+  the `ListAllBefore`/`ListByHookBefore` variants behind `/runs?before=`
+  paging (Seek to the cursor instant's bare nanos prefix, walk Prev:
+  strictly-older, same retention break); the per-hook
   index *value* carries `"<status> <finished-nanos> <startedat-nanos>"`
   (third field = processing start, `0` = never started) so `SummariesByHook`
   (the stats path) never deserializes metadata blobs — don't change one side
@@ -414,3 +429,24 @@ The companion repo is `wow-look-at-my/webhooks`.
   host-gateway and a shared Docker network proved more fragile; the shim keeps
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
+- The dashboard timeline is a **generated-asset pipeline** with several
+  interlocking pins — get any one wrong and CI goes red:
+  `internal/server/dashboard/ts/timeline.ts` (+ vendored component) is
+  compiled by ts0 into the COMMITTED `assets/timeline.js` (go:embed needs
+  it on a fresh clone; the bundle carries a DO-NOT-EDIT banner — never
+  hand-edit it, edit ts/ and regenerate). The `//go:generate` directive in
+  dashboard.go runs ts0 **via `npx --yes npm@11 exec`** (npm 10's npx
+  cannot install git deps that need a prepare build — a known npm bug)
+  pinned to a **full ts0 commit SHA**; go-toolchain executes directives
+  only with an approval hash over the directive text (`--generate
+  65524d6e099d` locally, the `generate:` input in ci.yml) — **any edit to
+  the directive line changes the hash**; a bare `go-toolchain` run prints
+  the new one to re-approve in both places. Regeneration needs Node 22+
+  and (in CI) authenticated git for the private ts0 repo — ci.yml's
+  setup-node + insteadOf rewrites, followed by the freshness gate
+  `git diff --exit-code -- internal/server/dashboard/assets/` (a stale
+  committed bundle or a TypeScript type error fails the build; ts0's
+  strict tsc gate runs inside the generate step). The vendored component
+  under `ts/vendor/js-snippets/ui/` is a verbatim pinned copy: fix bugs
+  UPSTREAM in js-snippets, `pnpm test && pnpm build` there, then re-copy
+  the files and update the SHA in their provenance headers.

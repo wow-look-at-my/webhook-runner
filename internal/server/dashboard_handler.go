@@ -32,10 +32,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		serveAsset(w, r, dashboard.CSS, true)
 	case "/" + dashboard.JS.HashedName:
 		serveAsset(w, r, dashboard.JS, true)
+	case "/" + dashboard.TimelineJS.HashedName:
+		serveAsset(w, r, dashboard.TimelineJS, true)
 	case "/dashboard.css": // compat: pre-hashing URL, kept working but never cached
 		serveAsset(w, r, dashboard.CSS, false)
 	case "/dashboard.js":
 		serveAsset(w, r, dashboard.JS, false)
+	case "/timeline.js":
+		serveAsset(w, r, dashboard.TimelineJS, false)
 	default:
 		http.NotFound(w, r)
 	}
