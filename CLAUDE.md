@@ -13,9 +13,10 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded read-only HTML dashboard
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
-internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager
+internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
+internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
 internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
 internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
 internal/runner/           docker run dispatch + output streaming + image build/status
@@ -64,8 +65,11 @@ The server listens on two TCP ports plus a Unix socket:
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
   newest-first), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries), `/images` (per-hook image state), `/concurrency` (live
-  per-group limit/active/waiting), `/kv` (read-only state-store stats:
+  event carries), `/images` (per-hook image state), the operator kill
+  switch (`POST /hooks/{id}/disable|enable`,
+  `PUT|DELETE /concurrency/{group}/limit` — see the overrides bullet under
+  "Things easy to get wrong"), `/concurrency` (live per-group
+  effective limit/declared/overridden/active/waiting), `/kv` (read-only state-store stats:
   per-namespace key count and bytes — shape unchanged, still value-free),
   `/kv/{namespace}` (one namespace's keys, sorted, `?prefix=` filters:
   name, size, and `expires_at` + remaining `ttl_seconds` when a TTL is
@@ -267,6 +271,31 @@ The companion repo is `wow-look-at-my/webhooks`.
   `concurrency.Manager`, and the `scheduler.Scheduler` must update
   atomically together or a hook can be registered before its group exists
   (or scheduled after it's been dropped).
+- Operator overrides (`internal/overrides`) are the kill switch — exactly
+  the "big red switch" for a runaway hook (a describe retry storm, a sweep
+  flooding PRs): flip it on the dashboard instead of merging a config PR or
+  deleting a repo. They are **operational state in the data dir**
+  (`<data-dir>/overrides.json`, atomic temp+rename writes; a persist
+  failure rolls the in-memory flip back and surfaces as a 500 + an
+  `override.write_failed` event — same loud-write rule as kv), NOT
+  hooks-repo config. The disable gate lives **at dispatch, not load**: a
+  disabled hook stays loaded/registered (image state, config, run history
+  intact) and `handleTrigger` rejects deliveries with a distinct 503 +
+  `hook.disabled_rejected` event, while `buildScheduleFire` skips its
+  scheduled runs (`schedule.skipped`, reason "disabled by operator");
+  run *cancellation* is deliberately not gated. Reloads **re-apply**
+  overrides, never silently wipe them: the trigger/schedule gates read the
+  store at dispatch time, and `concurrency.Manager` keeps limit overrides
+  in an internal map that `Update` re-applies atomically (the semaphore
+  swap is token-safe because releases capture their channel — the same
+  invariant as reload). The store is opened in `runServe` BEFORE the first
+  load and seeds the manager, so boot state reflects persisted overrides.
+  An override whose hook/group vanishes on a reload is kept inert and
+  announced ONCE per orphaning via `override.orphaned`
+  (`announceOrphanedOverrides` dedups across reloads); it re-applies if the
+  target returns. Concurrency overrides must be >= 1 — a 0 limit is
+  rejected everywhere (store, manager, HTTP) because it would deadlock
+  queued runs; disabling the hooks is the way to stop them entirely.
 - The scheduler (`internal/scheduler`) fires hooks declaring a `schedule`
   (a Go duration on `Hook`, validated in `hook.validate`) on a timer. Like
   `concurrency.Manager` it is a **pure** component: it owns only timing and

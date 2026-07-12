@@ -226,18 +226,20 @@ async function refresh() {
     if (hookId) {
       await refreshApp(hookId);
     } else {
-      const [hooks, runs, images, events, kv] = await Promise.all([
+      const [hooks, runs, images, events, kv, groups] = await Promise.all([
         fetchJSON("/hooks"),
         fetchJSON("/runs?max=50"),
         fetchJSON("/images"),
         fetchJSON("/events?max=100"),
         fetchJSON("/kv"),
+        fetchJSON("/concurrency"),
       ]);
       renderHooks(hooks);
       renderRuns(runs);
       renderImages(images);
       renderEvents(events);
       renderKV(kv);
+      renderConcurrency(groups);
     }
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
@@ -266,6 +268,46 @@ function triggerPath(id) {
   ];
 }
 
+// --- Operator kill switch --------------------------------------------------
+//
+// The big red switch: a disabled hook stays loaded but every delivery is
+// rejected (503) and scheduled runs are skipped, until re-enabled. Flips
+// persist server-side (survive restarts AND hooks-repo reloads), so this
+// is the way to stop a runaway hook — no config PR, no repo surgery.
+
+async function toggleHook(id, disable) {
+  if (disable && !confirm(`Disable hook ${id}? Deliveries will be rejected.`)) return;
+  try {
+    const res = await fetch(
+      `/hooks/${encodeURIComponent(id)}/${disable ? "disable" : "enable"}`,
+      { method: "POST" });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to ${disable ? "disable" : "enable"} hook ${id}: ${err.message}`);
+  }
+  refresh();
+}
+
+function hookToggleButton(id, disabled) {
+  const btn = el("button", {
+    class: "toggle-btn" + (disabled ? "" : " danger"),
+    title: disabled
+      ? `Re-enable ${id}: accept deliveries and scheduled runs again`
+      : `Disable ${id}: reject deliveries (503) and skip scheduled runs`,
+  }, disabled ? "Enable" : "Disable");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleHook(id, !disabled);
+  });
+  return btn;
+}
+
+function hookStatusBadge(disabled) {
+  return disabled
+    ? el("span", { class: "badge bad" }, "DISABLED")
+    : el("span", { class: "badge ok" }, "enabled");
+}
+
 function renderHooks(hooks) {
   const tbody = document.querySelector("#hooks-table tbody");
   tbody.innerHTML = "";
@@ -279,7 +321,79 @@ function renderHooks(hooks) {
             el("code", null, h.id))),
         el("td", null, h.description || ""),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
+        el("td", { class: "row-actions" }, hookStatusBadge(h.disabled), hookToggleButton(h.id, h.disabled)),
         el("td", null, ...triggerPath(h.id)),
+      )
+    );
+  }
+}
+
+// --- Concurrency groups: declared vs effective + live override -------------
+
+async function overrideLimit(name, declared, current) {
+  const v = prompt(
+    `Override the concurrency limit for group "${name}" (declared ${declared}).\n` +
+    "Must be an integer >= 1 — to stop the group's hooks entirely, disable the hooks instead.",
+    String(current)
+  );
+  if (v == null) return;
+  const n = Number(v.trim());
+  if (!Number.isInteger(n) || n < 1) {
+    alert("Limit must be an integer >= 1 (a 0 limit would deadlock queued runs).");
+    return;
+  }
+  try {
+    const res = await fetch(`/concurrency/${encodeURIComponent(name)}/limit`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: n }),
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to override group ${name}: ${err.message}`);
+  }
+  refresh();
+}
+
+async function clearLimitOverride(name, declared) {
+  if (!confirm(`Revert group "${name}" to its declared limit (${declared})?`)) return;
+  try {
+    const res = await fetch(`/concurrency/${encodeURIComponent(name)}/limit`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to revert group ${name}: ${err.message}`);
+  }
+  refresh();
+}
+
+function renderConcurrency(groups) {
+  const tbody = document.querySelector("#concurrency-table tbody");
+  tbody.innerHTML = "";
+  groups = groups || [];
+  document.getElementById("concurrency-empty").hidden = groups.length > 0;
+  for (const g of groups) {
+    const editBtn = el("button", {
+      class: "toggle-btn",
+      title: `Override the limit for ${g.name} live (persists across reloads/restarts until reverted)`,
+    }, "Override…");
+    editBtn.addEventListener("click", () => overrideLimit(g.name, g.declared, g.limit));
+    const actions = el("td", { class: "row-actions" }, editBtn);
+    if (g.overridden) {
+      const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the declared limit (${g.declared}) takes effect` }, "Revert");
+      revertBtn.addEventListener("click", () => clearLimitOverride(g.name, g.declared));
+      actions.appendChild(revertBtn);
+    }
+    tbody.appendChild(
+      el("tr", null,
+        el("td", null, el("code", null, g.name)),
+        el("td", null, String(g.declared)),
+        el("td", null,
+          String(g.limit),
+          g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
+        ),
+        el("td", null, String(g.active)),
+        el("td", null, String(g.waiting)),
+        actions,
       )
     );
   }
@@ -397,6 +511,8 @@ function renderAppMissing(id) {
   document.getElementById("app-desc").textContent = "";
   document.getElementById("app-missing").hidden = false;
   document.getElementById("app-body").hidden = true;
+  document.getElementById("app-disabled-badge").hidden = true;
+  document.getElementById("app-toggle").hidden = true;
 }
 
 function fillDl(dl, rows) {
@@ -414,8 +530,19 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-title").textContent = info.id;
   document.getElementById("app-desc").textContent = info.description || "";
 
+  // Operator kill switch for this hook: badge + toggle next to the title.
+  document.getElementById("app-disabled-badge").hidden = !detail.disabled;
+  const toggle = document.getElementById("app-toggle");
+  toggle.hidden = false;
+  toggle.textContent = detail.disabled ? "Enable hook" : "Disable hook";
+  toggle.classList.toggle("danger", !detail.disabled);
+  toggle.onclick = () => toggleHook(info.id, !detail.disabled);
+
   fillDl(document.getElementById("app-info"), [
     ["Trigger path", triggerPath(info.id)],
+    ["Operator switch", detail.disabled
+      ? el("span", { class: "status failure" }, "DISABLED — deliveries rejected (503), scheduled runs skipped")
+      : "enabled"],
     ["Mode", info.synchronous ? "sync" : "async"],
     ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
     ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
