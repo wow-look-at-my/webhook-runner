@@ -222,6 +222,15 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
+- `script` (hook.json) is parse-time sugar for `command`:
+  `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
+  pwsh, node, or tsx), resolving the file with `EvalSymlinks` and
+  rejecting anything outside the hook directory. It sets nothing else —
+  no image, no mounts: the script is baked into the hook's image like
+  all code, so the interpreter must be installed in that image (the
+  webhooks repo's `Dockerfile.common` base ships bash/node/tsx). An
+  explicit `command` wins over `script`. New hook.json field ⇒ same
+  deploy-first rule as `state`/`schedule`/`concurrency_group`.
 - The run `timeout` is **activity-based, not wall-clock**: it kills a run
   only when the container has produced **no output** (stdout or stderr) for
   that long — "time out after N minutes of no activity". There is **no
