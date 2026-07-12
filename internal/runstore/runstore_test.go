@@ -153,6 +153,108 @@ func TestListsNewestFirstFilteredAndCapped(t *testing.T) {
 	assert.Empty(t, s.ListByHook("nope", 0))
 }
 
+func idsOf(states []runs.RunState) []string {
+	out := make([]string, 0, len(states))
+	for _, st := range states {
+		out = append(out, st.ID)
+	}
+	return out
+}
+
+// The Before variants page into the past: runs whose Started is STRICTLY
+// before the cursor, newest-first, sharing ListAll/ListByHook's walk. The
+// seek must be right at every position: between two keys, exactly on a key
+// (excluded), past both ends, and inside one hook's bucket.
+func TestListBeforeSeekPositions(t *testing.T) {
+	s := newStore(t, Config{})
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 5; i++ {
+		hook := "a"
+		if i%2 == 1 {
+			hook = "b"
+		}
+		require.NoError(t, s.Record(state(fmt.Sprintf("run%d", i), hook, runs.StatusSuccess, base.Add(time.Duration(i)*time.Minute))))
+	}
+
+	// Between two keys: everything strictly older, newest-first.
+	assert.Equal(t, []string{"run2", "run1", "run0"},
+		idsOf(s.ListAllBefore(base.Add(2*time.Minute+30*time.Second), 0)))
+
+	// Exactly on a key: that run is excluded — strictly before.
+	assert.Equal(t, []string{"run1", "run0"},
+		idsOf(s.ListAllBefore(base.Add(2*time.Minute), 0)))
+
+	// Newer than everything: the full newest-first list, same as ListAll.
+	assert.Equal(t, idsOf(s.ListAll(0)),
+		idsOf(s.ListAllBefore(base.Add(time.Hour), 0)))
+
+	// Older than everything — and exactly on the oldest key: empty.
+	assert.Empty(t, s.ListAllBefore(base.Add(-time.Minute), 0))
+	assert.Empty(t, s.ListAllBefore(base, 0))
+
+	// max caps the page from the seek position down.
+	assert.Equal(t, []string{"run2", "run1"},
+		idsOf(s.ListAllBefore(base.Add(2*time.Minute+30*time.Second), 2)))
+
+	// Per-hook variant: the same strictness inside one hook's bucket.
+	assert.Equal(t, []string{"run2", "run0"},
+		idsOf(s.ListByHookBefore("a", base.Add(3*time.Minute), 0)))
+	assert.Equal(t, []string{"run1"},
+		idsOf(s.ListByHookBefore("b", base.Add(3*time.Minute), 0)))
+	assert.Empty(t, s.ListByHookBefore("nope", base.Add(time.Hour), 0))
+
+	// A zero before means no bound — the ListAll/ListByHook delegation.
+	assert.Equal(t, idsOf(s.ListAll(0)), idsOf(s.ListAllBefore(time.Time{}, 0)))
+}
+
+// Consecutive pages cut by before=<oldest Started of the previous page>
+// tile exactly: no gap, no overlap, and the walk ends with an empty page.
+func TestListBeforePaginationTiles(t *testing.T) {
+	s := newStore(t, Config{})
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 6; i++ {
+		require.NoError(t, s.Record(state(fmt.Sprintf("page%d", i), "h", runs.StatusSuccess, base.Add(time.Duration(i)*time.Second))))
+	}
+
+	page1 := s.ListAll(3)
+	require.Len(t, page1, 3)
+	page2 := s.ListAllBefore(page1[len(page1)-1].Started, 3)
+	require.Len(t, page2, 3)
+	assert.Equal(t, []string{"page5", "page4", "page3"}, idsOf(page1))
+	assert.Equal(t, []string{"page2", "page1", "page0"}, idsOf(page2))
+	assert.Empty(t, s.ListAllBefore(page2[len(page2)-1].Started, 3))
+
+	// The per-hook walk tiles identically.
+	hp1 := s.ListByHook("h", 4)
+	require.Len(t, hp1, 4)
+	hp2 := s.ListByHookBefore("h", hp1[len(hp1)-1].Started, 4)
+	assert.Equal(t, []string{"page1", "page0"}, idsOf(hp2))
+}
+
+// The retention break applies to Before walks exactly like ListAll: the
+// first expired key still ends the walk, and a cursor pointing past every
+// retained run yields nothing rather than surfacing expired history.
+func TestListBeforeRetentionBreak(t *testing.T) {
+	s := newStore(t, Config{Retention: time.Hour})
+	now := time.Now().UTC()
+	expired := state("xxxxxxxxxxxxxxxxxxxxxxxxxx", "h", runs.StatusSuccess, now.Add(-2*time.Hour))
+	older := state("yyyyyyyyyyyyyyyyyyyyyyyyyy", "h", runs.StatusSuccess, now.Add(-30*time.Minute))
+	newer := state("zzzzzzzzzzzzzzzzzzzzzzzzzz", "h", runs.StatusSuccess, now.Add(-10*time.Minute))
+	for _, st := range []runs.RunState{expired, older, newer} {
+		require.NoError(t, s.Record(st))
+	}
+
+	// A cursor between the retained runs pages to the older retained one and
+	// stops at the expired key.
+	assert.Equal(t, []string{older.ID}, idsOf(s.ListAllBefore(now.Add(-20*time.Minute), 0)))
+	assert.Equal(t, []string{older.ID}, idsOf(s.ListByHookBefore("h", now.Add(-20*time.Minute), 0)))
+
+	// A cursor older than every retained run: the first key the walk sees is
+	// already expired, so the page is empty.
+	assert.Empty(t, s.ListAllBefore(now.Add(-90*time.Minute), 0))
+	assert.Empty(t, s.ListByHookBefore("h", now.Add(-90*time.Minute), 0))
+}
+
 // The retention boundary is lazy on reads: a run just past the window
 // disappears from Get/lists even before the sweeper has reclaimed it, and
 // the boundary instant itself counts as expired (kv's TTL convention).
