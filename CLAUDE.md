@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that go:generate compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -528,21 +528,13 @@ The companion repo is `wow-look-at-my/webhooks`.
   hand-maintained ambient shim (types only) — temporary until js-snippets
   publishes .d.ts to Pages and the generate step fetches them mechanically
   (already queued; do not grow the shim beyond what the adapter consumes).
-  The adapter's **generated-asset pipeline** still has interlocking pins —
-  get any one wrong and CI goes red: `ts/timeline.ts` is compiled by ts0
-  into the COMMITTED `assets/timeline.js` (go:embed needs it on a fresh
-  clone; the bundle carries a DO-NOT-EDIT banner — never hand-edit it,
-  edit ts/ and regenerate). The `//go:generate` directive in dashboard.go
-  runs ts0 **via `npx --yes npm@11 exec`** (npm 10's npx cannot install
-  git deps that need a prepare build — a known npm bug) pinned to a
-  **full ts0 commit SHA**; go-toolchain executes directives only with an
-  approval hash over the directive text (`--generate e5b4190bd967`
-  locally, the `generate:` input in ci.yml) — **any edit to the directive
-  line (or the package doc comment around it — observed 2026-07-12)
-  changes the hash**; a bare `go-toolchain` run prints the new one to
-  re-approve in both places. Regeneration needs Node 22+ and (in CI)
-  authenticated git for the private ts0 repo — ci.yml's setup-node +
-  insteadOf rewrites, followed by the freshness gate
-  `git diff --exit-code -- internal/server/dashboard/assets/` (a stale
-  committed bundle or a TypeScript type error fails the build; ts0's
-  strict tsc gate runs inside the generate step).
+  The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
+  (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
+  banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
+  **temporarily manual**: the npx `//go:generate` directive (and with it
+  ci.yml's `generate:` approval hash, setup-node, ts0 git-auth, and the
+  assets freshness gate) was removed so the build uses the committed
+  bundle as-is with NO node/npm/npx anywhere; run ts0 yourself after
+  editing ts/ and commit the regenerated bundle. A prebuilt ts0 binary
+  served from buildhost, fetched by a small Go bootstrap, is landing next
+  to re-automate regeneration.
