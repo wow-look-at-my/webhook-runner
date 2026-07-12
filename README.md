@@ -805,7 +805,7 @@ running it from the repo root handles `go mod tidy`, tests, coverage,
 and a binary build.
 
 ```sh
-go-toolchain --generate 65524d6e099d
+go-toolchain --generate e5b4190bd967
 ```
 
 The `--generate` flag approves the repo's one `//go:generate` directive (the
@@ -816,13 +816,26 @@ approve.
 ### Dashboard TypeScript
 
 The dashboard's runs timeline is TypeScript under
-`internal/server/dashboard/ts/` — `timeline.ts` (the webhook-runner adapter)
-plus the vendored generic `<timeline-view>` component from
-[js-snippets](https://github.com/wow-look-at-my/js-snippets) under
-`ts/vendor/` (pinned to a commit; fix component bugs upstream and re-copy,
-never edit the vendored files). [ts0](https://github.com/wow-look-at-my/ts0)
-type-checks (strict `tsc`, an unskippable gate) and bundles it into
-`internal/server/dashboard/assets/timeline.js` per `ts0.json`.
+`internal/server/dashboard/ts/` — `timeline.ts`, the webhook-runner
+**adapter** only. The generic `<timeline-view>` component itself is NOT part
+of this repo: the browser imports it at **runtime** from
+[js-snippets](https://github.com/wow-look-at-my/js-snippets)' GitHub Pages
+(`https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`, live at
+master head — the org's standard js-snippets consumption model), so
+component fixes reach this dashboard on js-snippets merge with no
+webhook-runner change. Fix component bugs upstream in js-snippets. The
+chart therefore needs the viewer's browser to reach
+`wow-look-at-my.github.io`; if that fetch fails, the Runs section shows a
+"chart loading…" note and retries on a fixed 5s cadence forever while the
+rest of the dashboard works normally. Types for the URL import come from
+`ts/js-snippets-timeline.d.ts` — an interim hand-maintained shim, slated to
+be replaced by declarations published to Pages by js-snippets and fetched
+mechanically at generate time.
+[ts0](https://github.com/wow-look-at-my/ts0) type-checks (strict `tsc`, an
+unskippable gate) and bundles the adapter into
+`internal/server/dashboard/assets/timeline.js` per `ts0.json` (an ES
+module; the component URL passes through unbundled via esbuild
+`external`).
 
 To change the timeline: edit files under `ts/`, run
 `go generate ./internal/server/dashboard` (or the `go-toolchain --generate`

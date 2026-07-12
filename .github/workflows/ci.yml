@@ -32,7 +32,7 @@ jobs:
           # Approval hash for the //go:generate directive above — it changes
           # whenever the directive's text changes (a failing run prints the
           # new one; update it here and in CLAUDE.md).
-          generate: 65524d6e099d
+          generate: e5b4190bd967
       # go-toolchain just regenerated the committed bundle in the workspace:
       # a stale assets/timeline.js — or one whose TypeScript no longer
       # type-checks (ts0 fails the generate step directly) — turns the build
