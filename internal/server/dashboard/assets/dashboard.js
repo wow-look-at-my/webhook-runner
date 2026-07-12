@@ -588,6 +588,9 @@ function renderApp(detail, runs, events) {
     ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
     ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
     ["Timeout", `${info.timeout} without output`],
+    ["Skip conditions", info.skip_conditions
+      ? `${info.skip_conditions} — matched deliveries answer without a container`
+      : "none"],
     ["API key", info.api_key ? "configured" : "none"],
     ["Env vars", info.env_keys && info.env_keys.length
       ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
@@ -607,6 +610,12 @@ function renderApp(detail, runs, events) {
     ["Runs tracked", String(st.tracked)],
     ["By status", byStatus.length ? el("span", { class: "chips" }, ...byStatus) : "—"],
     ["Success rate", st.completed ? `${Math.round(st.success_rate * 100)}% of ${st.completed} completed` : "—"],
+    // Skips are their own bucket: no container ran, so they are excluded
+    // from the completed count, the success rate, and every duration/wait
+    // figure — counting non-work would dilute all of them.
+    ["Skipped", st.skipped
+      ? el("span", { class: "status skipped" }, `${st.skipped} (no container — excluded from the figures above)`)
+      : "—"],
     // Durations are processing-only (container launch → finish); queue wait
     // is its own pair of figures. wait_sampled counts the completed runs
     // that recorded a launch time — 0 means no wait data (e.g. only history

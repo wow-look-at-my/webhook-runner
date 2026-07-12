@@ -201,6 +201,27 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 	return run, nil
 }
 
+// Skip records a first-class "no work was done" run for a delivery matched
+// by one of the hook's skip_if conditions. It is the whole pipeline for a
+// skip: a real, tracked run that goes terminal immediately with status
+// "skipped" — its output names the matched condition, its Finish drives the
+// tracker's OnFinish seam exactly like any other run (so the skip persists
+// to run history), and a run.skipped event lands on the activity feed. What
+// it deliberately does NOT do is any work: no temp files, no secrets
+// decrypt, no image build, no concurrency-group slot, and above all NO
+// container. The onStart/onFinish callbacks (GitHub commit statuses) are
+// not invoked either — they report container work, and none happened.
+// Cancellation and timeout cannot apply: the run is terminal on return.
+func (r *Runner) Skip(hook *hooks.Hook, reason string) *runs.Run {
+	run := r.tracker.New(hook.ID)
+	run.AppendOutput("skipped: " + reason)
+	run.Finish(runs.StatusSkipped, 0, "")
+	r.log.Info("hook skipped", "hook", hook.ID, "run", run.ID(), "reason", reason)
+	r.events.Record("run.skipped", fmt.Sprintf("%s run %s skipped: %s", hook.ID, run.ID(), reason),
+		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(runs.StatusSkipped)})
+	return run
+}
+
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
 	timeout := hook.Timeout()
 
