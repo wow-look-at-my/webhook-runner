@@ -43,7 +43,9 @@ header h1 { margin: 0; font-size: 1.25rem; }
 main { padding: 1.5rem 2rem; display: grid; gap: 2rem; }
 section h2 { margin: 0 0 0.75rem; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 section h3 { margin: 1rem 0 0.5rem; font-size: 0.875rem; color: var(--muted); }
-table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
+/* Tables size to their content: a wide table may grow up to the viewport
+   (max-width caps it there), but a sparse one must not stretch to fill it. */
+table { width: auto; max-width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
 th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; }
 tbody tr:last-child td { border-bottom: 0; }
