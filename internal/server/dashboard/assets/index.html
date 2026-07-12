@@ -218,7 +218,8 @@
      must run AFTER dashboard.js (it reuses its globals: fetchJSON, el,
      fmtTime, tsPresent, showRun, …) — module scripts defer, so the classic
      dashboard.js above has always executed first. If the Pages fetch fails,
-     only this module is lost: the chart stays empty, the tables still work. -->
+     the chart section shows "chart loading…" and retries on a fixed cadence
+     forever; dashboard.js's tables are unaffected. -->
 <script type="module" src="timeline.js"></script>
 </body>
 </html>

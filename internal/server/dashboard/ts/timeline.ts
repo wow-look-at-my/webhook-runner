@@ -12,16 +12,18 @@
  * js-snippets consumption model), so component fixes reach this dashboard
  * on js-snippets merge with no runner change. Fix component bugs upstream
  * in js-snippets; only adapter logic lives here. The import's types come
- * from the hand-maintained shim in js-snippets-timeline.d.ts.
+ * from js-snippets-timeline.d.ts (an INTERIM hand-maintained shim — see
+ * its header).
  *
  * Built by ts0 (see ../ts0.json and the //go:generate directive in
- * dashboard.go) into assets/timeline.js — an ES module (the URL import
+ * dashboard.go) into assets/timeline.js — an ES module (the component URL
  * passes through unbundled) loaded via <script type="module"> AFTER
  * dashboard.js (module scripts defer; the classic dashboard.js has long
  * executed) and reusing its globals (fetchJSON, el, fmtTime, tsPresent,
- * showRun, … — declared in globals.d.ts). If the Pages fetch fails the
- * module doesn't run: the chart section stays empty and the rest of the
- * dashboard (dashboard.js's tables) is unaffected.
+ * showRun, … — declared in globals.d.ts). If the Pages fetch fails, the
+ * chart section shows "chart loading…" and the load retries on a fixed
+ * cadence forever (see boot() at the bottom); dashboard.js's tables are
+ * never affected either way.
  *
  * Runner semantics encoded here:
  *   - `started` is the QUEUED/accepted instant; `started_at` (absent while
@@ -47,10 +49,12 @@
  *     fetches the visible window only, never an exhaustive history walk.
  */
 
-// Side-effect import: registers the <timeline-view> custom element. The URL
-// is kept verbatim in the built bundle (esbuild `external`) — the browser
-// fetches the component (and its sibling chunk imports) from GitHub Pages.
-import 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
+// Types only — erased at compile time. The component itself is loaded at
+// RUNTIME by loadComponentForever() below (a dynamic import of the same URL,
+// kept verbatim in the built bundle via esbuild `external`); the browser
+// fetches it (and its sibling chunk imports) from GitHub Pages. Deliberately
+// NOT a static side-effect import: a static import that fails would kill
+// this whole module, and the load must retry forever instead.
 import type {
 	TimelineConnector,
 	TimelineData,
@@ -100,6 +104,8 @@ interface HookSummary {
 	disabled?: boolean;
 }
 
+const COMPONENT_URL = 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
+const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const TIMELINE_POLL_MS = 2000; // /runs poll (independent of dashboard.js's 3s)
 const HOOKS_POLL_MS = 30_000; // /hooks poll (lane roster)
 const POLL_MAX = 400; // newest window fetched per poll
@@ -454,8 +460,6 @@ function initTimeline(): void {
 		}
 	})();
 
-	initTableToggle();
-
 	// -- Polling ---------------------------------------------------------------
 
 	let pollInFlight = false;
@@ -586,4 +590,47 @@ function initTableToggle(): void {
 	});
 }
 
-initTimeline();
+// -- Boot: load the component (retrying forever), then wire the timeline ---------
+//
+// The <timeline-view> module lives on js-snippets' GitHub Pages and is
+// imported at runtime. That fetch can fail (origin briefly unreachable), and
+// a failure must NOT leave the chart section permanently dead: the load
+// retries on a FIXED short cadence forever — no growing backoff, no attempt
+// cap, never parks silently — with a visible "chart loading…" note in the
+// section until it succeeds. Retries cache-bust the URL (?retry=N) because
+// a failed module fetch can be memoized in the browser's module map — a
+// bare re-import would reject from cache without ever hitting the network.
+
+function loadingNote(): HTMLElement | null {
+	let note = document.getElementById('timeline-loading');
+	if (note) return note;
+	const tl = document.getElementById('runs-timeline');
+	if (!tl) return null;
+	note = el('p', { id: 'timeline-loading', class: 'empty' }, 'chart loading…');
+	tl.before(note);
+	return note;
+}
+
+async function loadComponentForever(): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await import(attempt === 0 ? COMPONENT_URL : `${COMPONENT_URL}?retry=${attempt}`);
+			return;
+		} catch (e) {
+			loadingNote(); // make the pending state visible (idempotent)
+			console.error(`timeline: component load failed (retry in ${COMPONENT_RETRY_MS}ms):`, e);
+			await new Promise((r) => setTimeout(r, COMPONENT_RETRY_MS));
+		}
+	}
+}
+
+async function boot(): Promise<void> {
+	// The table toggle must work even while (or if) the chart is loading —
+	// the runs table is the fallback view and depends only on this module.
+	initTableToggle();
+	await loadComponentForever();
+	document.getElementById('timeline-loading')?.remove();
+	initTimeline();
+}
+
+void boot();

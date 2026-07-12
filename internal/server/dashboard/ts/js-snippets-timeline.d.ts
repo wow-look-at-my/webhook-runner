@@ -1,17 +1,19 @@
-// Type shim for the Pages-served <timeline-view> module.
+// INTERIM type shim for the Pages-served <timeline-view> module — temporary
+// until js-snippets publishes .d.ts to Pages next to the .js (already
+// queued: ts0 grows a declarations option, and the //go:generate step will
+// then FETCH upstream's declarations into committed, freshness-gated files
+// so an upstream API change turns CI red instead of drifting). This file is
+// the stopgap, not the convention.
 //
 // The component is NOT vendored: the browser imports it at runtime from
 // js-snippets' GitHub Pages (live at master head), and the built bundle
 // keeps the URL verbatim (esbuild `external`). TypeScript can't fetch types
-// from a URL, so this hand-maintained ambient declaration provides them —
-// TYPES ONLY, no implementation. It declares exactly the public surface the
-// adapter consumes (plus the element's small public API), derived from
+// from a URL, so this ambient declaration provides them — TYPES ONLY, no
+// implementation. It declares exactly the public surface the adapter
+// consumes (plus the element's small public API), derived from
 // wow-look-at-my/js-snippets src/ui/timeline-view.ts + timeline-view-math.ts.
-//
-// Maintenance rule: when timeline.ts starts consuming new component API,
-// extend this shim from the upstream source of the same name — and if
-// upstream changes a declared signature, update it here. Keep it minimal:
-// never mirror upstream internals or helpers the adapter doesn't touch.
+// Until the mechanical replacement lands: keep it minimal — never mirror
+// upstream internals or helpers the adapter doesn't touch.
 declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js' {
 	// -- Data shapes ---------------------------------------------------------
 
