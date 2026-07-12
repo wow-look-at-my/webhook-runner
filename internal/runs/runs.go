@@ -27,13 +27,23 @@ const (
 	StatusTimeout   Status = "timeout"
 	StatusError     Status = "error"     // failed to start, never produced an exit code
 	StatusCancelled Status = "cancelled" // killed by an explicit cancel request
+
+	// StatusSkipped is a first-class "no work was done" terminal state: the
+	// delivery matched one of the hook's skip_if conditions, so NO container
+	// was ever booted (no image build, no concurrency slot). The run is real
+	// — tracked, persisted, on the dashboard — with near-zero duration, a
+	// zero StartedAt (nothing launched), ExitCode 0 as a placeholder (there
+	// was no container to exit), and its output naming the matched
+	// condition. Stats count skips in their own bucket, never against
+	// success rates or durations (see HookRunStats.Skipped).
+	StatusSkipped Status = "skipped"
 )
 
 // Terminal reports whether the status is a final state (the run's done
 // channel is closed and no further transitions happen).
 func (s Status) Terminal() bool {
 	switch s {
-	case StatusSuccess, StatusFailure, StatusTimeout, StatusError, StatusCancelled:
+	case StatusSuccess, StatusFailure, StatusTimeout, StatusError, StatusCancelled, StatusSkipped:
 		return true
 	}
 	return false

@@ -37,6 +37,35 @@ func state(id, hook string, status runs.Status, started time.Time) runs.RunState
 	}
 }
 
+// A skipped run is terminal, so it persists like any other — full metadata,
+// the reason line as output, and a "skipped" token in the per-hook summary
+// index (the "<status> <finished> <startedat>" value handles the new status
+// string as an opaque token; StartedAt stays zero: nothing ever launched).
+func TestRecordSkippedRunRoundtrip(t *testing.T) {
+	s := newStore(t, Config{})
+	st := state("skipskipskipskipskipskipsk", "h", runs.StatusSkipped, time.Now().UTC().Add(-time.Minute))
+	st.Finished = st.Started.Add(time.Millisecond) // near-zero, no container
+	st.Output = []string{`skipped: skip_if[0]: header x-github-event == "workflow_run"`}
+	st.OutputTimes = []time.Time{st.Started}
+	require.NoError(t, s.Record(st))
+
+	got, ok := s.Get(st.ID)
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusSkipped, got.Status)
+	assert.Equal(t, st.Output, got.Output)
+	assert.True(t, got.StartedAt.IsZero())
+
+	sums := s.SummariesByHook("h")
+	require.Len(t, sums, 1)
+	assert.Equal(t, runs.StatusSkipped, sums[0].Status)
+	assert.True(t, sums[0].StartedAt.IsZero())
+	assert.True(t, sums[0].Finished.Equal(st.Finished))
+
+	list := s.ListByHook("h", 0)
+	require.Len(t, list, 1)
+	assert.Equal(t, runs.StatusSkipped, list[0].Status)
+}
+
 func TestRecordGetRoundtrip(t *testing.T) {
 	s := newStore(t, Config{})
 	st := state("aaaaaaaaaaaaaaaaaaaaaaaaaa", "h", runs.StatusFailure, time.Now().UTC().Add(-time.Minute))

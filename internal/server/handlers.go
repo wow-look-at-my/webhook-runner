@@ -104,6 +104,23 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Declarative skip conditions — evaluated strictly AFTER authentication
+	// (an unauthenticated caller must never probe the conditions; it gets
+	// the 401 above with nothing recorded) and BEFORE any work: no image
+	// build, no container, no concurrency slot. A match answers the request
+	// immediately — sync hooks included, there is nothing to hold for — and
+	// records a real, terminal `skipped` run naming the matched condition,
+	// so "no work was done" is first-class on the runs table.
+	if reason, skip := hook.EvaluateSkip(body, r.Header); skip {
+		run := s.runner.Skip(hook, reason)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"run_id": run.ID(),
+			"status": string(runs.StatusSkipped),
+			"reason": reason,
+		})
+		return
+	}
+
 	wantSync, syncTimeout, err := parseWaitParams(r, hook)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

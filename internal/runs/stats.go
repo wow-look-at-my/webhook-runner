@@ -19,10 +19,16 @@ type HookRunStats struct {
 	Retention string `json:"retention,omitempty"`
 	// ByStatus counts every run in the window, including active ones.
 	ByStatus map[Status]int `json:"by_status,omitempty"`
-	// Completed counts runs with a terminal status; active (pending/running)
-	// runs appear in Tracked and ByStatus but are excluded from the rate and
-	// duration figures below.
+	// Completed counts runs that reached a terminal status BY DOING WORK;
+	// active (pending/running) runs and skipped runs appear in Tracked and
+	// ByStatus but are excluded from the rate and duration figures below.
 	Completed int `json:"completed"`
+	// Skipped counts terminal skip_if matches — deliveries answered without
+	// booting a container. A distinct bucket on purpose: no work was done,
+	// so folding skips into Completed would dilute SuccessRate and the
+	// duration/wait figures with zero-length non-runs. They still show in
+	// ByStatus (and can be LastRun).
+	Skipped int `json:"skipped,omitempty"`
 	// SuccessRate is successes/Completed over the window. It is 0 when
 	// Completed is 0 — check Completed before displaying it.
 	SuccessRate float64 `json:"success_rate"`
@@ -77,6 +83,12 @@ func ComputeStats(states []RunState) HookRunStats {
 			stats.LastRun = &LastRun{ID: snap.ID, Status: snap.Status, Started: snap.Started, Finished: snap.Finished}
 		}
 		if !snap.Status.Terminal() {
+			continue
+		}
+		// Skips are terminal but did no work: their own counter, and none of
+		// the completion/rate/duration/wait aggregation below.
+		if snap.Status == StatusSkipped {
+			stats.Skipped++
 			continue
 		}
 		// Terminal implies Finished is set: Finish records both under one
