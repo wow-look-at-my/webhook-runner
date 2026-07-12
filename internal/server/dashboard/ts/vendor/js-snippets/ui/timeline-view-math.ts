@@ -1,13 +1,16 @@
-// Vendored from wow-look-at-my/js-snippets src/ui/timeline-view-math.ts @ 0e0241f (PR #33). Do not edit here — fix upstream and re-copy. After PR #33 squash-merges, update this pin to the master SHA.
+// Vendored from wow-look-at-my/js-snippets src/ui/timeline-view-math.ts (PR #34, vendored 2026-07-12). Do not edit here — fix upstream and re-copy.
 // Pure math for the <timeline-view> element: time<->pixel scales, an
-// anchor-preserving zoom (with wheel-delta normalization), a nice TIME tick
-// ladder (1/2/5/10/15/30 across ms → s → min → h → days, with per-step label
-// granularity), greedy first-fit sub-track packing, lane layout, label-fit
-// and instant-interval (zero/near-zero width) helpers, stable category → hue
-// hashing, data-coverage / range-request bookkeeping for async history
-// loading, and hit-testing. No DOM or browser APIs — everything here runs
-// (and is tested) under node; ui/timeline-view.ts is the canvas-bound half
-// that consumes it.
+// anchor-preserving zoom (with wheel-delta normalization and gesture
+// routing), the follow-now engage/disengage rule, a device-pixel-snapped
+// render origin (whole-pixel scrolling), a nice TIME tick ladder
+// (1/2/5/10/15/30 across ms → s → min → h → days, with per-step label
+// granularity), greedy first-fit sub-track packing (whole-set and
+// visible-window variants), lane layout, label-fit and instant-interval
+// (zero/near-zero DURATION) helpers, stable category → hue hashing,
+// data-coverage / range-request bookkeeping for async history loading,
+// render-loop pacing tiers, and hit-testing. No DOM or browser APIs —
+// everything here runs (and is tested) under node; ui/timeline-view.ts is
+// the canvas-bound half that consumes it.
 
 // -- Data model ------------------------------------------------------------------
 
@@ -148,6 +151,89 @@ export const ZOOM_PX_PER_DOUBLE = 260;
  */
 export function zoomFactorForWheel(deltaPx: number): number {
   return Math.pow(2, -deltaPx / ZOOM_PX_PER_DOUBLE);
+}
+
+/** The parts of a WheelEvent the gesture router reads. */
+export interface WheelInput {
+  deltaX: number;
+  deltaY: number;
+  deltaMode: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+}
+
+/** Where a wheel gesture's energy goes (all deltaMode-normalized pixels). */
+export interface WheelRoute {
+  /** Zoom (ctrl/meta + wheel), from the vertical delta. 0 = no zoom. */
+  zoomPx: number;
+  /** Horizontal time pan. */
+  panPx: number;
+  /** Vertical lane-stack scroll. */
+  laneScrollPx: number;
+}
+
+/**
+ * Route a wheel/trackpad gesture: ctrl/meta+wheel zooms; shift+wheel pans
+ * time (a vertical wheel pans horizontally); otherwise deltaX ALWAYS pans
+ * time, while deltaY scrolls the lane stack when it overflows and joins the
+ * time pan when it doesn't. A diagonal two-finger gesture therefore applies
+ * both axes in one event, and a pure horizontal swipe is never dropped.
+ */
+export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
+  const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
+  const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
+  if (e.ctrlKey || e.metaKey) return { zoomPx: dy, panPx: 0, laneScrollPx: 0 };
+  if (e.shiftKey) return { zoomPx: 0, panPx: dy || dx, laneScrollPx: 0 };
+  return {
+    zoomPx: 0,
+    panPx: dx + (lanesOverflow ? 0 : dy),
+    laneScrollPx: lanesOverflow ? dy : 0,
+  };
+}
+
+// -- Follow-now rule ---------------------------------------------------------------
+
+/** Fraction of the span "now" sits in from the right edge while following. */
+export const FOLLOW_LEAD_FRAC = 0.02;
+/** A gesture ending with the right edge this close to "now" re-engages follow. */
+export const FOLLOW_SNAP_FRAC = 0.02;
+
+/**
+ * Whether follow-now is engaged after a user-driven viewport change.
+ *
+ * A PURE PAN that moves the right edge backward (into the past) always
+ * disengages. This is load-bearing for trackpads: a two-finger pan arrives
+ * as many small wheel events, and an unconditional magnetic rule re-pinned
+ * the view after every event smaller than the snap zone — making it
+ * impossible to leave "now" by scrolling. Everything else (zooms, forward
+ * pans, programmatic jumps) keeps the magnetic rule: engaged iff the right
+ * edge lands within FOLLOW_SNAP_FRAC of "now" — so zooming while pinned
+ * stays pinned, and panning forward re-docks at the live edge.
+ */
+export function followAfterGesture(prevEnd: number, next: TimeView, now: number, isPan: boolean): boolean {
+  if (isPan && next.end < prevEnd) return false;
+  return next.end >= now - (next.end - next.start) * FOLLOW_SNAP_FRAC;
+}
+
+// -- Whole-pixel scrolling ------------------------------------------------------------
+
+/**
+ * Snap a view's ORIGIN to the device-pixel grid, span preserved: with the
+ * snapped view, any fixed time's x keeps a constant subpixel phase, so a
+ * moving viewport translates the whole scene in WHOLE device-pixel steps
+ * and bars keep exact relative offsets. This is the ONE place rounding may
+ * touch time→x. Rounding per element instead makes neighboring bars round
+ * in different directions as a fractional translation slides under them —
+ * they visibly jiggle relative to each other. Snapping happens in DEVICE
+ * pixels (dpr-aware) so HiDPI displays don't land on half pixels.
+ */
+export function snapViewToDevicePixels(view: TimeView, plotWidthCss: number, dpr: number): TimeView {
+  const span = view.end - view.start;
+  const msPerDevPx = span / (plotWidthCss * dpr);
+  if (!Number.isFinite(msPerDevPx) || msPerDevPx <= 0) return view;
+  const start = Math.round(view.start / msPerDevPx) * msPerDevPx;
+  return { start, end: start + span };
 }
 
 // -- Time ticks --------------------------------------------------------------------
@@ -318,6 +404,46 @@ export function packTracks(items: readonly PackItem[]): { tracks: number[]; trac
   return { tracks, trackCount: Math.max(1, trackEnds.length) };
 }
 
+/** Effective packing footprint end: ongoing blocks forever, instants occupy PACK_MIN_MS. */
+function packEnd(it: PackItem): number {
+  return Math.max(it.end == null ? Infinity : it.end, it.start + PACK_MIN_MS);
+}
+
+/**
+ * packTracks over only the items that intersect `view` (a partially
+ * visible interval counts; an ongoing one — end null — intersects every
+ * window at/after its start). Same deterministic (start, id) ordering and
+ * first-fit reuse as packTracks, evaluated over the visible subset only —
+ * so one historical parallelism burst stops padding its lane the moment it
+ * scrolls out of view. Assignment is a pure function of the visible SET:
+ * while the window slides over unchanged overlap, nothing hops tracks.
+ * Items outside the view get track -1 (callers keep or cull them);
+ * trackCount is >= 1, so a lane with nothing visible collapses to one
+ * track.
+ */
+export function packVisibleTracks(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
+  const order: number[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.start <= view.end && packEnd(it) >= view.start) order.push(i);
+  }
+  order.sort((a, b) => {
+    const ia = items[a];
+    const ib = items[b];
+    return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
+  });
+  const tracks = new Array<number>(items.length).fill(-1);
+  const trackEnds: number[] = [];
+  for (const i of order) {
+    const it = items[i];
+    let t = 0;
+    while (t < trackEnds.length && trackEnds[t] > it.start) t++;
+    trackEnds[t] = packEnd(it);
+    tracks[i] = t;
+  }
+  return { tracks, trackCount: Math.max(1, trackEnds.length) };
+}
+
 // -- Lane layout --------------------------------------------------------------------
 
 /** Vertical metrics for lane layout (CSS px). */
@@ -385,6 +511,22 @@ export const INSTANT_THRESHOLD_PX = 3;
 /** True when a bar of `widthPx` should render as an instant pip/diamond. */
 export function isInstantWidth(widthPx: number, threshold = INSTANT_THRESHOLD_PX): boolean {
   return widthPx < threshold;
+}
+
+/** Minimum rendered width (CSS px) for a real-duration bar — clamped up, never demoted to a pip. */
+export const MIN_BAR_PX = 2;
+
+/**
+ * Rendered width of [startMs, endMs] mapped through the view's scale,
+ * computed from the DURATION alone. This — not a difference of two rounded
+ * screen coordinates — is what the bar-vs-pip decision must use: it is
+ * exactly invariant under viewport translation, so an event's shape can
+ * never flicker while the timeline scrolls (round(xEnd) - round(xStart)
+ * oscillates ±1px as the bar's subpixel phase shifts).
+ */
+export function durationWidthPx(startMs: number, endMs: number, view: TimeView, plotWidth: number): number {
+  const span = view.end - view.start;
+  return span > 0 ? ((endMs - startMs) / span) * plotWidth : 0;
 }
 
 // -- Hit testing --------------------------------------------------------------------
@@ -627,6 +769,27 @@ export function subtractRanges(span: TimeRange, covers: readonly TimeRange[]): T
   return out;
 }
 
+/**
+ * The range a consumer may ask `loadRange` about for this viewport: the
+ * visible window plus a little backward prefetch, clamped to `now` AND to
+ * the covered end. The covered-end clamp is load-bearing: the region
+ * between the last covered time and "now" belongs to the consumer's LIVE
+ * data feed (setData/mergeData `coverage`), and in follow mode "now"
+ * advances every frame — if loadRange could be asked for that forward
+ * sliver, a fresh gap would reopen the moment each request settled and the
+ * loader would refire serially at ~one request per round-trip (~30/s),
+ * forever. loadRange exists for BACKWARD history only. With no coverage at
+ * all the probe may still reach `now` (the bootstrap load), which latches
+ * once it settles. Returns null when nothing is requestable.
+ */
+export function historyProbe(view: TimeView, now: number, coveredEnd: number | null, prefetchFrac = 0.15): TimeRange | null {
+  const span = view.end - view.start;
+  let end = Math.min(view.end, now);
+  if (coveredEnd !== null && coveredEnd < end) end = coveredEnd;
+  const start = view.start - span * prefetchFrac;
+  return end > start ? { start, end } : null;
+}
+
 /** Options for CoverageTracker. */
 export interface CoverageOptions {
   /** Never request less than this much history at once (default 60 s). */
@@ -676,6 +839,12 @@ export class CoverageTracker {
   /** Sorted disjoint covered ranges (live reference — do not mutate). */
   coveredRanges(): readonly TimeRange[] {
     return this.covered;
+  }
+
+  /** End of the newest covered range (null while nothing is covered). */
+  coveredEnd(): number | null {
+    const last = this.covered[this.covered.length - 1];
+    return last ? last.end : null;
   }
 
   /** The in-flight request, if any. */
@@ -736,4 +905,34 @@ export class CoverageTracker {
       this.exhaustedBefore = first ? first.start : range.start;
     }
   }
+}
+
+// -- Render pacing ---------------------------------------------------------------------
+
+/** Render tiers: full rate while interacting, throttled idle, cheaper still on battery. */
+export type RenderTier = 'interactive' | 'idle' | 'idle-battery';
+
+/** Idle frame budget: ~30fps while nothing is being interacted with. */
+export const IDLE_FRAME_MS = 1000 / 30;
+/** Idle-on-battery frame budget: ~10fps. */
+export const IDLE_BATTERY_FRAME_MS = 100;
+/** Full-rate grace window after the last input — interaction never feels throttled. */
+export const INTERACT_GRACE_MS = 500;
+
+/** ms-per-frame budget for a tier (0 = render every rAF tick). */
+export function frameBudgetMs(tier: RenderTier): number {
+  if (tier === 'idle') return IDLE_FRAME_MS;
+  if (tier === 'idle-battery') return IDLE_BATTERY_FRAME_MS;
+  return 0;
+}
+
+/**
+ * Frame gate for a rAF loop: render when the tier's budget has elapsed
+ * since the last RENDERED frame. The half-tick slack keeps a 33.3ms budget
+ * from aliasing down (a 60Hz display ticks at 16.7ms — without slack,
+ * 33.3ms would round up to every 3rd tick = 20fps instead of 30).
+ */
+export function shouldRender(nowTs: number, lastRenderTs: number, budgetMs: number, rafIntervalMs = 16.7): boolean {
+  if (budgetMs <= 0) return true;
+  return nowTs - lastRenderTs >= budgetMs - rafIntervalMs / 2;
 }

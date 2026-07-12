@@ -35,6 +35,30 @@
   function zoomFactorForWheel(deltaPx) {
     return Math.pow(2, -deltaPx / ZOOM_PX_PER_DOUBLE);
   }
+  function routeWheel(e, lanesOverflow) {
+    const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
+    const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
+    if (e.ctrlKey || e.metaKey) return { zoomPx: dy, panPx: 0, laneScrollPx: 0 };
+    if (e.shiftKey) return { zoomPx: 0, panPx: dy || dx, laneScrollPx: 0 };
+    return {
+      zoomPx: 0,
+      panPx: dx + (lanesOverflow ? 0 : dy),
+      laneScrollPx: lanesOverflow ? dy : 0
+    };
+  }
+  var FOLLOW_LEAD_FRAC = 0.02;
+  var FOLLOW_SNAP_FRAC = 0.02;
+  function followAfterGesture(prevEnd, next, now, isPan) {
+    if (isPan && next.end < prevEnd) return false;
+    return next.end >= now - (next.end - next.start) * FOLLOW_SNAP_FRAC;
+  }
+  function snapViewToDevicePixels(view, plotWidthCss, dpr) {
+    const span = view.end - view.start;
+    const msPerDevPx = span / (plotWidthCss * dpr);
+    if (!Number.isFinite(msPerDevPx) || msPerDevPx <= 0) return view;
+    const start = Math.round(view.start / msPerDevPx) * msPerDevPx;
+    return { start, end: start + span };
+  }
   var TIME_TICK_STEPS = [
     1,
     2,
@@ -132,21 +156,27 @@
     return `${Math.floor(ms / 864e5)}d ${Math.floor(ms / 36e5) % 24}h`;
   }
   var PACK_MIN_MS = 1;
-  function packTracks(items) {
-    const order = items.map((_, i) => i);
+  function packEnd(it) {
+    return Math.max(it.end == null ? Infinity : it.end, it.start + PACK_MIN_MS);
+  }
+  function packVisibleTracks(items, view) {
+    const order = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.start <= view.end && packEnd(it) >= view.start) order.push(i);
+    }
     order.sort((a, b) => {
       const ia = items[a];
       const ib = items[b];
       return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
     });
-    const tracks = new Array(items.length).fill(0);
+    const tracks = new Array(items.length).fill(-1);
     const trackEnds = [];
     for (const i of order) {
       const it = items[i];
-      const end = Math.max(it.end == null ? Infinity : it.end, it.start + PACK_MIN_MS);
       let t = 0;
       while (t < trackEnds.length && trackEnds[t] > it.start) t++;
-      trackEnds[t] = end;
+      trackEnds[t] = packEnd(it);
       tracks[i] = t;
     }
     return { tracks, trackCount: Math.max(1, trackEnds.length) };
@@ -178,6 +208,11 @@
   var INSTANT_THRESHOLD_PX = 3;
   function isInstantWidth(widthPx, threshold = INSTANT_THRESHOLD_PX) {
     return widthPx < threshold;
+  }
+  var MIN_BAR_PX = 2;
+  function durationWidthPx(startMs, endMs, view, plotWidth) {
+    const span = view.end - view.start;
+    return span > 0 ? (endMs - startMs) / span * plotWidth : 0;
   }
   function expandHitRect(r, minW) {
     if (r.w >= minW) return r;
@@ -295,6 +330,13 @@
     if (cursor < span.end) out.push({ start: cursor, end: span.end });
     return out;
   }
+  function historyProbe(view, now, coveredEnd, prefetchFrac = 0.15) {
+    const span = view.end - view.start;
+    let end = Math.min(view.end, now);
+    if (coveredEnd !== null && coveredEnd < end) end = coveredEnd;
+    const start = view.start - span * prefetchFrac;
+    return end > start ? { start, end } : null;
+  }
   var CoverageTracker = class {
     covered = [];
     inflight = null;
@@ -319,6 +361,11 @@
     /** Sorted disjoint covered ranges (live reference — do not mutate). */
     coveredRanges() {
       return this.covered;
+    }
+    /** End of the newest covered range (null while nothing is covered). */
+    coveredEnd() {
+      const last = this.covered[this.covered.length - 1];
+      return last ? last.end : null;
     }
     /** The in-flight request, if any. */
     pending() {
@@ -376,9 +423,21 @@
       }
     }
   };
+  var IDLE_FRAME_MS = 1e3 / 30;
+  var IDLE_BATTERY_FRAME_MS = 100;
+  var INTERACT_GRACE_MS = 500;
+  function frameBudgetMs(tier) {
+    if (tier === "idle") return IDLE_FRAME_MS;
+    if (tier === "idle-battery") return IDLE_BATTERY_FRAME_MS;
+    return 0;
+  }
+  function shouldRender(nowTs, lastRenderTs, budgetMs, rafIntervalMs = 16.7) {
+    if (budgetMs <= 0) return true;
+    return nowTs - lastRenderTs >= budgetMs - rafIntervalMs / 2;
+  }
 
   // ts/vendor/js-snippets/ui/timeline-view.css
-  var timeline_view_default = `/* Vendored from wow-look-at-my/js-snippets src/ui/timeline-view.css @ 0e0241f (PR #33). Do not edit here \u2014 fix upstream and re-copy. After PR #33 squash-merges, update this pin to the master SHA. */
+  var timeline_view_default = `/* Vendored from wow-look-at-my/js-snippets src/ui/timeline-view.css (PR #34, vendored 2026-07-12). Do not edit here \u2014 fix upstream and re-copy. */
 /* Shadow-DOM styles for <timeline-view> (imported as text via ts0.json's
  * ".css" loader and adopted as a constructable stylesheet). Everything in
  * the plot is canvas-painted; this file styles the host and the DOM chrome:
@@ -558,8 +617,7 @@ canvas {
     gutterWidth: 0
   };
   var DEFAULT_SPAN_MS = 15 * 6e4;
-  var FOLLOW_LEAD_FRAC = 0.02;
-  var FOLLOW_SNAP_FRAC = 0.02;
+  var LAYOUT_TWEEN_MS = 150;
   var AXIS_H = 22;
   var HIT_MIN_W = 9;
   var CONNECTOR_TOL = 4;
@@ -580,7 +638,6 @@ canvas {
     laneIdxById = /* @__PURE__ */ new Map();
     perLane = [];
     // sorted by (start, id)
-    trackCounts = [];
     byId = /* @__PURE__ */ new Map();
     connectors = [];
     markers = [];
@@ -612,6 +669,24 @@ canvas {
     glideX = 0;
     // zoom anchor (canvas x) for the glide
     lastFrame = 0;
+    lastInputTs = -Infinity;
+    // last wheel/drag/key input (perf-clock)
+    lastRenderTs = -Infinity;
+    // last RENDERED frame (adaptive pacing)
+    batteryDischarging = false;
+    batteryOff = null;
+    // -- Visible-window lane layout --
+    packEpoch = 0;
+    // bumped on data changes; forces a re-pack
+    packedEpoch = -1;
+    packedStart = NaN;
+    packedEnd = NaN;
+    targetCounts = [];
+    // visible track count per lane
+    displayCounts = [];
+    // animated (float) counts driving layout
+    layoutAnim = null;
+    rvCache = { start: NaN, end: NaN, w: NaN, dpr: NaN, out: { start: 0, end: 1 } };
     // -- Rendering state --
     cssW = 0;
     cssH = 0;
@@ -682,6 +757,7 @@ canvas {
         this.motionMq.addEventListener?.("change", this.onMotionPref);
       }
       document.addEventListener("visibilitychange", this.onVisibility);
+      this.watchBattery();
       this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
       this.canvas.addEventListener("pointerdown", this.onPointerDown);
       this.canvas.addEventListener("pointermove", this.onPointerMove);
@@ -702,6 +778,8 @@ canvas {
       this.motionMq?.removeEventListener?.("change", this.onMotionPref);
       this.motionMq = null;
       document.removeEventListener("visibilitychange", this.onVisibility);
+      this.batteryOff?.();
+      this.batteryOff = null;
       this.canvas.removeEventListener("wheel", this.onWheel);
       this.canvas.removeEventListener("pointerdown", this.onPointerDown);
       this.canvas.removeEventListener("pointermove", this.onPointerMove);
@@ -917,21 +995,76 @@ canvas {
       this.byId.set(iv.id, n);
       this.perLane[laneIdx].push(n);
     }
-    /** Re-sort, re-pack, and re-layout after any data change. */
+    /**
+     * Re-sort and re-layout after any data change. Track assignment and lane
+     * heights come from the VISIBLE window (updateVisibleLayout), so a
+     * historical parallelism burst stops padding its lane once off-screen.
+     */
     rebuild() {
-      this.trackCounts = this.perLane.map((per) => {
+      for (const per of this.perLane) {
         per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-        const { tracks, trackCount } = packTracks(per);
-        per.forEach((n, i) => {
-          n.track = tracks[i];
-        });
-        return trackCount;
-      });
-      this.layout = layoutLanes(this.trackCounts, this.metrics());
+      }
+      this.packEpoch++;
+      this.updateVisibleLayout();
       this.autoGutter();
       this.clampLaneScroll();
       this.syncChrome();
       this.invalidate();
+    }
+    /**
+     * Track assignment + lane heights from the intervals intersecting the
+     * CURRENT viewport (partial overlap counts; a lane with nothing visible
+     * collapses to one track). Deterministic given the visible data — a
+     * merely-translating viewport over unchanged overlap recomputes to the
+     * identical result, so nothing jitters frame to frame. Count CHANGES
+     * ease over LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion).
+     * this.layout always reflects the CURRENT (possibly animating) heights,
+     * and hit-testing shares it, so hovers stay aligned mid-tween.
+     */
+    updateVisibleLayout() {
+      const rv = this.renderView();
+      const structure = this.targetCounts.length !== this.perLane.length;
+      if (this.packedEpoch !== this.packEpoch || this.packedStart !== rv.start || this.packedEnd !== rv.end || structure) {
+        this.packedEpoch = this.packEpoch;
+        this.packedStart = rv.start;
+        this.packedEnd = rv.end;
+        const prev = this.targetCounts;
+        const next = new Array(this.perLane.length);
+        let changed = structure;
+        for (let i = 0; i < this.perLane.length; i++) {
+          const per = this.perLane[i];
+          const { tracks, trackCount } = packVisibleTracks(per, rv);
+          for (let j = 0; j < per.length; j++) {
+            if (tracks[j] >= 0) per[j].track = tracks[j];
+          }
+          next[i] = trackCount;
+          if (!changed && prev[i] !== trackCount) changed = true;
+        }
+        this.targetCounts = next;
+        if (changed) {
+          if (this.reducedMotion || structure || this.displayCounts.length !== next.length) {
+            this.displayCounts = next.slice();
+            this.layoutAnim = null;
+          } else {
+            this.layoutAnim = { from: this.displayCounts.slice(), start: this.perfNow() };
+          }
+        }
+      }
+      if (this.layoutAnim) {
+        const a = this.layoutAnim;
+        const p = Math.min(1, (this.perfNow() - a.start) / LAYOUT_TWEEN_MS);
+        const ease = p * (2 - p);
+        const disp = new Array(this.targetCounts.length);
+        for (let i = 0; i < disp.length; i++) {
+          const from = a.from[i] ?? this.targetCounts[i];
+          disp[i] = from + (this.targetCounts[i] - from) * ease;
+        }
+        this.displayCounts = disp;
+        if (p >= 1) this.layoutAnim = null;
+      } else if (this.displayCounts.length !== this.targetCounts.length) {
+        this.displayCounts = this.targetCounts.slice();
+      }
+      this.layout = layoutLanes(this.displayCounts, this.metrics());
     }
     metrics() {
       return { trackHeight: this.theme.trackHeight, trackGap: 2, lanePad: 3 };
@@ -948,8 +1081,38 @@ canvas {
     nowMs() {
       return this.nowFn ? this.nowFn() : Date.now();
     }
+    perfNow() {
+      return typeof performance !== "undefined" ? performance.now() : Date.now();
+    }
     tzOffsetMs() {
       return -(/* @__PURE__ */ new Date()).getTimezoneOffset() * 6e4;
+    }
+    /** Battery awareness for the idle render tier (feature-detected; absent API = AC tier). */
+    watchBattery() {
+      const nav = typeof navigator !== "undefined" ? navigator : null;
+      if (!nav || typeof nav.getBattery !== "function") return;
+      nav.getBattery().then((b) => {
+        if (!this.connected || this.batteryOff) return;
+        const update = () => {
+          this.batteryDischarging = !b.charging;
+        };
+        update();
+        b.addEventListener?.("chargingchange", update);
+        this.batteryOff = () => {
+          b.removeEventListener?.("chargingchange", update);
+          this.batteryDischarging = false;
+        };
+      }).catch(() => {
+      });
+    }
+    noteInput() {
+      this.lastInputTs = this.perfNow();
+    }
+    /** Current pacing tier: any live gesture/tween = full rate; else idle (AC/battery). */
+    renderTier() {
+      if (this.pointers.size > 0 || this.glidePx !== 0 || this.layoutAnim !== null) return "interactive";
+      if (this.perfNow() - this.lastInputTs < INTERACT_GRACE_MS) return "interactive";
+      return this.batteryDischarging ? "idle-battery" : "idle";
     }
     // -- Viewport internals -----------------------------------------------------------
     pinToNow() {
@@ -957,12 +1120,17 @@ canvas {
       const end = this.nowMs() + span * FOLLOW_LEAD_FRAC;
       this.view = { start: end - span, end };
     }
-    /** Apply a user-driven viewport, with the magnetic follow re-engage rule. */
-    applyUserView(next) {
+    /**
+     * Apply a user-driven viewport. Backward PANS disengage follow outright;
+     * everything else keeps the magnetic re-engage rule (followAfterGesture —
+     * without the pan carve-out, small trackpad pan steps were re-pinned to
+     * "now" one by one and horizontal panning never escaped follow mode).
+     */
+    applyUserView(next, opts) {
       const span = next.end - next.start;
       const now = this.nowMs();
       const wasFollowing = this.following;
-      this.following = next.end >= now - span * FOLLOW_SNAP_FRAC;
+      this.following = followAfterGesture(this.view.end, next, now, opts?.pan === true);
       if (this.following) {
         const end = now + span * FOLLOW_LEAD_FRAC;
         this.view = { start: end - span, end };
@@ -999,6 +1167,24 @@ canvas {
     msPerPx() {
       return (this.view.end - this.view.start) / this.plotWidth();
     }
+    /**
+     * The view all GEOMETRY goes through: origin snapped to whole device
+     * pixels (memoized). One global rounding, zero per-element rounding —
+     * the scene translates in integer device-pixel steps and bars never
+     * jiggle relative to each other (see snapViewToDevicePixels).
+     */
+    renderView() {
+      const c = this.rvCache;
+      const w = this.plotWidth();
+      if (c.start !== this.view.start || c.end !== this.view.end || c.w !== w || c.dpr !== this.dpr) {
+        c.start = this.view.start;
+        c.end = this.view.end;
+        c.w = w;
+        c.dpr = this.dpr;
+        c.out = snapViewToDevicePixels(this.view, w, this.dpr);
+      }
+      return c.out;
+    }
     // -- Chrome (DOM) sync ---------------------------------------------------------
     syncChrome() {
       this.pillEl.hidden = this.following || this.hasAttribute("no-live-pill");
@@ -1015,7 +1201,7 @@ canvas {
     }
     /** True while something time-based needs continuous frames. */
     animating() {
-      if (this.following || this.glidePx !== 0) return true;
+      if (this.following || this.glidePx !== 0 || this.layoutAnim !== null) return true;
       if (this.coverage.pending() && this.loadRangeFn) return true;
       if (this.reducedMotion) return false;
       const now = this.nowMs();
@@ -1036,11 +1222,18 @@ canvas {
     }
     onFrame = (t) => {
       this.raf = 0;
+      if (!this.dirty && !shouldRender(t, this.lastRenderTs, frameBudgetMs(this.renderTier()))) {
+        if (this.animating()) this.schedule();
+        else this.lastFrame = 0;
+        return;
+      }
       const dt = this.lastFrame > 0 ? Math.min(100, t - this.lastFrame) : 16;
       this.lastFrame = t;
+      this.lastRenderTs = t;
       this.stepGlide(dt);
       if (this.following) this.pinToNow();
       this.pumpLoad();
+      this.updateVisibleLayout();
       if (this.dirty || this.animating()) {
         this.dirty = false;
         this.draw();
@@ -1060,9 +1253,8 @@ canvas {
       const fn = this.loadRangeFn;
       if (!fn) return;
       const now = this.nowMs();
-      const span = this.view.end - this.view.start;
-      const probe = { start: this.view.start - span * 0.15, end: Math.min(this.view.end, now) };
-      if (!(probe.end > probe.start)) return;
+      const probe = historyProbe(this.view, now, this.coverage.coveredEnd());
+      if (!probe) return;
       const req = this.coverage.nextRequest(probe, now);
       if (!req) return;
       const tick = this.loadTick;
@@ -1123,7 +1315,7 @@ canvas {
       }
       this.colorCache.clear();
       this.patternCache.clear();
-      this.layout = layoutLanes(this.trackCounts, this.metrics());
+      this.layout = layoutLanes(this.displayCounts, this.metrics());
       this.autoGutter();
     }
     // -- Styles / colors -------------------------------------------------------------
@@ -1203,12 +1395,18 @@ canvas {
       return pattern;
     }
     // -- Geometry ----------------------------------------------------------------
-    /** Unsnapped CSS-px rect of an interval (valid even outside the viewport). */
+    /**
+     * CSS-px rect of an interval (valid even outside the viewport). Mapped
+     * through the device-pixel-snapped render view and deliberately NOT
+     * rounded per element — one global rounding policy (renderView), so bars
+     * hold exact relative offsets while the viewport translates.
+     */
     rectFor(n, now) {
       const w = this.plotWidth();
       const m = this.metrics();
-      const xs = this.gutterW + timeToX(n.start, this.view, w);
-      const xe = this.gutterW + timeToX(n.end ?? now, this.view, w);
+      const rv = this.renderView();
+      const xs = this.gutterW + timeToX(n.start, rv, w);
+      const xe = this.gutterW + timeToX(n.end ?? now, rv, w);
       const y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m);
       return { x: xs, y, w: Math.max(0, xe - xs), h: m.trackHeight };
     }
@@ -1241,7 +1439,7 @@ canvas {
         const per = this.perLane[laneIdx];
         for (let i = per.length - 1; i >= 0; i--) {
           const n = per[i];
-          if (n.start > this.view.end) continue;
+          if (n.start > this.renderView().end) continue;
           const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
           if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
             return { type: "interval", interval: n.src, lane: this.lanes[n.laneIdx] };
@@ -1250,7 +1448,7 @@ canvas {
       }
       const w = this.plotWidth();
       for (let i = this.markers.length - 1; i >= 0; i--) {
-        const mx = this.gutterW + timeToX(this.markers[i].time, this.view, w);
+        const mx = this.gutterW + timeToX(this.markers[i].time, this.renderView(), w);
         if (Math.abs(x - mx) <= 3) {
           return { type: "marker", marker: this.markers[i] };
         }
@@ -1276,38 +1474,30 @@ canvas {
     }
     onWheel = (e) => {
       e.preventDefault();
+      this.noteInput();
       const p = this.toLocal(e);
+      const route = routeWheel(e, this.maxLaneScroll() > 0);
       if (e.ctrlKey || e.metaKey) {
-        const px = wheelDeltaToPixels(e.deltaY, e.deltaMode);
         if (e.deltaMode === 0) {
           const anchor = xToTime(p.x - this.gutterW, this.view, this.plotWidth());
-          this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(px)));
+          this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)));
           this.glidePx = 0;
         } else {
-          this.glidePx += px;
+          this.glidePx += route.zoomPx;
           this.glideX = p.x;
           this.invalidate();
         }
         return;
       }
-      const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
-      const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
-      if (e.shiftKey) {
-        this.applyUserView(panView(this.view, (dy || dx) * this.msPerPx()));
-        return;
+      if (route.laneScrollPx !== 0) {
+        this.laneScroll += route.laneScrollPx;
+        this.clampLaneScroll();
       }
-      let next = this.view;
-      if (dx !== 0) next = panView(next, dx * this.msPerPx());
-      if (dy !== 0) {
-        if (this.maxLaneScroll() > 0) {
-          this.laneScroll += dy;
-          this.clampLaneScroll();
-        } else {
-          next = panView(next, dy * this.msPerPx());
-        }
+      if (route.panPx !== 0) {
+        this.applyUserView(panView(this.view, route.panPx * this.msPerPx()), { pan: true });
+      } else if (route.laneScrollPx !== 0) {
+        this.invalidate();
       }
-      if (next !== this.view) this.applyUserView(next);
-      else this.invalidate();
     };
     stepGlide(dt) {
       if (this.glidePx === 0) return;
@@ -1320,6 +1510,7 @@ canvas {
     }
     onPointerDown = (e) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
+      this.noteInput();
       this.canvas.setPointerCapture(e.pointerId);
       const p = this.toLocal(e);
       this.pointers.set(e.pointerId, p);
@@ -1335,6 +1526,7 @@ canvas {
       }
       const prev = this.pointers.get(e.pointerId);
       this.pointers.set(e.pointerId, p);
+      this.noteInput();
       if (this.pointers.size === 2) {
         const [a, b] = [...this.pointers.values()];
         const other = a.x === p.x && a.y === p.y ? b : a;
@@ -1343,11 +1535,12 @@ canvas {
         const midX = (p.x + other.x) / 2;
         const midPrevX = (prev.x + other.x) / 2;
         let next = panView(this.view, (midPrevX - midX) * this.msPerPx());
-        if (distPrev > 8 && distNow > 8) {
+        const zoomed = distPrev > 8 && distNow > 8;
+        if (zoomed) {
           const anchor = xToTime(midX - this.gutterW, next, this.plotWidth());
           next = zoomView(next, anchor, distNow / distPrev);
         }
-        this.applyUserView(next);
+        this.applyUserView(next, { pan: !zoomed });
         return;
       }
       const dx = p.x - prev.x;
@@ -1363,7 +1556,7 @@ canvas {
         if (dx !== 0) next = panView(next, -dx * this.msPerPx());
         this.laneScroll -= dy;
         this.clampLaneScroll();
-        this.applyUserView(next);
+        this.applyUserView(next, { pan: true });
       }
     };
     onPointerUp = (e) => {
@@ -1388,14 +1581,15 @@ canvas {
       if (this.pointers.size === 0) this.setHover(null, 0, 0);
     };
     onKeyDown = (e) => {
+      this.noteInput();
       const span = this.view.end - this.view.start;
       const center = (this.view.start + this.view.end) / 2;
       switch (e.key) {
         case "ArrowLeft":
-          this.applyUserView(panView(this.view, -span * (e.shiftKey ? 0.5 : 0.1)));
+          this.applyUserView(panView(this.view, -span * (e.shiftKey ? 0.5 : 0.1)), { pan: true });
           break;
         case "ArrowRight":
-          this.applyUserView(panView(this.view, span * (e.shiftKey ? 0.5 : 0.1)));
+          this.applyUserView(panView(this.view, span * (e.shiftKey ? 0.5 : 0.1)), { pan: true });
           break;
         case "ArrowUp":
           this.laneScroll -= 48;
@@ -1613,14 +1807,15 @@ canvas {
       const plotW = this.plotWidth();
       const tz = this.tzOffsetMs();
       const maxTicks = Math.max(2, Math.floor(plotW / 88));
-      const span = this.view.end - this.view.start;
+      const rv = this.renderView();
+      const span = rv.end - rv.start;
       const step = timeTickStep(span, maxTicks);
-      const ticks = timeTicks(this.view, maxTicks, tz);
+      const ticks = timeTicks(rv, maxTicks, tz);
       ctx.font = this.fontAxis;
       ctx.textBaseline = "middle";
       const hairline = 1 / dpr;
       for (const tick of ticks) {
-        const x = snap(gx + timeToX(tick, this.view, plotW), dpr);
+        const x = snap(gx + timeToX(tick, rv, plotW), dpr);
         if (x < gx) continue;
         const isDay = (tick + tz) % 864e5 === 0;
         ctx.strokeStyle = t.grid;
@@ -1639,7 +1834,7 @@ canvas {
       if (step < 864e5 && this.lanes.length > 0) {
         ctx.fillStyle = t.muted;
         ctx.textAlign = "left";
-        const dateLabel = formatTimeFull(this.view.start, tz).split(" ").slice(0, 2).join(" ");
+        const dateLabel = formatTimeFull(rv.start, tz).split(" ").slice(0, 2).join(" ");
         ctx.fillText(dateLabel, 4, AXIS_H / 2 + 0.5);
       }
       void now;
@@ -1691,13 +1886,14 @@ canvas {
       const gx = this.gutterW;
       const plotW = this.plotWidth();
       const h = this.cssH;
-      const probeEnd = Math.min(this.view.end, now);
-      if (probeEnd > this.view.start) {
-        const gaps = this.coverage.uncoveredIn({ start: this.view.start, end: probeEnd });
+      const rv = this.renderView();
+      const probeEnd = Math.min(rv.end, now);
+      if (probeEnd > rv.start) {
+        const gaps = this.coverage.uncoveredIn({ start: rv.start, end: probeEnd });
         const pending = this.coverage.pending();
         for (const gap of gaps) {
-          const x0 = gx + timeToX(gap.start, this.view, plotW);
-          const x1 = gx + timeToX(gap.end, this.view, plotW);
+          const x0 = gx + timeToX(gap.start, rv, plotW);
+          const x1 = gx + timeToX(gap.end, rv, plotW);
           if (x1 - x0 < 1) continue;
           const busy = pending !== null && pending.start < gap.end && pending.end > gap.start;
           const pat = this.patternFor("hatch", busy ? withAlpha(t.muted, 0.35) : withAlpha(t.muted, 0.18));
@@ -1716,8 +1912,8 @@ canvas {
         }
       }
       const ex = this.coverage.exhaustedBefore;
-      if (ex !== null && ex >= this.view.start && ex <= this.view.end) {
-        const x = snap(gx + timeToX(ex, this.view, plotW), this.dpr);
+      if (ex !== null && ex >= rv.start && ex <= rv.end) {
+        const x = snap(gx + timeToX(ex, rv, plotW), this.dpr);
         if (x > gx) {
           ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
           ctx.fillRect(gx, AXIS_H, x - gx, h - AXIS_H);
@@ -1745,14 +1941,15 @@ canvas {
       const { tops, heights } = this.layout;
       ctx.font = this.fontBar;
       ctx.textBaseline = "middle";
+      const rv = this.renderView();
       for (let laneIdx = 0; laneIdx < this.perLane.length; laneIdx++) {
         const laneTop = AXIS_H + tops[laneIdx] - this.laneScroll;
         if (laneTop + heights[laneIdx] < AXIS_H || laneTop > h) continue;
         const per = this.perLane[laneIdx];
         for (let i = 0; i < per.length; i++) {
           const n = per[i];
-          if (n.start > this.view.end) break;
-          if ((n.end ?? now) < this.view.start && n.end !== null) continue;
+          if (n.start > rv.end) break;
+          if ((n.end ?? now) < rv.start && n.end !== null) continue;
           this.drawInterval(ctx, n, now);
         }
       }
@@ -1763,17 +1960,18 @@ canvas {
       const t = this.theme;
       const dpr = this.dpr;
       const r = this.rectFor(n, now);
-      const x0 = Math.round(r.x * dpr) / dpr;
-      const x1 = Math.round((r.x + r.w) * dpr) / dpr;
-      const y = Math.round(r.y * dpr) / dpr;
       const bh = this.metrics().trackHeight;
       const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
       const hovered = this.hoverIntervalId === n.id;
-      if (isInstantWidth(x1 - x0)) {
-        this.drawInstant(ctx, n, style, (x0 + x1) / 2, y + bh / 2, bh, hovered);
+      const trueW = durationWidthPx(n.start, n.end ?? now, this.renderView(), this.plotWidth());
+      if (isInstantWidth(trueW)) {
+        this.drawInstant(ctx, n, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
         return;
       }
-      const bw = x1 - x0;
+      const x0 = r.x;
+      const bw = Math.max(r.w, MIN_BAR_PX);
+      const x1 = x0 + bw;
+      const y = r.y;
       const radius = Math.min(3, bh / 3, bw / 2);
       const path = new Path2D();
       path.roundRect(x0, y, bw, bh, radius);
@@ -1799,9 +1997,10 @@ canvas {
         ctx.save();
         ctx.clip(path);
         const w = this.plotWidth();
+        const rv = this.renderView();
         for (const s of n.segs) {
-          const sx0 = Math.max(x0, this.gutterW + timeToX(s.start, this.view, w));
-          const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), this.view, w));
+          const sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, w));
+          const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, w));
           if (sx1 - sx0 < 0.5) continue;
           const ss = this.resolved(n.catKey, s.kind, null);
           if (ss.pattern === "hatch" || ss.pattern === "stipple") {
@@ -1962,9 +2161,10 @@ canvas {
       ctx.font = this.fontAxis;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
+      const rv = this.renderView();
       for (const m of this.markers) {
-        if (m.time < this.view.start || m.time > this.view.end) continue;
-        const x = snap(gx + timeToX(m.time, this.view, plotW), this.dpr);
+        if (m.time < rv.start || m.time > rv.end) continue;
+        const x = snap(gx + timeToX(m.time, rv, plotW), this.dpr);
         const color = m.kind === "emphasis" ? t.emphasis : t.muted;
         ctx.strokeStyle = color;
         ctx.lineWidth = 1;
@@ -1981,9 +2181,10 @@ canvas {
       }
     }
     drawNowLine(ctx, now) {
-      if (now < this.view.start || now > this.view.end) return;
+      const rv = this.renderView();
+      if (now < rv.start || now > rv.end) return;
       const t = this.theme;
-      const x = snap(this.gutterW + timeToX(now, this.view, this.plotWidth()), this.dpr);
+      const x = snap(this.gutterW + timeToX(now, rv, this.plotWidth()), this.dpr);
       ctx.strokeStyle = withAlpha(t.now, 0.85);
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -2096,6 +2297,12 @@ canvas {
         return "dim";
     }
   }
+  function runTitle(r) {
+    return typeof r.title === "string" && r.title.trim() !== "" ? r.title : null;
+  }
+  function runLabel(r) {
+    return runTitle(r) ?? r.id.slice(0, 8);
+  }
   function runToInterval(r) {
     const start = Date.parse(r.started);
     let end = tsPresent(r.finished) ? Date.parse(r.finished) : null;
@@ -2114,7 +2321,7 @@ canvas {
       laneId: r.hook_id,
       start,
       end,
-      label: r.id.slice(0, 8),
+      label: runLabel(r),
       category: r.hook_id,
       // stable hue per hook
       state: stateFor(r),
@@ -2138,21 +2345,9 @@ canvas {
     return out;
   }
   function computeLanes() {
-    const latest = /* @__PURE__ */ new Map();
-    for (const r of runsById.values()) {
-      const t = Date.parse(r.started);
-      const prev = latest.get(r.hook_id);
-      if (prev === void 0 || t > prev) latest.set(r.hook_id, t);
-    }
-    const ids = /* @__PURE__ */ new Set([...latest.keys(), ...hookMeta.keys()]);
-    return [...ids].sort((a, b) => {
-      const la = latest.get(a);
-      const lb = latest.get(b);
-      if (la !== void 0 && lb !== void 0) return lb - la || (a < b ? -1 : 1);
-      if (la !== void 0) return -1;
-      if (lb !== void 0) return 1;
-      return a < b ? -1 : a > b ? 1 : 0;
-    }).map((id) => ({ id, label: id }));
+    const ids = new Set(hookMeta.keys());
+    for (const r of runsById.values()) ids.add(r.hook_id);
+    return [...ids].sort((a, b) => a < b ? -1 : a > b ? 1 : 0).map((id) => ({ id, label: id }));
   }
   function trimText(s, max) {
     return s.length > max ? s.slice(0, max - 1) + "\u2026" : s;
@@ -2198,7 +2393,9 @@ canvas {
   }
   function runTooltip(r) {
     const frag = document.createDocumentFragment();
-    frag.appendChild(el("div", { class: "tt-title" }, `${r.hook_id} \xB7 ${shortRunId(r.id)}`));
+    const title = runTitle(r);
+    frag.appendChild(el("div", { class: "tt-title" }, title ? trimText(title, 140) : `${r.hook_id} \xB7 ${shortRunId(r.id)}`));
+    if (title) frag.appendChild(ttRow("run", `${r.hook_id} \xB7 ${shortRunId(r.id)}`));
     const color = statusColor(r.status);
     frag.appendChild(
       ttRow("status", el("span", { class: "tt-v", style: color ? `color: ${color}` : null }, r.status))
@@ -2264,32 +2461,42 @@ canvas {
       const detail = e.detail;
       location.hash = "#hook=" + encodeURIComponent(detail.lane.id);
     });
-    tl.loadRange = async (start, end) => {
-      let cursor;
-      if (oldestStartedRaw === null || oldestStartedMs > end + 6e4) {
-        cursor = new Date(end).toISOString();
-      } else {
-        cursor = oldestStartedRaw;
+    let backfillInFlight = false;
+    const backfill = async (start, end) => {
+      if (backfillInFlight) throw new Error("timeline backfill: already in flight");
+      backfillInFlight = true;
+      try {
+        let cursor;
+        if (oldestStartedRaw !== null && oldestStartedMs > start && oldestStartedMs <= end + 6e4) {
+          cursor = oldestStartedRaw;
+        } else {
+          cursor = new Date(end).toISOString();
+        }
+        let cursorMs = Date.parse(cursor);
+        for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
+          const rows = await fetchJSON(
+            `/runs?before=${encodeURIComponent(cursor)}&max=${BACKFILL_MAX}`
+          );
+          if (rows.length === 0) return { exhausted: true };
+          ingestRuns(rows);
+          syncLanes(tl);
+          const oldest = rows[rows.length - 1];
+          tl.mergeData({
+            intervals: rows.map(runToInterval),
+            coverage: { start: Date.parse(oldest.started), end: cursorMs }
+          });
+          cursor = oldest.started;
+          cursorMs = Date.parse(cursor);
+          if (rows.length < BACKFILL_MAX) return { exhausted: true };
+          if (cursorMs <= start) return void 0;
+        }
+        throw new Error("timeline backfill: page cap reached");
+      } finally {
+        backfillInFlight = false;
       }
-      let cursorMs = Date.parse(cursor);
-      for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
-        const rows = await fetchJSON(
-          `/runs?before=${encodeURIComponent(cursor)}&max=${BACKFILL_MAX}`
-        );
-        if (rows.length === 0) return { exhausted: true };
-        ingestRuns(rows);
-        syncLanes(tl);
-        const oldest = rows[rows.length - 1];
-        tl.mergeData({
-          intervals: rows.map(runToInterval),
-          coverage: { start: Date.parse(oldest.started), end: cursorMs }
-        });
-        cursor = oldest.started;
-        cursorMs = Date.parse(cursor);
-        if (rows.length < BACKFILL_MAX) return { exhausted: true };
-        if (cursorMs <= start) return;
-      }
-      throw new Error("timeline backfill: page cap reached");
+    };
+    const armBackfill = () => {
+      if (tl.loadRange === null) tl.loadRange = backfill;
     };
     void (async () => {
       try {
@@ -2319,6 +2526,7 @@ canvas {
           seeded = true;
           laneOrderKey = "";
           tl.setData(data);
+          armBackfill();
         } else {
           tl.mergeData(data);
         }

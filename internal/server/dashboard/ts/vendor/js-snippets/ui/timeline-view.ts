@@ -1,4 +1,4 @@
-// Vendored from wow-look-at-my/js-snippets src/ui/timeline-view.ts @ 0e0241f (PR #33). Do not edit here — fix upstream and re-copy. After PR #33 squash-merges, update this pin to the master SHA.
+// Vendored from wow-look-at-my/js-snippets src/ui/timeline-view.ts (PR #34, vendored 2026-07-12). Do not edit here — fix upstream and re-copy.
 /**
  * <timeline-view> — a canvas-rendered, realtime swimlane timeline.
  *
@@ -24,20 +24,36 @@
  *   });
  *
  * Follow-now mode (default) pins the right edge to a live "now"; scroll or
- * drag into the past and a jump-to-now pill appears. Interaction is
- * trackpad-first: two-finger pan (x = time, y = lanes), ctrl/meta+wheel =
- * smooth zoom anchored under the cursor (discrete wheel steps glide),
- * shift+wheel = time pan, drag = pan, pinch = zoom, arrows/±/Home/End when
- * focused. `loadRange` turns scrolling into the past into async history
- * requests, with uncovered regions visibly distinct from empty-but-known
+ * drag into the past and a jump-to-now pill appears (panning backward
+ * disengages follow immediately; panning forward re-docks magnetically at
+ * the live edge). Interaction is trackpad-first: two-finger pan (x = time,
+ * y = lanes — a horizontal swipe always pans time, a diagonal one applies
+ * both axes), ctrl/meta+wheel = smooth zoom anchored under the cursor
+ * (discrete wheel steps glide), shift+wheel = time pan, drag = pan, pinch =
+ * zoom, arrows/±/Home/End when focused. `loadRange` turns scrolling into
+ * the past into async history requests — for BACKWARD gaps only; the live
+ * forward edge always belongs to the consumer's own setData/mergeData
+ * `coverage` — with uncovered regions visibly distinct from empty-but-known
  * ones and an explicit end-of-history boundary.
+ *
+ * Rendering is stability-first: the viewport origin is snapped to WHOLE
+ * device pixels once per frame (bars keep exact relative offsets while
+ * scrolling — no per-element rounding jiggle), bar-vs-pip shapes are
+ * decided from data-space durations (never from rounded screen coords, so
+ * shapes don't flicker during pans), and lane heights derive from the
+ * parallelism visible in the CURRENT window (a historical burst stops
+ * padding its lane once off-screen; height changes tween ~150ms, honoring
+ * prefers-reduced-motion).
  *
  * Cheap by construction: draws only when dirty (one rAF at a time), a
  * continuous loop runs only while following/animating and the element is
- * visible; culled to the viewport; DPR-aware (capped at 2). Theme via
- * --timeline-* custom properties (see THEME_DEFAULTS); the DOM chrome
- * (tooltip, live pill, empty hint) is styled by timeline-view.css. The
- * pure math lives in ui/timeline-view-math.ts (node-tested) and is
+ * visible, and idle animation is paced adaptively — full rate while
+ * interacting (plus a short grace window), ~30fps idle, ~10fps idle on
+ * battery (feature-detected via navigator.getBattery), paused while the
+ * document is hidden; culled to the viewport; DPR-aware (capped at 2).
+ * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
+ * chrome (tooltip, live pill, empty hint) is styled by timeline-view.css.
+ * The pure math lives in ui/timeline-view-math.ts (node-tested) and is
  * re-exported here so one import serves both.
  */
 
@@ -47,8 +63,11 @@ import {
   xToTime,
   panView,
   zoomView,
-  wheelDeltaToPixels,
   zoomFactorForWheel,
+  routeWheel,
+  followAfterGesture,
+  FOLLOW_LEAD_FRAC,
+  snapViewToDevicePixels,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
   timeTicks,
@@ -56,11 +75,13 @@ import {
   formatTimeTick,
   formatTimeFull,
   formatDuration,
-  packTracks,
+  packVisibleTracks,
   layoutLanes,
   trackTop,
   fitText,
   isInstantWidth,
+  durationWidthPx,
+  MIN_BAR_PX,
   expandHitRect,
   hitTestPolyline,
   connectorRoute,
@@ -69,6 +90,11 @@ import {
   categoryColor,
   DEFAULT_STYLES,
   CoverageTracker,
+  historyProbe,
+  frameBudgetMs,
+  shouldRender,
+  INTERACT_GRACE_MS,
+  type RenderTier,
   type TimelineLane,
   type TimelineInterval,
   type TimelineConnector,
@@ -188,8 +214,7 @@ interface ResolvedStyle {
 }
 
 const DEFAULT_SPAN_MS = 15 * 60_000;
-const FOLLOW_LEAD_FRAC = 0.02; // now sits this fraction in from the right edge
-const FOLLOW_SNAP_FRAC = 0.02; // ending a gesture this close to now re-engages follow
+const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count change
 const AXIS_H = 22;
 const HIT_MIN_W = 9; // widened hit target for instants (px)
 const CONNECTOR_TOL = 4;
@@ -222,7 +247,6 @@ export class TimelineViewElement extends HTMLElement {
   private lanes: TimelineLane[] = [];
   private laneIdxById = new Map<string, number>();
   private perLane: NInterval[][] = []; // sorted by (start, id)
-  private trackCounts: number[] = [];
   private byId = new Map<string, NInterval>();
   private connectors: TimelineConnector[] = [];
   private markers: { time: number; label: string; kind: string }[] = [];
@@ -254,6 +278,20 @@ export class TimelineViewElement extends HTMLElement {
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
   private lastFrame = 0;
+  private lastInputTs = -Infinity; // last wheel/drag/key input (perf-clock)
+  private lastRenderTs = -Infinity; // last RENDERED frame (adaptive pacing)
+  private batteryDischarging = false;
+  private batteryOff: (() => void) | null = null;
+
+  // -- Visible-window lane layout --
+  private packEpoch = 0; // bumped on data changes; forces a re-pack
+  private packedEpoch = -1;
+  private packedStart = NaN;
+  private packedEnd = NaN;
+  private targetCounts: number[] = []; // visible track count per lane
+  private displayCounts: number[] = []; // animated (float) counts driving layout
+  private layoutAnim: { from: number[]; start: number } | null = null;
+  private rvCache = { start: NaN, end: NaN, w: NaN, dpr: NaN, out: { start: 0, end: 1 } as TimeView };
 
   // -- Rendering state --
   private cssW = 0;
@@ -331,6 +369,7 @@ export class TimelineViewElement extends HTMLElement {
       this.motionMq.addEventListener?.('change', this.onMotionPref);
     }
     document.addEventListener('visibilitychange', this.onVisibility);
+    this.watchBattery();
 
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
@@ -354,6 +393,8 @@ export class TimelineViewElement extends HTMLElement {
     this.motionMq?.removeEventListener?.('change', this.onMotionPref);
     this.motionMq = null;
     document.removeEventListener('visibilitychange', this.onVisibility);
+    this.batteryOff?.();
+    this.batteryOff = null;
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
@@ -596,21 +637,77 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane[laneIdx].push(n);
   }
 
-  /** Re-sort, re-pack, and re-layout after any data change. */
+  /**
+   * Re-sort and re-layout after any data change. Track assignment and lane
+   * heights come from the VISIBLE window (updateVisibleLayout), so a
+   * historical parallelism burst stops padding its lane once off-screen.
+   */
   private rebuild(): void {
-    this.trackCounts = this.perLane.map((per) => {
+    for (const per of this.perLane) {
       per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      const { tracks, trackCount } = packTracks(per);
-      per.forEach((n, i) => {
-        n.track = tracks[i];
-      });
-      return trackCount;
-    });
-    this.layout = layoutLanes(this.trackCounts, this.metrics());
+    }
+    this.packEpoch++;
+    this.updateVisibleLayout();
     this.autoGutter();
     this.clampLaneScroll();
     this.syncChrome();
     this.invalidate();
+  }
+
+  /**
+   * Track assignment + lane heights from the intervals intersecting the
+   * CURRENT viewport (partial overlap counts; a lane with nothing visible
+   * collapses to one track). Deterministic given the visible data — a
+   * merely-translating viewport over unchanged overlap recomputes to the
+   * identical result, so nothing jitters frame to frame. Count CHANGES
+   * ease over LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion).
+   * this.layout always reflects the CURRENT (possibly animating) heights,
+   * and hit-testing shares it, so hovers stay aligned mid-tween.
+   */
+  private updateVisibleLayout(): void {
+    const rv = this.renderView();
+    const structure = this.targetCounts.length !== this.perLane.length;
+    if (this.packedEpoch !== this.packEpoch || this.packedStart !== rv.start || this.packedEnd !== rv.end || structure) {
+      this.packedEpoch = this.packEpoch;
+      this.packedStart = rv.start;
+      this.packedEnd = rv.end;
+      const prev = this.targetCounts;
+      const next = new Array<number>(this.perLane.length);
+      let changed = structure;
+      for (let i = 0; i < this.perLane.length; i++) {
+        const per = this.perLane[i];
+        const { tracks, trackCount } = packVisibleTracks(per, rv);
+        for (let j = 0; j < per.length; j++) {
+          if (tracks[j] >= 0) per[j].track = tracks[j];
+        }
+        next[i] = trackCount;
+        if (!changed && prev[i] !== trackCount) changed = true;
+      }
+      this.targetCounts = next;
+      if (changed) {
+        if (this.reducedMotion || structure || this.displayCounts.length !== next.length) {
+          this.displayCounts = next.slice();
+          this.layoutAnim = null;
+        } else {
+          this.layoutAnim = { from: this.displayCounts.slice(), start: this.perfNow() };
+        }
+      }
+    }
+    if (this.layoutAnim) {
+      const a = this.layoutAnim;
+      const p = Math.min(1, (this.perfNow() - a.start) / LAYOUT_TWEEN_MS);
+      const ease = p * (2 - p); // easeOutQuad
+      const disp = new Array<number>(this.targetCounts.length);
+      for (let i = 0; i < disp.length; i++) {
+        const from = a.from[i] ?? this.targetCounts[i];
+        disp[i] = from + (this.targetCounts[i] - from) * ease;
+      }
+      this.displayCounts = disp;
+      if (p >= 1) this.layoutAnim = null;
+    } else if (this.displayCounts.length !== this.targetCounts.length) {
+      this.displayCounts = this.targetCounts.slice();
+    }
+    this.layout = layoutLanes(this.displayCounts, this.metrics());
   }
 
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
@@ -631,8 +728,51 @@ export class TimelineViewElement extends HTMLElement {
     return this.nowFn ? this.nowFn() : Date.now();
   }
 
+  private perfNow(): number {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
   private tzOffsetMs(): number {
     return -new Date().getTimezoneOffset() * 60_000;
+  }
+
+  /** Battery awareness for the idle render tier (feature-detected; absent API = AC tier). */
+  private watchBattery(): void {
+    type BatteryLike = {
+      charging: boolean;
+      addEventListener?: (type: string, fn: () => void) => void;
+      removeEventListener?: (type: string, fn: () => void) => void;
+    };
+    const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { getBattery?: () => Promise<BatteryLike> }) : null;
+    if (!nav || typeof nav.getBattery !== 'function') return;
+    nav
+      .getBattery()
+      .then((b) => {
+        if (!this.connected || this.batteryOff) return;
+        const update = (): void => {
+          this.batteryDischarging = !b.charging;
+        };
+        update();
+        b.addEventListener?.('chargingchange', update);
+        this.batteryOff = () => {
+          b.removeEventListener?.('chargingchange', update);
+          this.batteryDischarging = false;
+        };
+      })
+      .catch(() => {
+        /* API present but denied: stay on the AC tier */
+      });
+  }
+
+  private noteInput(): void {
+    this.lastInputTs = this.perfNow();
+  }
+
+  /** Current pacing tier: any live gesture/tween = full rate; else idle (AC/battery). */
+  private renderTier(): RenderTier {
+    if (this.pointers.size > 0 || this.glidePx !== 0 || this.layoutAnim !== null) return 'interactive';
+    if (this.perfNow() - this.lastInputTs < INTERACT_GRACE_MS) return 'interactive';
+    return this.batteryDischarging ? 'idle-battery' : 'idle';
   }
 
   // -- Viewport internals -----------------------------------------------------------
@@ -643,12 +783,17 @@ export class TimelineViewElement extends HTMLElement {
     this.view = { start: end - span, end };
   }
 
-  /** Apply a user-driven viewport, with the magnetic follow re-engage rule. */
-  private applyUserView(next: TimeView): void {
+  /**
+   * Apply a user-driven viewport. Backward PANS disengage follow outright;
+   * everything else keeps the magnetic re-engage rule (followAfterGesture —
+   * without the pan carve-out, small trackpad pan steps were re-pinned to
+   * "now" one by one and horizontal panning never escaped follow mode).
+   */
+  private applyUserView(next: TimeView, opts?: { pan?: boolean }): void {
     const span = next.end - next.start;
     const now = this.nowMs();
     const wasFollowing = this.following;
-    this.following = next.end >= now - span * FOLLOW_SNAP_FRAC;
+    this.following = followAfterGesture(this.view.end, next, now, opts?.pan === true);
     if (this.following) {
       const end = now + span * FOLLOW_LEAD_FRAC;
       this.view = { start: end - span, end };
@@ -693,6 +838,25 @@ export class TimelineViewElement extends HTMLElement {
     return (this.view.end - this.view.start) / this.plotWidth();
   }
 
+  /**
+   * The view all GEOMETRY goes through: origin snapped to whole device
+   * pixels (memoized). One global rounding, zero per-element rounding —
+   * the scene translates in integer device-pixel steps and bars never
+   * jiggle relative to each other (see snapViewToDevicePixels).
+   */
+  private renderView(): TimeView {
+    const c = this.rvCache;
+    const w = this.plotWidth();
+    if (c.start !== this.view.start || c.end !== this.view.end || c.w !== w || c.dpr !== this.dpr) {
+      c.start = this.view.start;
+      c.end = this.view.end;
+      c.w = w;
+      c.dpr = this.dpr;
+      c.out = snapViewToDevicePixels(this.view, w, this.dpr);
+    }
+    return c.out;
+  }
+
   // -- Chrome (DOM) sync ---------------------------------------------------------
 
   private syncChrome(): void {
@@ -713,7 +877,7 @@ export class TimelineViewElement extends HTMLElement {
 
   /** True while something time-based needs continuous frames. */
   private animating(): boolean {
-    if (this.following || this.glidePx !== 0) return true;
+    if (this.following || this.glidePx !== 0 || this.layoutAnim !== null) return true;
     if (this.coverage.pending() && this.loadRangeFn) return true;
     if (this.reducedMotion) return false;
     // Ongoing intervals pulse only while their live edge is in view.
@@ -737,11 +901,22 @@ export class TimelineViewElement extends HTMLElement {
 
   private onFrame = (t: number): void => {
     this.raf = 0;
+    // Adaptive pacing: a pure animation frame (nothing dirty) renders only
+    // when the current tier's budget has elapsed — full rate while
+    // interacting, ~30fps idle, ~10fps idle on battery. Dirty frames
+    // (fresh data, hover changes) always render immediately.
+    if (!this.dirty && !shouldRender(t, this.lastRenderTs, frameBudgetMs(this.renderTier()))) {
+      if (this.animating()) this.schedule();
+      else this.lastFrame = 0;
+      return;
+    }
     const dt = this.lastFrame > 0 ? Math.min(100, t - this.lastFrame) : 16;
     this.lastFrame = t;
+    this.lastRenderTs = t;
     this.stepGlide(dt);
     if (this.following) this.pinToNow();
     this.pumpLoad();
+    this.updateVisibleLayout();
     if (this.dirty || this.animating()) {
       this.dirty = false;
       this.draw();
@@ -765,10 +940,14 @@ export class TimelineViewElement extends HTMLElement {
     const fn = this.loadRangeFn;
     if (!fn) return;
     const now = this.nowMs();
-    const span = this.view.end - this.view.start;
-    // Only the past can be uncovered; prefetch a little beyond the left edge.
-    const probe: TimeView = { start: this.view.start - span * 0.15, end: Math.min(this.view.end, now) };
-    if (!(probe.end > probe.start)) return;
+    // loadRange fills BACKWARD gaps only: the probe is clamped to the
+    // covered end (historyProbe), so the sliver between the last covered
+    // time and the ever-advancing "now" is NEVER requested — that region
+    // belongs to the consumer's live merges. Without the clamp, follow
+    // mode reopened a fresh forward gap every frame and refired loadRange
+    // serially at ~one request per round-trip, forever (~30 req/s).
+    const probe = historyProbe(this.view, now, this.coverage.coveredEnd());
+    if (!probe) return;
     const req = this.coverage.nextRequest(probe, now);
     if (!req) return;
     const tick = this.loadTick;
@@ -832,7 +1011,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
-    this.layout = layoutLanes(this.trackCounts, this.metrics());
+    this.layout = layoutLanes(this.displayCounts, this.metrics());
     this.autoGutter();
   }
 
@@ -919,12 +1098,18 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Geometry ----------------------------------------------------------------
 
-  /** Unsnapped CSS-px rect of an interval (valid even outside the viewport). */
+  /**
+   * CSS-px rect of an interval (valid even outside the viewport). Mapped
+   * through the device-pixel-snapped render view and deliberately NOT
+   * rounded per element — one global rounding policy (renderView), so bars
+   * hold exact relative offsets while the viewport translates.
+   */
   private rectFor(n: NInterval, now: number): HitRect {
     const w = this.plotWidth();
     const m = this.metrics();
-    const xs = this.gutterW + timeToX(n.start, this.view, w);
-    const xe = this.gutterW + timeToX(n.end ?? now, this.view, w);
+    const rv = this.renderView();
+    const xs = this.gutterW + timeToX(n.start, rv, w);
+    const xe = this.gutterW + timeToX(n.end ?? now, rv, w);
     const y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m);
     return { x: xs, y, w: Math.max(0, xe - xs), h: m.trackHeight };
   }
@@ -962,7 +1147,7 @@ export class TimelineViewElement extends HTMLElement {
       const per = this.perLane[laneIdx];
       for (let i = per.length - 1; i >= 0; i--) {
         const n = per[i];
-        if (n.start > this.view.end) continue;
+        if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
           return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx] };
@@ -972,7 +1157,7 @@ export class TimelineViewElement extends HTMLElement {
     // Markers (full-height lines, generous ±3px).
     const w = this.plotWidth();
     for (let i = this.markers.length - 1; i >= 0; i--) {
-      const mx = this.gutterW + timeToX(this.markers[i].time, this.view, w);
+      const mx = this.gutterW + timeToX(this.markers[i].time, this.renderView(), w);
       if (Math.abs(x - mx) <= 3) {
         return { type: 'marker', marker: this.markers[i] };
       }
@@ -1002,42 +1187,36 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private onWheel = (e: WheelEvent): void => {
+    // Unconditional: the page must never scroll instead while the gesture
+    // is over the canvas.
     e.preventDefault();
+    this.noteInput();
     const p = this.toLocal(e);
+    const route = routeWheel(e, this.maxLaneScroll() > 0);
     if (e.ctrlKey || e.metaKey) {
-      const px = wheelDeltaToPixels(e.deltaY, e.deltaMode);
       if (e.deltaMode === 0) {
         // Pixel-precise trackpad pinch: apply 1:1, no smoothing, no lag.
         const anchor = xToTime(p.x - this.gutterW, this.view, this.plotWidth());
-        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(px)));
+        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)));
         this.glidePx = 0;
       } else {
         // Discrete wheel steps: glide over ~130ms so they feel smooth.
-        this.glidePx += px;
+        this.glidePx += route.zoomPx;
         this.glideX = p.x;
         this.invalidate();
       }
       return;
     }
-    const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
-    const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
-    if (e.shiftKey) {
-      // shift+wheel: time pan (vertical wheels pan horizontally).
-      this.applyUserView(panView(this.view, (dy || dx) * this.msPerPx()));
-      return;
+    if (route.laneScrollPx !== 0) {
+      this.laneScroll += route.laneScrollPx;
+      this.clampLaneScroll();
     }
-    let next = this.view;
-    if (dx !== 0) next = panView(next, dx * this.msPerPx());
-    if (dy !== 0) {
-      if (this.maxLaneScroll() > 0) {
-        this.laneScroll += dy;
-        this.clampLaneScroll();
-      } else {
-        next = panView(next, dy * this.msPerPx());
-      }
+    if (route.panPx !== 0) {
+      // A pan, possibly alongside the lane scroll (diagonal gesture).
+      this.applyUserView(panView(this.view, route.panPx * this.msPerPx()), { pan: true });
+    } else if (route.laneScrollPx !== 0) {
+      this.invalidate();
     }
-    if (next !== this.view) this.applyUserView(next);
-    else this.invalidate();
   };
 
   private stepGlide(dt: number): void {
@@ -1052,6 +1231,7 @@ export class TimelineViewElement extends HTMLElement {
 
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
+    this.noteInput();
     this.canvas.setPointerCapture(e.pointerId);
     const p = this.toLocal(e);
     this.pointers.set(e.pointerId, p);
@@ -1068,6 +1248,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     const prev = this.pointers.get(e.pointerId) as { x: number; y: number };
     this.pointers.set(e.pointerId, p);
+    this.noteInput();
     if (this.pointers.size === 2) {
       // Pinch zoom + two-finger pan.
       const [a, b] = [...this.pointers.values()];
@@ -1077,11 +1258,12 @@ export class TimelineViewElement extends HTMLElement {
       const midX = (p.x + other.x) / 2;
       const midPrevX = (prev.x + other.x) / 2;
       let next = panView(this.view, (midPrevX - midX) * this.msPerPx());
-      if (distPrev > 8 && distNow > 8) {
+      const zoomed = distPrev > 8 && distNow > 8;
+      if (zoomed) {
         const anchor = xToTime(midX - this.gutterW, next, this.plotWidth());
         next = zoomView(next, anchor, distNow / distPrev);
       }
-      this.applyUserView(next);
+      this.applyUserView(next, { pan: !zoomed });
       return;
     }
     const dx = p.x - prev.x;
@@ -1097,7 +1279,7 @@ export class TimelineViewElement extends HTMLElement {
       if (dx !== 0) next = panView(next, -dx * this.msPerPx());
       this.laneScroll -= dy;
       this.clampLaneScroll();
-      this.applyUserView(next);
+      this.applyUserView(next, { pan: true });
     }
   };
 
@@ -1127,14 +1309,15 @@ export class TimelineViewElement extends HTMLElement {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    this.noteInput();
     const span = this.view.end - this.view.start;
     const center = (this.view.start + this.view.end) / 2;
     switch (e.key) {
       case 'ArrowLeft':
-        this.applyUserView(panView(this.view, -span * (e.shiftKey ? 0.5 : 0.1)));
+        this.applyUserView(panView(this.view, -span * (e.shiftKey ? 0.5 : 0.1)), { pan: true });
         break;
       case 'ArrowRight':
-        this.applyUserView(panView(this.view, span * (e.shiftKey ? 0.5 : 0.1)));
+        this.applyUserView(panView(this.view, span * (e.shiftKey ? 0.5 : 0.1)), { pan: true });
         break;
       case 'ArrowUp':
         this.laneScroll -= 48;
@@ -1372,15 +1555,16 @@ export class TimelineViewElement extends HTMLElement {
     const plotW = this.plotWidth();
     const tz = this.tzOffsetMs();
     const maxTicks = Math.max(2, Math.floor(plotW / 88));
-    const span = this.view.end - this.view.start;
+    const rv = this.renderView();
+    const span = rv.end - rv.start;
     const step = timeTickStep(span, maxTicks);
-    const ticks = timeTicks(this.view, maxTicks, tz);
+    const ticks = timeTicks(rv, maxTicks, tz);
 
     ctx.font = this.fontAxis;
     ctx.textBaseline = 'middle';
     const hairline = 1 / dpr;
     for (const tick of ticks) {
-      const x = snap(gx + timeToX(tick, this.view, plotW), dpr);
+      const x = snap(gx + timeToX(tick, rv, plotW), dpr);
       if (x < gx) continue;
       const isDay = (tick + tz) % 86_400_000 === 0;
       ctx.strokeStyle = t.grid;
@@ -1402,7 +1586,7 @@ export class TimelineViewElement extends HTMLElement {
     if (step < 86_400_000 && this.lanes.length > 0) {
       ctx.fillStyle = t.muted;
       ctx.textAlign = 'left';
-      const dateLabel = formatTimeFull(this.view.start, tz).split(' ').slice(0, 2).join(' ');
+      const dateLabel = formatTimeFull(rv.start, tz).split(' ').slice(0, 2).join(' ');
       ctx.fillText(dateLabel, 4, AXIS_H / 2 + 0.5);
     }
     void now;
@@ -1457,13 +1641,14 @@ export class TimelineViewElement extends HTMLElement {
     const gx = this.gutterW;
     const plotW = this.plotWidth();
     const h = this.cssH;
-    const probeEnd = Math.min(this.view.end, now);
-    if (probeEnd > this.view.start) {
-      const gaps = this.coverage.uncoveredIn({ start: this.view.start, end: probeEnd });
+    const rv = this.renderView();
+    const probeEnd = Math.min(rv.end, now);
+    if (probeEnd > rv.start) {
+      const gaps = this.coverage.uncoveredIn({ start: rv.start, end: probeEnd });
       const pending = this.coverage.pending();
       for (const gap of gaps) {
-        const x0 = gx + timeToX(gap.start, this.view, plotW);
-        const x1 = gx + timeToX(gap.end, this.view, plotW);
+        const x0 = gx + timeToX(gap.start, rv, plotW);
+        const x1 = gx + timeToX(gap.end, rv, plotW);
         if (x1 - x0 < 1) continue;
         const busy = pending !== null && pending.start < gap.end && pending.end > gap.start;
         const pat = this.patternFor('hatch', busy ? withAlpha(t.muted, 0.35) : withAlpha(t.muted, 0.18));
@@ -1483,8 +1668,8 @@ export class TimelineViewElement extends HTMLElement {
     }
     // Explicit end-of-history boundary.
     const ex = this.coverage.exhaustedBefore;
-    if (ex !== null && ex >= this.view.start && ex <= this.view.end) {
-      const x = snap(gx + timeToX(ex, this.view, plotW), this.dpr);
+    if (ex !== null && ex >= rv.start && ex <= rv.end) {
+      const x = snap(gx + timeToX(ex, rv, plotW), this.dpr);
       // The void before history: clearly darker than the plot bg.
       if (x > gx) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
@@ -1514,14 +1699,15 @@ export class TimelineViewElement extends HTMLElement {
     const { tops, heights } = this.layout;
     ctx.font = this.fontBar;
     ctx.textBaseline = 'middle';
+    const rv = this.renderView();
     for (let laneIdx = 0; laneIdx < this.perLane.length; laneIdx++) {
       const laneTop = AXIS_H + tops[laneIdx] - this.laneScroll;
       if (laneTop + heights[laneIdx] < AXIS_H || laneTop > h) continue;
       const per = this.perLane[laneIdx];
       for (let i = 0; i < per.length; i++) {
         const n = per[i];
-        if (n.start > this.view.end) break; // sorted by start
-        if ((n.end ?? now) < this.view.start && n.end !== null) continue;
+        if (n.start > rv.end) break; // sorted by start
+        if ((n.end ?? now) < rv.start && n.end !== null) continue;
         this.drawInterval(ctx, n, now);
       }
     }
@@ -1533,19 +1719,29 @@ export class TimelineViewElement extends HTMLElement {
     const t = this.theme;
     const dpr = this.dpr;
     const r = this.rectFor(n, now);
-    const x0 = Math.round(r.x * dpr) / dpr;
-    const x1 = Math.round((r.x + r.w) * dpr) / dpr;
-    const y = Math.round(r.y * dpr) / dpr;
     const bh = this.metrics().trackHeight;
     const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
     const hovered = this.hoverIntervalId === n.id;
 
-    if (isInstantWidth(x1 - x0)) {
-      this.drawInstant(ctx, n, style, (x0 + x1) / 2, y + bh / 2, bh, hovered);
+    // Bar vs pip from the DURATION mapped through the current scale —
+    // translation-invariant, so a scrolling viewport can never flip an
+    // event's shape (a rounded-coordinate width oscillates ±1px with
+    // subpixel phase). Zero/near-zero-duration events are pips; anything
+    // wider draws as a bar, clamped to MIN_BAR_PX so a real duration is
+    // never demoted to a pip by rounding.
+    const trueW = durationWidthPx(n.start, n.end ?? now, this.renderView(), this.plotWidth());
+    if (isInstantWidth(trueW)) {
+      this.drawInstant(ctx, n, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
       return;
     }
 
-    const bw = x1 - x0;
+    // Unrounded coordinates on purpose: renderView is the single global
+    // rounding step; rounding again per bar would jiggle neighbors
+    // relative to each other during fractional translations.
+    const x0 = r.x;
+    const bw = Math.max(r.w, MIN_BAR_PX);
+    const x1 = x0 + bw;
+    const y = r.y;
     const radius = Math.min(3, bh / 3, bw / 2);
     const path = new Path2D();
     path.roundRect(x0, y, bw, bh, radius);
@@ -1575,9 +1771,10 @@ export class TimelineViewElement extends HTMLElement {
       ctx.save();
       ctx.clip(path);
       const w = this.plotWidth();
+      const rv = this.renderView();
       for (const s of n.segs) {
-        const sx0 = Math.max(x0, this.gutterW + timeToX(s.start, this.view, w));
-        const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), this.view, w));
+        const sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, w));
+        const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, w));
         if (sx1 - sx0 < 0.5) continue;
         const ss = this.resolved(n.catKey, s.kind, null);
         if (ss.pattern === 'hatch' || ss.pattern === 'stipple') {
@@ -1764,9 +1961,10 @@ export class TimelineViewElement extends HTMLElement {
     ctx.font = this.fontAxis;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
+    const rv = this.renderView();
     for (const m of this.markers) {
-      if (m.time < this.view.start || m.time > this.view.end) continue;
-      const x = snap(gx + timeToX(m.time, this.view, plotW), this.dpr);
+      if (m.time < rv.start || m.time > rv.end) continue;
+      const x = snap(gx + timeToX(m.time, rv, plotW), this.dpr);
       const color = m.kind === 'emphasis' ? t.emphasis : t.muted;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
@@ -1784,9 +1982,10 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private drawNowLine(ctx: CanvasRenderingContext2D, now: number): void {
-    if (now < this.view.start || now > this.view.end) return;
+    const rv = this.renderView();
+    if (now < rv.start || now > rv.end) return;
     const t = this.theme;
-    const x = snap(this.gutterW + timeToX(now, this.view, this.plotWidth()), this.dpr);
+    const x = snap(this.gutterW + timeToX(now, rv, this.plotWidth()), this.dpr);
     ctx.strokeStyle = withAlpha(t.now, 0.85);
     ctx.lineWidth = 1;
     ctx.beginPath();

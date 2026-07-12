@@ -22,12 +22,21 @@
  *     reads as a slow run.
  *   - `finished` is ALWAYS serialized — a Go zero time ("0001-01-01…") on
  *     live runs — so presence goes through tsPresent, never truthiness.
- *   - `waiting_on` / `waiters` (first-class waits) and any new status
- *     values are FEATURE-DETECTED: absent fields degrade to the plain
- *     rendering, unknown statuses render dim instead of crashing.
+ *   - `waiting_on` / `waiters` (first-class waits), the per-run friendly
+ *     `title`, and any new status values are FEATURE-DETECTED: absent
+ *     fields degrade to the plain rendering (short run id as the label),
+ *     unknown statuses render dim instead of crashing.
+ *   - Lanes are ordered ALPHABETICALLY by hook id — stable and
+ *     viewport-independent. (Most-recent-activity ordering made rows jump
+ *     around as runs entered/left the window; if activity ordering is
+ *     ever wanted it becomes an explicit user toggle, not the default.)
  *   - Dragging into the past pages GET /runs?before=<cursor> — the cursor
  *     is the oldest run's RAW `started` string (nanosecond precision;
- *     never round-tripped through Date).
+ *     never round-tripped through Date). The walk is BOUNDED by the
+ *     requested window (stop as soon as a page's oldest predates the
+ *     range floor), single-flight (a concurrent second walk throws), and
+ *     armed only after the first poll seeds coverage — so a page load
+ *     fetches the visible window only, never an exhaustive history walk.
  */
 
 import './vendor/js-snippets/ui/timeline-view.ts';
@@ -47,6 +56,8 @@ import type {
 interface RunState {
 	id: string;
 	hook_id: string;
+	/** Feature-detected: friendly display title (e.g. "owner/repo#47"). */
+	title?: string;
 	/** Queued/accepted instant (RFC3339Nano). Always present. */
 	started: string;
 	/** Container-launch instant; genuinely absent while pending. */
@@ -81,7 +92,11 @@ interface HookSummary {
 const TIMELINE_POLL_MS = 2000; // /runs poll (independent of dashboard.js's 3s)
 const HOOKS_POLL_MS = 30_000; // /hooks poll (lane roster)
 const POLL_MAX = 400; // newest window fetched per poll
-const BACKFILL_MAX = 200; // page size for ?before= history paging
+// Page size for ?before= history paging. Deliberately NOT raised: with the
+// walk bounded to the requested window a pan needs 1-2 pages, and at
+// observed production density a 200-run page is already ~3.5MB — a larger
+// page would slow each pan-driven request for no real round-trip savings.
+const BACKFILL_MAX = 200;
 const BACKFILL_MAX_PAGES = 30; // per loadRange call; a reject resumes deeper
 const PRUNE_AT = 10_000; // runs held in memory before pruning kicks in
 const PRUNE_TO = 8_000; // newest runs kept when it does
@@ -146,6 +161,16 @@ function stateFor(r: RunState): string {
 	}
 }
 
+/** Friendly title when the server sends one (additive /runs field), else null. */
+function runTitle(r: RunState): string | null {
+	return typeof r.title === 'string' && r.title.trim() !== '' ? r.title : null;
+}
+
+/** Bar label: never hardcode "label = run id" — the title wins when present. */
+function runLabel(r: RunState): string {
+	return runTitle(r) ?? r.id.slice(0, 8);
+}
+
 function runToInterval(r: RunState): TimelineInterval {
 	const start = Date.parse(r.started);
 	// finished is always serialized; zero time means "not finished".
@@ -168,7 +193,7 @@ function runToInterval(r: RunState): TimelineInterval {
 		laneId: r.hook_id,
 		start,
 		end,
-		label: r.id.slice(0, 8),
+		label: runLabel(r),
 		category: r.hook_id, // stable hue per hook
 		state: stateFor(r),
 		segments,
@@ -193,25 +218,17 @@ function computeConnectors(): TimelineConnector[] {
 	return out;
 }
 
-/** Lane order: most recent activity first; registered-but-idle hooks last. */
+/**
+ * Lane order: ALPHABETICAL by hook id — deterministic, stable, and
+ * viewport-independent, full stop. (The old most-recent-activity sort
+ * re-evaluated per poll, so rows visibly reordered themselves as runs
+ * entered/left the window. Activity-based ordering, if ever wanted, is a
+ * future explicit user toggle — never the default.)
+ */
 function computeLanes(): TimelineLane[] {
-	const latest = new Map<string, number>();
-	for (const r of runsById.values()) {
-		const t = Date.parse(r.started);
-		const prev = latest.get(r.hook_id);
-		if (prev === undefined || t > prev) latest.set(r.hook_id, t);
-	}
-	const ids = new Set<string>([...latest.keys(), ...hookMeta.keys()]);
-	return [...ids]
-		.sort((a, b) => {
-			const la = latest.get(a);
-			const lb = latest.get(b);
-			if (la !== undefined && lb !== undefined) return lb - la || (a < b ? -1 : 1);
-			if (la !== undefined) return -1;
-			if (lb !== undefined) return 1;
-			return a < b ? -1 : a > b ? 1 : 0;
-		})
-		.map((id) => ({ id, label: id }));
+	const ids = new Set<string>(hookMeta.keys());
+	for (const r of runsById.values()) ids.add(r.hook_id);
+	return [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((id) => ({ id, label: id }));
 }
 
 // -- Tooltips -------------------------------------------------------------------
@@ -269,7 +286,11 @@ function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
 
 function runTooltip(r: RunState): Node {
 	const frag = document.createDocumentFragment();
-	frag.appendChild(el('div', { class: 'tt-title' }, `${r.hook_id} · ${shortRunId(r.id)}`));
+	// The friendly title (when the server sends one) is the primary line;
+	// the run id demotes to a detail row. Without it: the old id line.
+	const title = runTitle(r);
+	frag.appendChild(el('div', { class: 'tt-title' }, title ? trimText(title, 140) : `${r.hook_id} · ${shortRunId(r.id)}`));
+	if (title) frag.appendChild(ttRow('run', `${r.hook_id} · ${shortRunId(r.id)}`));
 	const color = statusColor(r.status);
 	frag.appendChild(
 		ttRow('status', el('span', { class: 'tt-v', style: color ? `color: ${color}` : null }, r.status)),
@@ -348,44 +369,66 @@ function initTimeline(): void {
 	// -- History paging (drag into the past) -----------------------------------
 	//
 	// The component asks for [start, end] when the viewport reaches uncovered
-	// past. Page /runs?before=<cursor> newest-first until the range is
-	// reached; the cursor is always the RAW `started` string of the oldest
-	// run held (nanosecond precision — a Date round-trip would truncate and
-	// mis-tile the pages). An empty/short page means history ran out
-	// (retention or genuinely first run) → {exhausted: true} pins the
-	// "history ends here" boundary.
-	tl.loadRange = async (start: number, end: number) => {
-		let cursor: string;
-		if (oldestStartedRaw === null || oldestStartedMs > end + 60_000) {
-			// Nothing held yet (or nothing near the requested range): seed the
-			// cursor from the range end. Millisecond precision is fine here —
-			// there are no held runs for it to collide with.
-			cursor = new Date(end).toISOString();
-		} else {
-			cursor = oldestStartedRaw;
+	// past (BACKWARD ranges only — it never chases the live edge). Page
+	// /runs?before=<cursor> newest-first, BOUNDED BY THE REQUESTED WINDOW:
+	// the chain stops the moment a page's oldest `started` predates the
+	// range floor. The cursor resumes from the oldest run held only when
+	// that run sits INSIDE the requested range (the normal contiguous
+	// pan-back; its RAW `started` string keeps nanosecond tiling — a Date
+	// round-trip would truncate and mis-tile). For any other request the
+	// cursor seeds from the range's own end — NEVER unconditionally from
+	// the oldest run held: that turned every request newer than it into
+	// "fetch one page deeper than everything", an unbounded walk to
+	// retention (the 30 req/s page-load flood, together with the
+	// component's forward-gap refire). An empty/short page means history
+	// ran out (retention or genuinely first run) → {exhausted: true} pins
+	// the "history ends here" boundary. Single-flight: a second concurrent
+	// walk (double init, a coverage reset mid-flight) throws instead of
+	// starting its own paging chain — the component backs off and retries.
+	let backfillInFlight = false;
+	const backfill = async (start: number, end: number): Promise<{ exhausted?: boolean } | undefined> => {
+		if (backfillInFlight) throw new Error('timeline backfill: already in flight');
+		backfillInFlight = true;
+		try {
+			let cursor: string;
+			if (oldestStartedRaw !== null && oldestStartedMs > start && oldestStartedMs <= end + 60_000) {
+				cursor = oldestStartedRaw; // contiguous pan-back: exact next cursor
+			} else {
+				// Disjoint request (hole, or deeper jump): page from its end.
+				// Millisecond precision is fine — nothing held tiles against it.
+				cursor = new Date(end).toISOString();
+			}
+			let cursorMs = Date.parse(cursor);
+			for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
+				const rows = await fetchJSON<RunState[]>(
+					`/runs?before=${encodeURIComponent(cursor)}&max=${BACKFILL_MAX}`,
+				);
+				if (rows.length === 0) return { exhausted: true };
+				ingestRuns(rows);
+				syncLanes(tl);
+				const oldest = rows[rows.length - 1]; // pages are newest-first
+				tl.mergeData({
+					intervals: rows.map(runToInterval),
+					coverage: { start: Date.parse(oldest.started), end: cursorMs },
+				});
+				cursor = oldest.started; // raw server string — the exact next cursor
+				cursorMs = Date.parse(cursor);
+				if (rows.length < BACKFILL_MAX) return { exhausted: true };
+				if (cursorMs <= start) return undefined; // window floor reached — STOP
+			}
+			// Page cap: bail loudly instead of claiming coverage we didn't fetch.
+			// The component backs off and retries; the cursor resumes from the
+			// (now deeper) oldest run, so every attempt makes progress.
+			throw new Error('timeline backfill: page cap reached');
+		} finally {
+			backfillInFlight = false;
 		}
-		let cursorMs = Date.parse(cursor);
-		for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
-			const rows = await fetchJSON<RunState[]>(
-				`/runs?before=${encodeURIComponent(cursor)}&max=${BACKFILL_MAX}`,
-			);
-			if (rows.length === 0) return { exhausted: true };
-			ingestRuns(rows);
-			syncLanes(tl);
-			const oldest = rows[rows.length - 1]; // pages are newest-first
-			tl.mergeData({
-				intervals: rows.map(runToInterval),
-				coverage: { start: Date.parse(oldest.started), end: cursorMs },
-			});
-			cursor = oldest.started; // raw server string — the exact next cursor
-			cursorMs = Date.parse(cursor);
-			if (rows.length < BACKFILL_MAX) return { exhausted: true };
-			if (cursorMs <= start) return; // requested range reached
-		}
-		// Page cap: bail loudly instead of claiming coverage we didn't fetch.
-		// The component backs off and retries; the cursor resumes from the
-		// (now deeper) oldest run, so every attempt makes progress.
-		throw new Error('timeline backfill: page cap reached');
+	};
+	// Armed only after the first poll seeds coverage (see pollRuns): first
+	// paint is the poll's own window — a page load issues ZERO ?before=
+	// requests until the user actually pans into uncovered history.
+	const armBackfill = (): void => {
+		if (tl.loadRange === null) tl.loadRange = backfill;
 	};
 
 	// "history ends here — retention 48h" when the server reports a run store.
@@ -422,6 +465,7 @@ function initTimeline(): void {
 				seeded = true;
 				laneOrderKey = '';
 				tl.setData(data);
+				armBackfill(); // coverage exists now — history paging may engage
 			} else {
 				tl.mergeData(data);
 			}

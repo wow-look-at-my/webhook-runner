@@ -440,4 +440,8 @@ The companion repo is `wow-look-at-my/webhooks`.
   strict tsc gate runs inside the generate step). The vendored component
   under `ts/vendor/js-snippets/ui/` is a verbatim pinned copy: fix bugs
   UPSTREAM in js-snippets, `pnpm test && pnpm build` there, then re-copy
-  the files and update the SHA in their provenance headers.
+  the files and refresh their provenance headers — the convention is
+  `Vendored from wow-look-at-my/js-snippets src/ui/<name> (PR #<n>,
+  vendored <date>). Do not edit here — fix upstream and re-copy.`
+  (PR-number pinning survives squash merges; commit-SHA pins went
+  unreachable the moment the upstream PR branch was deleted).

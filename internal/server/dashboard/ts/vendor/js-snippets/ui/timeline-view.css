@@ -1,4 +1,4 @@
-/* Vendored from wow-look-at-my/js-snippets src/ui/timeline-view.css @ 0e0241f (PR #33). Do not edit here — fix upstream and re-copy. After PR #33 squash-merges, update this pin to the master SHA. */
+/* Vendored from wow-look-at-my/js-snippets src/ui/timeline-view.css (PR #34, vendored 2026-07-12). Do not edit here — fix upstream and re-copy. */
 /* Shadow-DOM styles for <timeline-view> (imported as text via ts0.json's
  * ".css" loader and adopted as a constructable stylesheet). Everything in
  * the plot is canvas-painted; this file styles the host and the DOM chrome:
