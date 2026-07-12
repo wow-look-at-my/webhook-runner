@@ -52,6 +52,11 @@ type HookInfo struct {
 	Timeout string   `json:"timeout"`
 	APIKey  bool     `json:"api_key"`
 	EnvKeys []string `json:"env_keys,omitempty"`
+	// SkipConditions is how many skip_if conditions the hook declares
+	// (0 = every authenticated delivery runs). A count, not the conditions:
+	// this summary stays compact — the conditions live in hook.json, and
+	// each skipped run's output names the exact one that matched.
+	SkipConditions int `json:"skip_conditions,omitempty"`
 }
 
 func hookInfo(h *hooks.Hook) HookInfo {
@@ -64,6 +69,7 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		State:            h.State,
 		Timeout:          h.Timeout().String(),
 		APIKey:           h.APIKey != "",
+		SkipConditions:   len(h.SkipIf),
 	}
 	for k := range h.Env {
 		info.EnvKeys = append(info.EnvKeys, k)

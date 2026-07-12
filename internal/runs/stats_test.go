@@ -30,6 +30,37 @@ func backdate(r *Run, started time.Time, dur time.Duration) {
 	}
 }
 
+// Skipped runs land in their own bucket: counted (Tracked, ByStatus,
+// Skipped) but excluded from Completed and every rate/duration/wait figure
+// — a skip did no work, so it must not read as a fast success or a failure.
+func TestStatsSkippedBucket(t *testing.T) {
+	tr := NewTracker()
+
+	ok := tr.New("h")
+	ok.SetRunning()
+	ok.Finish(StatusSuccess, 0, "")
+
+	bad := tr.New("h")
+	bad.SetRunning()
+	bad.Finish(StatusFailure, 1, "")
+
+	for range 3 {
+		sk := tr.New("h")
+		sk.AppendOutput(`skipped: skip_if[0]: header x-github-event == "workflow_run"`)
+		sk.Finish(StatusSkipped, 0, "")
+	}
+
+	got := tr.StatsByHook("h")
+	assert.Equal(t, 5, got.Tracked)
+	assert.Equal(t, 2, got.Completed, "skips are not completions")
+	assert.Equal(t, 3, got.Skipped)
+	assert.Equal(t, 0.5, got.SuccessRate, "the rate covers real work only")
+	assert.Equal(t, 3, got.ByStatus[StatusSkipped])
+	assert.Equal(t, 2, got.WaitSampled, "skips contribute no wait samples")
+	require.NotNil(t, got.LastRun)
+	assert.Equal(t, StatusSkipped, got.LastRun.Status, "a skip is still the latest run")
+}
+
 func TestStatsByHookAggregates(t *testing.T) {
 	tr := NewTracker()
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)

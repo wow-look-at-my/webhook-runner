@@ -59,9 +59,11 @@ The server listens on two TCP ports plus a Unix socket:
 - **Admin port** (`:9001`): dashboard, `/version` (build identity, same as
   the hook port's; the dashboard footer shows it), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
-  names only, never any api_key/env/secret value — plus image state, KV
-  namespace stats, and run stats over the live tracker window merged with
-  the persisted run history; `stats.retention` labels that window),
+  names only, never any api_key/env/secret value, `skip_conditions` as a
+  count — plus image state, KV namespace stats, and run stats over the live
+  tracker window merged with the persisted run history; `stats.retention`
+  labels that window and `stats.skipped` is the skip bucket — see the
+  skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
   newest-first), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
@@ -274,6 +276,43 @@ The companion repo is `wow-look-at-my/webhooks`.
   handler keeps touching the run's watchdog (see the wait bullet below), so
   an announced in-process sleep is never reaped as silence — only
   *undeclared* silence times out.
+- Declarative skips (`skip_if` in hook.json, `internal/hooks/skip.go`):
+  conditions over the request HEADERS (`"header:x-github-event"` keys,
+  name case-insensitive) and the parsed JSON payload (dotted paths,
+  `"workflow_run.conclusion"`, array elements by numeric index) — list
+  entries ORed, keys within one condition ANDed (pr-minder's triggers
+  convention), matchers a bare string (equality) or
+  `{eq,ne,in,exists,prefix,regex}` (several ops on one key AND). It is
+  deliberately NOT a language: total, bounded matching over stringified
+  scalar leaves (numbers as their JSON literal via json.Number,
+  true/false/null as those words; objects/arrays are not leaves), and
+  `regex` is Go's RE2 (linear, no backtracking) **compiled at load time** —
+  a malformed skip_if (unknown op, non-compiling regex, empty condition)
+  is a load/validation error and the hook is dropped, same fail-closed
+  rule as an undeclared concurrency group. **Dispatch order is
+  load-bearing** (`handleTrigger` in internal/server/handlers.go): kill
+  switch → body read → **authentication** → **skip_if** → wait params →
+  `runner.Start`. Auth strictly first — an unauthenticated delivery that
+  would match gets the plain 401 and must never probe the conditions or
+  leave a record; and the skip strictly before any work — a match calls
+  `runner.Skip`, which boots NO container (no temp files, no secrets
+  decrypt, no image build, no concurrency slot, no onStart/onFinish GitHub
+  statuses) yet creates a REAL terminal run: status `skipped`, ExitCode 0
+  (placeholder — nothing exited), zero StartedAt, output
+  `skipped: skip_if[N]: <rendered condition>`, flowing through the normal
+  Finish → OnFinish seam into the runstore, a `run.skipped` activity
+  event, and a purple `skipped` chip on the dashboard. The HTTP answer is
+  immediate — `200 {"run_id","status":"skipped","reason"}` — for sync
+  hooks too (never the sync snapshot path, whose non-success rule would
+  500 a skip). Stats keep skips honest: `HookRunStats.Skipped` is its own
+  bucket, EXCLUDED from Completed/SuccessRate/duration/wait so non-work
+  can't dilute them (they still show in ByStatus and can be LastRun).
+  Scheduled fires bypass skip_if by design (they don't pass through
+  `handleTrigger`; a timer fire is the operator's own doing, not an
+  unwanted delivery). Same deploy-first rule as
+  state/concurrency_group/schedule: old binaries reject the unknown
+  `skip_if` field, so deploy webhook-runner before merging a hook that
+  sets it.
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared

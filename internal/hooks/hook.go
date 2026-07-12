@@ -114,6 +114,21 @@ type Hook struct {
 	// Parse's DisallowUnknownFields means old binaries reject it — deploy a
 	// webhook-runner that supports it before merging a hook that sets it.
 	Schedule string `json:"schedule,omitempty"`
+
+	// SkipIf declares conditions under which an (authenticated) delivery is
+	// SKIPPED instead of run: answered immediately, recorded as a
+	// first-class run with status "skipped" naming the matched condition,
+	// and given NO container — no image build, no concurrency slot, no
+	// docker run. List entries are ORed; keys within one condition are
+	// ANDed. Keys address the parsed JSON payload by dotted path or a
+	// request header via the "header:" prefix; matchers are a bare string
+	// (equality) or {eq,ne,in,exists,prefix,regex} — see skip.go. Malformed
+	// conditions (bad regex, unknown operator, empty condition) fail the
+	// hook's load/validation. Like state/concurrency_group/schedule this is
+	// a newer hook.json field: deploy a webhook-runner that supports it
+	// before merging a hook that sets it (old binaries reject it via
+	// DisallowUnknownFields).
+	SkipIf SkipConditions `json:"skip_if,omitempty"`
 }
 
 // GitHubStatusConfig configures the optional GitHub commit status update
@@ -346,6 +361,11 @@ func (h *Hook) validate() error {
 		if ReservedEnvKey(k) {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
+	}
+	// Compiles every skip_if regex too, so evaluation never compiles at
+	// request time and a bad pattern can never load.
+	if err := h.SkipIf.compile(); err != nil {
+		return err
 	}
 	if err := h.validateAuth(); err != nil {
 		return err
