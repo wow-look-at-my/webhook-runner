@@ -215,3 +215,95 @@ func TestLockAcquireRace(t *testing.T) {
 	_, err := s.AcquireLock("ns", "l", "run-final", 0)
 	require.NoError(t, err)
 }
+
+func TestLockContendedAcquireNamesHolder(t *testing.T) {
+	s := newStore(t)
+	held, err := s.AcquireLock("ns", "l", "run-a", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, "ns", held.HookID)
+
+	// The contender learns exactly who holds the lock — run, hook (== the
+	// lock's namespace), and since when — alongside the refusal.
+	holder, err := s.AcquireLock("ns", "l", "run-b", 0)
+	require.Equal(t, ErrLockHeld, err)
+	require.Equal(t, "run-a", holder.RunID)
+	require.Equal(t, "ns", holder.HookID)
+	require.Equal(t, held.AcquiredAt, holder.AcquiredAt)
+	require.Equal(t, held.ExpiresAt, holder.ExpiresAt)
+}
+
+func TestStealLockTransfersFromLiveHolder(t *testing.T) {
+	s := newStore(t)
+	_, err := s.AcquireLock("ns", "l", "run-victim", time.Minute)
+	require.NoError(t, err)
+
+	info, displaced, err := s.StealLock("ns", "l", "run-thief", 0)
+	require.NoError(t, err)
+	require.Equal(t, "run-thief", info.RunID)
+	require.Equal(t, "run-victim", displaced.RunID)
+	require.Equal(t, "ns", displaced.HookID)
+
+	// The thief owns it now: the victim can neither release nor re-acquire.
+	require.Equal(t, ErrLockHeld, s.ReleaseLock("ns", "l", "run-victim"))
+	_, err = s.AcquireLock("ns", "l", "run-victim", 0)
+	require.Equal(t, ErrLockHeld, err)
+}
+
+// The steal/finish race-safety invariant: a stolen lock is TRANSFERRED, not
+// released — when the displaced run terminates and the finish seam frees
+// everything it still holds, the stolen lock (now the thief's) is skipped
+// while the victim's OTHER locks release normally.
+func TestStealLockSurvivesVictimFinishSeamRelease(t *testing.T) {
+	s := newStore(t)
+	_, err := s.AcquireLock("ns", "stolen", "run-victim", time.Minute)
+	require.NoError(t, err)
+	_, err = s.AcquireLock("ns", "other", "run-victim", time.Minute)
+	require.NoError(t, err)
+
+	_, displaced, err := s.StealLock("ns", "stolen", "run-thief", 0)
+	require.NoError(t, err)
+	require.Equal(t, "run-victim", displaced.RunID)
+
+	// The victim finishes; the finish seam frees ITS remaining locks only.
+	require.Equal(t, 1, s.ReleaseRunLocks("run-victim"))
+
+	// "other" is free again; "stolen" is still the thief's.
+	_, err = s.AcquireLock("ns", "other", "run-z", 0)
+	require.NoError(t, err)
+	holder, err := s.AcquireLock("ns", "stolen", "run-z", 0)
+	require.Equal(t, ErrLockHeld, err)
+	require.Equal(t, "run-thief", holder.RunID)
+}
+
+// A steal of a free (or expired, or already-finished-holder) lock degrades
+// to a plain acquire: no displaced party, no error.
+func TestStealLockUncontendedIsPlainAcquire(t *testing.T) {
+	s := newStore(t)
+
+	info, displaced, err := s.StealLock("ns", "free", "run-a", 0)
+	require.NoError(t, err)
+	require.Equal(t, "run-a", info.RunID)
+	require.Empty(t, displaced.RunID)
+
+	// Holder released (e.g. finished) between contention and steal: same.
+	require.NoError(t, s.ReleaseLock("ns", "free", "run-a"))
+	info, displaced, err = s.StealLock("ns", "free", "run-b", 0)
+	require.NoError(t, err)
+	require.Equal(t, "run-b", info.RunID)
+	require.Empty(t, displaced.RunID)
+}
+
+// Stealing a lock the caller already holds is an idempotent re-acquire:
+// nothing displaced, original take time kept.
+func TestStealLockOwnLockIsIdempotent(t *testing.T) {
+	s := newStore(t)
+	first, err := s.AcquireLock("ns", "l", "run-a", time.Minute)
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond)
+
+	again, displaced, err := s.StealLock("ns", "l", "run-a", time.Minute)
+	require.NoError(t, err)
+	require.Empty(t, displaced.RunID)
+	require.Equal(t, first.AcquiredAt, again.AcquiredAt)
+	require.False(t, again.ExpiresAt.Before(first.ExpiresAt))
+}
