@@ -296,7 +296,7 @@ func TestDashboardServesIndex(t *testing.T) {
 
 func TestDashboardServesAssets(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
-	for _, p := range []string{"/dashboard.css", "/dashboard.js"} {
+	for _, p := range []string{"/dashboard.css", "/dashboard.js", "/timeline.js"} {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
 		rec := httptest.NewRecorder()
 		admin(s).ServeHTTP(rec, req)

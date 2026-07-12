@@ -199,34 +199,18 @@ func (s *Store) Get(id string) (runs.RunState, bool) {
 // ListAll returns persisted runs across all hooks, newest-first, without
 // output, capped at max (<=0 means no cap).
 func (s *Store) ListAll(max int) []runs.RunState {
+	return s.ListAllBefore(time.Time{}, max)
+}
+
+// ListAllBefore is ListAll paged into the past: only runs whose Started
+// (the queued/accepted time the index keys carry) is STRICTLY before the
+// given instant, newest-first, capped at max (<=0 means no cap). A zero
+// before applies no bound — identical to ListAll. Clients page by passing
+// the oldest Started they already hold.
+func (s *Store) ListAllBefore(before time.Time, max int) []runs.RunState {
 	var out []runs.RunState
-	now := time.Now()
 	_ = s.db.View(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(bucketMeta)
-		c := tx.Bucket(bucketByTime).Cursor()
-		for k, _ := c.Last(); k != nil; k, _ = c.Prev() {
-			if max > 0 && len(out) >= max {
-				break
-			}
-			started, id, ok := splitKey(k)
-			if !ok {
-				continue
-			}
-			// Keys are chronological, so the first expired one ends the walk.
-			if s.expired(started, now) {
-				break
-			}
-			raw := meta.Get([]byte(id))
-			if raw == nil {
-				continue
-			}
-			var st runs.RunState
-			if err := json.Unmarshal(raw, &st); err != nil {
-				s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
-				continue
-			}
-			out = append(out, st)
-		}
+		out = s.collectBefore(tx, tx.Bucket(bucketByTime), before, max)
 		return nil
 	})
 	return out
@@ -235,40 +219,79 @@ func (s *Store) ListAll(max int) []runs.RunState {
 // ListByHook returns one hook's persisted runs, newest-first, without
 // output, capped at max (<=0 means no cap).
 func (s *Store) ListByHook(hookID string, max int) []runs.RunState {
+	return s.ListByHookBefore(hookID, time.Time{}, max)
+}
+
+// ListByHookBefore is ListByHook paged into the past, with ListAllBefore's
+// exact contract: runs Started strictly before the instant, newest-first,
+// capped at max (<=0 means no cap), zero before meaning no bound.
+func (s *Store) ListByHookBefore(hookID string, before time.Time, max int) []runs.RunState {
 	var out []runs.RunState
-	now := time.Now()
 	_ = s.db.View(func(tx *bolt.Tx) error {
 		hb := tx.Bucket(bucketByHook).Bucket([]byte(hookID))
 		if hb == nil {
 			return nil
 		}
-		meta := tx.Bucket(bucketMeta)
-		c := hb.Cursor()
-		for k, _ := c.Last(); k != nil; k, _ = c.Prev() {
-			if max > 0 && len(out) >= max {
-				break
-			}
-			started, id, ok := splitKey(k)
-			if !ok {
-				continue
-			}
-			if s.expired(started, now) {
-				break
-			}
-			raw := meta.Get([]byte(id))
-			if raw == nil {
-				continue
-			}
-			var st runs.RunState
-			if err := json.Unmarshal(raw, &st); err != nil {
-				s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
-				continue
-			}
-			out = append(out, st)
-		}
+		out = s.collectBefore(tx, hb, before, max)
 		return nil
 	})
 	return out
+}
+
+// collectBefore is the shared list walk: from the position seekBefore
+// selects, it steps the chronological bucket newest-first, decoding each
+// run's metadata record, until max runs are collected (<=0 = no cap) or the
+// first retention-expired key ends the walk.
+func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max int) []runs.RunState {
+	var out []runs.RunState
+	now := time.Now()
+	meta := tx.Bucket(bucketMeta)
+	c := b.Cursor()
+	for k := seekBefore(c, before); k != nil; k, _ = c.Prev() {
+		if max > 0 && len(out) >= max {
+			break
+		}
+		started, id, ok := splitKey(k)
+		if !ok {
+			continue
+		}
+		// Keys are chronological, so the first expired one ends the walk.
+		if s.expired(started, now) {
+			break
+		}
+		raw := meta.Get([]byte(id))
+		if raw == nil {
+			continue
+		}
+		var st runs.RunState
+		if err := json.Unmarshal(raw, &st); err != nil {
+			s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
+			continue
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// seekBefore positions the cursor at the newest key STRICTLY older than the
+// given instant and returns it (nil = nothing older); a zero before starts
+// at the newest key overall. Keys are "<zero-padded-nanos>-<id>", so the
+// bare zero-padded nanos of before sorts before every key at exactly that
+// instant (they continue with '-'): Seek lands on the first key at-or-after
+// before, and one Prev from there is the newest strictly-older key. When
+// Seek returns nil — before is newer than every key — the newest key
+// overall is the answer.
+func seekBefore(c *bolt.Cursor, before time.Time) []byte {
+	if before.IsZero() {
+		k, _ := c.Last()
+		return k
+	}
+	if k, _ := c.Seek(fmt.Appendf(nil, "%019d", before.UnixNano())); k == nil {
+		k, _ = c.Last()
+		return k
+	}
+	k, _ := c.Prev()
+	return k
 }
 
 // SummariesByHook returns skeleton states (ID, HookID, Status, Started,

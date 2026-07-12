@@ -66,8 +66,26 @@
     <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
   </section>
 
-  <section id="runs-section">
-    <h2>Recent runs</h2>
+  <section id="timeline-section">
+    <!-- The primary runs view: a realtime swimlane timeline, one lane per
+         hook (stable hue per hook). A bar runs queued→finished with the
+         queue wait as a dim lead-in; hatching = a declared wait or a
+         blocked lock (with a connector to the holder), emphasis = failure,
+         hollow = cancelled, diamond pips = instant runs. Wheel/drag pans,
+         ctrl/cmd+wheel zooms, and dragging into the past pages history via
+         /runs?before= until retention runs out. Clicking a bar opens the
+         run modal; clicking a lane label opens that hook's page. Rendered
+         by timeline.js (generated from ts/ — see dashboard.go). The old
+         runs table below stays reachable via the toggle. -->
+    <div class="section-head">
+      <h2>Runs</h2>
+      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
+    </div>
+    <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
+  <section id="runs-section" hidden>
+    <h2>Recent runs (list)</h2>
     <!-- The first column is when the run was ACCEPTED (queued) — a run may
          wait for a concurrency-group slot before it actually starts. -->
     <table id="runs-table">
@@ -195,5 +213,8 @@
 <footer class="site-footer">webhook-runner <span id="server-version"></span></footer>
 
 <script src="dashboard.js"></script>
+<!-- timeline.js must load AFTER dashboard.js: it reuses its globals
+     (fetchJSON, el, fmtTime, tsPresent, showRun, …). -->
+<script src="timeline.js"></script>
 </body>
 </html>
