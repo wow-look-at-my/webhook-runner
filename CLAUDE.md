@@ -321,7 +321,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   safety net; like kv, expiry is lazy on reads AND swept in the background —
   keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`,
   where the nanos are the QUEUED/accepted time — leave the key format
-  alone), so GC and newest-first reads are single cursor walks; the per-hook
+  alone), so GC and newest-first reads are single cursor walks — including
+  the `ListAllBefore`/`ListByHookBefore` variants behind `/runs?before=`
+  paging (Seek to the cursor instant's bare nanos prefix, walk Prev:
+  strictly-older, same retention break); the per-hook
   index *value* carries `"<status> <finished-nanos> <startedat-nanos>"`
   (third field = processing start, `0` = never started) so `SummariesByHook`
   (the stats path) never deserializes metadata blobs — don't change one side
