@@ -213,8 +213,12 @@
 <footer class="site-footer">webhook-runner <span id="server-version"></span></footer>
 
 <script src="dashboard.js"></script>
-<!-- timeline.js must load AFTER dashboard.js: it reuses its globals
-     (fetchJSON, el, fmtTime, tsPresent, showRun, …). -->
-<script src="timeline.js"></script>
+<!-- timeline.js is an ES module: it imports the <timeline-view> component at
+     runtime from js-snippets' GitHub Pages (wow-look-at-my.github.io). It
+     must run AFTER dashboard.js (it reuses its globals: fetchJSON, el,
+     fmtTime, tsPresent, showRun, …) — module scripts defer, so the classic
+     dashboard.js above has always executed first. If the Pages fetch fails,
+     only this module is lost: the chart stays empty, the tables still work. -->
+<script type="module" src="timeline.js"></script>
 </body>
 </html>

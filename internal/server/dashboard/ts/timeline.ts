@@ -1,19 +1,27 @@
 /*
  * timeline.ts — the dashboard's primary runs view: a realtime swimlane
- * timeline (one lane per hook) rendered by the vendored <timeline-view>
+ * timeline (one lane per hook) rendered by the generic <timeline-view>
  * canvas element from wow-look-at-my/js-snippets.
  *
  * This file is the webhook-runner adapter: it knows the /runs, /hooks and
  * /config shapes and the runner's semantics (queued vs started_at vs
  * finished, terminal statuses, waiting_on/waiters) and translates them into
  * the component's generic lanes/intervals/connectors model. The component
- * itself is generic and vendored verbatim under ts/vendor/ — fix component
- * bugs upstream, never here.
+ * itself is NOT part of this repo: the browser imports it at runtime from
+ * js-snippets' GitHub Pages (live at master head — the org's standard
+ * js-snippets consumption model), so component fixes reach this dashboard
+ * on js-snippets merge with no runner change. Fix component bugs upstream
+ * in js-snippets; only adapter logic lives here. The import's types come
+ * from the hand-maintained shim in js-snippets-timeline.d.ts.
  *
  * Built by ts0 (see ../ts0.json and the //go:generate directive in
- * dashboard.go) into assets/timeline.js — an IIFE bundle that loads as a
- * classic <script> AFTER dashboard.js and reuses its globals (fetchJSON,
- * el, fmtTime, tsPresent, showRun, … — declared in globals.d.ts).
+ * dashboard.go) into assets/timeline.js — an ES module (the URL import
+ * passes through unbundled) loaded via <script type="module"> AFTER
+ * dashboard.js (module scripts defer; the classic dashboard.js has long
+ * executed) and reusing its globals (fetchJSON, el, fmtTime, tsPresent,
+ * showRun, … — declared in globals.d.ts). If the Pages fetch fails the
+ * module doesn't run: the chart section stays empty and the rest of the
+ * dashboard (dashboard.js's tables) is unaffected.
  *
  * Runner semantics encoded here:
  *   - `started` is the QUEUED/accepted instant; `started_at` (absent while
@@ -39,7 +47,10 @@
  *     fetches the visible window only, never an exhaustive history walk.
  */
 
-import './vendor/js-snippets/ui/timeline-view.ts';
+// Side-effect import: registers the <timeline-view> custom element. The URL
+// is kept verbatim in the built bundle (esbuild `external`) — the browser
+// fetches the component (and its sibling chunk imports) from GitHub Pages.
+import 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
 import type {
 	TimelineConnector,
 	TimelineData,
@@ -48,7 +59,7 @@ import type {
 	TimelineLane,
 	TimelineSegment,
 	TimelineViewElement,
-} from './vendor/js-snippets/ui/timeline-view.ts';
+} from 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
 
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 
