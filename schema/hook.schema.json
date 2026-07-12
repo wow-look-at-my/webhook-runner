@@ -115,6 +115,28 @@
       "type": "string",
       "description": "Legacy: shared secret for HMAC-SHA256 signature verification. Prefer api_key or public_key."
     },
+    "script": {
+      "type": "object",
+      "required": ["file", "interpreter"],
+      "additionalProperties": false,
+      "description": "Run a script file from the hook directory: derives the container command as <interpreter> <file> [args...]. Like all hook code, the script is baked into the hook's image by its Dockerfile (never mounted), so the interpreter must be installed in that image. An explicit command overrides the derived one.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Script file path relative to the hook directory. Must not be a symlink escaping the hook directory."
+        },
+        "interpreter": {
+          "type": "string",
+          "enum": ["bash", "pwsh", "node", "tsx"],
+          "description": "Script interpreter used to invoke the file. Must be installed in the hook's image (e.g. via a shared base image that ships it)."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional arguments passed after the script path."
+        }
+      }
+    },
     "github_status": {
       "type": "object",
       "additionalProperties": false,
