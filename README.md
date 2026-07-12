@@ -89,6 +89,13 @@ graph LR
   equally watchdog-safe, shown as *waiting on lock … held by …* with the
   holder's runs listing their waiters), and `steal` hands the lock to the
   caller while cancelling the displaced run.
+- **Declarative skips**: `skip_if` conditions over the request headers and
+  parsed JSON payload answer unwanted-but-unmutable deliveries (e.g. a
+  GitHub event type bundled into a checkbox you need for another event)
+  immediately, with **no container booted** — recorded as first-class
+  `skipped` runs naming the matched condition, visible on the dashboard
+  and counted in their own stats bucket. See
+  [Skip conditions](#skip-conditions-skip_if).
 - **Immutable hook code**: every hook ships a `Dockerfile` next to its
   `hook.json` and runs an image webhook-runner builds from the hook
   directory, tagged by content hash — code is baked in, a hooks-repo pull
@@ -208,7 +215,7 @@ URL (backed by an internal Unix socket; see below), not a public port.
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version: `{"status":"ok","version":"..."}`. |
 | GET    | `/version`          | Build identity: `{"version","revision","time"}` — the same string `webhook-runner version` prints, plus the VCS commit/time when the build has them. |
-| POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. `503 {"error":"hook disabled by operator"}` while the hook's [kill switch](#operational-overrides-the-kill-switch) is flipped. |
+| POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. `503 {"error":"hook disabled by operator"}` while the hook's [kill switch](#operational-overrides-the-kill-switch) is flipped. An authenticated delivery matching a [`skip_if` condition](#skip-conditions-skip_if) answers immediately (sync hooks included) with `200 {"run_id","status":"skipped","reason"}` and boots no container. |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). Works for disabled hooks too — cancelling is stopping work. |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
 
@@ -435,6 +442,58 @@ life as a host env var and move into the repo without touching hook.json.
 Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
 untouched. Expansion never happens at load/validate time, so CI validation
 needs neither the production environment nor any decryption keys.
+
+## Skip conditions (skip_if)
+
+Webhook sources often can't be narrowed at the sender: GitHub's webhook
+checkboxes bundle event types, so subscribing to an event you want also
+delivers events you don't. Without `skip_if`, each of those boots a
+container just to exit — and "nothing happened" is invisible. With it, the
+unwanted delivery is answered **immediately**, boots **no container** (no
+image build, no concurrency-group slot, no `docker run`), and is recorded
+as a **first-class run** with status `skipped` whose output names exactly
+which condition matched — visible on the runs table, in the activity feed
+(`run.skipped`), and in per-hook stats as its own `skipped` bucket (never
+counted against success rates or durations: no work was done).
+
+```json
+"skip_if": [
+  // Entries are ORed: the first matching condition skips.
+  { "header:x-github-event": "workflow_run" },
+
+  // Keys within one condition are ANDed; a bare string means equality.
+  { "action": { "in": ["labeled", "unlabeled"] }, "sender.type": "Bot" },
+
+  // Operators: eq, ne, in, exists, prefix, regex. Several on one key AND.
+  { "ref": { "prefix": "refs/tags/", "ne": "refs/tags/latest" } }
+]
+```
+
+- A key is a **dotted path into the parsed JSON payload** (`action`,
+  `workflow_run.conclusion`, array elements by index: `commits.0.message`)
+  or a **request header** via the `header:` prefix (name case-insensitive).
+- Comparisons are over stringified scalar leaves: strings as themselves,
+  numbers as their JSON literal text, `true`/`false`/`null` as those words.
+  Objects and arrays are not leaves — only `exists` can see them.
+- **Evaluation is total and fails toward doing the work**: a missing path,
+  a non-leaf value, or a non-JSON payload just means the key doesn't match
+  and the run happens. Skipping is never the failure mode.
+- **Auth comes first**: conditions are evaluated only after the request
+  authenticated (`secret`/`api_key`/`public_key`), so an unauthenticated
+  caller can't probe them — it gets the plain 401.
+- Safe by construction: no expression language, no user code — just these
+  declarative matchers, with `regex` being Go's RE2 (linear-time, no
+  backtracking), compiled at load time. Malformed `skip_if` (unknown
+  operator, non-compiling regex, empty condition) **fails the hook's
+  load/validation** and the hook is dropped, same as an undeclared
+  concurrency group.
+
+The caller gets `200 {"run_id", "status": "skipped", "reason": ...}` right
+away — synchronous hooks included, there is nothing to wait for.
+
+> **Deploy-first:** `skip_if` is a newer `hook.json` field, so deploy a
+> webhook-runner build that understands it before any hook sets it — old
+> binaries reject unknown fields and would drop the hook entirely.
 
 ## Timeouts
 
