@@ -42,6 +42,12 @@ hooks without restart.
   produced no output for that long (any output byte resets the clock) —
   so long-but-chatty work survives while hung work is reaped. See
   [Timeouts](#timeouts).
+- **First-class waits**: a state hook that wants to pause declares it —
+  `POST /wait {"seconds": N, "reason": "..."}` on its state API blocks
+  server-side, shows live on the dashboard as `waiting Ns: reason`, and
+  counts as **activity** for the idle `timeout` — so hooks just sleep
+  in-process instead of deferring work to a later run. See
+  [Timeouts](#timeouts).
 - **Immutable hook code**: every hook ships a `Dockerfile` next to its
   `hook.json` and runs an image webhook-runner builds from the hook
   directory, tagged by content hash — code is baked in, a hooks-repo pull
@@ -207,6 +213,7 @@ own data.
 | POST   | `/kv/{key}/incr` | Atomically add to an integer counter. Optional body `{"delta":N}` (default `+1`) and TTL as for PUT. Returns `{"value":<int64>}`; `409` if the existing value isn't an integer. |
 | POST   | `/kv/{key}/acquire` | Take the cooperative lock named `{key}`, owned by the **calling run** (the identity in the token — no client-side owner tokens). `200` `{"run_id","acquired_at","expires_at"}` when this run took or already held it (idempotent); `409` when another live run holds it (nothing is mutated). Optional body `{"ttl_seconds": 1..3600}` sets the secondary backstop expiry (default 15m). The **primary** release is automatic: when the holding run finishes — success, error, timeout, or cancel — the runner frees all its locks. Locks are in-memory (a restart starts lock-free; no run survives a restart anyway) and separate from stored values: GET/PUT/DELETE on the same key touch the value, never the lock. |
 | POST   | `/kv/{key}/release` | Release early, before the run ends (optional hygiene). `204` released; `404` not held (absent or expired); `409` held by a different run — ownership is verified server-side from the token. |
+| POST   | `/wait`          | **Declared sleep.** Body `{"seconds": 1..600, "reason": "..."}` — both required (a wait must be explained; one call caps at 10 minutes, loop for longer). Blocks ~`seconds`, then returns `200` `{"waited": N}`. While it blocks, the run row on the dashboard shows `waiting Ns: reason` and the wait **counts as activity for the idle `timeout`** — a declared in-process sleep can never be reaped as silence (see [Timeouts](#timeouts)). Returns early with `{"waited": M, "interrupted": true, "cause": "run finished"\|"run cancelled"}` when the run ends or a cancel is requested. `400` invalid body; `409` when the calling run is no longer active. |
 
 ### Sync vs async
 
@@ -287,6 +294,10 @@ Properties:
   releases everything a run still holds the moment it terminates — for any
   reason — so a crashed or killed holder can never wedge a lock (a generous
   TTL backstop exists purely as a belt against bugs).
+- **Waits**: `POST /wait {"seconds": N, "reason": "..."}` is a first-class
+  declared sleep — dashboard-visible and counted as activity for the idle
+  `timeout` (see [Timeouts](#timeouts)) — so a state hook can pause
+  in-process without being reaped for silence.
 
 See the State KV API table above for the full endpoint list. On the admin
 port, `GET /kv` shows per-hook key counts and byte totals, and the inspection
@@ -365,6 +376,17 @@ hung one promptly.
 The clock arms **at container launch**: never while the run is queued
 behind a [concurrency group](#concurrency-groups), decrypting secrets, or
 building its image — a queued run cannot time out.
+
+Silence a hook *chose* doesn't count either: a [state hook](#stateful-hooks-kv-store)
+that needs to pause (a settle window, a retry backoff, polling an external
+system) declares it with `POST /wait {"seconds": N, "reason": "..."}` on its
+state API. The server blocks the call for that long, shows the run as
+`waiting Ns: reason` on the dashboard, and keeps resetting the idle clock
+while the wait is in flight — so an announced sleep is forward progress,
+not a hang, and hooks can simply sleep in-process instead of contorting
+retries into deferred-to-next-tick patterns. One call is capped at 10
+minutes (loop for longer); an undeclared `sleep` is still just silence and
+is reaped as before.
 
 For synchronous requests (`?wait=true` or `"synchronous": true`), the
 hook's `timeout` value also serves as the default bound on how long the

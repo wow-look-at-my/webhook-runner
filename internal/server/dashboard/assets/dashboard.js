@@ -93,6 +93,19 @@ function runDuration(r) {
   return "—";
 }
 
+// A run inside a declared wait (POST /wait on the state API) advertises what
+// it is sleeping for; render that inline on the run row as
+// "waiting Ns: reason". Remaining time is computed client-side from
+// wait_until, so it counts down on the poll cadence; a wait that just
+// elapsed (state not yet refreshed) clamps to 0s.
+function waitNote(r) {
+  if (!r.waiting || !tsPresent(r.wait_until)) return null;
+  const left = new Date(r.wait_until) - Date.now();
+  const t = left > 0 ? fmtDuration(left) : "0s";
+  return el("span", { class: "wait-note" },
+    `waiting ${t}${r.wait_reason ? ": " + r.wait_reason : ""}`);
+}
+
 // --- Views: the global overview vs the per-app (per-hook) drill-down ------
 //
 // The fragment #hook=<id> selects the app view; anything else shows the
@@ -407,7 +420,7 @@ function renderRuns(rs) {
     const tr = el("tr", { data: { runId: r.id } },
       el("td", null, fmtTime(r.started)),
       el("td", null, el("code", null, r.hook_id)),
-      el("td", { class: "status " + r.status }, r.status),
+      el("td", { class: "status " + r.status }, r.status, waitNote(r)),
       el("td", null, String(r.exit_code)),
       el("td", null, el("code", null, r.id)),
     );
@@ -605,7 +618,7 @@ function renderApp(detail, runs, events) {
     // runs); Duration = processing only (live while running).
     const tr = el("tr", null,
       el("td", null, fmtTime(r.started)),
-      el("td", { class: "status " + r.status }, r.status),
+      el("td", { class: "status " + r.status }, r.status, waitNote(r)),
       el("td", null, runWaited(r)),
       el("td", null, runDuration(r)),
       el("td", null, String(r.exit_code)),
@@ -727,6 +740,9 @@ async function showRun(id) {
       ["Waited", runWaited(r)],
       ["Duration", runDuration(r)],
     ];
+    // A live declared wait gets its own row (same text as the run-row note).
+    const wn = waitNote(r);
+    if (wn) rows.push(["Waiting", wn]);
     if (r.error) rows.push(["Error", r.error]);
     for (const [k, v] of rows) {
       dl.appendChild(el("dt", null, k));

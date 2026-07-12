@@ -96,6 +96,18 @@ type RunState struct {
 	// stays in its current status until the container actually dies and
 	// the runner records StatusCancelled.
 	CancelRequested bool `json:"cancel_requested,omitempty"`
+
+	// Waiting is true while the run is inside a declared wait (POST /wait
+	// on the state API): the hook has told the runner it is deliberately
+	// sleeping, so the pause is announced forward progress, not silence.
+	// WaitReason (mandatory on the API) says what it is waiting for and
+	// WaitUntil is when the wait ends — the dashboard renders both live.
+	// All three are transient: cleared when the wait returns and by
+	// Finish, so a terminal run — including the snapshot persisted to the
+	// run store — is never waiting.
+	Waiting    bool      `json:"waiting,omitempty"`
+	WaitReason string    `json:"wait_reason,omitempty"`
+	WaitUntil  time.Time `json:"wait_until,omitzero"`
 }
 
 // Run is the mutex-protected wrapper around a RunState. Always pass *Run
@@ -109,6 +121,17 @@ type Run struct {
 	// onFinish is copied from the tracker at New and immutable after —
 	// read without the mutex. See Tracker.SetOnFinish.
 	onFinish func(RunState)
+
+	// touch resets the runner's idle watchdog for this run. The runner
+	// registers it when it arms the watchdog (container launch); the state
+	// API's declared waits call it (via TouchActivity) so a waiting run
+	// counts as active, never as silent. nil until registered.
+	touch func()
+
+	// waitSeq numbers BeginWait calls so a stale EndWait — from a wait
+	// that was overlapped by a newer one — cannot clear the newer wait's
+	// dashboard state. 0 is never a live sequence.
+	waitSeq uint64
 }
 
 // ID returns the run's stable ID.
@@ -213,6 +236,12 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	if errMsg != "" {
 		r.state.Error = errMsg
 	}
+	// A terminal run is never waiting: clear any in-flight declared wait so
+	// neither the dashboard nor the persisted history (the onFinish snapshot
+	// below is what the run store writes) shows a finished run as sleeping.
+	r.state.Waiting = false
+	r.state.WaitReason = ""
+	r.state.WaitUntil = time.Time{}
 	r.mu.Unlock()
 	close(r.done)
 	if r.onFinish != nil {
@@ -240,6 +269,63 @@ func (r *Run) StartedAt() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state.StartedAt
+}
+
+// SetActivityTouch registers fn as the run's idle-watchdog reset. The runner
+// calls this when it arms the watchdog at container launch; the state API's
+// declared waits then keep the run alive through TouchActivity. Touching a
+// finished run's watchdog is harmless (its firing loop has exited), so
+// nothing ever needs to deregister.
+func (r *Run) SetActivityTouch(fn func()) {
+	r.mu.Lock()
+	r.touch = fn
+	r.mu.Unlock()
+}
+
+// TouchActivity resets the run's idle watchdog, if one is registered. Safe
+// at any lifecycle stage: before the watchdog is armed and after the run
+// finished it is a no-op.
+func (r *Run) TouchActivity() {
+	r.mu.Lock()
+	fn := r.touch
+	r.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// BeginWait marks the run as inside a declared wait (POST /wait on the state
+// API) so the dashboard can show "waiting Ns: reason" live. It returns a
+// sequence token for EndWait: waits normally run one at a time per run, but
+// if a newer wait overlaps an older one the newer state wins and the older
+// EndWait becomes a no-op. A finished run is never marked (returns 0, which
+// EndWait ignores).
+func (r *Run) BeginWait(reason string, until time.Time) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.state.Finished.IsZero() {
+		return 0
+	}
+	r.waitSeq++
+	r.state.Waiting = true
+	r.state.WaitReason = reason
+	r.state.WaitUntil = until
+	return r.waitSeq
+}
+
+// EndWait clears the wait state recorded by the BeginWait that returned seq.
+// A stale token (a newer wait began since) or 0 leaves the current state
+// untouched. Calling it after Finish is a harmless no-op — Finish already
+// cleared the fields.
+func (r *Run) EndWait(seq uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if seq == 0 || seq != r.waitSeq {
+		return
+	}
+	r.state.Waiting = false
+	r.state.WaitReason = ""
+	r.state.WaitUntil = time.Time{}
 }
 
 // LastLines returns up to n trailing lines of output.

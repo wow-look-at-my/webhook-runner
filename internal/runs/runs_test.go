@@ -1,6 +1,7 @@
 package runs
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -259,4 +260,96 @@ func TestStatusTerminal(t *testing.T) {
 	for _, s := range []Status{StatusPending, StatusRunning} {
 		assert.False(t, s.Terminal(), string(s))
 	}
+}
+
+func TestBeginEndWait(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	until := time.Now().UTC().Add(45 * time.Second)
+
+	seq := r.BeginWait("green-settle", until)
+	require.NotZero(t, seq)
+	snap := r.Snapshot(-1)
+	assert.True(t, snap.Waiting)
+	assert.Equal(t, "green-settle", snap.WaitReason)
+	assert.Equal(t, until, snap.WaitUntil)
+
+	r.EndWait(seq)
+	snap = r.Snapshot(-1)
+	assert.False(t, snap.Waiting)
+	assert.Empty(t, snap.WaitReason)
+	assert.True(t, snap.WaitUntil.IsZero())
+}
+
+// The wait fields ride the documented JSON names while a wait is active and
+// vanish entirely (omitempty/omitzero) once it ends — the list and detail
+// endpoints ship RunState verbatim, so this IS the dashboard contract.
+func TestWaitFieldsJSON(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	seq := r.BeginWait("green-settle", time.Now().UTC().Add(30*time.Second))
+
+	b, err := json.Marshal(r.Snapshot(-1))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"waiting":true`)
+	assert.Contains(t, string(b), `"wait_reason":"green-settle"`)
+	assert.Contains(t, string(b), `"wait_until"`)
+
+	r.EndWait(seq)
+	b, err = json.Marshal(r.Snapshot(-1))
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "waiting")
+	assert.NotContains(t, string(b), "wait_reason")
+	assert.NotContains(t, string(b), "wait_until")
+}
+
+// A stale EndWait — from a wait that a newer one overlapped — must not clear
+// the newer wait's state; only the current sequence token does.
+func TestEndWaitIgnoresStaleSequence(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	seq1 := r.BeginWait("first", time.Now().Add(time.Minute))
+	seq2 := r.BeginWait("second", time.Now().Add(2*time.Minute))
+	require.NotEqual(t, seq1, seq2)
+
+	r.EndWait(seq1) // stale: the second wait's state stays
+	snap := r.Snapshot(-1)
+	assert.True(t, snap.Waiting)
+	assert.Equal(t, "second", snap.WaitReason)
+
+	r.EndWait(seq2)
+	assert.False(t, r.Snapshot(-1).Waiting)
+}
+
+// A terminal run is never waiting: Finish clears in-flight wait state, so
+// the OnFinish snapshot (what the run store persists) never carries it, and
+// a BeginWait after the fact is inert.
+func TestFinishClearsWaitState(t *testing.T) {
+	tr := NewTracker()
+	var persisted RunState
+	tr.SetOnFinish(func(st RunState) { persisted = st })
+	r := tr.New("h")
+
+	r.BeginWait("about to die", time.Now().Add(time.Minute))
+	r.Finish(StatusTimeout, -1, "timed out")
+
+	assert.False(t, persisted.Waiting)
+	assert.Empty(t, persisted.WaitReason)
+	assert.True(t, persisted.WaitUntil.IsZero())
+	assert.False(t, r.Snapshot(-1).Waiting)
+
+	assert.Zero(t, r.BeginWait("too late", time.Now().Add(time.Minute)))
+	assert.False(t, r.Snapshot(-1).Waiting)
+}
+
+func TestTouchActivity(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	r.TouchActivity() // no touch registered: a safe no-op
+
+	var touches int
+	r.SetActivityTouch(func() { touches++ })
+	r.TouchActivity()
+	r.TouchActivity()
+	assert.Equal(t, 2, touches)
 }

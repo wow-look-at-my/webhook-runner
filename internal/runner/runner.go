@@ -457,6 +457,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// while one that has gone silent is killed.
 	wd := newIdleWatchdog(timeout, time.Now)
 	wd.Arm()
+	// Declared waits (the state API's POST /wait) count as activity: hand
+	// the run a handle to this watchdog so an in-flight wait keeps touching
+	// it — an announced sleep is forward progress, not silence. Touches on
+	// a finished run are harmless, so this is never deregistered.
+	run.SetActivityTouch(wd.Touch)
 	silent := wd.Watch(stopWatcher)
 	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
 	stderr := &touchReader{r: stderrR, touch: wd.Touch}

@@ -205,6 +205,9 @@ func (s *Server) registerRoutes() {
 	// from the entries the routes above serve.
 	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
 	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
+	// First-class declared sleep: blocks ~N seconds, shows on the dashboard,
+	// and counts as activity for the idle timeout (see wait.go).
+	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))
 }
 
 // runRequestContext returns a background context derived from the server

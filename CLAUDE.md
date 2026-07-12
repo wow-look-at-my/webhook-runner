@@ -96,8 +96,12 @@ The server listens on two TCP ports plus a Unix socket:
   so an edge cache can never pair new HTML with stale assets.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
-  `POST /kv/{key}/incr`, and the run-owned cooperative locks
+  `POST /kv/{key}/incr`, the run-owned cooperative locks
   `POST /kv/{key}/acquire` / `POST /kv/{key}/release` (see the lock bullet
+  under "Things easy to get wrong"), and the first-class declared sleep
+  `POST /wait` (`{"seconds": 1..600, "reason": "..."}`, both required —
+  blocks server-side, shows `waiting Ns: reason` on the run's dashboard
+  row, counts as activity for the idle `timeout`; see the wait bullet
   under "Things easy to get wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
@@ -242,7 +246,11 @@ The companion repo is `wow-look-at-my/webhooks`.
   to the async 202 while the run continues. (The short-lived `idle_timeout`
   field from #30 is REMOVED — `timeout` itself is the idle limit now, and
   `DisallowUnknownFields` means a hook.json still setting `idle_timeout`
-  fails to load; nothing merged ever set it.)
+  fails to load; nothing merged ever set it.) **Declared waits count as
+  activity too**: while a state hook's `POST /wait` is in flight, the wait
+  handler keeps touching the run's watchdog (see the wait bullet below), so
+  an announced in-process sleep is never reaped as silence — only
+  *undeclared* silence times out.
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared
@@ -389,6 +397,33 @@ The companion repo is `wow-look-at-my/webhooks`.
   rule as usual: hooks that call acquire/release need this runner deployed
   first — older runners 404 the routes (hooks should treat 404/405 as
   "primitive unavailable" and degrade, not wedge).
+- First-class waits (`internal/server/wait.go`, `POST /wait` on the state
+  socket): a hook that wants to pause SLEEPS IN-PROCESS by declaring it —
+  `{"seconds": 1..600, "reason": "..."}`, both required (waits must be
+  explained; one call caps at 10 min, loop for longer) — instead of
+  deferring work to a timer/tick pattern. The server blocks ~N seconds and
+  returns `{"waited": N}`, or early with `{"interrupted": true, "cause":
+  "run finished"|"run cancelled"}` when the run ends/cancels (client
+  disconnect just releases the handler). Requires `state: true` — only
+  those hooks have the socket + token. Three coupled mechanisms, don't
+  break any of them: (1) the runner registers the idle watchdog's Touch on
+  the run (`run.SetActivityTouch`, at watchdog arm) and the wait handler
+  keeps calling `TouchActivity` on a cadence derived from the hook's OWN
+  timeout — `min(5s, timeout/3)`, 50ms floor — so a wait always outpaces
+  the watchdog it is holding off (touches before arm / after finish are
+  harmless no-ops; nothing deregisters). (2) Dashboard state is
+  `RunState.Waiting/WaitReason/WaitUntil` set by `Run.BeginWait`/`EndWait`
+  (sequence-tokened so an overlapping newer wait can't be cleared by a
+  stale older one's deferred EndWait); run rows and the run modal render
+  "waiting Ns: reason" with the remaining time computed client-side from
+  `wait_until`. (3) The fields are TRANSIENT: `Finish` clears them before
+  the OnFinish snapshot, so the persisted run history never shows a
+  terminal run as waiting — don't "fix" that. One `run.wait` event is
+  recorded per wait start (hook-scoped, so `?hook=` filters); there is
+  deliberately NO wait-end event — the start message carries the duration,
+  and a retry loop of short waits would double the feed volume. Deploy-first
+  rule as usual: older runners 404 `/wait` (hooks should fall back to a
+  plain sleep — they lose the badge and the activity credit, nothing else).
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at
