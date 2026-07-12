@@ -24,8 +24,9 @@ hooks without restart.
   `http://localhost:9002` URL (`HOOK_KV_URL`) with a scoped `HOOK_KV_TOKEN` —
   any HTTP client, no networking (webhook-runner injects a proxy shim that
   bridges that port to an internal Unix socket). get/put/delete/list, atomic
-  increment, and per-key TTL. Data is disk-backed (survives restarts),
-  bounded, and isolated per hook.
+  increment, per-key TTL, and run-owned cooperative locks (acquire/release,
+  auto-freed when the holding run ends). Data is disk-backed (survives
+  restarts), bounded, and isolated per hook.
 - **Git-backed hooks**: point at a Git repository with
   `WEBHOOK_RUNNER_HOOKS_REPO` and the server clones it on startup.
   Configure a GitHub push webhook to `POST /_reload` to auto-pull on push.
@@ -58,20 +59,42 @@ hooks without restart.
   skip-if-already-running overlap protection and fire-on-startup. See
   [Scheduled hooks](#scheduled-hooks).
 - **Concurrency**: no global queue, each request fires its own container.
-- **Dashboard**: read-only HTML view at `/` on the admin port showing the
+- **Operator kill switch**: disable any hook from the dashboard — deliveries
+  are rejected with a loud `503` and scheduled runs are skipped until it is
+  re-enabled — and override any concurrency group's limit live (declared vs
+  effective always visible). Both are operational state persisted under the
+  data dir: they survive restarts **and** hooks-repo reloads, and every flip
+  is an activity event. See
+  [Operational overrides](#operational-overrides-the-kill-switch).
+- **Dashboard**: HTML view at `/` on the admin port showing the
   full internal state — loaded hooks, per-hook image status (built /
-  will-build-next-run, images on disk), recent runs, and a live activity
+  will-build-next-run, images on disk), runs, and a live activity
   feed (GitHub push webhooks received, git pulls, reloads, load errors,
   image builds, run lifecycle — and rejected requests: unknown hook ids,
   denied auth, unresolvable `${NAME}` references in `api_key`/`env`, so
   "did you receive anything?" always has an answer). One-time setup
-  instructions stay collapsed. Opening a run shows its output with a
+  instructions stay collapsed. The **primary runs view is a realtime
+  swimlane timeline** (a canvas `<timeline-view>`, one lane per hook with
+  a stable hue per hook): each run's queue wait draws as a dim lead-in
+  ahead of its processing time, declared waits and blocked lock acquires
+  hatch (with a connector from the waiter to the lock's holder when the
+  runner reports one), failures are unmissable, cancelled runs render
+  hollow, and instant runs become diamond pips. It follows "now" live;
+  wheel/drag pans, ctrl/cmd+wheel (or pinch) zooms, and dragging into the
+  past auto-loads history via `/runs?before=` until retention runs out
+  (an explicit "history ends here" boundary). Clicking a bar opens the
+  run's output modal, clicking a lane label opens that hook's page, and
+  the classic runs table stays available behind a "Show table" toggle.
+  Opening a run shows its output with a
   per-line timestamp column (the raw view) or per-turn times (the
   conversation view), plus a **Copy log** button that puts the whole
   timestamped log on the clipboard. Every hook also has its own
   drill-down page (`/#hook={id}`, linked from the hooks list) with its
-  config summary, run stats, image state, runs, and activity slice — a
-  per-"app" view, where an app is one hook for now. Run timing is split
+  config summary, run stats, image state, runs, activity slice, and —
+  for `state: true` hooks — a **State (KV)** section listing the hook's
+  stored keys (size, TTL remaining) where clicking a key shows its
+  stored value (pretty-printed when it's JSON) — a per-"app" view,
+  where an app is one hook for now. Run timing is split
   into queue wait and processing time: the runs table shows when a run
   was queued, how long it **Waited** for its concurrency slot, and a
   **Duration** that covers container time only, and the stats keep
@@ -138,8 +161,8 @@ URL (backed by an internal Unix socket; see below), not a public port.
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version: `{"status":"ok","version":"..."}`. |
 | GET    | `/version`          | Build identity: `{"version","revision","time"}` — the same string `webhook-runner version` prints, plus the VCS commit/time when the build has them. |
-| POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. |
-| POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). |
+| POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. `503 {"error":"hook disabled by operator"}` while the hook's [kill switch](#operational-overrides-the-kill-switch) is flipped. |
+| POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). Works for disabled hooks too — cancelling is stopping work. |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
 
 ### Admin port (`:9001`)
@@ -148,27 +171,39 @@ URL (backed by an internal Unix socket; see below), not a public port.
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
-| GET    | `/hooks`            | List loaded hooks (id + description).      |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
-| POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
+| GET    | `/hooks`            | List loaded hooks (id + description + `disabled`, the operator kill-switch state — a disabled hook stays loaded and listed). |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), the operator kill-switch state (`disabled`), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
+| POST   | `/hooks/{id}/disable` | Flip a hook's [kill switch](#operational-overrides-the-kill-switch) off: deliveries are rejected (`503`) and scheduled runs skipped until re-enabled. Idempotent; `404` for unknown hooks; persisted before the response (a persist failure is a loud `500` with nothing half-applied). |
+| POST   | `/hooks/{id}/enable`  | Flip it back on. Idempotent; `404` for unknown hooks. |
+| POST   | `/hook/{id}`        | Trigger a hook (also available here; a disabled hook is `503` here too — re-enable it to run it). |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
-| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
+| GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). `?before=<RFC3339 timestamp>` (fractional seconds optional) pages into history: only runs queued **strictly before** that instant — pass the oldest `started` you already hold as the next cursor, so consecutive pages tile with no gap or overlap (a malformed value is a `400`; omitted means unpaged). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. |
 | GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
-| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`) and unresolved env references (`env.unresolved`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
+| GET    | `/config`           | Dashboard setup info: `hooks_repo`, `hook_base_url`, `reload_secret` (each only when set), plus `run_retention` — the persisted run-history window as a compact duration (e.g. `48h`), i.e. how far back `/runs?before=` paging can ever reach — present only when the run store is configured. |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), unresolved env references (`env.unresolved`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
-| GET    | `/concurrency`      | Live state of every declared concurrency group: its `limit`, how many runs are `active`, and how many are `waiting` (queued) behind it. |
-| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total. Never exposes stored values. |
+| GET    | `/concurrency`      | Live state of every declared concurrency group: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it. |
+| PUT    | `/concurrency/{group}/limit` | Override a group's limit live: body `{"limit": N}`, `N >= 1` (`0` is rejected — it would deadlock queued runs; to stop a group's hooks entirely, disable the hooks). `404` for undeclared groups. The swap is safe with runs in flight, and the override survives reloads and restarts until deleted. |
+| DELETE | `/concurrency/{group}/limit` | Remove the override; the declared limit takes effect again. Idempotent; also accepts a group that is no longer declared but still has a stored (orphaned) override. |
+| GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total (no values at this level; shape unchanged for existing consumers). |
+| GET    | `/kv/{namespace}`   | List one namespace's keys (namespace == hook ID): per key its name, value size in bytes, and — when a TTL is set — `expires_at` (absolute) plus `ttl_seconds` (remaining); both absent for keys without a TTL. Sorted by key; `?prefix=` filters. Unknown/empty namespaces list as empty. |
+| GET    | `/kv/{namespace}/{key}` | Read one entry: the metadata above **plus the stored value** — `value_base64` always, `value_utf8` additionally when the bytes are valid UTF-8. `404` when absent **or expired** (the same lazy-expiry rule the state API applies). The key is one path segment: URL-encode it (`%2F` for `/`, `%23` for `#`). |
 | GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
 
 The dashboard's static assets are content-addressed: the served index.html
-references `/dashboard.<hash>.css|.js` (hash of the embedded bytes), which are
-cacheable forever (`Cache-Control: immutable` + ETag) — a new build changes
-the URLs. `/`, the bare `/dashboard.css|.js` paths, and any stale-hash URL
-(404) are `no-cache`, so an edge cache (e.g. Cloudflare, which caches
-`.css`/`.js` by extension when the origin sends no cache headers) can never
-pair a new index.html with stale assets after a deploy.
+references `/dashboard.<hash>.css|.js` and `/timeline.<hash>.js` (hash of the
+embedded bytes), which are cacheable forever (`Cache-Control: immutable` +
+ETag) — a new build changes the URLs. `/`, the bare
+`/dashboard.css|.js`/`/timeline.js` paths, and any stale-hash URL (404) are
+`no-cache`, so an edge cache (e.g. Cloudflare, which caches `.css`/`.js` by
+extension when the origin sends no cache headers) can never pair a new
+index.html with stale assets after a deploy. `timeline.js` is **generated**
+(TypeScript compiled by ts0 via `go generate` — see
+[Dashboard TypeScript](#dashboard-typescript)) but committed, so `go:embed`
+works on a fresh clone; CI regenerates it and fails on any diff, so the
+committed bundle can never go stale.
 
 ### State KV API (`http://localhost:9002` in state hooks)
 
@@ -188,6 +223,8 @@ own data.
 | DELETE | `/kv/{key}`      | Remove a key (idempotent `204`).                               |
 | GET    | `/kv`            | List the caller's keys: `{"keys":[...]}` (sorted, non-expired). |
 | POST   | `/kv/{key}/incr` | Atomically add to an integer counter. Optional body `{"delta":N}` (default `+1`) and TTL as for PUT. Returns `{"value":<int64>}`; `409` if the existing value isn't an integer. |
+| POST   | `/kv/{key}/acquire` | Take the cooperative lock named `{key}`, owned by the **calling run** (the identity in the token — no client-side owner tokens). `200` `{"run_id","acquired_at","expires_at"}` when this run took or already held it (idempotent); `409` when another live run holds it (nothing is mutated). Optional body `{"ttl_seconds": 1..3600}` sets the secondary backstop expiry (default 15m). The **primary** release is automatic: when the holding run finishes — success, error, timeout, or cancel — the runner frees all its locks. Locks are in-memory (a restart starts lock-free; no run survives a restart anyway) and separate from stored values: GET/PUT/DELETE on the same key touch the value, never the lock. |
+| POST   | `/kv/{key}/release` | Release early, before the run ends (optional hygiene). `204` released; `404` not held (absent or expired); `409` held by a different run — ownership is verified server-side from the token. |
 
 ### Sync vs async
 
@@ -262,9 +299,23 @@ Properties:
   runaway hook from exhausting disk (oversize writes get `413`).
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
+- **Locks**: `acquire`/`release` give same-hook runs a race-free mutual
+  exclusion primitive without any of the GET-then-PUT races a client-side
+  lock would have. A lock belongs to the acquiring **run**, and the runner
+  releases everything a run still holds the moment it terminates — for any
+  reason — so a crashed or killed holder can never wedge a lock (a generous
+  TTL backstop exists purely as a belt against bugs).
 
-See the State KV API table above for the full endpoint list. The admin port's
-`GET /kv` shows per-hook key counts and byte totals (never values).
+See the State KV API table above for the full endpoint list. On the admin
+port, `GET /kv` shows per-hook key counts and byte totals, and the inspection
+routes `GET /kv/{namespace}` / `GET /kv/{namespace}/{key}` list a hook's keys
+(with sizes and TTLs) and read stored **values** — also surfaced on the
+dashboard as a *State (KV)* section on each state hook's page (click a key to
+view its value). Exposing values on the admin port is deliberate: whatever a
+hook stores becomes readable there, so keep that port operator-only (Zero
+Trust — the same trust the un-authenticated `/reload` and run cancellation
+already assume). Values never appear on the public hook port, and
+`/hooks/{id}` stays value-free.
 
 > **Deploy-first:** `state` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"state":
@@ -393,6 +444,42 @@ group never reads as a slow run.
 
 The schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
+
+## Operational overrides (the kill switch)
+
+When a hook runs away — a retry storm, a sweep flooding an org with PRs —
+the operator needs to stop it **now**, not after a config PR merges and
+reloads. The dashboard (and the admin API behind it) has a big red switch
+for exactly that:
+
+- **Disable a hook**: the toggle on the hook list / per-hook page (or
+  `POST /hooks/{id}/disable`). Deliveries are rejected with a loud, distinct
+  `503 {"error":"hook disabled by operator"}` (never a silent drop or a
+  confusable 404/401), scheduled runs are skipped with a `schedule.skipped`
+  event, and every rejected delivery lands on the activity feed
+  (`hook.disabled_rejected`). The hook stays loaded — config, image state,
+  and run history intact — only dispatch is gated. In-flight runs are not
+  killed (cancel them from the dashboard if needed; cancellation still
+  works while disabled). `POST /hooks/{id}/enable` flips it back.
+- **Override a concurrency limit**: the Override/Revert controls in the
+  dashboard's concurrency section (or `PUT`/`DELETE
+  /concurrency/{group}/limit`). The new limit takes effect immediately —
+  runs already holding slots finish normally; new runs are gated by the
+  override. `/concurrency` and the dashboard always show **declared vs
+  effective** so an active override is visible at a glance. A limit of `0`
+  is rejected: it would leave queued runs blocked forever — to stop a
+  group's hooks entirely, disable the hooks.
+
+Overrides are **operational state, not hooks-repo config**: they persist in
+`<data-dir>/overrides.json` (atomic writes; a failed write is a `500` and
+nothing is half-applied) and survive both server **restarts** and hooks-repo
+**reloads** — a config push can never silently un-disable a hook or revert a
+limit override. If a reload removes the hook/group an override points at,
+the override is kept inert and announced once on the activity feed
+(`override.orphaned`); it re-applies automatically if the target comes back.
+Every flip is an activity event (`hook.disabled`, `hook.enabled`,
+`concurrency.overridden`, `concurrency.override_cleared`), so the feed
+answers "who turned this off, and when?".
 
 ## Scheduled hooks
 
@@ -631,8 +718,32 @@ running it from the repo root handles `go mod tidy`, tests, coverage,
 and a binary build.
 
 ```sh
-go-toolchain
+go-toolchain --generate 65524d6e099d
 ```
+
+The `--generate` flag approves the repo's one `//go:generate` directive (the
+dashboard TypeScript build, below). The hash is over the directive's text —
+if the directive changes, a bare `go-toolchain` run prints the new hash to
+approve.
+
+### Dashboard TypeScript
+
+The dashboard's runs timeline is TypeScript under
+`internal/server/dashboard/ts/` — `timeline.ts` (the webhook-runner adapter)
+plus the vendored generic `<timeline-view>` component from
+[js-snippets](https://github.com/wow-look-at-my/js-snippets) under
+`ts/vendor/` (pinned to a commit; fix component bugs upstream and re-copy,
+never edit the vendored files). [ts0](https://github.com/wow-look-at-my/ts0)
+type-checks (strict `tsc`, an unskippable gate) and bundles it into
+`internal/server/dashboard/assets/timeline.js` per `ts0.json`.
+
+To change the timeline: edit files under `ts/`, run
+`go generate ./internal/server/dashboard` (or the `go-toolchain --generate`
+invocation above, which does it as part of the build — Node 22+ required),
+and commit the regenerated `assets/timeline.js` together with the source.
+**Never edit `assets/timeline.js` by hand** — it carries a DO-NOT-EDIT
+banner, and CI rebuilds it and fails on any difference from the committed
+bytes.
 
 ## Notes
 

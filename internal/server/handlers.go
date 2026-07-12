@@ -39,8 +39,21 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.version)
 }
 
+// hookListEntry is one row of GET /hooks: the registry summary plus the
+// operator kill-switch state (disabled hooks stay loaded and listed —
+// only their dispatch is gated).
+type hookListEntry struct {
+	hooks.Summary
+	Disabled bool `json:"disabled"`
+}
+
 func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.registry.List())
+	list := s.registry.List()
+	out := make([]hookListEntry, 0, len(list))
+	for _, sum := range list {
+		out = append(out, hookListEntry{Summary: sum, Disabled: s.overrides.HookDisabled(sum.ID)})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +66,20 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		s.events.Record("hook.unknown", "trigger for unknown hook "+id+" from "+r.RemoteAddr,
 			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
+		return
+	}
+
+	// The operator kill switch gates DISPATCH only: the hook stays loaded
+	// (image state, config, runs all intact) but no new run starts — not
+	// even from the admin port (re-enable it to run it). Checked before the
+	// body/auth so a runaway caller is cut off at minimal cost, and
+	// answered with a deliberately distinct, loud 503 (a 404/401 would read
+	// as a routing or key problem).
+	if s.overrides.HookDisabled(id) {
+		s.events.Record("hook.disabled_rejected",
+			hook.ID+": delivery rejected — hook is disabled by operator (from "+r.RemoteAddr+")",
+			map[string]string{"hook": hook.ID})
+		writeError(w, http.StatusServiceUnavailable, "hook disabled by operator")
 		return
 	}
 
@@ -133,7 +160,9 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 // hook (for api_key hooks the body is irrelevant; for signature hooks the
 // signature covers whatever body the caller sent). The response is 202 —
 // cancellation is a request: the run reaches "cancelled" once the runner
-// has actually killed the container.
+// has actually killed the container. Deliberately NOT gated by the
+// operator kill switch: cancelling a disabled hook's in-flight runs is
+// stopping work, which is what disabling is for.
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
@@ -238,25 +267,48 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), max))
+	// ?before= pages into history: only runs queued STRICTLY before the
+	// instant (RFC3339, fractional seconds optional). Clients page by
+	// passing the oldest `started` they already hold. Omitted = no bound.
+	var before time.Time
+	if b := r.URL.Query().Get("before"); b != "" {
+		t, err := time.Parse(time.RFC3339Nano, b)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid before=%q: want an RFC3339 timestamp", b))
+			return
+		}
+		before = t
+	}
+	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), before, max))
 }
 
 // mergedRuns is the /runs read path: live tracker runs (active + recent)
 // merged with the persisted completed history, deduped by run ID (the live
 // copy wins — for the same run it can never be older than the persisted
-// one), newest-first, capped at max. Output is never shipped in the list
-// view; clients fetch /runs/{id} for that.
-func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
+// one), newest-first, capped at max. A non-zero before keeps only runs
+// queued strictly before it (the page cursor); zero means unbounded. Output
+// is never shipped in the list view; clients fetch /runs/{id} for that.
+func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.RunState {
+	// With a cursor the newest-max live window may sit entirely at-or-after
+	// it, hiding older live runs behind the cap — list uncapped (the tracker
+	// is bounded anyway) and let the filter plus the final cap do the work.
+	liveMax := max
+	if !before.IsZero() {
+		liveMax = 0
+	}
 	var live []*runs.Run
 	if hookID != "" {
-		live = s.tracker.ListByHook(hookID, max)
+		live = s.tracker.ListByHook(hookID, liveMax)
 	} else {
-		live = s.tracker.ListAll(max)
+		live = s.tracker.ListAll(liveMax)
 	}
 	out := make([]runs.RunState, 0, len(live))
 	seen := make(map[string]struct{}, len(live))
 	for _, r := range live {
 		snap := r.Snapshot(0)
+		if !before.IsZero() && !snap.Started.Before(before) {
+			continue
+		}
 		snap.Output = nil
 		snap.OutputTimes = nil
 		out = append(out, snap)
@@ -265,9 +317,9 @@ func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
 	if s.runstore != nil {
 		var persisted []runs.RunState
 		if hookID != "" {
-			persisted = s.runstore.ListByHook(hookID, max)
+			persisted = s.runstore.ListByHookBefore(hookID, before, max)
 		} else {
-			persisted = s.runstore.ListAll(max)
+			persisted = s.runstore.ListAllBefore(before, max)
 		}
 		for _, st := range persisted {
 			if _, dup := seen[st.ID]; dup {
@@ -428,7 +480,9 @@ func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleKVStats reports per-namespace key counts and byte totals for the
-// state store (admin port). It never exposes stored values.
+// state store (admin port). This level stays value-free (and its shape is
+// stable for existing consumers); keys and values are inspectable one level
+// down via /kv/{namespace} and /kv/{namespace}/{key} (see kvadmin.go).
 func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
 	if s.kv == nil {
 		writeJSON(w, http.StatusOK, []kv.NamespaceStat{})
@@ -447,6 +501,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.reloadSecret != "" {
 		cfg["reload_secret"] = s.reloadSecret
+	}
+	// The persisted-history window, compacted like stats.retention ("48h") —
+	// how far back /runs?before= paging can ever reach, so a client can mark
+	// "history ends here". Absent when no run store is configured.
+	if s.runstore != nil {
+		cfg["run_retention"] = compactDuration(s.runstore.Retention())
 	}
 	writeJSON(w, http.StatusOK, cfg)
 }

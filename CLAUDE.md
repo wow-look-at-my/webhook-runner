@@ -13,9 +13,10 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded read-only HTML dashboard
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline TypeScript (adapter + vendored <timeline-view> from js-snippets) that go:generate compiles via ts0 into the committed assets/timeline.js
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
-internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager
+internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
+internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
 internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
 internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
 internal/runner/           docker run dispatch + output streaming + image build/status
@@ -64,20 +65,52 @@ The server listens on two TCP ports plus a Unix socket:
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
   newest-first), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries), `/images` (per-hook image state), `/concurrency` (live
-  per-group limit/active/waiting), `/kv` (read-only state-store stats:
-  per-namespace key count and bytes, never values). Internal, behind
-  Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment opens a
-  per-hook "app" page built on those endpoints — an app is exactly one
-  hook for now; grouping several hooks into one app is future work, which
-  is why `/hooks/{id}` keeps a hook-scoped shape a grouping layer could
-  aggregate. Dashboard assets are content-addressed (`internal/server/
-  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js`, served
+  event carries), `/images` (per-hook image state), the operator kill
+  switch (`POST /hooks/{id}/disable|enable`,
+  `PUT|DELETE /concurrency/{group}/limit` — see the overrides bullet under
+  "Things easy to get wrong"), `/concurrency` (live per-group
+  effective limit/declared/overridden/active/waiting), `/kv` (read-only state-store stats:
+  per-namespace key count and bytes — shape unchanged, still value-free),
+  `/kv/{namespace}` (one namespace's keys, sorted, `?prefix=` filters:
+  name, size, and `expires_at` + remaining `ttl_seconds` when a TTL is
+  set — the entry model tracks nothing else, so no created/updated
+  stamps), and `/kv/{namespace}/{key}` (one entry **including its
+  value**: `value_base64` always, `value_utf8` when the bytes are valid
+  UTF-8; 404 on absent-or-expired via the same lazy-expiry rule as the
+  state API). Exposing values on `/kv/{namespace}/{key}` is a
+  **deliberate reversal** of the original "never values" stance, made at
+  the operator's explicit request — the admin port is operator-only
+  behind Zero Trust; the hook port and `/hooks/{id}` stay value-free
+  (`/hooks/{id}`'s KV field remains the count/bytes summary). Internal,
+  behind Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment
+  opens a per-hook "app" page built on those endpoints — an app is
+  exactly one hook for now; grouping several hooks into one app is
+  future work, which is why `/hooks/{id}` keeps a hook-scoped shape a
+  grouping layer could aggregate. For `state: true` hooks that app page
+  renders a "State (KV)" section: the key table (name, size, TTL
+  remaining) with click-through to the stored value (pretty-printed when
+  it parses as JSON, base64 for binary; text-node rendering, so stored
+  bytes can't inject markup). The overview's PRIMARY runs view is a
+  realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
+  hook, hue per hook): queue wait as a dim lead-in segment, declared
+  waits/blocked locks hatched (connector to the lock holder), failures
+  emphasized, cancelled hollow, instant runs as pips; wheel/drag
+  pan + zoom, and panning into the past pages `/runs?before=` history
+  down to retention (`/config`'s `run_retention` labels the boundary).
+  A bar click opens the run modal, a lane-label click opens `#hook={id}`,
+  and the old runs table stays behind a persisted "Show table" toggle.
+  waiting_on/waiters and unknown statuses are feature-detected, so the
+  timeline works against servers with or without first-class waits.
+  Dashboard assets are content-addressed (`internal/server/
+  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js` +
+  `/timeline.<hash>.js`, served
   immutable; `/` and the bare asset paths are no-cache, stale hashes 404)
   so an edge cache can never pair new HTML with stale assets.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
-  `POST /kv/{key}/incr`. Hooks don't touch the socket directly: the runner
+  `POST /kv/{key}/incr`, and the run-owned cooperative locks
+  `POST /kv/{key}/acquire` / `POST /kv/{key}/release` (see the lock bullet
+  under "Things easy to get wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
   `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
@@ -241,6 +274,31 @@ The companion repo is `wow-look-at-my/webhooks`.
   `concurrency.Manager`, and the `scheduler.Scheduler` must update
   atomically together or a hook can be registered before its group exists
   (or scheduled after it's been dropped).
+- Operator overrides (`internal/overrides`) are the kill switch — exactly
+  the "big red switch" for a runaway hook (a describe retry storm, a sweep
+  flooding PRs): flip it on the dashboard instead of merging a config PR or
+  deleting a repo. They are **operational state in the data dir**
+  (`<data-dir>/overrides.json`, atomic temp+rename writes; a persist
+  failure rolls the in-memory flip back and surfaces as a 500 + an
+  `override.write_failed` event — same loud-write rule as kv), NOT
+  hooks-repo config. The disable gate lives **at dispatch, not load**: a
+  disabled hook stays loaded/registered (image state, config, run history
+  intact) and `handleTrigger` rejects deliveries with a distinct 503 +
+  `hook.disabled_rejected` event, while `buildScheduleFire` skips its
+  scheduled runs (`schedule.skipped`, reason "disabled by operator");
+  run *cancellation* is deliberately not gated. Reloads **re-apply**
+  overrides, never silently wipe them: the trigger/schedule gates read the
+  store at dispatch time, and `concurrency.Manager` keeps limit overrides
+  in an internal map that `Update` re-applies atomically (the semaphore
+  swap is token-safe because releases capture their channel — the same
+  invariant as reload). The store is opened in `runServe` BEFORE the first
+  load and seeds the manager, so boot state reflects persisted overrides.
+  An override whose hook/group vanishes on a reload is kept inert and
+  announced ONCE per orphaning via `override.orphaned`
+  (`announceOrphanedOverrides` dedups across reloads); it re-applies if the
+  target returns. Concurrency overrides must be >= 1 — a 0 limit is
+  rejected everywhere (store, manager, HTTP) because it would deadlock
+  queued runs; disabling the hooks is the way to stop them entirely.
 - The scheduler (`internal/scheduler`) fires hooks declaring a `schedule`
   (a Go duration on `Hook`, validated in `hook.validate`) on a timer. Like
   `concurrency.Manager` it is a **pure** component: it owns only timing and
@@ -275,7 +333,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   safety net; like kv, expiry is lazy on reads AND swept in the background —
   keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`,
   where the nanos are the QUEUED/accepted time — leave the key format
-  alone), so GC and newest-first reads are single cursor walks; the per-hook
+  alone), so GC and newest-first reads are single cursor walks — including
+  the `ListAllBefore`/`ListByHookBefore` variants behind `/runs?before=`
+  paging (Seek to the cursor instant's bare nanos prefix, walk Prev:
+  strictly-older, same retention break); the per-hook
   index *value* carries `"<status> <finished-nanos> <startedat-nanos>"`
   (third field = processing start, `0` = never started) so `SummariesByHook`
   (the stats path) never deserializes metadata blobs — don't change one side
@@ -292,7 +353,14 @@ The companion repo is `wow-look-at-my/webhooks`.
   hook plus a `state-secret` file. Writes are atomic (temp+rename) and a persist failure
   rolls the in-memory mutation back, so memory never diverges from disk —
   don't "optimize" by keeping an in-memory-only value on write failure or you
-  break the survives-a-restart guarantee. TTL is enforced lazily on read AND
+  break the survives-a-restart guarantee. A rolled-back write is loud
+  end-to-end: the store returns the error, the state API surfaces it as a
+  500 (body carries the reason), and the server logs it and records a
+  `kv.write_failed` event on the activity feed (`Server.writeKVError` in
+  internal/server/state.go) — never a quiet degrade. (The sweeper's persist
+  failures are log-only inside `internal/kv` — it has no events.Recorder,
+  and an expired-entry cleanup failing to flush is invisible to reads
+  either way.) TTL is enforced lazily on read AND
   by a background sweeper (`StartSweeper`/`Close`); keep both. The store is
   bounded (64 KiB/value, 5000 keys/namespace, 256 namespaces by default —
   zero-valued `kv.Config` fields fall back to these in `kv.New`);
@@ -304,8 +372,38 @@ The companion repo is `wow-look-at-my/webhooks`.
   runner bind-mounts the KV socket + the proxy shim, sets the shim as the
   container `--entrypoint`, and injects `HOOK_KV_SOCKET`, `HOOK_KV_URL`
   (`http://localhost:9002`), and `HOOK_KV_TOKEN` (all `ReservedEnvKey`). The
-  token is a stateless HMAC over the hook ID (`kv.Token`/`VerifyToken`) —
-  namespace == hook ID, minted per run, nothing to store or expire.
+  token is a stateless HMAC over the hook ID AND the run ID
+  (`kv.Token(ns, runID)`/`VerifyToken` returning both) — namespace == hook
+  ID, minted per run, nothing to store or expire. The run identity in the
+  token is what binds cooperative locks to their holding run; the retired
+  two-part (namespace-only) format no longer verifies, which is fine
+  because tokens never outlive their run.
+- Cooperative locks (`internal/kv/lock.go`, `POST /kv/{key}/acquire` /
+  `/release`) are **owned by run instances, not by client-managed tokens**:
+  the state token carries the run ID, acquire/release are atomic under the
+  lock table's own mutex (the compare-and-set/compare-and-delete a hook
+  could never build from GET+PUT), and the **primary** release mechanism is
+  the run tracker's OnFinish seam — `server.RunFinishCallback` (wired in
+  cli/serve.go; it lives in internal/server, beside the lock handlers, so
+  the cli package stays test-free) calls `kv.ReleaseRunLocks(runID)`
+  BEFORE the runstore write, so a run
+  that ends for ANY reason (success, error, timeout kill, cancel — Finish
+  fires exactly once on every terminal path) drops all its locks even if
+  the history write fails; leftovers surface as a `lock.released_on_finish`
+  event. The TTL is a SECONDARY backstop only (default `kv.DefaultLockTTL`
+  15m, explicit `ttl_seconds` 1..3600) against a release-path bug — never
+  the liveness story — and a CONTENDED acquire mutates nothing (in
+  particular it never restamps the holder's expiry, so contenders can't
+  keep a dead lock alive). The table is **in-memory on purpose**: no run
+  survives a server restart, so a restart correctly starts lock-free —
+  don't "fix" that by persisting locks. Locks are NOT entries: they never
+  appear in GET/PUT/DELETE/list, the namespace files, or the admin KV
+  views; the same key string can hold a value and a lock independently.
+  Same-run re-acquire is idempotent (refreshes the backstop, keeps
+  acquiredAt); cross-run release is refused server-side (409). Deploy-first
+  rule as usual: hooks that call acquire/release need this runner deployed
+  first — older runners 404 the routes (hooks should treat 404/405 as
+  "primitive unavailable" and degrade, not wedge).
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at
@@ -322,3 +420,24 @@ The companion repo is `wow-look-at-my/webhooks`.
   host-gateway and a shared Docker network proved more fragile; the shim keeps
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
+- The dashboard timeline is a **generated-asset pipeline** with several
+  interlocking pins — get any one wrong and CI goes red:
+  `internal/server/dashboard/ts/timeline.ts` (+ vendored component) is
+  compiled by ts0 into the COMMITTED `assets/timeline.js` (go:embed needs
+  it on a fresh clone; the bundle carries a DO-NOT-EDIT banner — never
+  hand-edit it, edit ts/ and regenerate). The `//go:generate` directive in
+  dashboard.go runs ts0 **via `npx --yes npm@11 exec`** (npm 10's npx
+  cannot install git deps that need a prepare build — a known npm bug)
+  pinned to a **full ts0 commit SHA**; go-toolchain executes directives
+  only with an approval hash over the directive text (`--generate
+  65524d6e099d` locally, the `generate:` input in ci.yml) — **any edit to
+  the directive line changes the hash**; a bare `go-toolchain` run prints
+  the new one to re-approve in both places. Regeneration needs Node 22+
+  and (in CI) authenticated git for the private ts0 repo — ci.yml's
+  setup-node + insteadOf rewrites, followed by the freshness gate
+  `git diff --exit-code -- internal/server/dashboard/assets/` (a stale
+  committed bundle or a TypeScript type error fails the build; ts0's
+  strict tsc gate runs inside the generate step). The vendored component
+  under `ts/vendor/js-snippets/ui/` is a verbatim pinned copy: fix bugs
+  UPSTREAM in js-snippets, `pnpm test && pnpm build` there, then re-copy
+  the files and update the SHA in their provenance headers.

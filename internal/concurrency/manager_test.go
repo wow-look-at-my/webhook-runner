@@ -166,6 +166,8 @@ func TestStatus(t *testing.T) {
 	require.Len(t, st, 1)
 	assert.Equal(t, "g", st[0].Name)
 	assert.Equal(t, 2, st[0].Limit)
+	assert.Equal(t, 2, st[0].Declared)
+	assert.False(t, st[0].Overridden)
 	assert.Equal(t, 0, st[0].Active)
 
 	rel, _, _ := m.Acquire("g", nil, nil)
@@ -175,4 +177,145 @@ func TestStatus(t *testing.T) {
 
 	var nilMgr *Manager
 	assert.Nil(t, nilMgr.Status())
+}
+
+// The load-bearing override invariant: swapping a group's semaphore while
+// runs are active never loses or double-counts a token. A run holding a
+// slot releases into the exact channel it acquired from (captured by its
+// release closure); new acquires are gated by the new semaphore only.
+func TestSetLimitOverrideSwapIsSafeWithRunsInFlight(t *testing.T) {
+	m := NewManager(&Config{Groups: map[string]Group{"g": {Limit: 1}}})
+
+	// A run is active under the declared limit-1 semaphore.
+	rel1, ok, err := m.Acquire("g", nil, nil)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Operator raises the limit to 2: fresh semaphore, two free slots.
+	require.NoError(t, m.SetLimitOverride("g", 2))
+	st := m.Status()
+	require.Len(t, st, 1)
+	assert.Equal(t, 2, st[0].Limit)
+	assert.Equal(t, 1, st[0].Declared)
+	assert.True(t, st[0].Overridden)
+
+	rel2, ok, _ := tryAcquire(m, "g")
+	require.True(t, ok)
+	rel3, ok, _ := tryAcquire(m, "g")
+	require.True(t, ok)
+	_, ok, _ = tryAcquire(m, "g")
+	assert.False(t, ok, "the overridden limit (2) must gate new acquires")
+
+	// The pre-swap run releases into the OLD semaphore: it must not free a
+	// slot in the new one (that would double-count), and it must not panic.
+	rel1()
+	rel1() // double release stays idempotent across the swap
+	_, ok, _ = tryAcquire(m, "g")
+	assert.False(t, ok, "an old-semaphore release must not free a new-semaphore slot")
+
+	// Releasing a post-swap holder frees exactly one new-semaphore slot.
+	rel2()
+	rel4, ok, _ := tryAcquire(m, "g")
+	require.True(t, ok, "a new-semaphore release must free a slot")
+
+	// Clearing the override reverts to the declared limit (1) with the same
+	// swap semantics: the two in-flight holders drain into their own
+	// channel, and new acquires see exactly one declared slot.
+	m.ClearLimitOverride("g")
+	st = m.Status()
+	assert.Equal(t, 1, st[0].Limit)
+	assert.False(t, st[0].Overridden)
+	rel5, ok, _ := tryAcquire(m, "g")
+	require.True(t, ok)
+	_, ok, _ = tryAcquire(m, "g")
+	assert.False(t, ok, "the declared limit must gate after the override clears")
+	rel3()
+	rel4()
+	rel5()
+}
+
+func TestSetLimitOverrideRejectsBelowOne(t *testing.T) {
+	m := NewManager(&Config{Groups: map[string]Group{"g": {Limit: 1}}})
+	require.Error(t, m.SetLimitOverride("g", 0), "a 0 limit would deadlock queued runs")
+	require.Error(t, m.SetLimitOverride("g", -1))
+	st := m.Status()
+	assert.Equal(t, 1, st[0].Limit)
+	assert.False(t, st[0].Overridden)
+}
+
+// A reload (Update) must re-apply the operator's override on top of the
+// fresh declared config — never silently revert it.
+func TestUpdateReappliesOverride(t *testing.T) {
+	cfg := &Config{Groups: map[string]Group{"g": {Limit: 3}}}
+	m := NewManager(cfg)
+	require.NoError(t, m.SetLimitOverride("g", 1))
+
+	// Saturate the overridden limit, then reload with the same declared
+	// config: the override must still be in effect, and — because the
+	// effective limit didn't change — the in-flight slot must survive.
+	rel, ok, _ := tryAcquire(m, "g")
+	require.True(t, ok)
+	m.Update(&Config{Groups: map[string]Group{"g": {Limit: 3}}})
+	st := m.Status()
+	require.Len(t, st, 1)
+	assert.Equal(t, 1, st[0].Limit, "reload must re-apply the override")
+	assert.Equal(t, 3, st[0].Declared)
+	assert.True(t, st[0].Overridden)
+	assert.Equal(t, 1, st[0].Active, "in-flight accounting must survive an override-preserving reload")
+	_, ok, _ = tryAcquire(m, "g")
+	assert.False(t, ok)
+	rel()
+
+	// Clearing the override then reloading reports the declared limit.
+	m.ClearLimitOverride("g")
+	m.Update(&Config{Groups: map[string]Group{"g": {Limit: 3}}})
+	st = m.Status()
+	assert.Equal(t, 3, st[0].Limit)
+	assert.False(t, st[0].Overridden)
+}
+
+// An override for a group that is not currently declared stays inert (the
+// group still errors on Acquire) and takes effect when a later Update
+// declares the group — the orphaned-override re-apply contract.
+func TestOverrideForUndeclaredGroupIsInertUntilDeclared(t *testing.T) {
+	m := NewManager(nil)
+	require.NoError(t, m.SetLimitOverride("later", 2))
+
+	_, _, err := m.Acquire("later", nil, nil)
+	require.Error(t, err, "an override must not conjure an undeclared group")
+	assert.Empty(t, m.Status())
+	_, ok := m.Declared("later")
+	assert.False(t, ok)
+
+	m.Update(&Config{Groups: map[string]Group{"later": {Limit: 5}}})
+	st := m.Status()
+	require.Len(t, st, 1)
+	assert.Equal(t, 2, st[0].Limit, "the stored override applies once the group is declared")
+	assert.Equal(t, 5, st[0].Declared)
+	assert.True(t, st[0].Overridden)
+
+	d, ok := m.Declared("later")
+	require.True(t, ok)
+	assert.Equal(t, 5, d)
+}
+
+// Setting an override equal to the current effective limit must keep the
+// semaphore (no swap), so in-flight accounting is preserved.
+func TestOverrideEqualLimitKeepsSemaphore(t *testing.T) {
+	m := NewManager(&Config{Groups: map[string]Group{"g": {Limit: 1}}})
+	rel, ok, _ := tryAcquire(m, "g")
+	require.True(t, ok)
+
+	require.NoError(t, m.SetLimitOverride("g", 1)) // same as declared
+	st := m.Status()
+	assert.True(t, st[0].Overridden)
+	assert.Equal(t, 1, st[0].Active, "no-swap override must keep the in-flight slot")
+	_, ok, _ = tryAcquire(m, "g")
+	assert.False(t, ok)
+
+	m.ClearLimitOverride("g") // back to declared 1: still no swap
+	st = m.Status()
+	assert.False(t, st[0].Overridden)
+	assert.Equal(t, 1, st[0].Active)
+	rel()
 }
