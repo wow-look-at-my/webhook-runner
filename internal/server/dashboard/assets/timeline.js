@@ -2180,21 +2180,21 @@ canvas {
     const v = typeof value === "string" ? el("span", { class: "tt-v" }, value) : value;
     return el("div", { class: "tt-row" }, el("span", { class: "tt-k" }, key), v);
   }
-  function waitingLine(r) {
+  function appendWaitingRows(frag, r) {
     const w = r.waiting_on;
-    if (!w || isTerminal(r.status)) return null;
-    const remaining = w.until && tsPresent(w.until) ? Math.max(0, Date.parse(w.until) - Date.now()) : null;
+    if (!w || isTerminal(r.status)) return;
     if (w.kind === "lock") {
-      let line2 = `on lock ${w.key || "?"}`;
+      frag.appendChild(ttRow("waiting", `on lock ${w.key || "?"}`));
       if (w.holder_run_id) {
-        line2 += ` \u2014 held by ${shortRunId(w.holder_run_id)}`;
-        if (w.holder_hook_id) line2 += ` (${w.holder_hook_id})`;
+        const holder = shortRunId(w.holder_run_id) + (w.holder_hook_id ? ` (${w.holder_hook_id})` : "");
+        frag.appendChild(ttRow("holder", holder));
       }
-      return line2;
+      return;
     }
+    const remaining = w.until && tsPresent(w.until) ? Math.max(0, Date.parse(w.until) - Date.now()) : null;
     let line = w.reason || "declared wait";
     if (remaining !== null) line += ` \u2014 ${fmtDuration(remaining)} left`;
-    return line;
+    frag.appendChild(ttRow("waiting", line));
   }
   function runTooltip(r) {
     const frag = document.createDocumentFragment();
@@ -2216,8 +2216,7 @@ canvas {
     frag.appendChild(ttRow("waited", runWaited(r) || "\u2014"));
     frag.appendChild(ttRow("ran", runDuration(r) || "\u2014"));
     if (r.error) frag.appendChild(ttRow("error", trimText(r.error, 160)));
-    const waiting = waitingLine(r);
-    if (waiting) frag.appendChild(ttRow("waiting", waiting));
+    appendWaitingRows(frag, r);
     if (r.waiters && r.waiters.length > 0) {
       frag.appendChild(
         ttRow("holds", `${r.waiters.length} run(s) waiting on this run's lock(s)`)
