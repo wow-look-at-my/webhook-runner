@@ -96,6 +96,53 @@ type RunState struct {
 	// stays in its current status until the container actually dies and
 	// the runner records StatusCancelled.
 	CancelRequested bool `json:"cancel_requested,omitempty"`
+
+	// WaitingOn describes what the run is currently paused on — a declared
+	// sleep or a contended cooperative lock (see the WaitingOn type). nil
+	// when the run isn't waiting. Transient: cleared when the pause ends
+	// and by Finish, so a terminal run — including the snapshot persisted
+	// to the run store — is never waiting.
+	WaitingOn *WaitingOn `json:"waiting_on,omitempty"`
+
+	// Waiters lists the runs currently blocked on cooperative locks THIS
+	// run holds. It is DERIVED, never stored: the Run itself doesn't set
+	// it — the server computes it from live runs' WaitingOn at
+	// serialization time, so it only ever appears on read-path snapshots.
+	Waiters []Waiter `json:"waiters,omitempty"`
+}
+
+// WaitingOn kinds.
+const (
+	// WaitingOnWait is a declared sleep (POST /wait on the state API).
+	WaitingOnWait = "wait"
+	// WaitingOnLock is a blocking lock acquire (POST /kv/{key}/acquire
+	// with "block": true) contending against another run's lock.
+	WaitingOnLock = "lock"
+)
+
+// WaitingOn is the one "what is this run paused on?" record the dashboard
+// renders: kind "wait" is a declared sleep with its mandatory Reason; kind
+// "lock" is a blocked acquire naming the contended Key and who holds it.
+// Until is when the pause resolves on its own — the sleep's end, or the
+// blocking acquire's give-up deadline.
+type WaitingOn struct {
+	Kind   string    `json:"kind"`
+	Reason string    `json:"reason,omitempty"`
+	Until  time.Time `json:"until,omitzero"`
+	Key    string    `json:"key,omitempty"`
+	// HolderRunID/HolderHookID name the current holder of the contended
+	// lock (kind "lock"); re-stamped as holders change while blocked.
+	HolderRunID  string `json:"holder_run_id,omitempty"`
+	HolderHookID string `json:"holder_hook_id,omitempty"`
+}
+
+// Waiter identifies one run blocked on a cooperative lock the annotated run
+// holds — the holder-side view of WaitingOn.
+type Waiter struct {
+	RunID  string `json:"run_id"`
+	HookID string `json:"hook_id"`
+	// Key is which of the holder's locks the waiter wants.
+	Key string `json:"key,omitempty"`
 }
 
 // Run is the mutex-protected wrapper around a RunState. Always pass *Run
@@ -109,6 +156,23 @@ type Run struct {
 	// onFinish is copied from the tracker at New and immutable after —
 	// read without the mutex. See Tracker.SetOnFinish.
 	onFinish func(RunState)
+
+	// touch resets the runner's idle watchdog for this run. The runner
+	// registers it when it arms the watchdog (container launch); the state
+	// API's declared waits and blocking lock acquires call it (via
+	// TouchActivity) so a waiting run counts as active, never as silent.
+	// nil until registered.
+	touch func()
+
+	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from
+	// a pause that a newer one overlapped — cannot clear the newer pause's
+	// dashboard state. 0 is never a live sequence.
+	waitSeq uint64
+
+	// cancelReason optionally explains a cancel request (e.g. "lock stolen
+	// by run X"); the runner uses it in place of the generic "cancelled"
+	// when recording the terminal state. Set by the first cancel only.
+	cancelReason string
 }
 
 // ID returns the run's stable ID.
@@ -150,14 +214,31 @@ func (r *Run) Done() <-chan struct{} { return r.done }
 // signals; the run reaches StatusCancelled when the runner observes the
 // signal and the container is actually gone. Calling it on a finished
 // run is a harmless no-op (Finish wins).
-func (r *Run) RequestCancel() {
+func (r *Run) RequestCancel() { r.RequestCancelWithReason("") }
+
+// RequestCancelWithReason is RequestCancel carrying an explanation — e.g. a
+// lock steal naming its displacer — which the runner records as the
+// cancelled run's error in place of the generic "cancelled", so the reason
+// survives into run history. Only the first cancel's reason sticks.
+func (r *Run) RequestCancelWithReason(reason string) {
 	r.mu.Lock()
 	already := r.state.CancelRequested
 	r.state.CancelRequested = true
+	if !already && reason != "" {
+		r.cancelReason = reason
+	}
 	r.mu.Unlock()
 	if !already {
 		close(r.cancel)
 	}
+}
+
+// CancelReason returns the explanation attached to the cancel request, or
+// "" when none was given (or no cancel was requested).
+func (r *Run) CancelReason() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cancelReason
 }
 
 // Cancelled returns a channel closed once a cancel has been requested.
@@ -178,6 +259,12 @@ func (r *Run) Snapshot(tail int) RunState {
 	cp := r.state
 	cp.Output = append([]string(nil), out...)
 	cp.OutputTimes = append([]time.Time(nil), times...)
+	if cp.WaitingOn != nil {
+		// SetWaitingOn always replaces the pointer, never mutates the
+		// pointee — but copy anyway so a snapshot can't alias live state.
+		w := *cp.WaitingOn
+		cp.WaitingOn = &w
+	}
 	return cp
 }
 
@@ -213,6 +300,10 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	if errMsg != "" {
 		r.state.Error = errMsg
 	}
+	// A terminal run is never waiting: clear any in-flight pause so neither
+	// the dashboard nor the persisted history (the onFinish snapshot below
+	// is what the run store writes) shows a finished run as waiting.
+	r.state.WaitingOn = nil
 	r.mu.Unlock()
 	close(r.done)
 	if r.onFinish != nil {
@@ -240,6 +331,59 @@ func (r *Run) StartedAt() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state.StartedAt
+}
+
+// SetActivityTouch registers fn as the run's idle-watchdog reset. The runner
+// calls this when it arms the watchdog at container launch; the state API's
+// declared waits and blocking lock acquires then keep the run alive through
+// TouchActivity. Touching a finished run's watchdog is harmless (its firing
+// loop has exited), so nothing ever needs to deregister.
+func (r *Run) SetActivityTouch(fn func()) {
+	r.mu.Lock()
+	r.touch = fn
+	r.mu.Unlock()
+}
+
+// TouchActivity resets the run's idle watchdog, if one is registered. Safe
+// at any lifecycle stage: before the watchdog is armed and after the run
+// finished it is a no-op.
+func (r *Run) TouchActivity() {
+	r.mu.Lock()
+	fn := r.touch
+	r.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// SetWaitingOn marks the run as paused on w (a declared sleep or a
+// contended lock) so the dashboard can render it live. It returns a
+// sequence token for ClearWaitingOn: pauses normally run one at a time per
+// run, but if a newer pause overlaps — or a blocked acquire re-stamps its
+// holder — the newest state wins and stale tokens become no-ops. A finished
+// run is never marked (returns 0, which ClearWaitingOn ignores).
+func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.state.Finished.IsZero() {
+		return 0
+	}
+	r.waitSeq++
+	r.state.WaitingOn = &w
+	return r.waitSeq
+}
+
+// ClearWaitingOn clears the pause recorded by the SetWaitingOn that
+// returned seq. A stale token (a newer SetWaitingOn happened since) or 0
+// leaves the current state untouched. Calling it after Finish is a harmless
+// no-op — Finish already cleared the field.
+func (r *Run) ClearWaitingOn(seq uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if seq == 0 || seq != r.waitSeq {
+		return
+	}
+	r.state.WaitingOn = nil
 }
 
 // LastLines returns up to n trailing lines of output.
