@@ -24,8 +24,6 @@
 // the go-toolchain --generate approval hash.
 package dashboard
 
-//go:generate npx --yes npm@11 exec --yes github:wow-look-at-my/ts0#3c37b92cfadf53e36c38759215c214f9737674bc -- build
-
 import (
 	"bytes"
 	"crypto/sha256"
