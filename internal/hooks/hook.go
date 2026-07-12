@@ -34,41 +34,35 @@ const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
 const DefaultAPIKeyHeader = "X-API-Key"
 
+// Script configures a hook to run a script file from the hook directory
+// without spelling out the command: the interpreter determines it
+// (e.g. "tsx <file>"). The script is baked into the hook's image like all
+// hook code, so the interpreter must be installed in that image. An
+// explicit Command overrides the derived one.
+type Script struct {
+	File        string   `json:"file"`
+	Interpreter string   `json:"interpreter"`
+	Args        []string `json:"args,omitempty"`
+}
+
 // Hook is the parsed in-memory representation of a single hook.json file.
 //
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID          string `json:"-"`
-	SourcePath  string `json:"-"`
-	Schema      string `json:"$schema,omitempty"`
-	Description string `json:"description"`
-	// Command optionally overrides the image's CMD. Every hook runs the
-	// image built from its directory's Dockerfile (tagged by content
-	// hash), so code is baked in and immutable per run.
-	Command []string `json:"command,omitempty"`
-	// Tests are argv arrays run by `webhook-runner test` in this hook's
-	// built image, so tests exercise the exact baked code. They never run
-	// when the hook is triggered.
-	Tests    [][]string        `json:"tests,omitempty"`
-	Networks []string          `json:"networks,omitempty"`
-	Volumes  []string          `json:"volumes,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	User     string            `json:"user,omitempty"`
-	Workdir  string            `json:"workdir,omitempty"`
-
-	// TimeoutRaw bounds a run by ACTIVITY, not wall clock: the run is killed
-	// only once its container has produced NO output (stdout or stderr) for
-	// this long. Any output byte resets the clock, so a hook that keeps
-	// logging progress runs as long as it needs, while one that has gone
-	// silent is reaped. There is no absolute processing ceiling. The clock
-	// arms only once the concurrency-group slot is acquired and the
-	// container launches, so a queued run never times out while it waits
-	// (see runner.execute). Empty means DefaultTimeout (5 minutes of
-	// silence). A kill ends the run as status "timeout" with the error
-	// "timed out after <d> (no output)".
-	TimeoutRaw string `json:"timeout,omitempty"`
-
+	ID              string              `json:"-"`
+	SourcePath      string              `json:"-"`
+	Schema          string              `json:"$schema,omitempty"`
+	Description     string              `json:"description"`
+	Command         []string            `json:"command,omitempty"`
+	Script          *Script             `json:"script,omitempty"`
+	Tests           [][]string          `json:"tests,omitempty"`
+	Networks        []string            `json:"networks,omitempty"`
+	Volumes         []string            `json:"volumes,omitempty"`
+	Env             map[string]string   `json:"env,omitempty"`
+	User            string              `json:"user,omitempty"`
+	Workdir         string              `json:"workdir,omitempty"`
+	TimeoutRaw      string              `json:"timeout,omitempty"`
 	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
 
@@ -220,6 +214,9 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	if err := h.resolveScript(); err != nil {
+		return nil, err
+	}
 	if !h.hasDockerfile() {
 		return nil, errors.New("hook must ship a Dockerfile next to hook.json (every hook runs an image built from its directory)")
 	}
@@ -227,6 +224,50 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 		return nil, err
 	}
 	return h, nil
+}
+
+func (h *Hook) resolveScript() error {
+	if h.Script == nil {
+		return nil
+	}
+	s := h.Script
+	if s.File == "" {
+		return errors.New("script.file is required")
+	}
+	if s.Interpreter == "" {
+		return errors.New("script.interpreter is required")
+	}
+
+	hookDir := filepath.Dir(h.SourcePath)
+	scriptAbs := filepath.Join(hookDir, s.File)
+
+	realScript, err := filepath.EvalSymlinks(scriptAbs)
+	if err != nil {
+		return fmt.Errorf("script.file %q: %w", s.File, err)
+	}
+	realHookDir, err := filepath.EvalSymlinks(hookDir)
+	if err != nil {
+		return fmt.Errorf("resolve hook directory: %w", err)
+	}
+	if !strings.HasPrefix(realScript, realHookDir+string(filepath.Separator)) {
+		return fmt.Errorf("script.file %q resolves outside hook directory", s.File)
+	}
+
+	if len(h.Command) == 0 {
+		switch s.Interpreter {
+		case "bash":
+			h.Command = append([]string{"bash", s.File}, s.Args...)
+		case "pwsh":
+			h.Command = append([]string{"pwsh", "-File", s.File}, s.Args...)
+		case "node":
+			h.Command = append([]string{"node", s.File}, s.Args...)
+		case "tsx":
+			h.Command = append([]string{"tsx", s.File}, s.Args...)
+		default:
+			return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, node, or tsx)", s.Interpreter)
+		}
+	}
+	return nil
 }
 
 func (h *Hook) hasDockerfile() bool {

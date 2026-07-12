@@ -5,6 +5,43 @@ disposable Docker containers. Each webhook is described by a `hook.json`
 file in its own folder; the server watches the directory and hot-reloads
 hooks without restart.
 
+## Architecture
+
+```mermaid
+graph LR
+    subgraph "CI (GitHub Actions)"
+        WR_CI[webhook-runner CI]
+        HOOKS_CI[webhooks CI]
+    end
+
+    GHCR[GHCR]
+
+    subgraph Host
+        WR[webhook-runner]
+        HOOKS[hooks directory]
+        SOCK[Docker socket]
+
+        subgraph "Hook container (disposable)"
+            SCRIPT["script.ts (baked into image)"]
+            PAYLOAD["/var/run/webhook-runner/payload"]
+        end
+    end
+
+    GH[GitHub Org Webhook]
+
+    WR_CI -->|builds Go binary| WR
+    HOOKS_CI -->|builds and pushes Dockerfile.common| GHCR
+
+    WR -->|git clones webhooks repo into| HOOKS
+    WR -->|reads hook.json from| HOOKS
+    WR -->|docker build + docker run --rm via| SOCK
+    SOCK -->|pulls base image from| GHCR
+    HOOKS -->|docker build bakes into| SCRIPT
+    WR -->|bind-mounts temp file into| PAYLOAD
+
+    GH -->|"POST /hook/{id}"| WR
+```
+
 ## Features
 
 - **Folder-per-hook config**, parsed with JSONC-style comments.
@@ -352,6 +389,23 @@ This is required: the server and `webhook-runner validate` both reject a
 hook whose `hook.json` is missing `$schema`. Declaring it lets editors and
 CI (e.g. [json-validator](https://github.com/wow-look-at-my/json-validator))
 validate the file against the published schema.
+
+`script` is shorthand for `command` when the hook is a single script file:
+
+```json
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "script": { "file": "handle.ts", "interpreter": "tsx" }
+}
+```
+
+It derives the command from the interpreter (`tsx handle.ts` here; `bash`,
+`pwsh`, `node`, and `tsx` are supported, plus an optional `args` array). The
+file must live inside the hook directory — symlinks escaping it are
+rejected. Like all hook code the script is baked into the hook's image, so
+the interpreter must be installed there, e.g. via a shared base image such
+as the webhooks repo's `Dockerfile.common`. An explicit `command` overrides
+the derived one.
 
 Two values support `${NAME}` secret references:
 

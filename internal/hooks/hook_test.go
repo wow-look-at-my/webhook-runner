@@ -180,6 +180,118 @@ func TestStripComments(t *testing.T) {
 	assert.NotContains(t, got, "block")
 }
 
+func makeScriptHookDir(t *testing.T, scriptName, scriptContent string) (hookDir, hookJSON string) {
+	t.Helper()
+	root := t.TempDir()
+	hookDir = filepath.Join(root, "my-hook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, scriptName), []byte(scriptContent), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine:3.20\n"), 0o644))
+	hookJSON = filepath.Join(hookDir, "hook.json")
+	return hookDir, hookJSON
+}
+
+const testSchema = `"$schema":"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json"`
+
+func TestScriptResolveBash(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash\necho hi")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bash", "run.sh"}, h.Command)
+}
+
+func TestScriptResolvePwsh(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.ps1", "Write-Host hi")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.ps1","interpreter":"pwsh"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pwsh", "-File", "run.ps1"}, h.Command)
+}
+
+func TestScriptResolveNode(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "index.js", "console.log('hi')")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"index.js","interpreter":"node"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"node", "index.js"}, h.Command)
+}
+
+func TestScriptResolveTsx(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "handler.ts", "console.log('hi')")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"handler.ts","interpreter":"tsx"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tsx", "handler.ts"}, h.Command)
+}
+
+func TestScriptWithArgs(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash","args":["--verbose","--dry-run"]}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bash", "run.sh", "--verbose", "--dry-run"}, h.Command)
+}
+
+func TestScriptCommandOverride(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"},"command":["sh","run.sh"]}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sh", "run.sh"}, h.Command)
+}
+
+func TestScriptRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	hookDir := filepath.Join(root, "my-hook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
+	outside := filepath.Join(root, "evil.sh")
+	require.NoError(t, os.WriteFile(outside, []byte("rm -rf /"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(hookDir, "run.sh")))
+
+	hookJSON := filepath.Join(hookDir, "hook.json")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"}}`)
+	_, err := Parse("my-hook", hookJSON, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside hook directory")
+}
+
+func TestScriptRejectsMissingFile(t *testing.T) {
+	root := t.TempDir()
+	hookDir := filepath.Join(root, "my-hook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
+	hookJSON := filepath.Join(hookDir, "hook.json")
+
+	doc := []byte(`{` + testSchema + `,"script":{"file":"nope.sh","interpreter":"bash"}}`)
+	_, err := Parse("my-hook", hookJSON, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nope.sh")
+}
+
+func TestScriptRejectsBadInterpreter(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.rb", "puts 'hi'")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.rb","interpreter":"ruby"}}`)
+	_, err := Parse("my-hook", hookJSON, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported")
+}
+
+func TestScriptRejectsMissingFields(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
+	cases := map[string]string{
+		"missing file":        `{` + testSchema + `,"script":{"interpreter":"bash"}}`,
+		"missing interpreter": `{` + testSchema + `,"script":{"file":"run.sh"}}`,
+	}
+	for name, doc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse("h", hookJSON, []byte(doc))
+			require.Error(t, err)
+		})
+	}
+}
+
 func readAll(r interface{ Read(p []byte) (int, error) }) (string, error) {
 	var b strings.Builder
 	buf := make([]byte, 256)
