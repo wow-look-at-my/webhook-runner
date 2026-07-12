@@ -97,12 +97,14 @@ The server listens on two TCP ports plus a Unix socket:
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
   `POST /kv/{key}/incr`, the run-owned cooperative locks
-  `POST /kv/{key}/acquire` / `POST /kv/{key}/release` (see the lock bullet
-  under "Things easy to get wrong"), and the first-class declared sleep
-  `POST /wait` (`{"seconds": 1..600, "reason": "..."}`, both required —
-  blocks server-side, shows `waiting Ns: reason` on the run's dashboard
-  row, counts as activity for the idle `timeout`; see the wait bullet
-  under "Things easy to get wrong"). Hooks don't touch the socket directly: the runner
+  `POST /kv/{key}/acquire` (holder-identified 409 on contention; opt-in
+  `{"block": true}` holds the request until acquired) /
+  `POST /kv/{key}/release` / `POST /kv/{key}/steal` (transfer + cancel the
+  holder — see the lock bullet under "Things easy to get wrong"), and the
+  first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
+  "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
+  on the run's dashboard row, counts as activity for the idle `timeout`;
+  see the wait bullet under "Things easy to get wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
   `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
@@ -397,6 +399,41 @@ The companion repo is `wow-look-at-my/webhooks`.
   rule as usual: hooks that call acquire/release need this runner deployed
   first — older runners 404 the routes (hooks should treat 404/405 as
   "primitive unavailable" and degrade, not wedge).
+- Lock contention is first-class, never anonymous (the try/block/steal
+  layer over the bullet above; `takeLockLocked` in internal/kv/lock.go is
+  the ONE compare-and-set acquire and steal share):
+  (1) **Try**: a contended acquire 409s with `held_by`
+  ({run_id, hook_id, acquired_at, expires_at} — hook_id == the lock's
+  namespace) so a contender can display, keep waiting on, or steal from a
+  NAMED holder; the contended path still mutates nothing.
+  (2) **Block**: acquire with `{"block": true}` (+ optional
+  `block_timeout_seconds` 1..600, default 600 — the /wait cap) HOLDS the
+  request, retrying every `lockRetryInterval` (250ms, tightened to the
+  /wait touch cadence for tiny timeouts) until taken / timed out (409 +
+  held_by) / the run ends. Fairness is deliberately best-effort — NO FIFO
+  queue, waiters just poll — which keeps the lock table free of waiter
+  state and lets a steal trivially beat every blocked waiter (they keep
+  polling against the new holder). While blocked, the run's watchdog is
+  fed (a blocked acquire is a declared wait) and its `waiting_on` names
+  the holder, re-stamped when the lock changes hands mid-block.
+  (3) **Steal** (`POST /kv/{key}/steal` — a separate route, NOT an acquire
+  flag, so the destructive intent is unmistakable): atomically TRANSFERS
+  the lock to the caller under the table mutex, then the server cancels
+  the displaced run via the tracker (`RequestCancelWithReason`, riding the
+  existing docker-kill cancel path; the reason — `cancelled: lock "k"
+  stolen by run X` — becomes the victim's terminal error, visible in run
+  history). Transfer-not-release is the race-safety invariant: after a
+  steal the entry is owned by the thief, so the victim's finish-seam
+  `ReleaseRunLocks` frees its OTHER locks but skips the stolen one; a
+  holder that finished FIRST just makes steal a plain acquire (no error,
+  no cancel, no `stolen_from` in the response). Namespace scoping means a
+  run can only ever steal from — and thus cancel — runs of its OWN hook.
+  Events: `lock.waiting` once per blocking acquire that actually waits,
+  `lock.stolen` on displacement. Dashboard: the blocked run's row shows
+  "waiting on lock K held by RUN (HOOK)" (from `waiting_on`), and holders
+  carry a derived `waiters` list ("N waiting on this run's locks") —
+  computed by `server.attachWaiters` from live runs' `waiting_on` at READ
+  time, never stored; don't add waiter state to the lock table.
 - First-class waits (`internal/server/wait.go`, `POST /wait` on the state
   socket): a hook that wants to pause SLEEPS IN-PROCESS by declaring it —
   `{"seconds": 1..600, "reason": "..."}`, both required (waits must be
@@ -411,14 +448,18 @@ The companion repo is `wow-look-at-my/webhooks`.
   keeps calling `TouchActivity` on a cadence derived from the hook's OWN
   timeout — `min(5s, timeout/3)`, 50ms floor — so a wait always outpaces
   the watchdog it is holding off (touches before arm / after finish are
-  harmless no-ops; nothing deregisters). (2) Dashboard state is
-  `RunState.Waiting/WaitReason/WaitUntil` set by `Run.BeginWait`/`EndWait`
-  (sequence-tokened so an overlapping newer wait can't be cleared by a
-  stale older one's deferred EndWait); run rows and the run modal render
-  "waiting Ns: reason" with the remaining time computed client-side from
-  `wait_until`. (3) The fields are TRANSIENT: `Finish` clears them before
-  the OnFinish snapshot, so the persisted run history never shows a
-  terminal run as waiting — don't "fix" that. One `run.wait` event is
+  harmless no-ops; nothing deregisters). (2) Dashboard state is the ONE
+  unified `RunState.WaitingOn` struct (`{kind: "wait"|"lock", reason,
+  until, key, holder_run_id, holder_hook_id}` — declared sleeps AND
+  blocked lock acquires share it) set by
+  `Run.SetWaitingOn`/`ClearWaitingOn` (sequence-tokened so an overlapping
+  newer pause — or a blocked acquire re-stamping its holder — can't be
+  cleared by a stale older token); run rows and the run modal render
+  "waiting Ns: reason" / "waiting on lock K held by RUN (HOOK)" with the
+  remaining time computed client-side from `until`. (3) The field is
+  TRANSIENT: `Finish` clears it before the OnFinish snapshot, so the
+  persisted run history never shows a terminal run as waiting — don't
+  "fix" that. One `run.wait` event is
   recorded per wait start (hook-scoped, so `?hook=` filters); there is
   deliberately NO wait-end event — the start message carries the duration,
   and a retry loop of short waits would double the feed volume. Deploy-first

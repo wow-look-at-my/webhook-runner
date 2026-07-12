@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
 // Declared-wait bounds. One call blocks for at most maxWaitSeconds (10
@@ -107,8 +109,12 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	}
 
 	d := time.Duration(req.Seconds) * time.Second
-	seq := run.BeginWait(reason, time.Now().UTC().Add(d))
-	defer run.EndWait(seq)
+	seq := run.SetWaitingOn(runs.WaitingOn{
+		Kind:   runs.WaitingOnWait,
+		Reason: reason,
+		Until:  time.Now().UTC().Add(d),
+	})
+	defer run.ClearWaitingOn(seq)
 	run.TouchActivity()
 	s.events.Record("run.wait",
 		fmt.Sprintf("%s run %s waiting %ds: %s", ns, runID, req.Seconds, reason),

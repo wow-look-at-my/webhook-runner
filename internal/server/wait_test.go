@@ -98,10 +98,7 @@ func TestStateWaitBlocksFullDuration(t *testing.T) {
 	require.JSONEq(t, `{"waited":1}`, rr.Body.String())
 	assert.GreaterOrEqual(t, elapsed, 950*time.Millisecond, "the wait must actually block")
 
-	snap := run.Snapshot(-1)
-	assert.False(t, snap.Waiting)
-	assert.Empty(t, snap.WaitReason)
-	assert.True(t, snap.WaitUntil.IsZero())
+	assert.Nil(t, run.Snapshot(-1).WaitingOn)
 
 	// The start of the wait landed on the activity feed, hook-scoped.
 	evs := rec.ListByHook("h", 10)
@@ -124,24 +121,27 @@ func TestStateWaitVisibleAndCancelInterrupts(t *testing.T) {
 		respCh <- stateReq(t, s, "POST", "/wait", tok, strings.NewReader(`{"seconds":30,"reason":"green-settle"}`))
 	}()
 
-	require.Eventually(t, func() bool { return run.Snapshot(0).Waiting }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return run.Snapshot(0).WaitingOn != nil }, 2*time.Second, 5*time.Millisecond)
 	snap := run.Snapshot(0)
-	assert.Equal(t, "green-settle", snap.WaitReason)
-	assert.WithinDuration(t, time.Now().Add(30*time.Second), snap.WaitUntil, 3*time.Second)
+	require.NotNil(t, snap.WaitingOn)
+	assert.Equal(t, runs.WaitingOnWait, snap.WaitingOn.Kind)
+	assert.Equal(t, "green-settle", snap.WaitingOn.Reason)
+	assert.WithinDuration(t, time.Now().Add(30*time.Second), snap.WaitingOn.Until, 3*time.Second)
 
 	// The dashboard reads these via /runs and /runs/{id}: field names are
 	// part of the contract.
 	detail := httptest.NewRecorder()
 	admin(s).ServeHTTP(detail, httptest.NewRequest("GET", "/runs/"+run.ID(), nil))
 	require.Equal(t, 200, detail.Code)
-	assert.Contains(t, detail.Body.String(), `"waiting": true`)
-	assert.Contains(t, detail.Body.String(), `"wait_reason": "green-settle"`)
-	assert.Contains(t, detail.Body.String(), `"wait_until"`)
+	assert.Contains(t, detail.Body.String(), `"waiting_on"`)
+	assert.Contains(t, detail.Body.String(), `"kind": "wait"`)
+	assert.Contains(t, detail.Body.String(), `"reason": "green-settle"`)
+	assert.Contains(t, detail.Body.String(), `"until"`)
 
 	list := httptest.NewRecorder()
 	admin(s).ServeHTTP(list, httptest.NewRequest("GET", "/runs?hook=h", nil))
 	require.Equal(t, 200, list.Code)
-	assert.Contains(t, list.Body.String(), `"wait_reason": "green-settle"`)
+	assert.Contains(t, list.Body.String(), `"reason": "green-settle"`)
 
 	run.RequestCancel()
 	select {
@@ -159,7 +159,7 @@ func TestStateWaitVisibleAndCancelInterrupts(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancel did not interrupt the wait")
 	}
-	assert.False(t, run.Snapshot(0).Waiting, "wait state must clear when the wait ends")
+	assert.Nil(t, run.Snapshot(0).WaitingOn, "wait state must clear when the wait ends")
 }
 
 func TestStateWaitRunFinishInterrupts(t *testing.T) {
@@ -172,7 +172,7 @@ func TestStateWaitRunFinishInterrupts(t *testing.T) {
 	go func() {
 		respCh <- stateReq(t, s, "POST", "/wait", tok, strings.NewReader(`{"seconds":30,"reason":"outliving the run"}`))
 	}()
-	require.Eventually(t, func() bool { return run.Snapshot(0).Waiting }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return run.Snapshot(0).WaitingOn != nil }, 2*time.Second, 5*time.Millisecond)
 
 	run.Finish(runs.StatusSuccess, 0, "")
 	select {
@@ -183,7 +183,7 @@ func TestStateWaitRunFinishInterrupts(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("run finish did not interrupt the wait")
 	}
-	assert.False(t, run.Snapshot(0).Waiting)
+	assert.Nil(t, run.Snapshot(0).WaitingOn)
 }
 
 func TestStateWaitClientDisconnect(t *testing.T) {
@@ -201,7 +201,7 @@ func TestStateWaitClientDisconnect(t *testing.T) {
 		state(s).ServeHTTP(rr, req)
 		close(done)
 	}()
-	require.Eventually(t, func() bool { return run.Snapshot(0).Waiting }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return run.Snapshot(0).WaitingOn != nil }, 2*time.Second, 5*time.Millisecond)
 
 	cancel() // the hook's container went away mid-wait
 	select {
@@ -209,7 +209,7 @@ func TestStateWaitClientDisconnect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("client disconnect did not release the wait")
 	}
-	assert.False(t, run.Snapshot(0).Waiting)
+	assert.Nil(t, run.Snapshot(0).WaitingOn)
 }
 
 // writeSilentSleepDocker fakes a container that produces NO output and

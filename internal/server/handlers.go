@@ -233,7 +233,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if run := s.tracker.Get(id); run != nil {
-		writeJSON(w, http.StatusOK, run.Snapshot(tail))
+		st := []runs.RunState{run.Snapshot(tail)}
+		s.attachWaiters(st)
+		writeJSON(w, http.StatusOK, st[0])
 		return
 	}
 	// The tracker window is bounded; fall back to the persisted history for
@@ -311,7 +313,44 @@ func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
 	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
+	s.attachWaiters(out)
 	return out
+}
+
+// attachWaiters decorates run snapshots with the runs currently blocked on
+// cooperative locks each of them holds — the holder-side view the dashboard
+// shows ("N runs waiting on this run's locks"). DERIVED, never stored: a
+// blocked acquire stamps its own run's WaitingOn with the holder it is
+// waiting on (re-stamped as holders change), so the live tracker already
+// contains the whole graph and one pass inverts it. Waiter lists are
+// sorted for stable JSON. Terminal/persisted runs never hold locks, so
+// they simply never match.
+func (s *Server) attachWaiters(states []runs.RunState) {
+	if s.tracker == nil || len(states) == 0 {
+		return
+	}
+	var byHolder map[string][]runs.Waiter
+	for _, r := range s.tracker.ListAll(0) {
+		snap := r.Snapshot(0)
+		w := snap.WaitingOn
+		if w == nil || w.Kind != runs.WaitingOnLock || w.HolderRunID == "" {
+			continue
+		}
+		if byHolder == nil {
+			byHolder = make(map[string][]runs.Waiter)
+		}
+		byHolder[w.HolderRunID] = append(byHolder[w.HolderRunID],
+			runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: w.Key})
+	}
+	if byHolder == nil {
+		return
+	}
+	for _, ws := range byHolder {
+		sort.Slice(ws, func(i, j int) bool { return ws[i].RunID < ws[j].RunID })
+	}
+	for i := range states {
+		states[i].Waiters = byHolder[states[i].ID]
+	}
 }
 
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>

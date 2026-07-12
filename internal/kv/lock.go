@@ -30,7 +30,12 @@ import (
 // broken by a bug. Expiry is enforced lazily (an expired lock reads as free
 // at acquire/release time) and reaped by the store's existing sweeper.
 // Contended acquires mutate NOTHING — in particular they never restamp the
-// holder's expiry, so contenders can't keep a dead run's lock alive.
+// holder's expiry, so contenders can't keep a dead run's lock alive — and
+// they name the holder (LockInfo alongside ErrLockHeld), so contention is
+// never anonymous. StealLock is the destructive counterpart: it transfers
+// a held lock to the caller atomically (namespace-scoped, so a run can only
+// ever displace a run of its OWN hook); cancelling the displaced run is the
+// server's job.
 var (
 	// ErrLockHeld: the lock is held by a different live run (acquire), or the
 	// caller tried to release a lock a different live run holds (release).
@@ -56,11 +61,20 @@ func (l lockEntry) expired(now time.Time) bool {
 	return !l.expiresAt.After(now)
 }
 
-// LockInfo is what a successful acquire reports back to the caller.
+// LockInfo describes a lock's holder: what a successful acquire/steal
+// reports back to the caller, and — on a contended acquire — WHO currently
+// holds the lock (so a contender can display, wait on, or steal from a
+// named holder rather than an anonymous 409). HookID is the lock's
+// namespace, which is the holding run's hook.
 type LockInfo struct {
 	RunID      string    `json:"run_id"`
+	HookID     string    `json:"hook_id"`
 	AcquiredAt time.Time `json:"acquired_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+func (e lockEntry) info(ns string) LockInfo {
+	return LockInfo{RunID: e.runID, HookID: ns, AcquiredAt: e.acquiredAt, ExpiresAt: e.expiresAt}
 }
 
 // AcquireLock atomically takes the cooperative lock at key in ns for runID.
@@ -68,8 +82,9 @@ type LockInfo struct {
 // when ttl <= 0). A lock the SAME run already holds is re-acquired
 // idempotently — its backstop expiry refreshed, its original acquiredAt kept
 // (only the live owner can do this, so it can never prolong a dead run's
-// lock). A lock held by another live run returns ErrLockHeld, mutating
-// nothing. The same namespace/key caps as the entry store apply.
+// lock). A lock held by another live run returns ErrLockHeld — mutating
+// nothing — together with the HOLDER's LockInfo, so contention is never
+// anonymous. The same namespace/key caps as the entry store apply.
 func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo, error) {
 	if !validNamespace(ns) {
 		return LockInfo{}, ErrBadNamespace
@@ -79,22 +94,62 @@ func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo,
 		// without a run identity); refuse rather than mint anonymous locks.
 		return LockInfo{}, errors.New("kv: lock requires a run identity")
 	}
-	if ttl <= 0 {
-		ttl = DefaultLockTTL
-	}
+	ttl = lockTTL(ttl)
 
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	info, _, err := s.takeLockLocked(ns, key, runID, ttl, false)
+	return info, err
+}
 
+// StealLock atomically takes the lock at key in ns for runID EVEN IF another
+// live run holds it, returning the displaced holder's info (displaced.RunID
+// == "" when the lock was free or already ours — a steal of an uncontended
+// lock is exactly an acquire). The transfer happens under the lock-table
+// mutex, so it cannot race the displaced run's finish-seam release: after a
+// steal the entry is owned by the thief, and ReleaseRunLocks for the old
+// holder skips it (ownership check) while still freeing the holder's OTHER
+// locks. Cancelling the displaced run is the CALLER's job (the server does
+// it via the tracker) — this package doesn't know about runs.
+func (s *Store) StealLock(ns, key, runID string, ttl time.Duration) (info LockInfo, displaced LockInfo, err error) {
+	if !validNamespace(ns) {
+		return LockInfo{}, LockInfo{}, ErrBadNamespace
+	}
+	if runID == "" {
+		return LockInfo{}, LockInfo{}, errors.New("kv: lock requires a run identity")
+	}
+	ttl = lockTTL(ttl)
+
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	return s.takeLockLocked(ns, key, runID, ttl, true)
+}
+
+func lockTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return DefaultLockTTL
+	}
+	return ttl
+}
+
+// takeLockLocked is the one compare-and-set both acquire and steal share.
+// Caller holds lockMu. When steal is false and another live run holds the
+// lock, it returns that holder's info with ErrLockHeld (mutating nothing);
+// when steal is true the entry is transferred to runID and the displaced
+// holder's info returned.
+func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal bool) (info LockInfo, displaced LockInfo, err error) {
 	now := time.Now()
 	m, nsExisted := s.locks[ns]
 	if nsExisted {
 		if prev, ok := m[key]; ok && !prev.expired(now) && prev.runID != runID {
-			return LockInfo{}, ErrLockHeld
+			if !steal {
+				return prev.info(ns), LockInfo{}, ErrLockHeld
+			}
+			displaced = prev.info(ns)
 		}
 	} else {
 		if len(s.locks) >= s.cfg.MaxNamespaces {
-			return LockInfo{}, ErrTooManyNS
+			return LockInfo{}, LockInfo{}, ErrTooManyNS
 		}
 		m = make(map[string]lockEntry)
 		s.locks[ns] = m
@@ -105,7 +160,7 @@ func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo,
 		if !nsExisted {
 			delete(s.locks, ns)
 		}
-		return LockInfo{}, ErrTooManyKeys
+		return LockInfo{}, LockInfo{}, ErrTooManyKeys
 	}
 
 	e := lockEntry{runID: runID, acquiredAt: now, expiresAt: now.Add(ttl)}
@@ -114,7 +169,7 @@ func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo,
 		e.acquiredAt = prev.acquiredAt
 	}
 	m[key] = e
-	return LockInfo{RunID: e.runID, AcquiredAt: e.acquiredAt, ExpiresAt: e.expiresAt}, nil
+	return e.info(ns), displaced, nil
 }
 
 // ReleaseLock atomically frees the lock at key in ns iff runID holds it —

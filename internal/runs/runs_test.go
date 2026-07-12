@@ -262,84 +262,112 @@ func TestStatusTerminal(t *testing.T) {
 	}
 }
 
-func TestBeginEndWait(t *testing.T) {
+func TestSetClearWaitingOn(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
 	until := time.Now().UTC().Add(45 * time.Second)
 
-	seq := r.BeginWait("green-settle", until)
+	seq := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "green-settle", Until: until})
 	require.NotZero(t, seq)
 	snap := r.Snapshot(-1)
-	assert.True(t, snap.Waiting)
-	assert.Equal(t, "green-settle", snap.WaitReason)
-	assert.Equal(t, until, snap.WaitUntil)
+	require.NotNil(t, snap.WaitingOn)
+	assert.Equal(t, WaitingOnWait, snap.WaitingOn.Kind)
+	assert.Equal(t, "green-settle", snap.WaitingOn.Reason)
+	assert.Equal(t, until, snap.WaitingOn.Until)
 
-	r.EndWait(seq)
-	snap = r.Snapshot(-1)
-	assert.False(t, snap.Waiting)
-	assert.Empty(t, snap.WaitReason)
-	assert.True(t, snap.WaitUntil.IsZero())
+	r.ClearWaitingOn(seq)
+	assert.Nil(t, r.Snapshot(-1).WaitingOn)
 }
 
-// The wait fields ride the documented JSON names while a wait is active and
-// vanish entirely (omitempty/omitzero) once it ends — the list and detail
-// endpoints ship RunState verbatim, so this IS the dashboard contract.
-func TestWaitFieldsJSON(t *testing.T) {
+// waiting_on rides the documented JSON names while a pause is active and
+// vanishes entirely (omitempty) once it ends — the list and detail endpoints
+// ship RunState verbatim, so this IS the dashboard contract. Both kinds are
+// exercised: a declared sleep and a blocked lock acquire naming its holder.
+func TestWaitingOnJSON(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
-	seq := r.BeginWait("green-settle", time.Now().UTC().Add(30*time.Second))
+	seq := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "green-settle", Until: time.Now().UTC().Add(30 * time.Second)})
 
 	b, err := json.Marshal(r.Snapshot(-1))
 	require.NoError(t, err)
-	assert.Contains(t, string(b), `"waiting":true`)
-	assert.Contains(t, string(b), `"wait_reason":"green-settle"`)
-	assert.Contains(t, string(b), `"wait_until"`)
+	assert.Contains(t, string(b), `"waiting_on":{"kind":"wait"`)
+	assert.Contains(t, string(b), `"reason":"green-settle"`)
+	assert.Contains(t, string(b), `"until"`)
 
-	r.EndWait(seq)
+	seq = r.SetWaitingOn(WaitingOn{Kind: WaitingOnLock, Key: "pr-7", HolderRunID: "holderrun", HolderHookID: "h"})
 	b, err = json.Marshal(r.Snapshot(-1))
 	require.NoError(t, err)
-	assert.NotContains(t, string(b), "waiting")
-	assert.NotContains(t, string(b), "wait_reason")
-	assert.NotContains(t, string(b), "wait_until")
+	assert.Contains(t, string(b), `"waiting_on":{"kind":"lock"`)
+	assert.Contains(t, string(b), `"key":"pr-7"`)
+	assert.Contains(t, string(b), `"holder_run_id":"holderrun"`)
+	assert.Contains(t, string(b), `"holder_hook_id":"h"`)
+
+	r.ClearWaitingOn(seq)
+	b, err = json.Marshal(r.Snapshot(-1))
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "waiting_on")
+
+	// Waiters marshals under its documented name too (it is server-derived,
+	// so set it on a detached snapshot the way the read path does).
+	snap := r.Snapshot(-1)
+	snap.Waiters = []Waiter{{RunID: "w1", HookID: "h", Key: "pr-7"}}
+	b, err = json.Marshal(snap)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"waiters":[{"run_id":"w1","hook_id":"h","key":"pr-7"}]`)
 }
 
-// A stale EndWait — from a wait that a newer one overlapped — must not clear
-// the newer wait's state; only the current sequence token does.
-func TestEndWaitIgnoresStaleSequence(t *testing.T) {
+// A stale ClearWaitingOn — from a pause that a newer one overlapped — must
+// not clear the newer pause's state; only the current sequence token does.
+func TestClearWaitingOnIgnoresStaleSequence(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
-	seq1 := r.BeginWait("first", time.Now().Add(time.Minute))
-	seq2 := r.BeginWait("second", time.Now().Add(2*time.Minute))
+	seq1 := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "first", Until: time.Now().Add(time.Minute)})
+	seq2 := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "second", Until: time.Now().Add(2 * time.Minute)})
 	require.NotEqual(t, seq1, seq2)
 
-	r.EndWait(seq1) // stale: the second wait's state stays
+	r.ClearWaitingOn(seq1) // stale: the second pause's state stays
 	snap := r.Snapshot(-1)
-	assert.True(t, snap.Waiting)
-	assert.Equal(t, "second", snap.WaitReason)
+	require.NotNil(t, snap.WaitingOn)
+	assert.Equal(t, "second", snap.WaitingOn.Reason)
 
-	r.EndWait(seq2)
-	assert.False(t, r.Snapshot(-1).Waiting)
+	r.ClearWaitingOn(seq2)
+	assert.Nil(t, r.Snapshot(-1).WaitingOn)
 }
 
-// A terminal run is never waiting: Finish clears in-flight wait state, so
+// A terminal run is never waiting: Finish clears in-flight pause state, so
 // the OnFinish snapshot (what the run store persists) never carries it, and
-// a BeginWait after the fact is inert.
-func TestFinishClearsWaitState(t *testing.T) {
+// a SetWaitingOn after the fact is inert.
+func TestFinishClearsWaitingOn(t *testing.T) {
 	tr := NewTracker()
 	var persisted RunState
 	tr.SetOnFinish(func(st RunState) { persisted = st })
 	r := tr.New("h")
 
-	r.BeginWait("about to die", time.Now().Add(time.Minute))
+	r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "about to die", Until: time.Now().Add(time.Minute)})
 	r.Finish(StatusTimeout, -1, "timed out")
 
-	assert.False(t, persisted.Waiting)
-	assert.Empty(t, persisted.WaitReason)
-	assert.True(t, persisted.WaitUntil.IsZero())
-	assert.False(t, r.Snapshot(-1).Waiting)
+	assert.Nil(t, persisted.WaitingOn)
+	assert.Nil(t, r.Snapshot(-1).WaitingOn)
 
-	assert.Zero(t, r.BeginWait("too late", time.Now().Add(time.Minute)))
-	assert.False(t, r.Snapshot(-1).Waiting)
+	assert.Zero(t, r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "too late"}))
+	assert.Nil(t, r.Snapshot(-1).WaitingOn)
+}
+
+// A cancel can carry a reason (e.g. "lock stolen by run X"); only the first
+// one sticks, and a plain RequestCancel carries none.
+func TestRequestCancelWithReason(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	assert.Empty(t, r.CancelReason())
+
+	r.RequestCancelWithReason("displaced by a steal")
+	assert.Equal(t, "displaced by a steal", r.CancelReason())
+	r.RequestCancelWithReason("second reason loses")
+	assert.Equal(t, "displaced by a steal", r.CancelReason())
+
+	r2 := tr.New("h")
+	r2.RequestCancel()
+	assert.Empty(t, r2.CancelReason())
 }
 
 func TestTouchActivity(t *testing.T) {

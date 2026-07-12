@@ -202,9 +202,13 @@ func (s *Server) registerRoutes() {
 	s.stateMux.HandleFunc("POST /kv/{key}/incr", s.withNamespace(s.handleKVIncr))
 	// Cooperative run-owned locks: atomic acquire/release bound to the run
 	// identity in the token (internal/kv/lock.go). Lock state is separate
-	// from the entries the routes above serve.
+	// from the entries the routes above serve. Acquire names the holder on
+	// contention and can block ({"block": true}); steal is a separate route
+	// because it cancels the displaced holder — destructive intent must be
+	// unmistakable.
 	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
 	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
+	s.stateMux.HandleFunc("POST /kv/{key}/steal", s.withNamespace(s.handleKVSteal))
 	// First-class declared sleep: blocks ~N seconds, shows on the dashboard,
 	// and counts as activity for the idle timeout (see wait.go).
 	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))
