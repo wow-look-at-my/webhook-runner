@@ -11,11 +11,13 @@
 // which is exactly the incident that motivated this.
 //
 // assets/timeline.js is GENERATED — never edit it. Its TypeScript source
-// lives in ts/ (the runs-timeline adapter plus the vendored <timeline-view>
-// component from wow-look-at-my/js-snippets) and is compiled by ts0
-// (type-check + bundle, config in ts0.json) via the go:generate directive
-// below. The bundle is committed so a fresh clone builds and embeds without
-// Node; CI regenerates it and fails on any diff, so it can't go stale. The
+// lives in ts/ (the runs-timeline ADAPTER only — the <timeline-view>
+// component itself is imported by the browser at runtime from
+// wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
+// compiled by ts0 (type-check + bundle, config in ts0.json; the component
+// URL passes through unbundled) via the go:generate directive below. The
+// bundle is committed so a fresh clone builds and embeds without Node; CI
+// regenerates it and fails on any diff, so it can't go stale. The
 // directive runs ts0 through npm 11's exec (npm 10's npx cannot install git
 // dependencies that need a prepare build) pinned to a full ts0 commit —
 // bump the SHA deliberately, and remember any edit to the directive changes

@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline TypeScript (adapter + vendored <timeline-view> from js-snippets) that go:generate compiles via ts0 into the committed assets/timeline.js
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that go:generate compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -544,24 +544,44 @@ The companion repo is `wow-look-at-my/webhooks`.
   host-gateway and a shared Docker network proved more fragile; the shim keeps
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
-- The dashboard timeline is a **generated-asset pipeline** with several
-  interlocking pins — get any one wrong and CI goes red:
-  `internal/server/dashboard/ts/timeline.ts` (+ vendored component) is
-  compiled by ts0 into the COMMITTED `assets/timeline.js` (go:embed needs
-  it on a fresh clone; the bundle carries a DO-NOT-EDIT banner — never
-  hand-edit it, edit ts/ and regenerate). The `//go:generate` directive in
-  dashboard.go runs ts0 **via `npx --yes npm@11 exec`** (npm 10's npx
-  cannot install git deps that need a prepare build — a known npm bug)
-  pinned to a **full ts0 commit SHA**; go-toolchain executes directives
-  only with an approval hash over the directive text (`--generate
-  65524d6e099d` locally, the `generate:` input in ci.yml) — **any edit to
-  the directive line changes the hash**; a bare `go-toolchain` run prints
-  the new one to re-approve in both places. Regeneration needs Node 22+
-  and (in CI) authenticated git for the private ts0 repo — ci.yml's
-  setup-node + insteadOf rewrites, followed by the freshness gate
+- The dashboard timeline splits in two: the **`<timeline-view>` component
+  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
+  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
+  (live at master head; the org's standard js-snippets consumption model,
+  NEVER vendored copies) — while this repo ships only the runner-specific
+  adapter. Component fixes deploy to this dashboard on js-snippets merge
+  with no runner change; fix component bugs upstream in js-snippets, full
+  stop. Consequences to keep straight: `assets/timeline.js` is a small
+  ES-module adapter bundle whose component import passes through UNBUNDLED
+  (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
+  loaded via `<script type="module">` (after dashboard.js — modules defer,
+  so its globals are always ready); the admin dashboard's chart therefore
+  needs reach to wow-look-at-my.github.io at page load. A failed component
+  fetch degrades softly and NEVER parks: the adapter module still runs,
+  shows a "chart loading…" note in the Runs section, and retries the
+  dynamic import on a FIXED 5s cadence forever (cache-busted `?retry=N`,
+  because browsers can memoize a failed module fetch; no backoff, no
+  attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
+  are untouched and the runs-table toggle keeps working. TypeScript types
+  for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
+  hand-maintained ambient shim (types only) — temporary until js-snippets
+  publishes .d.ts to Pages and the generate step fetches them mechanically
+  (already queued; do not grow the shim beyond what the adapter consumes).
+  The adapter's **generated-asset pipeline** still has interlocking pins —
+  get any one wrong and CI goes red: `ts/timeline.ts` is compiled by ts0
+  into the COMMITTED `assets/timeline.js` (go:embed needs it on a fresh
+  clone; the bundle carries a DO-NOT-EDIT banner — never hand-edit it,
+  edit ts/ and regenerate). The `//go:generate` directive in dashboard.go
+  runs ts0 **via `npx --yes npm@11 exec`** (npm 10's npx cannot install
+  git deps that need a prepare build — a known npm bug) pinned to a
+  **full ts0 commit SHA**; go-toolchain executes directives only with an
+  approval hash over the directive text (`--generate e5b4190bd967`
+  locally, the `generate:` input in ci.yml) — **any edit to the directive
+  line (or the package doc comment around it — observed 2026-07-12)
+  changes the hash**; a bare `go-toolchain` run prints the new one to
+  re-approve in both places. Regeneration needs Node 22+ and (in CI)
+  authenticated git for the private ts0 repo — ci.yml's setup-node +
+  insteadOf rewrites, followed by the freshness gate
   `git diff --exit-code -- internal/server/dashboard/assets/` (a stale
   committed bundle or a TypeScript type error fails the build; ts0's
-  strict tsc gate runs inside the generate step). The vendored component
-  under `ts/vendor/js-snippets/ui/` is a verbatim pinned copy: fix bugs
-  UPSTREAM in js-snippets, `pnpm test && pnpm build` there, then re-copy
-  the files and update the SHA in their provenance headers.
+  strict tsc gate runs inside the generate step).
