@@ -32,8 +32,11 @@
 
   <section id="hooks-section">
     <h2>Hooks</h2>
+    <!-- Status is the operator kill switch: a disabled hook stays loaded
+         but rejects deliveries (503) and skips scheduled runs. The toggle
+         flips it via POST /hooks/{id}/disable|enable. -->
     <table id="hooks-table">
-      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Endpoint</th></tr></thead>
+      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Status</th><th>Endpoint</th></tr></thead>
       <tbody></tbody>
     </table>
     <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
@@ -48,8 +51,40 @@
     <p id="images-empty" class="empty" hidden>No hooks loaded.</p>
   </section>
 
-  <section id="runs-section">
-    <h2>Recent runs</h2>
+  <section id="concurrency-section">
+    <h2>Concurrency groups</h2>
+    <!-- Declared = the limit in concurrency.json; Effective = what gates
+         runs right now (an operator override wins and survives reloads
+         and restarts). Override… PUTs /concurrency/{group}/limit; Revert
+         DELETEs it. A 0 limit is rejected server-side — disable the
+         group's hooks instead. -->
+    <table id="concurrency-table">
+      <thead><tr><th>Group</th><th>Declared</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
+  </section>
+
+  <section id="timeline-section">
+    <!-- The primary runs view: a realtime swimlane timeline, one lane per
+         hook (stable hue per hook). A bar runs queued→finished with the
+         queue wait as a dim lead-in; hatching = a declared wait or a
+         blocked lock (with a connector to the holder), emphasis = failure,
+         hollow = cancelled, diamond pips = instant runs. Wheel/drag pans,
+         ctrl/cmd+wheel zooms, and dragging into the past pages history via
+         /runs?before= until retention runs out. Clicking a bar opens the
+         run modal; clicking a lane label opens that hook's page. Rendered
+         by timeline.js (generated from ts/ — see dashboard.go). The old
+         runs table below stays reachable via the toggle. -->
+    <div class="section-head">
+      <h2>Runs</h2>
+      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
+    </div>
+    <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
+  <section id="runs-section" hidden>
+    <h2>Recent runs (list)</h2>
     <!-- The first column is when the run was ACCEPTED (queued) — a run may
          wait for a concurrency-group slot before it actually starts. -->
     <table id="runs-table">
@@ -82,7 +117,13 @@
   <p class="crumbs"><a href="#">&larr; All hooks</a></p>
 
   <section id="app-head">
-    <h2 id="app-title"></h2>
+    <!-- The badge + toggle mirror the overview's Status column: the
+         operator kill switch for this one hook. -->
+    <div class="app-title-row">
+      <h2 id="app-title"></h2>
+      <span id="app-disabled-badge" class="badge bad" hidden>DISABLED by operator</span>
+      <button id="app-toggle" class="toggle-btn" hidden>Disable hook</button>
+    </div>
     <p id="app-desc"></p>
     <p id="app-missing" class="empty" hidden>No such hook.</p>
   </section>
@@ -171,5 +212,8 @@
 <footer class="site-footer">webhook-runner <span id="server-version"></span></footer>
 
 <script src="dashboard.js"></script>
+<!-- timeline.js must load AFTER dashboard.js: it reuses its globals
+     (fetchJSON, el, fmtTime, tsPresent, showRun, …). -->
+<script src="timeline.js"></script>
 </body>
 </html>
