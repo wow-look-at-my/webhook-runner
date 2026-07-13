@@ -31,3 +31,6 @@ go.work.sum
 # .idea/
 # .vscode/
 /build/
+
+# ts0 fetched by the dashboard go:generate one-liner (see internal/server/dashboard/dashboard.go)
+/internal/server/dashboard/.cache/

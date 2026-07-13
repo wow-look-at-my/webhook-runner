@@ -15,12 +15,17 @@
 // component itself is imported by the browser at runtime from
 // wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
 // compiled by ts0 (type-check + bundle, config in ts0.json; the component
-// URL passes through unbundled). The committed bundle is authoritative and
-// embedded as-is: the npx //go:generate directive that rebuilt it was
-// removed (the build must not need node/npm/npx), so regeneration is
-// temporarily a manual step — run ts0 yourself after editing ts/ and commit
-// the regenerated bundle. A prebuilt ts0 binary served from buildhost,
-// fetched by a small Go bootstrap, is landing next to re-automate this.
+// URL passes through unbundled) via the //go:generate one-liner below: curl
+// a pinned ts0 build from buildhost, curl the component's published .d.ts
+// pair from Pages into the committed ts/js-snippets/ (the types the adapter
+// compiles against), run `node ts0.cjs build`. Needs curl and Node 22+ —
+// no npm, no npx, no git auth. The bundle and the fetched declarations are
+// committed (a fresh clone builds and embeds without Node); CI regenerates
+// both and fails on any diff, so the bundle can't go stale and an upstream
+// component API change turns CI red instead of drifting. To bump ts0:
+// change ?v=N and re-key the go-toolchain approval hash (a bare
+// go-toolchain run prints it — update ci.yml's generate: input to match;
+// ANY edit to the directive line, or anything that moves it, re-keys it).
 package dashboard
 
 import (
@@ -29,6 +34,8 @@ import (
 	"embed"
 	"encoding/hex"
 )
+
+//go:generate sh -c "mkdir -p .cache && curl -fsSL 'https://dl.pazer.build/ts0?v=2&os=linux&arch=amd64' -o .cache/ts0.cjs && curl -fsSL 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.d.ts' -o ts/js-snippets/timeline-view.d.ts && curl -fsSL 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view-math.d.ts' -o ts/js-snippets/timeline-view-math.d.ts && node .cache/ts0.cjs build"
 
 //go:embed assets/*
 var assets embed.FS
