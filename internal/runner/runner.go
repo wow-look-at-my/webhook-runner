@@ -317,8 +317,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// is flooded, the excess runs wait here — staying "pending", not
 	// "running" — instead of all launching containers at once. The timeout
 	// watchdog is deliberately NOT armed yet: a run must not burn its
-	// budget while sitting in the queue.
-	release, acquired, qErr := r.acquireSlot(hook, run)
+	// budget while sitting in the queue. While queued, the run's waiting_on
+	// mirrors its place in the line (kind "group": holders + position) so
+	// the dashboard can answer "what is it stuck behind".
+	release, acquired, clearQueued, qErr := r.acquireSlot(hook, run)
 	if qErr != nil {
 		// An undeclared group is a misconfiguration; fail closed rather
 		// than silently running unbounded.
@@ -331,13 +333,15 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	if !acquired {
-		// Cancelled while waiting in the queue.
+		// Cancelled while waiting in the queue. (Finish clears waiting_on
+		// itself, so no explicit clearQueued is needed on this path.)
 		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
 		if r.onFinish != nil {
 			r.onFinish(hook, run, payload)
 		}
 		return
 	}
+	clearQueued()
 	defer release()
 
 	containerName := "webhook-runner-" + run.ID()
@@ -646,15 +650,58 @@ func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run
 // one-time "queued" activity event the moment the run actually has to wait
 // (not when it gets a slot immediately). A hook with no concurrency_group
 // returns instantly with a no-op release. The returned release must be
-// called exactly once when the run finishes.
-func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, err error) {
-	return r.groups.Acquire(hook.ConcurrencyGroup, run.Cancelled(), func() {
-		r.log.Info("hook run queued",
-			"hook", hook.ID, "run", run.ID(), "group", hook.ConcurrencyGroup)
-		r.events.Record("run.queued",
-			fmt.Sprintf("%s run %s queued on concurrency group %q", hook.ID, run.ID(), hook.ConcurrencyGroup),
-			map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
-	})
+// called exactly once when the run finishes; clearQueued must be called
+// once the slot is acquired (it clears the waiting_on the queue observer
+// stamped — a no-op if the run never actually queued).
+func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, clearQueued func(), err error) {
+	onQueue, clearQueued := r.groupQueueObserver(hook, run)
+	release, acquired, err = r.groups.Acquire(hook.ConcurrencyGroup, run.ID(), run.Cancelled(), onQueue)
+	return release, acquired, clearQueued, err
+}
+
+// groupQueueObserver builds the concurrency.Manager onQueue callback that
+// mirrors a queued run's live place in its group's queue into the run's
+// waiting_on — {kind: "group", key: <group>, holder_run_ids, position} —
+// plus the matching clear for when the wait ends. The first call also
+// records the one-time run.queued event (the Manager only invokes onQueue
+// when the run actually has to wait, so a free slot never flickers a wait
+// note). Calls arrive serialized under the Manager's mutex; consecutive
+// identical states are deduped so re-notifications that change nothing
+// don't churn the run's wait sequence.
+func (r *Runner) groupQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue func(concurrency.QueueState), clearQueued func()) {
+	var mu sync.Mutex
+	var seq uint64
+	var lastKey string
+	queued := false
+	onQueue = func(qs concurrency.QueueState) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !queued {
+			queued = true
+			r.log.Info("hook run queued",
+				"hook", hook.ID, "run", run.ID(), "group", hook.ConcurrencyGroup)
+			r.events.Record("run.queued",
+				fmt.Sprintf("%s run %s queued on concurrency group %q", hook.ID, run.ID(), hook.ConcurrencyGroup),
+				map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
+		}
+		key := fmt.Sprintf("%d|%s", qs.Position, strings.Join(qs.Holders, ","))
+		if key == lastKey {
+			return
+		}
+		lastKey = key
+		seq = run.SetWaitingOn(runs.WaitingOn{
+			Kind:         runs.WaitingOnGroup,
+			Key:          hook.ConcurrencyGroup,
+			HolderRunIDs: qs.Holders,
+			Position:     qs.Position,
+		})
+	}
+	clearQueued = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		run.ClearWaitingOn(seq) // seq 0 (never queued) is a no-op by contract
+	}
+	return onQueue, clearQueued
 }
 
 func (r *Runner) killContainer(name string) {

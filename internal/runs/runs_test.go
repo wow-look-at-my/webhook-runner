@@ -381,3 +381,31 @@ func TestTouchActivity(t *testing.T) {
 	r.TouchActivity()
 	assert.Equal(t, 2, touches)
 }
+
+// Group-wait fields ride WaitingOn additively: present when stamped,
+// omitted from JSON when empty, and deep-copied by Snapshot.
+func TestWaitingOnGroupFieldsJSONAndCopy(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+	holders := []string{"run-1", "run-2"}
+	r.SetWaitingOn(WaitingOn{Kind: WaitingOnGroup, Key: "model-gateway", HolderRunIDs: holders, Position: 3})
+
+	snap := r.Snapshot(0)
+	require.NotNil(t, snap.WaitingOn)
+	// Mutating the caller's slice must not reach the snapshot (deep copy).
+	holders[0] = "mutated"
+	assert.Equal(t, []string{"run-1", "run-2"}, snap.WaitingOn.HolderRunIDs)
+
+	b, err := json.Marshal(snap.WaitingOn)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"holder_run_ids":["run-1","run-2"]`)
+	assert.Contains(t, string(b), `"position":3`)
+
+	// A lock wait (no group fields) omits them.
+	r2 := tr.New("h")
+	r2.SetWaitingOn(WaitingOn{Kind: WaitingOnLock, Key: "k", HolderRunID: "x"})
+	b2, err := json.Marshal(r2.Snapshot(0).WaitingOn)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b2), "holder_run_ids")
+	assert.NotContains(t, string(b2), "position")
+}
