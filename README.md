@@ -262,10 +262,10 @@ ETag) — a new build changes the URLs. `/`, the bare
 `no-cache`, so an edge cache (e.g. Cloudflare, which caches `.css`/`.js` by
 extension when the origin sends no cache headers) can never pair a new
 index.html with stale assets after a deploy. `timeline.js` is **generated**
-(TypeScript compiled by ts0 via `go generate` — see
-[Dashboard TypeScript](#dashboard-typescript)) but committed, so `go:embed`
-works on a fresh clone; CI regenerates it and fails on any diff, so the
-committed bundle can never go stale.
+(TypeScript compiled by ts0 — see
+[Dashboard TypeScript](#dashboard-typescript)) but committed, and the
+committed bundle is authoritative: `go:embed` ships it as-is, and the build
+needs no Node toolchain.
 
 ### State KV API (`http://localhost:9002` in state hooks)
 
@@ -920,13 +920,8 @@ running it from the repo root handles `go mod tidy`, tests, coverage,
 and a binary build.
 
 ```sh
-go-toolchain --generate e5b4190bd967
+go-toolchain
 ```
-
-The `--generate` flag approves the repo's one `//go:generate` directive (the
-dashboard TypeScript build, below). The hash is over the directive's text —
-if the directive changes, a bare `go-toolchain` run prints the new hash to
-approve.
 
 ### Dashboard TypeScript
 
@@ -952,13 +947,15 @@ unskippable gate) and bundles the adapter into
 module; the component URL passes through unbundled via esbuild
 `external`).
 
-To change the timeline: edit files under `ts/`, run
-`go generate ./internal/server/dashboard` (or the `go-toolchain --generate`
-invocation above, which does it as part of the build — Node 22+ required),
-and commit the regenerated `assets/timeline.js` together with the source.
-**Never edit `assets/timeline.js` by hand** — it carries a DO-NOT-EDIT
-banner, and CI rebuilds it and fails on any difference from the committed
-bytes.
+To change the timeline: edit files under `ts/`, run ts0 yourself to
+rebuild the bundle, and commit the regenerated `assets/timeline.js`
+together with the source. Regeneration is **temporarily manual**: the
+`//go:generate` npx directive was removed so the build needs no
+node/npm/npx anywhere; a prebuilt ts0 binary served from
+[buildhost](https://pazer.build), fetched by a small Go bootstrap, is
+landing next to re-automate it. **Never edit `assets/timeline.js` by
+hand** — it carries a DO-NOT-EDIT banner; the committed bundle is what
+ships.
 
 ## Notes
 
