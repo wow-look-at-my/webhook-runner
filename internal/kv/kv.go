@@ -119,9 +119,33 @@ type Store struct {
 	lockMu sync.Mutex
 	locks  map[string]map[string]lockEntry
 
+	// onMutate, when set, is invoked after every successful ENTRY mutation
+	// (Set, a Delete that deleted, Incr, a sweep that reclaimed something)
+	// — synchronously on the mutating goroutine, under the store mutex, so
+	// it must be fast, never block, and never call back into the Store.
+	// It is the dashboard's "kv changed" push seam (locks are not entries
+	// and never fire it). Set once at wiring time, before traffic.
+	onMutate func()
+
 	stop      chan struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+}
+
+// SetOnMutate registers fn to run after every successful entry mutation.
+// A nil fn disables the callback. See the field comment for the contract.
+func (s *Store) SetOnMutate(fn func()) {
+	s.mu.Lock()
+	s.onMutate = fn
+	s.mu.Unlock()
+}
+
+// notifyMutate fires the onMutate seam. Callers hold s.mu (read the field
+// under the same lock that guards it).
+func (s *Store) notifyMutate() {
+	if s.onMutate != nil {
+		s.onMutate()
+	}
 }
 
 // New constructs a Store, creating Dir if needed and loading every namespace
@@ -252,6 +276,7 @@ func (s *Store) Set(ns, key string, value []byte, ttl time.Duration) error {
 		s.rollback(ns, key, prev, keyExisted, nsExisted)
 		return err
 	}
+	s.notifyMutate()
 	return nil
 }
 
@@ -277,6 +302,7 @@ func (s *Store) Delete(ns, key string) error {
 		m[key] = prev
 		return err
 	}
+	s.notifyMutate()
 	return nil
 }
 
@@ -401,6 +427,7 @@ func (s *Store) Incr(ns, key string, delta int64, ttl time.Duration) (int64, err
 		s.rollback(ns, key, prev, keyExisted, nsExisted)
 		return 0, err
 	}
+	s.notifyMutate()
 	return newVal, nil
 }
 
@@ -451,6 +478,7 @@ func (s *Store) sweep() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	reclaimed := false
 	for ns, m := range s.ns {
 		changed := false
 		for k, e := range m {
@@ -460,10 +488,17 @@ func (s *Store) sweep() {
 			}
 		}
 		if changed {
+			reclaimed = true
 			if err := s.persist(ns); err != nil {
 				s.log.Error("kv: persist during sweep failed", "ns", ns, "err", err)
 			}
 		}
+	}
+	// One signal per sweep that reclaimed anything: expired entries change
+	// the admin /kv views (lazy expiry hides them from reads earlier, but
+	// the sweep is when counts/bytes actually move).
+	if reclaimed {
+		s.notifyMutate()
 	}
 }
 
