@@ -17,12 +17,16 @@ func init() {
 		Short: "Validate every hook.json in the given directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			loaded, errs := hooks.LoadDir(args[0])
+			// One detection rule everywhere: serve, validate, and test all
+			// resolve the layout the same way (see internal/hooks/layout.go).
+			layout := hooks.DetectLayout(args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "layout: %s\n", layout)
+			loaded, errs := hooks.LoadLayout(layout)
 
 			// Load the central concurrency groups and verify every hook's
 			// concurrency_group is declared there — referencing an
 			// undeclared group is a validation failure.
-			cfg, cerr := concurrency.Load(args[0])
+			cfg, cerr := concurrency.LoadFile(layout.ConcurrencyPath())
 			if cerr != nil {
 				errs = append(errs, cerr)
 				cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
