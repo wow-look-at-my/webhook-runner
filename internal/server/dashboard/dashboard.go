@@ -24,9 +24,9 @@
 // declarations are committed so a fresh clone builds and embeds without
 // Node; CI regenerates both and fails on any diff, so neither can go stale
 // (an upstream js-snippets API change turns CI red with a diff, by
-// design). Bump the ts0 pin in internal/tools/ts0gen/main.go — that does
-// NOT change this directive's go-toolchain --generate approval hash, but
-// any edit to the directive line or this doc comment does (a bare
+// design). Bump the ts0 pin (ts0Version in internal/tools/ts0gen) — that
+// does NOT change this directive's go-toolchain --generate approval hash,
+// but any edit to the directive line or this doc comment does (a bare
 // go-toolchain run prints the new one; update ci.yml and CLAUDE.md).
 package dashboard
 
