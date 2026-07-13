@@ -10,7 +10,6 @@ var FETCH_TIMEOUT_MS = 15e3;
 var RESYNC_MAX = 400;
 var RECONCILE_MAX = 20;
 var STALE_AFTER_MS = 25e3;
-var HOOKS_POLL_MS = 3e4;
 var BACKFILL_MAX = 200;
 var BACKFILL_MAX_PAGES = 30;
 var PRUNE_AT = 1e4;
@@ -24,8 +23,17 @@ var runsById = /* @__PURE__ */ new Map();
 var oldestStartedRaw = null;
 var oldestStartedMs = Infinity;
 var hookMeta = /* @__PURE__ */ new Map();
+var timelineEl = null;
 var laneOrderKey = "";
 var seeded = false;
+function applyHooksData(hooks) {
+  hookMeta = new Map(hooks.map((h) => [h.id, h]));
+  if (timelineEl) syncLanes(timelineEl);
+}
+if (window.whrHooks) applyHooksData(window.whrHooks);
+window.addEventListener("whr:hooks-data", (e) => {
+  applyHooksData(e.detail.hooks);
+});
 function noteOldest(r) {
   const ms = Date.parse(r.started);
   if (!Number.isFinite(ms)) return;
@@ -129,6 +137,15 @@ function openStream() {
     }
   });
   es.addEventListener("hb", () => fresh());
+  es.addEventListener("changed", (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      fresh();
+      window.dispatchEvent(new CustomEvent("whr:sections-changed", { detail: { sections: d.sections ?? [] } }));
+    } catch (err) {
+      console.error("timeline: bad changed event:", err);
+    }
+  });
 }
 var fallbackInFlight = false;
 function startFeedSupervisor() {
@@ -504,17 +521,8 @@ function initTimeline() {
     }
   };
   if (runsById.size > 0) applyPage([...runsById.values()]);
-  const pollHooks = async () => {
-    try {
-      const hooks = await fetchJSONBounded("/hooks");
-      hookMeta = new Map(hooks.map((h) => [h.id, h]));
-      syncLanes(tl);
-    } catch (e) {
-      console.error("timeline: hooks poll failed:", e);
-    }
-  };
-  setInterval(() => void pollHooks(), HOOKS_POLL_MS);
-  void pollHooks();
+  timelineEl = tl;
+  if (hookMeta.size > 0) syncLanes(tl);
 }
 function syncLanes(tl) {
   const lanes = computeLanes();
@@ -554,6 +562,7 @@ function applyTablePref(show) {
   if (section) section.hidden = !show;
   const btn = document.getElementById("timeline-table-toggle");
   if (btn) btn.textContent = show ? "Hide table" : "Show table";
+  if (show) window.dispatchEvent(new CustomEvent("whr:runs-table-shown"));
 }
 function initTableToggle() {
   applyTablePref(tablePref());

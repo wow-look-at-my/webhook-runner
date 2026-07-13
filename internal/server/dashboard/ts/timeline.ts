@@ -36,6 +36,14 @@
  * honest until the stream reconnects, and every stream (re)open does ONE
  * full /runs resync then goes stream-only again.
  *
+ * The SAME connection multiplexes `changed` events — coarse "these admin
+ * sections changed, refetch each once" signals (hooks/images/concurrency/
+ * kv/events) — which this module re-publishes as whr:sections-changed for
+ * dashboard.js, whose section tables follow the exact same push-first/
+ * fixed-fallback pattern. One stream feeds the whole dashboard; an idle
+ * page makes zero requests of any kind. The /hooks lane roster likewise
+ * arrives via whr:hooks-data from dashboard.js instead of a poll here.
+ *
  * WHY the poll was demoted — the stuck-running-bars post-mortem. The 2s
  * poll design had three independent ways to show fiction:
  *
@@ -171,7 +179,6 @@ const RECONCILE_MAX = 20; // stale non-terminal runs re-checked per resync
 // Component staleness marking (feature-detected): with 10s heartbeats,
 // ~2.5 missed beats = the feed is genuinely dead, say so on the chart.
 const STALE_AFTER_MS = 25_000;
-const HOOKS_POLL_MS = 30_000; // /hooks poll (lane roster metadata only)
 // Page size for ?before= history paging. Deliberately NOT raised: with the
 // walk bounded to the requested window a pan needs 1-2 pages, and at
 // observed production density a 200-run page is already ~3.5MB — a larger
@@ -196,10 +203,29 @@ const runsById = new Map<string, RunState>();
 /** Raw `started` of the oldest run held — the next ?before= cursor. */
 let oldestStartedRaw: string | null = null;
 let oldestStartedMs = Infinity;
-/** GET /hooks roster (registered hooks appear as lanes even when idle). */
+/** /hooks roster (registered hooks appear as lanes even when idle) — fed
+ * by dashboard.js, never fetched here: the classic script owns the single
+ * /hooks fetch (boot, stream-open resyncs, changed{hooks} push signals,
+ * fallback polls) and republishes the payload as window.whrHooks + a
+ * whr:hooks-data event. Consuming that killed both this module's old 30s
+ * roster poll and the page-load double-fetch (two scripts each fetching
+ * /hooks). */
 let hookMeta = new Map<string, HookSummary>();
+/** The mounted <timeline-view>, once initTimeline ran (lane resync target). */
+let timelineEl: TimelineViewElement | null = null;
 let laneOrderKey = '';
 let seeded = false; // first data application went through setData
+
+function applyHooksData(hooks: HookSummary[]): void {
+	hookMeta = new Map(hooks.map((h) => [h.id, h]));
+	if (timelineEl) syncLanes(timelineEl);
+}
+// Seed from whatever dashboard.js already fetched (its boot refresh usually
+// beats this module's evaluation), then track pushes.
+if (window.whrHooks) applyHooksData(window.whrHooks);
+window.addEventListener('whr:hooks-data', (e) => {
+	applyHooksData((e as CustomEvent<{ hooks: HookSummary[] }>).detail.hooks);
+});
 
 function noteOldest(r: RunState): void {
 	const ms = Date.parse(r.started);
@@ -355,6 +381,20 @@ function openStream(): void {
 	// Heartbeats are the idle-stream freshness signal (data may legitimately
 	// be quiet for hours; the FEED being alive is what markFresh attests).
 	es.addEventListener('hb', () => fresh());
+	// Coarse "section changed → refetch once" signals for the non-run admin
+	// sections (hooks/images/concurrency/kv/events), multiplexed onto this
+	// same connection. This module only re-publishes them: dashboard.js
+	// owns those sections' fetching and rendering, and gates its own
+	// fallback poll on window.whrStreamLive exactly like the runs feed.
+	es.addEventListener('changed', (e) => {
+		try {
+			const d = JSON.parse((e as MessageEvent<string>).data) as { sections?: string[] };
+			fresh(); // server data on the feed is liveness too
+			window.dispatchEvent(new CustomEvent('whr:sections-changed', { detail: { sections: d.sections ?? [] } }));
+		} catch (err) {
+			console.error('timeline: bad changed event:', err);
+		}
+	});
 }
 
 /** The feed supervisor + fallback poll: one interval, armed once, never
@@ -868,20 +908,11 @@ function initTimeline(): void {
 	// load).
 	if (runsById.size > 0) applyPage([...runsById.values()]);
 
-	// Lane metadata (descriptions, kill-switch state) changes rarely: a
-	// gentle fixed poll, try/caught, never cleared. NOT visibility-gated —
-	// the gate is one of the documented ways the old feed died.
-	const pollHooks = async (): Promise<void> => {
-		try {
-			const hooks = await fetchJSONBounded<HookSummary[]>('/hooks');
-			hookMeta = new Map(hooks.map((h) => [h.id, h]));
-			syncLanes(tl);
-		} catch (e) {
-			console.error('timeline: hooks poll failed:', e);
-		}
-	};
-	setInterval(() => void pollHooks(), HOOKS_POLL_MS);
-	void pollHooks();
+	// Lane metadata (descriptions, kill-switch state) is push-fed via
+	// whr:hooks-data (see applyHooksData) — register as its resync target
+	// and apply whatever roster has already arrived.
+	timelineEl = tl;
+	if (hookMeta.size > 0) syncLanes(tl);
 }
 
 /** Re-apply lane order only when it actually changed (setLanes re-ingests). */
@@ -939,6 +970,10 @@ function applyTablePref(show: boolean): void {
 	if (section) section.hidden = !show;
 	const btn = document.getElementById('timeline-table-toggle');
 	if (btn) btn.textContent = show ? 'Hide table' : 'Show table';
+	// A just-revealed table starts stale (nothing fetches /runs for a
+	// hidden one): tell dashboard.js so it refills immediately instead of
+	// waiting for the next run delta.
+	if (show) window.dispatchEvent(new CustomEvent('whr:runs-table-shown'));
 }
 
 function initTableToggle(): void {
