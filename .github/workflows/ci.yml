@@ -14,6 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The dashboard's committed assets/timeline.js is authoritative and
+      # embedded as-is — the npx //go:generate directive that rebuilt it via
+      # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
+      # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
+      # driven by a small Go bootstrap is landing next.
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true

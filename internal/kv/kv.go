@@ -45,6 +45,24 @@ type NamespaceStat struct {
 	Bytes     int    `json:"bytes"`
 }
 
+// KeyInfo is one key's metadata — name, value size, and expiry — for the
+// admin inspection endpoints. ExpiresAt/TTLSeconds are nil for keys without
+// a TTL; TTLSeconds is the remaining lifetime, computed at read time. The
+// entry model tracks nothing else (no created/updated stamps), so nothing
+// else is reported.
+type KeyInfo struct {
+	Key        string     `json:"key"`
+	Size       int        `json:"size"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	TTLSeconds *int64     `json:"ttl_seconds,omitempty"`
+}
+
+// Entry is KeyInfo plus the stored value — the admin single-key read.
+type Entry struct {
+	KeyInfo
+	Value []byte
+}
+
 // Typed errors let the HTTP layer map failures onto status codes.
 var (
 	ErrValueTooLarge = errors.New("kv: value exceeds max size")
@@ -72,6 +90,19 @@ func (e entry) expired(now time.Time) bool {
 	return e.Expires != nil && !e.Expires.After(now)
 }
 
+// info snapshots a (non-expired) entry's metadata. The expiry time is copied
+// so the returned struct stays valid outside the store's lock.
+func (e entry) info(key string, now time.Time) KeyInfo {
+	ki := KeyInfo{Key: key, Size: len(e.Value)}
+	if e.Expires != nil {
+		exp := *e.Expires
+		remaining := int64(exp.Sub(now) / time.Second)
+		ki.ExpiresAt = &exp
+		ki.TTLSeconds = &remaining
+	}
+	return ki
+}
+
 // Store is a disk-backed, bounded, concurrency-safe namespaced KV store.
 type Store struct {
 	mu  sync.RWMutex
@@ -80,6 +111,13 @@ type Store struct {
 	log *slog.Logger
 
 	secret []byte // HMAC key for namespace tokens (see token.go)
+
+	// Cooperative run-owned locks (see lock.go). Deliberately in-memory only
+	// — a lock's lifecycle is bounded by its holding run, and no run survives
+	// a restart — and under its own mutex, so lock verbs never contend with
+	// entry persistence.
+	lockMu sync.Mutex
+	locks  map[string]map[string]lockEntry
 
 	stop      chan struct{}
 	wg        sync.WaitGroup
@@ -113,6 +151,7 @@ func New(cfg Config, secret []byte, log *slog.Logger) (*Store, error) {
 	}
 	s := &Store{
 		ns:     make(map[string]map[string]entry),
+		locks:  make(map[string]map[string]lockEntry),
 		cfg:    cfg,
 		log:    log,
 		secret: secret,
@@ -261,6 +300,47 @@ func (s *Store) List(ns string) []string {
 	return keys
 }
 
+// Keys returns metadata (never values) for the non-expired keys in ns whose
+// names start with prefix ("" matches every key), sorted by key — the same
+// lazy-expiry and ordering rules as List, plus per-key size and expiry for
+// the admin inspection view.
+func (s *Store) Keys(ns, prefix string) []KeyInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.ns[ns]
+	if !ok {
+		return []KeyInfo{}
+	}
+	now := time.Now()
+	infos := make([]KeyInfo, 0, len(m))
+	for k, e := range m {
+		if e.expired(now) || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		infos = append(infos, e.info(k, now))
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Key < infos[j].Key })
+	return infos
+}
+
+// GetEntry returns one key's metadata plus a copy of its value, or ok=false
+// when it is absent or expired — the exact lazy-expiry rule Get uses, so the
+// admin inspection endpoint can never serve a ghost the state API would 404.
+func (s *Store) GetEntry(ns, key string) (Entry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.ns[ns]
+	if !ok {
+		return Entry{}, false
+	}
+	e, ok := m[key]
+	now := time.Now()
+	if !ok || e.expired(now) {
+		return Entry{}, false
+	}
+	return Entry{KeyInfo: e.info(key, now), Value: append([]byte(nil), e.Value...)}, true
+}
+
 // Incr atomically adds delta to the integer stored at key in ns and returns
 // the new value. A missing or expired key starts from 0. An existing value
 // that is not a base-10 int64 returns ErrNotInteger (it is never silently
@@ -367,6 +447,7 @@ func (s *Store) StartSweeper() {
 }
 
 func (s *Store) sweep() {
+	s.reapExpiredLocks()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()

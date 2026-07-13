@@ -8,6 +8,7 @@
   --failure: #f85149;
   --running: #d29922;
   --pending: #6e7681;
+  --skipped: #a371f7;
   --panel: #161b22;
 }
 * { box-sizing: border-box; }
@@ -37,10 +38,15 @@ header {
 }
 header h1 { margin: 0; font-size: 1.25rem; }
 .meta { color: var(--muted); font-size: 0.875rem; display: flex; gap: 0.75rem; align-items: center; }
-main { padding: 1.5rem 2rem; display: grid; gap: 2rem; max-width: 1200px; }
+/* Full width on purpose: a max-width cap here left the right ~25% of a
+   wide screen blank while the tables squeezed (and mid-word-wrapped their
+   ids) on the left. The padding is the breathing room. */
+main { padding: 1.5rem 2rem; display: grid; gap: 2rem; }
 section h2 { margin: 0 0 0.75rem; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 section h3 { margin: 1rem 0 0.5rem; font-size: 0.875rem; color: var(--muted); }
-table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
+/* Tables size to their content: a wide table may grow up to the viewport
+   (max-width caps it there), but a sparse one must not stretch to fill it. */
+table { width: auto; max-width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
 th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; }
 tbody tr:last-child td { border-bottom: 0; }
@@ -62,6 +68,18 @@ code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radiu
 .status.failure, .status.error, .status.timeout { color: var(--failure); }
 .status.running { color: var(--running); }
 .status.pending { color: var(--pending); }
+/* Distinct on purpose: a skipped run is "no work was done", not a pale
+   success or a soft failure — it must read as its own state at a glance. */
+.status.skipped { color: var(--skipped); }
+/* Inline "waiting Ns: reason" note on a run row — the run is inside a
+   declared wait (POST /wait on the state API), sleeping on purpose. */
+.wait-note {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--muted);
+}
 .empty { color: var(--muted); font-style: italic; padding: 1rem; }
 pre {
   background: #010409;
@@ -357,12 +375,30 @@ details#setup-details[open] summary { margin-bottom: 0.5rem; }
    table clips overflow (border-radius), so an unwrappable cell value is
    silently truncated instead of wrapped. */
 td { overflow-wrap: anywhere; }
+/* ...but identifiers are tokens, not prose. Every table renders ids in
+   <code> (hook ids, run ids, image tags, KV namespaces/keys, trigger
+   paths), and letting those break mid-word produced "github/-api" and
+   "requir/ed-/builds". Pin them to one line: an auto table column never
+   shrinks below its widest unbreakable content, so the id column just
+   claims its width and the prose columns (Description, event messages,
+   on-disk lists) absorb the squeeze by wrapping instead. Timestamps in
+   the runs tables get the same pin the activity feed's .event-time
+   already has -- a date broken mid-number reads just as badly. */
+td code { white-space: nowrap; }
+#runs-table td:first-child, #app-runs-table td:first-child { white-space: nowrap; }
 .window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
 a.hook-link { text-decoration: none; }
 a.hook-link code { color: var(--accent); }
 a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
 a.run-link { text-decoration: none; }
 a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+/* Plain-text jump link (the Info card's State (KV) summary): no <code>
+   child, so it carries the link color itself. */
+a.kv-jump { color: var(--accent); text-decoration: none; }
+a.kv-jump:hover { text-decoration: underline; }
+/* The overview State (KV) rows link into the per-hook KV browser; the
+   orphaned badge rides inside the link without picking up link styling. */
+#kv-table a.hook-link .badge { margin-left: 0.5rem; }
 /* A row of <code> chips (env var names, per-status counts): adjacent inline
    chips have NO whitespace between them, i.e. no soft-wrap opportunity at
    all -- the row is one unbreakable line. A wrapping flex row breaks
@@ -382,13 +418,42 @@ a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent
   color: var(--muted);
   white-space: nowrap;
 }
-.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured { background: rgba(248,81,73,0.15); color: var(--failure); }
+.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started, .kind.hook-enabled, .kind.concurrency-override_cleared { background: rgba(63,185,80,0.15); color: var(--success); }
+.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed, .kind.hook-disabled_rejected, .kind.override-write_failed, .kind.override-invalid { background: rgba(248,81,73,0.15); color: var(--failure); }
 .kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
+/* Operator kill-switch activity: amber — deliberate operator state, not
+   an error, but worth spotting in the feed. */
+.kind.hook-disabled, .kind.concurrency-overridden, .kind.override-orphaned { background: rgba(210,153,34,0.15); color: var(--running); }
+.kind.run-skipped { background: rgba(163,113,247,0.15); color: var(--skipped); }
 .event-time { white-space: nowrap; color: var(--muted); }
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
 #events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
-#app-events-table tbody tr { cursor: default; }
+#app-events-table tbody tr, #concurrency-table tbody tr { cursor: default; }
+
+/* Operator kill-switch controls: compact in-table buttons; "danger" marks
+   the destructive direction (disabling a hook). */
+.toggle-btn {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 5px;
+}
+.toggle-btn.danger, #app-toggle.danger { background: var(--failure); }
+.row-actions { white-space: nowrap; }
+.row-actions .badge, .row-actions .toggle-btn { margin-right: 0.4rem; }
+.row-actions :last-child { margin-right: 0; }
+.app-title-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.app-title-row h2 { margin: 0; }
+
+/* Per-app State (KV) inspection: key rows are clickable and expand into a
+   value row beneath them; the value row itself is not clickable. */
+#app-kv-table tr.kv-open td { border-bottom: 0; }
+#app-kv-table tr.kv-value-row { cursor: default; }
+#app-kv-table tr.kv-value-row:hover { background: transparent; }
+.kv-value-meta { color: var(--muted); font-size: 0.75rem; margin: 0.1rem 0 0.4rem; }
+.kv-value-error { color: var(--failure); }
+/* The value <pre> lives inside a table cell; keep it compact and let long
+   tokens (hashes, base64) wrap instead of widening the table. */
+pre.kv-value { margin: 0 0 0.35rem; max-height: 40vh; word-break: break-word; }
 
 /* Build-identity footer: unobtrusive, but always answers "which build is
    this host running?" (filled from GET /version by dashboard.js). */
@@ -398,3 +463,73 @@ a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent
   font-size: 0.75rem;
 }
 .site-footer #server-version { font-family: monospace; }
+
+/* --- Runs timeline (the primary runs view; timeline.js + <timeline-view>) ---
+   The generic canvas component ships its own dark defaults; these overrides
+   pin its --timeline-* theme to the dashboard palette so the plot, tooltip
+   and chrome read as one page. The demoted runs table sits below it behind
+   the "Show table" toggle. */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.section-head h2 { margin: 0; }
+/* A quiet secondary control — the accent-blue button base would shout. */
+.table-toggle {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.table-toggle:hover { color: var(--fg); filter: none; background: rgba(255,255,255,0.1); }
+timeline-view {
+  --timeline-bg: var(--panel);
+  --timeline-fg: var(--fg);
+  --timeline-muted: var(--muted);
+  --timeline-grid: rgba(230, 237, 243, 0.05);
+  --timeline-hairline: rgba(230, 237, 243, 0.09);
+  --timeline-row-tint: rgba(255, 255, 255, 0.012);
+  --timeline-now: var(--accent);
+  --timeline-emphasis: var(--failure);
+  --timeline-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --timeline-tooltip-bg: rgba(22, 27, 34, 0.97);
+  --timeline-tooltip-fg: var(--fg);
+  height: 75vh;
+  min-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* Friendly run titles (feature-detected /runs field): in the run tables the
+   title leads and the full id demotes to a small muted second line; in the
+   run modal's heading the id chip reads as secondary next to the title (or
+   the plain "Run" word for untitled runs). */
+td .run-title { font-weight: 500; }
+td .run-id-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
+td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
+#run-detail-title code { font-size: 0.65em; color: var(--muted); font-weight: 400; }
+
+/* Concurrency drill-down: group rows expand into a detail row listing the
+   runs holding the group's slots and the wait queue (each a run link into
+   the modal). Group rows are genuinely clickable, so they opt back IN to
+   the pointer cursor (overriding the blanket opt-out above); the detail
+   row itself is not clickable. */
+#concurrency-table tbody tr { cursor: pointer; }
+#concurrency-table tr.group-open td { border-bottom: 0; }
+#concurrency-table tr.group-detail-row { cursor: default; }
+#concurrency-table tr.group-detail-row:hover { background: transparent; }
+.group-detail-head {
+  color: var(--muted);
+  font-size: 0.7rem;
+  margin: 0.3rem 0 0.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.group-run { font-size: 0.85rem; margin: 0.1rem 0; }
+.group-run-title { color: var(--muted); }
+.group-run-since { color: var(--muted); font-size: 0.85em; margin-left: 0.4rem; }

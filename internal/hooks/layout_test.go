@@ -1,0 +1,213 @@
+package hooks
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// -- Tree builders -----------------------------------------------------------
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+const minimalHookJSON = `{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "description": "test hook",
+  "command": ["sh", "-c", "echo hi"],
+  "api_key": "k"
+}`
+
+// writeLegacyHook creates <root>/<id>/{hook.json,Dockerfile}.
+func writeLegacyHook(t *testing.T, root, id string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, id, "hook.json"), minimalHookJSON)
+	writeFile(t, filepath.Join(root, id, "Dockerfile"), "FROM alpine:3.20\n")
+}
+
+// writeSrcHook creates <root>/src/hooks/<id>/{hook.json,Dockerfile,main.ts}.
+func writeSrcHook(t *testing.T, root, id string) {
+	t.Helper()
+	dir := filepath.Join(root, "src", "hooks", id)
+	writeFile(t, filepath.Join(dir, "hook.json"), minimalHookJSON)
+	writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine:3.20\nCOPY sdk/ /app/sdk/\nCOPY hooks/"+id+"/ /app/hooks/"+id+"/\nWORKDIR /app/hooks/"+id+"\n")
+	writeFile(t, filepath.Join(dir, "main.ts"), "import { greet } from '../../sdk/util.ts';\nconsole.log(greet('x'));\n")
+}
+
+// -- Detection ---------------------------------------------------------------
+
+func TestDetectLayout(t *testing.T) {
+	legacy := t.TempDir()
+	writeLegacyHook(t, legacy, "a")
+	l := DetectLayout(legacy)
+	assert.False(t, l.SDK)
+	assert.Equal(t, "legacy", l.String())
+	assert.Equal(t, legacy, l.HooksDir())
+	assert.Equal(t, filepath.Join(legacy, "concurrency.json"), l.ConcurrencyPath())
+	assert.Empty(t, l.SrcDir())
+	assert.Empty(t, l.SDKDir())
+
+	src := t.TempDir()
+	writeSrcHook(t, src, "a")
+	l = DetectLayout(src)
+	assert.True(t, l.SDK)
+	assert.Equal(t, "src", l.String())
+	assert.Equal(t, filepath.Join(src, "src", "hooks"), l.HooksDir())
+	assert.Equal(t, filepath.Join(src, "src", "config", "concurrency.json"), l.ConcurrencyPath())
+	assert.Equal(t, filepath.Join(src, "src"), l.SrcDir())
+	assert.Equal(t, filepath.Join(src, "src", "sdk"), l.SDKDir())
+
+	// src/hooks must be a DIRECTORY — a stray file doesn't flip the layout.
+	odd := t.TempDir()
+	writeFile(t, filepath.Join(odd, "src", "hooks"), "not a dir")
+	assert.False(t, DetectLayout(odd).SDK)
+}
+
+// -- Loading -----------------------------------------------------------------
+
+func TestLoadLayoutSrcTree(t *testing.T) {
+	root := t.TempDir()
+	writeSrcHook(t, root, "alpha")
+	writeSrcHook(t, root, "beta")
+	writeFile(t, filepath.Join(root, "src", "sdk", "util.ts"), "export const x = 1;\n")
+	// A stray legacy-shaped dir at the root: must be IGNORED, loudly.
+	writeLegacyHook(t, root, "stray")
+	// A root-level non-hook dir: silently fine (README folders etc.).
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0o755))
+
+	loaded, errs := LoadDir(root)
+	require.Len(t, loaded, 2)
+	require.Contains(t, loaded, "alpha")
+	require.Contains(t, loaded, "beta")
+	assert.True(t, loaded["alpha"].SDKLayout())
+	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].SrcRoot)
+	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].BuildContext())
+
+	// Exactly one error: the ignored stray dir, named.
+	require.Len(t, errs, 1)
+	var ignored IgnoredLegacyDirError
+	require.True(t, errors.As(errs[0], &ignored), "want IgnoredLegacyDirError, got %v", errs[0])
+	assert.Contains(t, ignored.Dir, "stray")
+	assert.Contains(t, ignored.Error(), "src layout")
+}
+
+func TestLoadLayoutLegacyUnchanged(t *testing.T) {
+	root := t.TempDir()
+	writeLegacyHook(t, root, "a")
+	loaded, errs := LoadDir(root)
+	assert.Empty(t, errs)
+	require.Len(t, loaded, 1)
+	assert.False(t, loaded["a"].SDKLayout())
+	assert.Equal(t, loaded["a"].Dir(), loaded["a"].BuildContext())
+}
+
+func TestLoadFixtureTree(t *testing.T) {
+	loaded, errs := LoadDir(filepath.Join("testdata", "srclayout"))
+	assert.Empty(t, errs)
+	require.Contains(t, loaded, "demo-ts")
+	h := loaded["demo-ts"]
+	assert.True(t, h.SDKLayout())
+	hash, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.Len(t, hash, 16)
+}
+
+// -- The zero-hooks guard ------------------------------------------------------
+
+func TestZeroHooksIsLoud(t *testing.T) {
+	// Empty dir: nothing to serve — must be a loud, typed error.
+	_, errs := LoadDir(t.TempDir())
+	require.Len(t, errs, 1)
+	var zero ZeroHooksError
+	require.True(t, errors.As(errs[0], &zero))
+	assert.Contains(t, zero.Error(), "no hooks loaded")
+
+	// The dry-run disaster shape: a src-restructured tree WITHOUT
+	// src/hooks (or scanned by anything that falls back to legacy rules)
+	// yields zero hooks. That must be equally loud — a silent zero here is
+	// how a premature restructure takes a whole fleet offline with green
+	// checks.
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "misc", "note.txt"), "not hooks")
+	loaded, errs := LoadDir(root)
+	assert.Empty(t, loaded)
+	require.Len(t, errs, 1)
+	require.True(t, errors.As(errs[0], &zero))
+	assert.Contains(t, zero.Error(), "legacy layout", "the message must name the layout that was scanned")
+}
+
+// -- Content hashing -----------------------------------------------------------
+
+// The legacy algorithm must stay byte-identical across this change:
+// existing deployments must not re-tag (and so re-build) every hook on
+// upgrade. Golden value computed from the historical algorithm (relative
+// path + \x00 + content + \x00 per file, lexical walk, sha256 hex[:16]).
+func TestContentHashLegacyByteIdentical(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "golden")
+	writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine:3.20\nCMD [\"sh\", \"-c\", \"echo golden\"]\n")
+	writeFile(t, filepath.Join(dir, "hook.json"), "{\n  \"$schema\": \"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json\",\n  \"description\": \"golden legacy fixture\",\n  \"command\": [\"sh\", \"-c\", \"echo golden\"],\n  \"api_key\": \"golden-key\"\n}\n")
+	writeFile(t, filepath.Join(dir, "payload.txt"), "fixed bytes\n")
+
+	loaded, errs := LoadDir(root)
+	require.Empty(t, errs)
+	h := loaded["golden"]
+	hash, err := h.ContentHash()
+	require.NoError(t, err)
+	assert.Equal(t, "c1b0e5de5444c992", hash,
+		"legacy content hashing changed — every deployed hook would re-tag on upgrade")
+}
+
+func TestContentHashSDKSensitivity(t *testing.T) {
+	root := t.TempDir()
+	writeSrcHook(t, root, "a")
+	writeSrcHook(t, root, "b")
+	writeFile(t, filepath.Join(root, "src", "sdk", "util.ts"), "export function greet(n: string) { return n; }\n")
+
+	load := func() (*Hook, *Hook) {
+		loaded, errs := LoadDir(root)
+		require.Empty(t, errs)
+		return loaded["a"], loaded["b"]
+	}
+	hash := func(h *Hook) string {
+		v, err := h.ContentHash()
+		require.NoError(t, err)
+		return v
+	}
+
+	a, b := load()
+	a1, b1 := hash(a), hash(b)
+	assert.NotEqual(t, a1, b1, "different hooks must not share a hash")
+
+	// An sdk edit re-tags EVERY src-layout hook.
+	writeFile(t, filepath.Join(root, "src", "sdk", "util.ts"), "export function greet(n: string) { return 'hi ' + n; }\n")
+	a2, b2 := hash(a), hash(b)
+	assert.NotEqual(t, a1, a2, "sdk edit must re-tag hook a")
+	assert.NotEqual(t, b1, b2, "sdk edit must re-tag hook b")
+
+	// An edit to hook B never re-tags hook A.
+	writeFile(t, filepath.Join(root, "src", "hooks", "b", "main.ts"), "console.log('changed');\n")
+	a3, b3 := hash(a), hash(b)
+	assert.Equal(t, a2, a3, "sibling edit must not re-tag hook a")
+	assert.NotEqual(t, b2, b3, "own edit must re-tag hook b")
+
+	// Mode changes count under the SDK layout (relative path + bytes + mode).
+	require.NoError(t, os.Chmod(filepath.Join(root, "src", "hooks", "a", "main.ts"), 0o755))
+	a4, _ := hash(a), hash(b)
+	assert.NotEqual(t, a3, a4, "mode change must re-tag under the src layout")
+
+	// A src tree WITHOUT an sdk dir still hashes (shared code is optional).
+	bare := t.TempDir()
+	writeSrcHook(t, bare, "solo")
+	loaded, errs := LoadDir(bare)
+	require.Empty(t, errs)
+	_, err := loaded["solo"].ContentHash()
+	assert.NoError(t, err)
+}

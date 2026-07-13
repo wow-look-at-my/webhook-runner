@@ -13,6 +13,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
@@ -43,7 +44,12 @@ type Server struct {
 	hookBaseURL  string
 	kv           *kv.Store
 	runstore     *runstore.Store
+	overrides    *overrides.Store
 	version      VersionInfo
+
+	// stream fans run lifecycle updates out to GET /runs/stream clients;
+	// fed by the tracker's OnChange seam (wired in New). Never nil.
+	stream *streamHub
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -97,6 +103,12 @@ type Options struct {
 	// behavior.
 	RunStore *runstore.Store
 
+	// Overrides is the operator kill-switch store: per-hook disable
+	// switches (deliveries 503, scheduled runs skipped) and concurrency
+	// limit overrides, persisted under the data dir. nil disables the
+	// override endpoints (reads treat every hook as enabled).
+	Overrides *overrides.Store
+
 	// Version identifies the running build; it is reported by /health and
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
@@ -126,10 +138,20 @@ func New(opts Options) *Server {
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
 		runstore:     opts.RunStore,
+		overrides:    opts.Overrides,
 		version:      opts.Version,
+		stream:       newStreamHub(),
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
 		stateMux:     http.NewServeMux(),
+	}
+	// The live tail: every run lifecycle mutation is fanned out to the
+	// /runs/stream subscribers. publish never blocks (bounded per-client
+	// buffers, slow clients dropped), so hooking it to the tracker's
+	// mutating goroutines is safe. Wired here — before any run can exist —
+	// because SetOnChange only applies to runs created after it.
+	if opts.Tracker != nil {
+		opts.Tracker.SetOnChange(s.stream.publish)
 	}
 	s.registerRoutes()
 	return s
@@ -161,9 +183,18 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)
+	// Operator kill switch (see overrides.go): flip a hook off/on, override
+	// a concurrency group's limit live. Admin-port-only by design.
+	s.adminMux.HandleFunc("POST /hooks/{id}/disable", s.handleHookDisable)
+	s.adminMux.HandleFunc("POST /hooks/{id}/enable", s.handleHookEnable)
+	s.adminMux.HandleFunc("PUT /concurrency/{group}/limit", s.handleConcurrencyOverrideSet)
+	s.adminMux.HandleFunc("DELETE /concurrency/{group}/limit", s.handleConcurrencyOverrideClear)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)
+	// The SSE live tail. The literal "stream" segment wins over the
+	// {id} pattern below (most-specific match), so no run id collision.
+	s.adminMux.HandleFunc("GET /runs/stream", s.handleRunsStream)
 	s.adminMux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	s.adminMux.HandleFunc("POST /runs/{id}/cancel", s.handleAdminCancelRun)
 	s.adminMux.HandleFunc("POST /reload", s.handleReload)
@@ -172,6 +203,9 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
 	s.adminMux.HandleFunc("GET /kv", s.handleKVStats)
+	// State inspection (deliberately value-bearing — see kvadmin.go).
+	s.adminMux.HandleFunc("GET /kv/{namespace}", s.handleKVNamespace)
+	s.adminMux.HandleFunc("GET /kv/{namespace}/{key}", s.handleKVEntry)
 	s.adminMux.HandleFunc("GET /", s.handleDashboard)
 
 	// State port (internal): hook containers reach their own namespace,
@@ -182,6 +216,21 @@ func (s *Server) registerRoutes() {
 	s.stateMux.HandleFunc("DELETE /kv/{key}", s.withNamespace(s.handleKVDelete))
 	s.stateMux.HandleFunc("GET /kv", s.withNamespace(s.handleKVList))
 	s.stateMux.HandleFunc("POST /kv/{key}/incr", s.withNamespace(s.handleKVIncr))
+	// Cooperative run-owned locks: atomic acquire/release bound to the run
+	// identity in the token (internal/kv/lock.go). Lock state is separate
+	// from the entries the routes above serve. Acquire names the holder on
+	// contention and can block ({"block": true}); steal is a separate route
+	// because it cancels the displaced holder — destructive intent must be
+	// unmistakable.
+	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
+	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
+	s.stateMux.HandleFunc("POST /kv/{key}/steal", s.withNamespace(s.handleKVSteal))
+	// First-class declared sleep: blocks ~N seconds, shows on the dashboard,
+	// and counts as activity for the idle timeout (see wait.go).
+	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))
+	// Friendly-title override: a run whose subject is only known mid-run
+	// (a fleet sweep reaching some repo) names itself (see title.go).
+	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
 }
 
 // runRequestContext returns a background context derived from the server

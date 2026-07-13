@@ -97,7 +97,7 @@ func TestRunnerSuccess(t *testing.T) {
 		ID:      "h",
 		Command: []string{"hello", "world"},
 	})
-	run, err := r.Start(context.Background(), hook, []byte("payload"), http.Header{"X-Test": []string{"yes"}})
+	run, err := r.Start(context.Background(), hook, []byte("payload"), http.Header{"X-Test": []string{"yes"}}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -127,7 +127,7 @@ func TestRunnerFailure(t *testing.T) {
 		ID:      "h",
 		Command: []string{"EXIT_3"},
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -155,7 +155,7 @@ func TestRunnerTimeout(t *testing.T) {
 		Command:    []string{"SLEEP_30"},
 		TimeoutRaw: "100ms",
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
 	select {
@@ -183,7 +183,7 @@ func TestRunnerStartHookCallback(t *testing.T) {
 		OnFinish: func(*hooks.Hook, *runs.Run, []byte) { finishCalled = true },
 	})
 	hook := diskHook(t, dir, &hooks.Hook{ID: "h", Command: []string{"x"}})
-	_, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	_, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 	assert.True(t, startCalled)
@@ -201,7 +201,7 @@ func TestRunnerWritesPayloadFile(t *testing.T) {
 		Docker:  "/bin/true", // accepts and ignores all args, exits 0
 	})
 	hook := diskHook(t, tmp, &hooks.Hook{ID: "h", Command: []string{"x"}})
-	_, err := r.Start(context.Background(), hook, []byte("hello payload"), http.Header{})
+	_, err := r.Start(context.Background(), hook, []byte("hello payload"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 	// Temp dir should have been cleaned up; no leftover wh-* dirs.
@@ -244,7 +244,7 @@ func TestRunnerCancelWhileRunning(t *testing.T) {
 		ID:      "h",
 		Command: []string{"SLEEP_30"},
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -284,7 +284,7 @@ func TestRunnerCancelImmediately(t *testing.T) {
 		ID:      "h",
 		Command: []string{"SLEEP_30"},
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	run.RequestCancel()
 
@@ -324,7 +324,7 @@ func TestRunnerExpandsEnv(t *testing.T) {
 			"PLAIN":   "v",
 		},
 	}
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -387,7 +387,7 @@ func TestRunnerBuildsDockerfileHookImage(t *testing.T) {
 
 	tracker := runs.NewTracker()
 	r := New(Options{Tracker: tracker, Logger: newSilentLogger(), TmpDir: dir, Docker: docker})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 	require.Equal(t, runs.StatusSuccess, run.Status())
@@ -425,7 +425,7 @@ exit 0
 
 	tracker := runs.NewTracker()
 	r := New(Options{Tracker: tracker, Logger: newSilentLogger(), TmpDir: dir, Docker: docker})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -478,7 +478,7 @@ func TestRunnerInjectsSopsSecrets(t *testing.T) {
 			"COMBINED":   "${REFERENCED}/${WHR_RUNNER_HOST_ONLY}", // ${NAME} sees secrets, then host env
 		},
 	}
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -529,7 +529,7 @@ func TestRunnerSecretsDecryptFailureFailsRun(t *testing.T) {
 		SourcePath: filepath.Join(hookDir, "hook.json"),
 		Command:    []string{"x"},
 	}
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -575,7 +575,7 @@ func TestRunnerConcurrencyGroupQueuesAndDefersTimeout(t *testing.T) {
 
 	// A holds the single slot for ~1s.
 	hookA := diskHook(t, dir, &hooks.Hook{ID: "a", Command: []string{"SLEEP_1"}, ConcurrencyGroup: "g"})
-	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{})
+	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	waitStatus(t, runA, runs.StatusRunning, 2*time.Second)
 
@@ -584,7 +584,7 @@ func TestRunnerConcurrencyGroupQueuesAndDefersTimeout(t *testing.T) {
 	// runs — so despite waiting ~1s (>> its 300ms timeout) it succeeds
 	// rather than timing out.
 	hookB := diskHook(t, dir, &hooks.Hook{ID: "b", Command: []string{"echo", "b"}, TimeoutRaw: "300ms", ConcurrencyGroup: "g"})
-	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{})
+	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
 	// While A still holds the slot, B is queued, not running.
@@ -610,7 +610,7 @@ func TestRunnerUnknownGroupFailsClosed(t *testing.T) {
 		Groups:  concurrency.NewManager(nil), // no groups declared
 	})
 	hook := diskHook(t, dir, &hooks.Hook{ID: "h", Command: []string{"x"}, ConcurrencyGroup: "ghost"})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 	assert.Equal(t, runs.StatusError, run.Status())
@@ -635,12 +635,12 @@ func TestRunnerCancelWhileQueued(t *testing.T) {
 	})
 
 	hookA := diskHook(t, dir, &hooks.Hook{ID: "a", Command: []string{"SLEEP_30"}, ConcurrencyGroup: "g"})
-	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{})
+	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	waitStatus(t, runA, runs.StatusRunning, 2*time.Second)
 
 	hookB := diskHook(t, dir, &hooks.Hook{ID: "b", Command: []string{"echo", "b"}, ConcurrencyGroup: "g"})
-	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{})
+	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	assert.Equal(t, runs.StatusPending, runB.Status())
 
@@ -656,4 +656,57 @@ func TestRunnerCancelWhileQueued(t *testing.T) {
 	// Free the runner: cancel A so r.Wait returns promptly.
 	runA.RequestCancel()
 	r.Wait()
+}
+
+// The runner registers each run's watchdog reset via SetActivityTouch when
+// it arms the watchdog — the seam the state API's declared waits (/wait)
+// use. While something keeps calling TouchActivity, a completely silent run
+// outlives an idle timeout far shorter than its silence; the identical
+// untouched run dies (TestRunnerTimeout above proves the control case).
+func TestRunnerTouchActivityDefersIdleTimeout(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeMockDocker(t, dir)
+
+	tracker := runs.NewTracker()
+	r := New(Options{
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
+	})
+
+	hook := diskHook(t, dir, &hooks.Hook{
+		ID:         "h",
+		Command:    []string{"SLEEP_1"},
+		TimeoutRaw: "300ms",
+	})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
+	require.NoError(t, err)
+
+	// Stand in for an in-flight declared wait: touch well inside the limit.
+	stop := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-run.Done():
+				return
+			case <-stop:
+				return
+			case <-tick.C:
+				run.TouchActivity()
+			}
+		}
+	}()
+
+	select {
+	case <-run.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not finish")
+	}
+	close(stop)
+	r.Wait()
+
+	assert.Equal(t, runs.StatusSuccess, run.Status())
 }

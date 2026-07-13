@@ -153,7 +153,7 @@ func TestRunnerTimeoutKillsSilentRun(t *testing.T) {
 		Command:    []string{"one-line-then-silence", "SLEEP_30"},
 		TimeoutRaw: "200ms",
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
 	select {
@@ -193,7 +193,7 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 		Command:    []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
 		TimeoutRaw: "3s",
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 

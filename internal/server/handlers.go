@@ -13,6 +13,7 @@ import (
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -39,8 +40,21 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.version)
 }
 
+// hookListEntry is one row of GET /hooks: the registry summary plus the
+// operator kill-switch state (disabled hooks stay loaded and listed —
+// only their dispatch is gated).
+type hookListEntry struct {
+	hooks.Summary
+	Disabled bool `json:"disabled"`
+}
+
 func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.registry.List())
+	list := s.registry.List()
+	out := make([]hookListEntry, 0, len(list))
+	for _, sum := range list {
+		out = append(out, hookListEntry{Summary: sum, Disabled: s.overrides.HookDisabled(sum.ID)})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +67,20 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		s.events.Record("hook.unknown", "trigger for unknown hook "+id+" from "+r.RemoteAddr,
 			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
+		return
+	}
+
+	// The operator kill switch gates DISPATCH only: the hook stays loaded
+	// (image state, config, runs all intact) but no new run starts — not
+	// even from the admin port (re-enable it to run it). Checked before the
+	// body/auth so a runaway caller is cut off at minimal cost, and
+	// answered with a deliberately distinct, loud 503 (a 404/401 would read
+	// as a routing or key problem).
+	if s.overrides.HookDisabled(id) {
+		s.events.Record("hook.disabled_rejected",
+			hook.ID+": delivery rejected — hook is disabled by operator (from "+r.RemoteAddr+")",
+			map[string]string{"hook": hook.ID})
+		writeError(w, http.StatusServiceUnavailable, "hook disabled by operator")
 		return
 	}
 
@@ -77,17 +105,48 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Friendly run title — resolved exactly ONCE per delivery, here, BEFORE
+	// skip evaluation, so whichever pipeline the delivery takes (skip or
+	// run) carries the same title: a skipped run should still say which PR
+	// it was about. Resolution is total and never fails ("" = untitled, the
+	// dashboard falls back to the run id), so it cannot reject a delivery.
+	title := hook.RenderRunTitle(body, r.Header)
+
+	// Declarative skip conditions — evaluated strictly AFTER authentication
+	// (an unauthenticated caller must never probe the conditions; it gets
+	// the 401 above with nothing recorded) and BEFORE any work: no image
+	// build, no container, no concurrency slot. A match answers the request
+	// immediately — sync hooks included, there is nothing to hold for — and
+	// records a real, terminal `skipped` run naming the matched condition,
+	// so "no work was done" is first-class on the runs table.
+	if reason, skip := hook.EvaluateSkip(body, r.Header); skip {
+		run := s.runner.Skip(hook, reason, title)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"run_id": run.ID(),
+			"status": string(runs.StatusSkipped),
+			"reason": reason,
+		})
+		return
+	}
+
 	wantSync, syncTimeout, err := parseWaitParams(r, hook)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header)
+	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header, title)
 	if err != nil {
+		// A draining server is a RETRYABLE condition, not a hook failure:
+		// answer 503 so the sender (GitHub redelivers webhooks) tries the
+		// restarted server instead of recording a permanent failure.
+		code := http.StatusInternalServerError
+		if errors.Is(err, runner.ErrDraining) {
+			code = http.StatusServiceUnavailable
+		}
 		// The runner has already recorded the failure; return the run
 		// ID anyway so the client can fetch details.
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
+		writeJSON(w, code, map[string]string{
 			"run_id": run.ID(),
 			"error":  err.Error(),
 		})
@@ -133,7 +192,9 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 // hook (for api_key hooks the body is irrelevant; for signature hooks the
 // signature covers whatever body the caller sent). The response is 202 —
 // cancellation is a request: the run reaches "cancelled" once the runner
-// has actually killed the container.
+// has actually killed the container. Deliberately NOT gated by the
+// operator kill switch: cancelling a disabled hook's in-flight runs is
+// stopping work, which is what disabling is for.
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
@@ -204,7 +265,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if run := s.tracker.Get(id); run != nil {
-		writeJSON(w, http.StatusOK, run.Snapshot(tail))
+		st := []runs.RunState{run.Snapshot(tail)}
+		s.attachWaiters(st)
+		writeJSON(w, http.StatusOK, st[0])
 		return
 	}
 	// The tracker window is bounded; fall back to the persisted history for
@@ -238,25 +301,48 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), max))
+	// ?before= pages into history: only runs queued STRICTLY before the
+	// instant (RFC3339, fractional seconds optional). Clients page by
+	// passing the oldest `started` they already hold. Omitted = no bound.
+	var before time.Time
+	if b := r.URL.Query().Get("before"); b != "" {
+		t, err := time.Parse(time.RFC3339Nano, b)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid before=%q: want an RFC3339 timestamp", b))
+			return
+		}
+		before = t
+	}
+	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), before, max))
 }
 
 // mergedRuns is the /runs read path: live tracker runs (active + recent)
 // merged with the persisted completed history, deduped by run ID (the live
 // copy wins — for the same run it can never be older than the persisted
-// one), newest-first, capped at max. Output is never shipped in the list
-// view; clients fetch /runs/{id} for that.
-func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
+// one), newest-first, capped at max. A non-zero before keeps only runs
+// queued strictly before it (the page cursor); zero means unbounded. Output
+// is never shipped in the list view; clients fetch /runs/{id} for that.
+func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.RunState {
+	// With a cursor the newest-max live window may sit entirely at-or-after
+	// it, hiding older live runs behind the cap — list uncapped (the tracker
+	// is bounded anyway) and let the filter plus the final cap do the work.
+	liveMax := max
+	if !before.IsZero() {
+		liveMax = 0
+	}
 	var live []*runs.Run
 	if hookID != "" {
-		live = s.tracker.ListByHook(hookID, max)
+		live = s.tracker.ListByHook(hookID, liveMax)
 	} else {
-		live = s.tracker.ListAll(max)
+		live = s.tracker.ListAll(liveMax)
 	}
 	out := make([]runs.RunState, 0, len(live))
 	seen := make(map[string]struct{}, len(live))
 	for _, r := range live {
 		snap := r.Snapshot(0)
+		if !before.IsZero() && !snap.Started.Before(before) {
+			continue
+		}
 		snap.Output = nil
 		snap.OutputTimes = nil
 		out = append(out, snap)
@@ -265,9 +351,9 @@ func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
 	if s.runstore != nil {
 		var persisted []runs.RunState
 		if hookID != "" {
-			persisted = s.runstore.ListByHook(hookID, max)
+			persisted = s.runstore.ListByHookBefore(hookID, before, max)
 		} else {
-			persisted = s.runstore.ListAll(max)
+			persisted = s.runstore.ListAllBefore(before, max)
 		}
 		for _, st := range persisted {
 			if _, dup := seen[st.ID]; dup {
@@ -282,7 +368,59 @@ func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
 	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
+	s.attachWaiters(out)
 	return out
+}
+
+// attachWaiters decorates run snapshots with the runs currently blocked on
+// resources each of them holds — the holder-side view the dashboard shows
+// ("N runs waiting on this run"). DERIVED, never stored: a blocked acquire
+// stamps its own run's WaitingOn with the holder(s) it is waiting on
+// (re-stamped as holders change), so the live tracker already contains the
+// whole graph and one pass inverts it. Two kinds contribute: a lock wait
+// names its single holder (Key = the lock key), and a concurrency-group
+// wait names every current slot holder (Key = "group:<name>", so renderers
+// can tell the two apart). Waiter lists are sorted for stable JSON.
+// Terminal/persisted runs never hold locks or slots, so they simply never
+// match.
+func (s *Server) attachWaiters(states []runs.RunState) {
+	if s.tracker == nil || len(states) == 0 {
+		return
+	}
+	var byHolder map[string][]runs.Waiter
+	add := func(holderID string, waiter runs.Waiter) {
+		if holderID == "" {
+			return
+		}
+		if byHolder == nil {
+			byHolder = make(map[string][]runs.Waiter)
+		}
+		byHolder[holderID] = append(byHolder[holderID], waiter)
+	}
+	for _, r := range s.tracker.ListAll(0) {
+		snap := r.Snapshot(0)
+		w := snap.WaitingOn
+		if w == nil {
+			continue
+		}
+		switch w.Kind {
+		case runs.WaitingOnLock:
+			add(w.HolderRunID, runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: w.Key})
+		case runs.WaitingOnGroup:
+			for _, h := range w.HolderRunIDs {
+				add(h, runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: groupWaiterKey(w.Key)})
+			}
+		}
+	}
+	if byHolder == nil {
+		return
+	}
+	for _, ws := range byHolder {
+		sort.Slice(ws, func(i, j int) bool { return ws[i].RunID < ws[j].RunID })
+	}
+	for i := range states {
+		states[i].Waiters = byHolder[states[i].ID]
+	}
 }
 
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>
@@ -420,15 +558,10 @@ func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.runner.ImageStatus(s.registry.All()))
 }
 
-// handleConcurrency reports the live state of every declared concurrency
-// group — its limit, how many runs are active, and how many are queued
-// behind it (admin port).
-func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.concurrency.Status())
-}
-
 // handleKVStats reports per-namespace key counts and byte totals for the
-// state store (admin port). It never exposes stored values.
+// state store (admin port). This level stays value-free (and its shape is
+// stable for existing consumers); keys and values are inspectable one level
+// down via /kv/{namespace} and /kv/{namespace}/{key} (see kvadmin.go).
 func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
 	if s.kv == nil {
 		writeJSON(w, http.StatusOK, []kv.NamespaceStat{})
@@ -447,6 +580,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.reloadSecret != "" {
 		cfg["reload_secret"] = s.reloadSecret
+	}
+	// The persisted-history window, compacted like stats.retention ("48h") —
+	// how far back /runs?before= paging can ever reach, so a client can mark
+	// "history ends here". Absent when no run store is configured.
+	if s.runstore != nil {
+		cfg["run_retention"] = compactDuration(s.runstore.Retention())
 	}
 	writeJSON(w, http.StatusOK, cfg)
 }

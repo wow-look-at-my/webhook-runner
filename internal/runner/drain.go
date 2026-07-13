@@ -1,0 +1,27 @@
+package runner
+
+// The shutdown drain gate. A run LAUNCHED by a dying runner process races
+// the state-socket handover (its kvproxy shim would dial a socket the next
+// process unlinks and re-binds) and the process's own teardown — observed
+// in production as a fresh container's first lock call dying with a
+// connection-level "fetch failed" inside a deploy window, which the hook
+// then reported as a real failure with external side effects. Once
+// shutdown begins, new launches are refused with a retryable error;
+// in-flight runs are untouched (Wait drains them), and the kvproxy shim's
+// flat dial retry covers THEIR calls across the brief handover.
+
+import "errors"
+
+// ErrDraining is returned by Start once BeginShutdown has been called.
+var ErrDraining = errors.New("server is restarting; not accepting new runs")
+
+// BeginShutdown flips the runner into drain mode: every later Start is
+// refused with ErrDraining (recorded as an error run so the caller's
+// response and the run history both say WHY), while in-flight runs keep
+// running for Wait to collect. Call it at the very start of graceful
+// shutdown, before the HTTP servers stop accepting.
+func (r *Runner) BeginShutdown() { r.draining.Store(true) }
+
+// Draining reports whether BeginShutdown has been called (handlers use it
+// to refuse deliveries cheaply before creating any run state).
+func (r *Runner) Draining() bool { return r.draining.Load() }

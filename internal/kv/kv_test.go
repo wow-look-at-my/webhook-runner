@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -196,28 +197,34 @@ func TestBadNamespace(t *testing.T) {
 
 func TestToken(t *testing.T) {
 	s := newStore(t)
-	tok := s.Token("my-hook")
-	ns, ok := s.VerifyToken(tok)
+	tok := s.Token("my-hook", "run123")
+	ns, runID, ok := s.VerifyToken(tok)
 	require.True(t, ok)
 	require.Equal(t, "my-hook", ns)
+	require.Equal(t, "run123", runID)
 
 	// Tampered MAC.
-	_, ok = s.VerifyToken(tok + "x")
+	_, _, ok = s.VerifyToken(tok + "x")
 	require.False(t, ok)
 
 	// Cross-namespace forgery: keep a valid MAC but swap the namespace.
-	_, ok = s.VerifyToken("other" + tok[len("my-hook"):])
+	_, _, ok = s.VerifyToken("other" + tok[len("my-hook"):])
+	require.False(t, ok)
+
+	// Cross-run forgery: keep a valid MAC but swap the run identity (a hook
+	// must not be able to release another run's locks by editing its token).
+	_, _, ok = s.VerifyToken("my-hook.run999." + strings.SplitN(tok, ".", 3)[2])
 	require.False(t, ok)
 
 	// Different secret.
 	other, err := New(Config{Dir: filepath.Join(t.TempDir(), "kv")}, []byte("other-secret"), nil)
 	require.NoError(t, err)
-	_, ok = other.VerifyToken(tok)
+	_, _, ok = other.VerifyToken(tok)
 	require.False(t, ok)
 
-	// Garbage.
-	for _, bad := range []string{"", "no-dot", "ns.", ".mac", "ns.not-base64!!"} {
-		_, ok = s.VerifyToken(bad)
+	// Garbage — including the retired two-part (no run identity) format.
+	for _, bad := range []string{"", "no-dot", "ns.", ".mac", "ns.not-base64!!", "ns.mac", "ns.run.", "ns..mac", ".run.mac"} {
+		_, _, ok = s.VerifyToken(bad)
 		assert.Falsef(t, ok, "bad=%q", bad)
 	}
 }
@@ -236,6 +243,67 @@ func TestStats(t *testing.T) {
 	require.Equal(t, 3, stats[0].Bytes)
 	require.Equal(t, "b", stats[1].Namespace)
 	require.Equal(t, 1, stats[1].Keys)
+}
+
+func TestKeys(t *testing.T) {
+	s := newStore(t)
+	require.NoError(t, s.Set("ns", "b:ttl", []byte("12345"), time.Hour))
+	require.NoError(t, s.Set("ns", "a:plain", []byte("xy"), 0))
+	require.NoError(t, s.Set("ns", "b:gone", []byte("v"), 10*time.Millisecond))
+	time.Sleep(30 * time.Millisecond)
+
+	infos := s.Keys("ns", "")
+	require.Len(t, infos, 2, "expired key leaked into Keys")
+
+	// Sorted by key; a key without a TTL has nil expiry fields.
+	require.Equal(t, "a:plain", infos[0].Key)
+	require.Equal(t, 2, infos[0].Size)
+	require.Nil(t, infos[0].ExpiresAt)
+	require.Nil(t, infos[0].TTLSeconds)
+
+	// A TTL'd key carries the absolute expiry plus remaining seconds.
+	require.Equal(t, "b:ttl", infos[1].Key)
+	require.Equal(t, 5, infos[1].Size)
+	require.NotNil(t, infos[1].ExpiresAt)
+	require.True(t, infos[1].ExpiresAt.After(time.Now()))
+	require.NotNil(t, infos[1].TTLSeconds)
+	require.InDelta(t, 3600, float64(*infos[1].TTLSeconds), 5)
+
+	// Prefix filter.
+	pre := s.Keys("ns", "b:")
+	require.Len(t, pre, 1)
+	require.Equal(t, "b:ttl", pre[0].Key)
+
+	// Unknown namespace: empty, never nil.
+	require.NotNil(t, s.Keys("nope", ""))
+	require.Empty(t, s.Keys("nope", ""))
+}
+
+func TestGetEntry(t *testing.T) {
+	s := newStore(t)
+	require.NoError(t, s.Set("ns", "k", []byte("hello"), time.Hour))
+
+	e, ok := s.GetEntry("ns", "k")
+	require.True(t, ok)
+	require.Equal(t, "k", e.Key)
+	require.Equal(t, 5, e.Size)
+	require.Equal(t, "hello", string(e.Value))
+	require.NotNil(t, e.ExpiresAt)
+	require.NotNil(t, e.TTLSeconds)
+
+	// The returned value is a copy, like Get's.
+	e.Value[0] = 'X'
+	v, _ := s.Get("ns", "k")
+	require.Equal(t, "hello", string(v))
+
+	// Absent and expired keys are equally invisible — the same lazy-expiry
+	// rule as Get, so inspection can never show a ghost.
+	_, ok = s.GetEntry("ns", "missing")
+	require.False(t, ok)
+	require.NoError(t, s.Set("ns", "fast", []byte("v"), 10*time.Millisecond))
+	time.Sleep(30 * time.Millisecond)
+	_, ok = s.GetEntry("ns", "fast")
+	require.False(t, ok)
 }
 
 func TestEnsureSecret(t *testing.T) {
