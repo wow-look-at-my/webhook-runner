@@ -13,6 +13,7 @@ import (
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -136,9 +137,16 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header, title)
 	if err != nil {
+		// A draining server is a RETRYABLE condition, not a hook failure:
+		// answer 503 so the sender (GitHub redelivers webhooks) tries the
+		// restarted server instead of recording a permanent failure.
+		code := http.StatusInternalServerError
+		if errors.Is(err, runner.ErrDraining) {
+			code = http.StatusServiceUnavailable
+		}
 		// The runner has already recorded the failure; return the run
 		// ID anyway so the client can fetch details.
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
+		writeJSON(w, code, map[string]string{
 			"run_id": run.ID(),
 			"error":  err.Error(),
 		})
