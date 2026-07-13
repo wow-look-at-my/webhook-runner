@@ -222,7 +222,10 @@ function ingestRuns(page: RunState[]): void {
 /** The chart's hooks into the feed; attached once the component loads. */
 interface FeedConsumer {
 	onPage(page: RunState[]): void;
-	onDelta(r: RunState): void;
+	/** prev = the state this delta replaced (undefined for a new run) —
+	 * needed to re-render bars the run STOPPED affecting (e.g. the former
+	 * holders' waiter badges when its wait ended). */
+	onDelta(r: RunState, prev: RunState | undefined): void;
 	/** Rebuild from runsById outright — used after removals, which
 	 * mergeData cannot express. */
 	rebuild(): void;
@@ -266,9 +269,8 @@ function ingestDelta(r: RunState): void {
 	const prev = runsById.get(r.id);
 	runsById.set(r.id, r);
 	noteOldest(r);
-	chart?.onDelta(r);
+	chart?.onDelta(r, prev);
 	window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: r.id, run: r } }));
-	void prev; // (kept for symmetry; per-delta diffing lives chart-side)
 }
 
 function ingestPage(page: RunState[]): void {
@@ -392,6 +394,43 @@ function startFeedSupervisor(): void {
 
 // -- Run → timeline translation ------------------------------------------------
 
+/** Who waits on a given run, derived CLIENT-SIDE by inverting the held
+ * runs' waiting_on (lock holder + group holders). The server derives the
+ * same thing for /runs (attachWaiters), but stream DELTAS deliberately
+ * don't carry it — one RunState per event — so the chart inverts locally
+ * and stays correct on push data. Rebuilt per render batch. */
+interface WaiterRef {
+	runId: string;
+	hookId: string;
+	what: string; // "lock k" | "a slot in group g"
+}
+let waiterIndex = new Map<string, WaiterRef[]>();
+
+function holderIdsOf(r: RunState | undefined): string[] {
+	const w = r?.waiting_on;
+	if (!w || (r && isTerminal(r.status))) return [];
+	if (w.kind === 'lock' && w.holder_run_id) return [w.holder_run_id];
+	if (w.kind === 'group' && w.holder_run_ids) return w.holder_run_ids;
+	return [];
+}
+
+function rebuildWaiterIndex(): void {
+	waiterIndex = new Map();
+	for (const r of runsById.values()) {
+		const w = r.waiting_on;
+		if (!w || isTerminal(r.status)) continue;
+		const what =
+			w.kind === 'lock' ? `lock ${w.key || '?'}` :
+			w.kind === 'group' ? `a slot in group ${w.key || '?'}` : null;
+		if (what === null) continue;
+		for (const holder of holderIdsOf(r)) {
+			const list = waiterIndex.get(holder) ?? [];
+			list.push({ runId: r.id, hookId: r.hook_id, what });
+			waiterIndex.set(holder, list);
+		}
+	}
+}
+
 /** Style-map key for a run: status (+ waiting_on) → rendering treatment. */
 function stateFor(r: RunState): string {
 	if (r.waiting_on && !isTerminal(r.status)) return 'waiting'; // hatched
@@ -419,9 +458,24 @@ function runTitle(r: RunState): string | null {
 	return typeof r.title === 'string' && r.title.trim() !== '' ? r.title : null;
 }
 
-/** Bar label: never hardcode "label = run id" — the title wins when present. */
+/** Bar label: never hardcode "label = run id" — the title wins when present.
+ * Live queue/holder facts ride as suffix badges: a run queued on a group
+ * shows the group and its place in line; a run others wait on shows how
+ * many it is holding up. Both derive from the same manager bookkeeping the
+ * /concurrency drill-down shows (via waiting_on / the inverted index). */
 function runLabel(r: RunState): string {
-	return runTitle(r) ?? r.id.slice(0, 8);
+	const base = runTitle(r) ?? r.id.slice(0, 8);
+	const w = r.waiting_on;
+	if (w && w.kind === 'group' && !isTerminal(r.status)) {
+		const ahead = typeof w.position === 'number' && w.position > 0 ? w.position - 1 : null;
+		const place = ahead === null ? '' : ahead === 0 ? ' · next' : ` · ${ahead} ahead`;
+		return `${base} ⧗ ${w.key || 'group'}${place}`;
+	}
+	const waiters = waiterIndex.get(r.id);
+	if (waiters && waiters.length > 0 && !isTerminal(r.status)) {
+		return `${base} ⏳${waiters.length}`;
+	}
+	return base;
 }
 
 function runToInterval(r: RunState): TimelineInterval {
@@ -454,18 +508,32 @@ function runToInterval(r: RunState): TimelineInterval {
 	};
 }
 
-/** Live lock waits become connectors: waiter → holder, labeled by key. */
+/** Live waits become connectors: waiter → holder, labeled by what is
+ * contended. Locks have one holder; a group wait fans out to EVERY current
+ * slot holder (the queued run is behind all of them). Connector kinds are
+ * cosmetic to the component (dedup key + tooltip fallback), so the new
+ * 'group' kind is safe on any component build. */
 function computeConnectors(): TimelineConnector[] {
 	const out: TimelineConnector[] = [];
 	for (const r of runsById.values()) {
 		const w = r.waiting_on;
-		if (w && w.kind === 'lock' && w.holder_run_id && !isTerminal(r.status)) {
+		if (!w || isTerminal(r.status)) continue;
+		if (w.kind === 'lock' && w.holder_run_id) {
 			out.push({
 				fromIntervalId: r.id,
 				toIntervalId: w.holder_run_id,
 				kind: 'lock',
 				label: w.key || 'lock',
 			});
+		} else if (w.kind === 'group' && w.holder_run_ids) {
+			for (const holder of w.holder_run_ids) {
+				out.push({
+					fromIntervalId: r.id,
+					toIntervalId: holder,
+					kind: 'group',
+					label: w.key || 'group',
+				});
+			}
 		}
 	}
 	return out;
@@ -530,6 +598,19 @@ function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
 		}
 		return;
 	}
+	if (w.kind === 'group') {
+		const ahead = typeof w.position === 'number' && w.position > 0 ? w.position - 1 : null;
+		const place = ahead === null ? '' : ahead === 0 ? ' — next in line' : ` — ${ahead} ahead`;
+		frag.appendChild(ttRow('waiting', `for a slot in group ${w.key || '?'}${place}`));
+		for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
+			const hr = runsById.get(holder);
+			frag.appendChild(ttRow('held by', shortRunId(holder) + (hr ? ` (${hr.hook_id})` : '')));
+		}
+		if ((w.holder_run_ids || []).length > 3) {
+			frag.appendChild(ttRow('', `…and ${(w.holder_run_ids as string[]).length - 3} more`));
+		}
+		return;
+	}
 	const remaining =
 		w.until && tsPresent(w.until) ? Math.max(0, Date.parse(w.until) - Date.now()) : null;
 	let line = w.reason || 'declared wait';
@@ -562,10 +643,13 @@ function runTooltip(r: RunState): Node {
 	frag.appendChild(ttRow('ran', runDuration(r) || '—'));
 	if (r.error) frag.appendChild(ttRow('error', trimText(r.error, 160)));
 	appendWaitingRows(frag, r);
-	if (r.waiters && r.waiters.length > 0) {
-		frag.appendChild(
-			ttRow('holds', `${r.waiters.length} run(s) waiting on this run`),
-		);
+	const held = waiterIndex.get(r.id);
+	if (held && held.length > 0 && !isTerminal(r.status)) {
+		frag.appendChild(ttRow('holds', `${held.length} run(s) waiting on this run`));
+		for (const wr of held.slice(0, 3)) {
+			frag.appendChild(ttRow('', `${shortRunId(wr.runId)} (${wr.hookId}) → ${wr.what}`));
+		}
+		if (held.length > 3) frag.appendChild(ttRow('', `…and ${held.length - 3} more`));
 	}
 	return frag;
 }
@@ -707,6 +791,7 @@ function initTimeline(): void {
 
 	const applyPage = (page: RunState[]): void => {
 		const now = Date.now();
+		rebuildWaiterIndex(); // labels/tooltips read it during interval mapping
 		if (maybePrune(tl, now)) return; // prune did a full setData already
 		const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
 		const data: TimelineData = {
@@ -727,7 +812,7 @@ function initTimeline(): void {
 		tl.setConnectors(computeConnectors());
 	};
 
-	const applyDelta = (r: RunState): void => {
+	const applyDelta = (r: RunState, prev: RunState | undefined): void => {
 		if (!seeded) {
 			// No coverage yet (deltas can precede the first page when the
 			// stream connects before the seed fetch returns): render what we
@@ -735,7 +820,18 @@ function initTimeline(): void {
 			applyPage([...runsById.values()]);
 			return;
 		}
-		tl.mergeData({ intervals: [runToInterval(r)] });
+		// A delta can change OTHER bars' badges: every run this one was — or
+		// now is — waiting on gains/loses its ⏳ waiter count. Re-merge the
+		// union of the old and new holder sets alongside the run itself.
+		const affected = new Set<string>([r.id]);
+		for (const holder of holderIdsOf(prev)) affected.add(holder);
+		for (const holder of holderIdsOf(r)) affected.add(holder);
+		rebuildWaiterIndex();
+		const intervals = [...affected]
+			.map((id) => runsById.get(id))
+			.filter((x): x is RunState => x !== undefined)
+			.map(runToInterval);
+		tl.mergeData({ intervals });
 		syncLanes(tl);
 		tl.setConnectors(computeConnectors());
 	};
@@ -805,6 +901,7 @@ function syncLanes(tl: TimelineViewElement): void {
  */
 function maybePrune(tl: TimelineViewElement, now: number): boolean {
 	if (runsById.size <= PRUNE_AT) return false;
+	rebuildWaiterIndex();
 	const keep = [...runsById.values()]
 		.sort((a, b) => Date.parse(b.started) - Date.parse(a.started))
 		.slice(0, PRUNE_TO);

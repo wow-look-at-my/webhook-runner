@@ -67,9 +67,8 @@ function ingestDelta(r) {
   const prev = runsById.get(r.id);
   runsById.set(r.id, r);
   noteOldest(r);
-  chart?.onDelta(r);
+  chart?.onDelta(r, prev);
   window.dispatchEvent(new CustomEvent("whr:run-delta", { detail: { id: r.id, run: r } }));
-  void prev;
 }
 function ingestPage(page) {
   ingestRuns(page);
@@ -155,6 +154,28 @@ function startFeedSupervisor() {
     }
   }, FALLBACK_POLL_MS);
 }
+var waiterIndex = /* @__PURE__ */ new Map();
+function holderIdsOf(r) {
+  const w = r?.waiting_on;
+  if (!w || r && isTerminal(r.status)) return [];
+  if (w.kind === "lock" && w.holder_run_id) return [w.holder_run_id];
+  if (w.kind === "group" && w.holder_run_ids) return w.holder_run_ids;
+  return [];
+}
+function rebuildWaiterIndex() {
+  waiterIndex = /* @__PURE__ */ new Map();
+  for (const r of runsById.values()) {
+    const w = r.waiting_on;
+    if (!w || isTerminal(r.status)) continue;
+    const what = w.kind === "lock" ? `lock ${w.key || "?"}` : w.kind === "group" ? `a slot in group ${w.key || "?"}` : null;
+    if (what === null) continue;
+    for (const holder of holderIdsOf(r)) {
+      const list = waiterIndex.get(holder) ?? [];
+      list.push({ runId: r.id, hookId: r.hook_id, what });
+      waiterIndex.set(holder, list);
+    }
+  }
+}
 function stateFor(r) {
   if (r.waiting_on && !isTerminal(r.status)) return "waiting";
   switch (r.status) {
@@ -181,7 +202,18 @@ function runTitle(r) {
   return typeof r.title === "string" && r.title.trim() !== "" ? r.title : null;
 }
 function runLabel(r) {
-  return runTitle(r) ?? r.id.slice(0, 8);
+  const base = runTitle(r) ?? r.id.slice(0, 8);
+  const w = r.waiting_on;
+  if (w && w.kind === "group" && !isTerminal(r.status)) {
+    const ahead = typeof w.position === "number" && w.position > 0 ? w.position - 1 : null;
+    const place = ahead === null ? "" : ahead === 0 ? " \xB7 next" : ` \xB7 ${ahead} ahead`;
+    return `${base} \u29D7 ${w.key || "group"}${place}`;
+  }
+  const waiters = waiterIndex.get(r.id);
+  if (waiters && waiters.length > 0 && !isTerminal(r.status)) {
+    return `${base} \u23F3${waiters.length}`;
+  }
+  return base;
 }
 function runToInterval(r) {
   const start = Date.parse(r.started);
@@ -213,13 +245,23 @@ function computeConnectors() {
   const out = [];
   for (const r of runsById.values()) {
     const w = r.waiting_on;
-    if (w && w.kind === "lock" && w.holder_run_id && !isTerminal(r.status)) {
+    if (!w || isTerminal(r.status)) continue;
+    if (w.kind === "lock" && w.holder_run_id) {
       out.push({
         fromIntervalId: r.id,
         toIntervalId: w.holder_run_id,
         kind: "lock",
         label: w.key || "lock"
       });
+    } else if (w.kind === "group" && w.holder_run_ids) {
+      for (const holder of w.holder_run_ids) {
+        out.push({
+          fromIntervalId: r.id,
+          toIntervalId: holder,
+          kind: "group",
+          label: w.key || "group"
+        });
+      }
     }
   }
   return out;
@@ -266,6 +308,19 @@ function appendWaitingRows(frag, r) {
     }
     return;
   }
+  if (w.kind === "group") {
+    const ahead = typeof w.position === "number" && w.position > 0 ? w.position - 1 : null;
+    const place = ahead === null ? "" : ahead === 0 ? " \u2014 next in line" : ` \u2014 ${ahead} ahead`;
+    frag.appendChild(ttRow("waiting", `for a slot in group ${w.key || "?"}${place}`));
+    for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
+      const hr = runsById.get(holder);
+      frag.appendChild(ttRow("held by", shortRunId(holder) + (hr ? ` (${hr.hook_id})` : "")));
+    }
+    if ((w.holder_run_ids || []).length > 3) {
+      frag.appendChild(ttRow("", `\u2026and ${w.holder_run_ids.length - 3} more`));
+    }
+    return;
+  }
   const remaining = w.until && tsPresent(w.until) ? Math.max(0, Date.parse(w.until) - Date.now()) : null;
   let line = w.reason || "declared wait";
   if (remaining !== null) line += ` \u2014 ${fmtDuration(remaining)} left`;
@@ -294,10 +349,13 @@ function runTooltip(r) {
   frag.appendChild(ttRow("ran", runDuration(r) || "\u2014"));
   if (r.error) frag.appendChild(ttRow("error", trimText(r.error, 160)));
   appendWaitingRows(frag, r);
-  if (r.waiters && r.waiters.length > 0) {
-    frag.appendChild(
-      ttRow("holds", `${r.waiters.length} run(s) waiting on this run`)
-    );
+  const held = waiterIndex.get(r.id);
+  if (held && held.length > 0 && !isTerminal(r.status)) {
+    frag.appendChild(ttRow("holds", `${held.length} run(s) waiting on this run`));
+    for (const wr of held.slice(0, 3)) {
+      frag.appendChild(ttRow("", `${shortRunId(wr.runId)} (${wr.hookId}) \u2192 ${wr.what}`));
+    }
+    if (held.length > 3) frag.appendChild(ttRow("", `\u2026and ${held.length - 3} more`));
   }
   return frag;
 }
@@ -391,6 +449,7 @@ function initTimeline() {
   })();
   const applyPage = (page) => {
     const now = Date.now();
+    rebuildWaiterIndex();
     if (maybePrune(tl, now)) return;
     const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
     const data = {
@@ -408,12 +467,17 @@ function initTimeline() {
     syncLanes(tl);
     tl.setConnectors(computeConnectors());
   };
-  const applyDelta = (r) => {
+  const applyDelta = (r, prev) => {
     if (!seeded) {
       applyPage([...runsById.values()]);
       return;
     }
-    tl.mergeData({ intervals: [runToInterval(r)] });
+    const affected = /* @__PURE__ */ new Set([r.id]);
+    for (const holder of holderIdsOf(prev)) affected.add(holder);
+    for (const holder of holderIdsOf(r)) affected.add(holder);
+    rebuildWaiterIndex();
+    const intervals = [...affected].map((id) => runsById.get(id)).filter((x) => x !== void 0).map(runToInterval);
+    tl.mergeData({ intervals });
     syncLanes(tl);
     tl.setConnectors(computeConnectors());
   };
@@ -461,6 +525,7 @@ function syncLanes(tl) {
 }
 function maybePrune(tl, now) {
   if (runsById.size <= PRUNE_AT) return false;
+  rebuildWaiterIndex();
   const keep = [...runsById.values()].sort((a, b) => Date.parse(b.started) - Date.parse(a.started)).slice(0, PRUNE_TO);
   runsById.clear();
   oldestStartedRaw = null;
