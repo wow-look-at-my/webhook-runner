@@ -918,13 +918,14 @@ running it from the repo root handles `go mod tidy`, tests, coverage,
 and a binary build.
 
 ```sh
-go-toolchain --generate e5b4190bd967
+go-toolchain --generate d3d1df3e25dc
 ```
 
 The `--generate` flag approves the repo's one `//go:generate` directive (the
-dashboard TypeScript build, below). The hash is over the directive's text —
-if the directive changes, a bare `go-toolchain` run prints the new hash to
-approve.
+dashboard TypeScript build, below). The hash is over the directive's text
+(and the package doc comment around it) — if either changes, a bare
+`go-toolchain` run prints the new hash to approve. A ts0 pin bump does NOT
+change it (the pin lives in `internal/tools/ts0gen`, not in the directive).
 
 ### Dashboard TypeScript
 
@@ -940,23 +941,39 @@ webhook-runner change. Fix component bugs upstream in js-snippets. The
 chart therefore needs the viewer's browser to reach
 `wow-look-at-my.github.io`; if that fetch fails, the Runs section shows a
 "chart loading…" note and retries on a fixed 5s cadence forever while the
-rest of the dashboard works normally. Types for the URL import come from
-`ts/js-snippets-timeline.d.ts` — an interim hand-maintained shim, slated to
-be replaced by declarations published to Pages by js-snippets and fetched
-mechanically at generate time.
-[ts0](https://github.com/wow-look-at-my/ts0) type-checks (strict `tsc`, an
-unskippable gate) and bundles the adapter into
-`internal/server/dashboard/assets/timeline.js` per `ts0.json` (an ES
-module; the component URL passes through unbundled via esbuild
-`external`).
+rest of the dashboard works normally.
+
+Regeneration is one `//go:generate` directive (in `dashboard.go`) running
+`internal/tools/ts0gen`, a small dependency-free bootstrap that:
+
+1. downloads a **pinned** prebuilt [ts0](https://github.com/wow-look-at-my/ts0)
+   from buildhost (`https://dl.pazer.build/ts0?v=N` — anonymous, cached
+   under the user cache dir; the pin is the `ts0Version` const in
+   `internal/tools/ts0gen/ts0gen.go`),
+2. re-fetches the component's own type declarations (`timeline-view.d.ts`
+   plus `timeline-view-math.d.ts`) from js-snippets' Pages into
+   `ts/js-snippets/` (committed, DO-NOT-EDIT provenance headers; rewritten
+   only when the upstream content actually changes — the adapter
+   type-imports these files directly), and
+3. runs `node <ts0> build` — ts0 type-checks (strict `tsc`, an unskippable
+   gate) and bundles the adapter into
+   `internal/server/dashboard/assets/timeline.js` per `ts0.json` (an ES
+   module; the component URL passes through unbundled via esbuild
+   `external`).
+
+Node 22+ is the only prerequisite — no npm, npx, or git auth anywhere.
 
 To change the timeline: edit files under `ts/`, run
 `go generate ./internal/server/dashboard` (or the `go-toolchain --generate`
-invocation above, which does it as part of the build — Node 22+ required),
-and commit the regenerated `assets/timeline.js` together with the source.
-**Never edit `assets/timeline.js` by hand** — it carries a DO-NOT-EDIT
-banner, and CI rebuilds it and fails on any difference from the committed
-bytes.
+invocation above, which does it as part of the build), and commit the
+regenerated `assets/timeline.js` — plus any refreshed `ts/js-snippets/`
+declarations — together with the source. **Never edit `assets/timeline.js`
+or `ts/js-snippets/` by hand** — they carry DO-NOT-EDIT banners, and CI
+regenerates both and fails on any difference from the committed bytes (so
+an upstream js-snippets API change turns CI red here with a diff, by
+design). To bump the pinned ts0, change `ts0Version` and regenerate — the
+directive text doesn't change, so the go-toolchain `--generate` approval
+hash survives a pin bump.
 
 ## Notes
 

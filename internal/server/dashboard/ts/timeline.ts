@@ -11,9 +11,9 @@
  * js-snippets' GitHub Pages (live at master head — the org's standard
  * js-snippets consumption model), so component fixes reach this dashboard
  * on js-snippets merge with no runner change. Fix component bugs upstream
- * in js-snippets; only adapter logic lives here. The import's types come
- * from js-snippets-timeline.d.ts (an INTERIM hand-maintained shim — see
- * its header).
+ * in js-snippets; only adapter logic lives here. The component types are
+ * its own declarations, fetched from Pages into ts/js-snippets/ by
+ * internal/tools/ts0gen (see the type-only import below).
  *
  * Built by ts0 (see ../ts0.json and the //go:generate directive in
  * dashboard.go) into assets/timeline.js — an ES module (the component URL
@@ -49,12 +49,18 @@
  *     fetches the visible window only, never an exhaustive history walk.
  */
 
-// Types only — erased at compile time. The component itself is loaded at
-// RUNTIME by loadComponentForever() below (a dynamic import of the same URL,
-// kept verbatim in the built bundle via esbuild `external`); the browser
-// fetches it (and its sibling chunk imports) from GitHub Pages. Deliberately
-// NOT a static side-effect import: a static import that fails would kill
-// this whole module, and the load must retry forever instead.
+// Types only — erased at compile time. These are the component's OWN
+// declarations, fetched from js-snippets' Pages into ts/js-snippets/ by
+// internal/tools/ts0gen (committed + freshness-gated, so upstream API
+// drift fails CI with a diff). The component itself is loaded at RUNTIME
+// by loadComponentForever() below (a dynamic import of COMPONENT_URL; the
+// browser fetches it and its sibling chunk imports from GitHub Pages).
+// Deliberately NOT a static side-effect import: a static import that fails
+// would kill this whole module, and the load must retry forever instead —
+// which is also why the types can't ride an import of the URL specifier:
+// TypeScript can't fetch a URL module, and an ambient `declare module`
+// bridge can't re-export from a relative path (TS2439), so the type import
+// names the fetched declaration file directly.
 import type {
 	TimelineConnector,
 	TimelineData,
@@ -63,7 +69,7 @@ import type {
 	TimelineLane,
 	TimelineSegment,
 	TimelineViewElement,
-} from 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
+} from './js-snippets/timeline-view.js';
 
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 

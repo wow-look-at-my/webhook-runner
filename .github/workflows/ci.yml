@@ -15,30 +15,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The go:generate directive (internal/server/dashboard/dashboard.go)
-      # rebuilds the dashboard's timeline.js via ts0, which needs Node 22 and
-      # clones the private wow-look-at-my/ts0 repo — npm falls back from the
-      # unauthenticated codeload tarball to a git clone, so authenticate the
-      # https (and npm's canonical ssh) GitHub URLs for the org.
+      # runs internal/tools/ts0gen: it bootstraps a PINNED prebuilt ts0 from
+      # buildhost (anonymous download — no npm/npx, no git auth), re-fetches
+      # the <timeline-view> type declarations from js-snippets' GitHub Pages,
+      # and rebuilds the dashboard's timeline.js. Node is the only extra
+      # prerequisite (ts0 is a Node bundle).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Authenticate git for the private ts0 install
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.PRIVATE_ORG_REPO_READ }}@github.com/wow-look-at-my/".insteadOf "https://github.com/wow-look-at-my/"
-          git config --global --add url."https://x-access-token:${{ secrets.PRIVATE_ORG_REPO_READ }}@github.com/wow-look-at-my/".insteadOf "ssh://git@github.com/wow-look-at-my/"
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
           # Approval hash for the //go:generate directive above — it changes
-          # whenever the directive's text changes (a failing run prints the
+          # whenever the directive's text (or dashboard.go's package doc
+          # comment) changes, NOT on a ts0 pin bump (a failing run prints the
           # new one; update it here and in CLAUDE.md).
-          generate: e5b4190bd967
-      # go-toolchain just regenerated the committed bundle in the workspace:
-      # a stale assets/timeline.js — or one whose TypeScript no longer
-      # type-checks (ts0 fails the generate step directly) — turns the build
-      # red here instead of shipping.
+          generate: d3d1df3e25dc
+      # go-toolchain just regenerated the committed bundle AND re-fetched the
+      # js-snippets type declarations in the workspace: a stale bundle, a
+      # TypeScript type error (ts0's strict tsc gate fails the generate step
+      # directly), or an upstream js-snippets API change turns the build red
+      # here with a diff instead of shipping.
       - name: Generated dashboard assets are fresh
-        run: git diff --exit-code -- internal/server/dashboard/assets/
+        run: git diff --exit-code -- internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/
 
   e2e:
     runs-on: ubuntu-latest

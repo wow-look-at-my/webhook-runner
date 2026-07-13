@@ -16,13 +16,21 @@
 // wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
 // compiled by ts0 (type-check + bundle, config in ts0.json; the component
 // URL passes through unbundled) via the go:generate directive below. The
-// bundle is committed so a fresh clone builds and embeds without Node; CI
-// regenerates it and fails on any diff, so it can't go stale. The
-// directive runs ts0 through npm 11's exec (npm 10's npx cannot install git
-// dependencies that need a prepare build) pinned to a full ts0 commit —
-// bump the SHA deliberately, and remember any edit to the directive changes
-// the go-toolchain --generate approval hash.
+// directive runs internal/tools/ts0gen, which bootstraps a PINNED prebuilt
+// ts0 from buildhost (anonymous download, cached under the user cache dir;
+// Node 22+ is the only prerequisite — no npm/npx, no git auth), re-fetches
+// the component's type declarations from js-snippets' Pages into
+// ts/js-snippets/, and runs `ts0 build`. The bundle AND the fetched
+// declarations are committed so a fresh clone builds and embeds without
+// Node; CI regenerates both and fails on any diff, so neither can go stale
+// (an upstream js-snippets API change turns CI red with a diff, by
+// design). Bump the ts0 pin in internal/tools/ts0gen/main.go — that does
+// NOT change this directive's go-toolchain --generate approval hash, but
+// any edit to the directive line or this doc comment does (a bare
+// go-toolchain run prints the new one; update ci.yml and CLAUDE.md).
 package dashboard
+
+//go:generate go run ../../tools/ts0gen/main.go
 
 import (
 	"bytes"

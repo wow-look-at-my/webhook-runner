@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that go:generate compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that go:generate compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; its type declarations are fetched from Pages into the committed ts/js-snippets/ by the same generate step — see the timeline bullet)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -25,6 +25,7 @@ internal/runstore/         bbolt-backed persistent completed-run history (48h re
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
+internal/tools/ts0gen/     go:generate bootstrap for the dashboard TypeScript (pinned buildhost ts0 + Pages-fetched type declarations); a LIBRARY + //go:build ignore stub, deliberately not a main package so matrix/autorelease never grow a second released binary
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
 e2e/                       end-to-end test (shell script, requires Docker)
@@ -599,25 +600,41 @@ The companion repo is `wow-look-at-my/webhooks`.
   because browsers can memoize a failed module fetch; no backoff, no
   attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
   are untouched and the runs-table toggle keeps working. TypeScript types
-  for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
-  hand-maintained ambient shim (types only) — temporary until js-snippets
-  publishes .d.ts to Pages and the generate step fetches them mechanically
-  (already queued; do not grow the shim beyond what the adapter consumes).
-  The adapter's **generated-asset pipeline** still has interlocking pins —
-  get any one wrong and CI goes red: `ts/timeline.ts` is compiled by ts0
-  into the COMMITTED `assets/timeline.js` (go:embed needs it on a fresh
-  clone; the bundle carries a DO-NOT-EDIT banner — never hand-edit it,
-  edit ts/ and regenerate). The `//go:generate` directive in dashboard.go
-  runs ts0 **via `npx --yes npm@11 exec`** (npm 10's npx cannot install
-  git deps that need a prepare build — a known npm bug) pinned to a
-  **full ts0 commit SHA**; go-toolchain executes directives only with an
-  approval hash over the directive text (`--generate e5b4190bd967`
+  for the component are its OWN declarations: `ts/js-snippets/`
+  (timeline-view.d.ts + timeline-view-math.d.ts, side by side — the former
+  imports './timeline-view-math.ts' and TypeScript resolves it to the
+  sibling .d.ts), fetched from js-snippets' Pages by the generate step —
+  COMMITTED, DO-NOT-EDIT provenance headers, rewritten only when upstream
+  content actually changes (so the Fetched date stamps the last content
+  change and CI's regenerate never diffs on an unchanged upstream). The
+  adapter type-imports the fetched file directly
+  (`from './js-snippets/timeline-view.js'`, erased at compile time) — an
+  ambient `declare module` bridge for the URL specifier CANNOT work
+  (ambient module declarations can't reference relative modules, TS2439,
+  and skipLibCheck masks the error into an empty module); the old interim
+  hand-shim ts/js-snippets-timeline.d.ts is gone. The **generated-asset
+  pipeline**: `ts/timeline.ts` is compiled by ts0 into the COMMITTED
+  `assets/timeline.js` (go:embed needs it on a fresh clone; the bundle
+  carries a DO-NOT-EDIT banner — never hand-edit it, edit ts/ and
+  regenerate). The `//go:generate` directive in dashboard.go runs
+  **internal/tools/ts0gen** (dependency-free; a library + ignore-tagged
+  stub so it never becomes a released binary — see the layout note): it
+  downloads the prebuilt ts0 pinned by `ts0Version` in ts0gen.go from
+  buildhost (`https://dl.pazer.build/ts0?v=N` — anonymous, cached under
+  the user cache dir as ts0.cjs; Node 22+ is the only prerequisite, NO
+  npm/npx/git-auth — the npx form is banned), re-fetches the declarations,
+  and runs `node ts0.cjs build`. go-toolchain executes directives only
+  with an approval hash over the directive text (`--generate d3d1df3e25dc`
   locally, the `generate:` input in ci.yml) — **any edit to the directive
   line (or the package doc comment around it — observed 2026-07-12)
-  changes the hash**; a bare `go-toolchain` run prints the new one to
-  re-approve in both places. Regeneration needs Node 22+ and (in CI)
-  authenticated git for the private ts0 repo — ci.yml's setup-node +
-  insteadOf rewrites, followed by the freshness gate
-  `git diff --exit-code -- internal/server/dashboard/assets/` (a stale
-  committed bundle or a TypeScript type error fails the build; ts0's
-  strict tsc gate runs inside the generate step).
+  changes the hash; a ts0 pin bump does NOT** (the pin lives in ts0gen.go,
+  not the directive); a bare `go-toolchain` run prints the new one to
+  re-approve in both places (ci.yml, CLAUDE.md, README). go-toolchain's
+  up-to-date fingerprint can miss ts-only edits — after editing only ts/,
+  run the generator directly (`go generate ./internal/server/dashboard`),
+  then go-toolchain. CI needs only setup-node 22 before go-toolchain,
+  followed by the freshness gate `git diff --exit-code --
+  internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/`
+  (a stale committed bundle, a TypeScript type error, or upstream
+  js-snippets API drift fails the build; ts0's strict tsc gate runs inside
+  the generate step).
