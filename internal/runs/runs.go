@@ -115,6 +115,23 @@ type RunState struct {
 	// the runner records StatusCancelled.
 	CancelRequested bool `json:"cancel_requested,omitempty"`
 
+	// CancelRequestedAt is when the first cancel request arrived (zero =
+	// never requested). Additive: CancelRequested stays the boolean it
+	// always was; this timestamp lets renderers style the kill tail — the
+	// span from the request to the actual death — instead of repainting
+	// the run's whole bar as cancelled from birth.
+	CancelRequestedAt time.Time `json:"cancel_requested_at,omitzero"`
+
+	// WaitHistory is the run's accumulated wait segments — one entry per
+	// SetWaitingOn stamp, closed (End set) when the pause ends or the run
+	// finishes. It is what lets the dashboard render a wait as HISTORICAL
+	// STATE (hatching that ends exactly when the wait ended) instead of
+	// deriving an open-ended hatch from current status. Bounded by
+	// MaxWaitSegments; WaitHistoryTruncated flags a capped run. Additive;
+	// persisted with the terminal snapshot like every RunState field.
+	WaitHistory          []WaitSegment `json:"wait_history,omitempty"`
+	WaitHistoryTruncated bool          `json:"wait_history_truncated,omitempty"`
+
 	// WaitingOn describes what the run is currently paused on — a declared
 	// sleep or a contended cooperative lock (see the WaitingOn type). nil
 	// when the run isn't waiting. Transient: cleared when the pause ends
@@ -169,6 +186,21 @@ type WaitingOn struct {
 	// line, so "N ahead" renders as Position-1). 0/omitted = unknown or
 	// not a queued kind (lock contention has no queue order).
 	Position int `json:"position,omitempty"`
+}
+
+// MaxWaitSegments bounds a run's recorded wait history. A run cycling
+// through more waits than this keeps its FIRST MaxWaitSegments segments
+// and sets WaitHistoryTruncated — bounded memory, explicit truncation.
+const MaxWaitSegments = 32
+
+// WaitSegment is one historical pause: which kind (wait/lock/group), what
+// it contended on (Key), and exactly when it started and ended. End is
+// zero while the pause is still live.
+type WaitSegment struct {
+	Kind  string    `json:"kind"`
+	Key   string    `json:"key,omitempty"`
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end,omitzero"`
 }
 
 // Waiter identifies one run blocked on a cooperative lock the annotated run
@@ -276,6 +308,9 @@ func (r *Run) RequestCancelWithReason(reason string) {
 	r.mu.Lock()
 	already := r.state.CancelRequested
 	r.state.CancelRequested = true
+	if !already {
+		r.state.CancelRequestedAt = time.Now().UTC()
+	}
 	if !already && reason != "" {
 		r.cancelReason = reason
 	}
@@ -312,6 +347,7 @@ func (r *Run) Snapshot(tail int) RunState {
 	cp := r.state
 	cp.Output = append([]string(nil), out...)
 	cp.OutputTimes = append([]time.Time(nil), times...)
+	cp.WaitHistory = append([]WaitSegment(nil), r.state.WaitHistory...)
 	if cp.WaitingOn != nil {
 		// SetWaitingOn always replaces the pointer, never mutates the
 		// pointee — but copy anyway so a snapshot can't alias live state.
@@ -358,8 +394,10 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	}
 	// A terminal run is never waiting: clear any in-flight pause so neither
 	// the dashboard nor the persisted history (the onFinish snapshot below
-	// is what the run store writes) shows a finished run as waiting.
+	// is what the run store writes) shows a finished run as waiting — and
+	// close its wait-history segment at the same instant.
 	r.state.WaitingOn = nil
+	r.closeOpenWaitSegmentLocked(r.state.Finished)
 	r.mu.Unlock()
 	close(r.done)
 	if r.onFinish != nil {
@@ -466,9 +504,25 @@ func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
 	r.waitSeq++
 	seq := r.waitSeq
 	r.state.WaitingOn = &w
+	r.closeOpenWaitSegmentLocked(time.Now().UTC())
+	if len(r.state.WaitHistory) < MaxWaitSegments {
+		r.state.WaitHistory = append(r.state.WaitHistory, WaitSegment{
+			Kind: w.Kind, Key: w.Key, Start: time.Now().UTC(),
+		})
+	} else {
+		r.state.WaitHistoryTruncated = true
+	}
 	r.mu.Unlock()
 	r.notifyChange()
 	return seq
+}
+
+// closeOpenWaitSegmentLocked stamps End on the trailing open wait segment,
+// if any. Caller holds r.mu.
+func (r *Run) closeOpenWaitSegmentLocked(at time.Time) {
+	if n := len(r.state.WaitHistory); n > 0 && r.state.WaitHistory[n-1].End.IsZero() {
+		r.state.WaitHistory[n-1].End = at
+	}
 }
 
 // ClearWaitingOn clears the pause recorded by the SetWaitingOn that
@@ -482,6 +536,7 @@ func (r *Run) ClearWaitingOn(seq uint64) {
 		return
 	}
 	r.state.WaitingOn = nil
+	r.closeOpenWaitSegmentLocked(time.Now().UTC())
 	r.mu.Unlock()
 	r.notifyChange()
 }
