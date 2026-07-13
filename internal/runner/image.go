@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
@@ -38,7 +39,16 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 	if exec.Command(dockerBin, "image", "inspect", tag).Run() == nil {
 		return tag, false, nil
 	}
-	cmd := exec.Command(dockerBin, "build", "-t", tag, hook.Dir())
+	// Legacy hooks build from their own directory with its Dockerfile (the
+	// docker default — invocation unchanged). SDK-layout hooks build with
+	// the repo's src/ directory as context and the hook's own Dockerfile
+	// via -f, so tree-mirror COPYs (sdk/ + hooks/<id>/) resolve.
+	args := []string{"build", "-t", tag}
+	if hook.SDKLayout() {
+		args = append(args, "-f", filepath.Join(hook.Dir(), hooks.DockerfileName))
+	}
+	args = append(args, hook.BuildContext())
+	cmd := exec.Command(dockerBin, args...)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
