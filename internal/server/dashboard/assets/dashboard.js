@@ -139,11 +139,30 @@ function waiterText(x) {
 // The fragment #hook=<id> selects the app view; anything else shows the
 // overview. Hash routing keeps the page a single embedded document with no
 // server-side routes, and hashchange gives back/forward for free.
+// An optional &kv=1 suffix (what the overview's State (KV) links append)
+// additionally lands the app view scrolled to its State (KV) section.
+// Hook IDs are always encodeURIComponent'd into the fragment, so a literal
+// "&" in an ID can never be mistaken for the parameter separator.
 
 function currentHookId() {
-  const m = location.hash.match(/^#hook=(.+)$/);
+  const m = location.hash.match(/^#hook=([^&]+)/);
   return m ? decodeURIComponent(m[1]) : null;
 }
+
+// The fragment for a hook's app page; kv: true additionally lands it on the
+// State (KV) key/value browser (consumed as a one-shot scroll by renderAppKV).
+function hookHref(id, opts) {
+  return "#hook=" + encodeURIComponent(id) + (opts && opts.kv ? "&kv=1" : "");
+}
+
+function hashWantsKV() {
+  return /^#hook=[^&]+&kv=1$/.test(location.hash);
+}
+
+// One-shot: armed when a navigation lands with &kv=1, consumed by the first
+// app render — the poll must never re-scroll a page the operator has since
+// scrolled elsewhere.
+let pendingKVScroll = hashWantsKV();
 
 function setView(hookId) {
   document.getElementById("overview-view").hidden = !!hookId;
@@ -279,7 +298,7 @@ async function refresh() {
       renderRuns(runs);
       renderImages(images);
       renderEvents(events);
-      renderKV(kv);
+      renderKV(kv, new Set(hooks.map((h) => h.id)));
       renderConcurrency(groups);
     }
     document.getElementById("updated").textContent =
@@ -358,7 +377,7 @@ function renderHooks(hooks) {
       el("tr", null,
         // Each hook is an "app": its ID links to the per-hook drill-down.
         el("td", null,
-          el("a", { href: "#hook=" + encodeURIComponent(h.id), class: "hook-link" },
+          el("a", { href: hookHref(h.id), class: "hook-link" },
             el("code", null, h.id))),
         el("td", null, h.description || ""),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
@@ -521,18 +540,36 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function renderKV(namespaces) {
+function renderKV(namespaces, loadedHookIDs) {
   const tbody = document.querySelector("#kv-table tbody");
   tbody.innerHTML = "";
   document.getElementById("kv-empty").hidden = namespaces.length > 0;
   for (const ns of namespaces) {
-    tbody.appendChild(
-      el("tr", null,
-        el("td", null, el("code", null, ns.namespace)),
-        el("td", null, String(ns.keys)),
-        el("td", null, fmtBytes(ns.bytes)),
-      )
+    // Namespace == hook ID, so each row links to that hook's app page,
+    // landed on its State (KV) key/value browser. A namespace whose hook is
+    // no longer loaded (leftover state from a removed/renamed hook) links
+    // to the SAME place: the app page detects the orphan and still renders
+    // the key/value browser — stored data must always be inspectable.
+    const orphan = !loadedHookIDs.has(ns.namespace);
+    const href = hookHref(ns.namespace, { kv: true });
+    const title = orphan
+      ? "no loaded hook with this ID — browse the namespace's stored keys and values"
+      : "browse this hook's stored keys and values";
+    const link = el("a", { href, class: "hook-link", title },
+      el("code", null, ns.namespace),
+      orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
     );
+    const tr = el("tr", null,
+      el("td", null, link),
+      el("td", null, String(ns.keys)),
+      el("td", null, fmtBytes(ns.bytes)),
+    );
+    // The whole row is the click target (the pointer cursor promises it).
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return; // let the real link handle itself
+      location.hash = href;
+    });
+    tbody.appendChild(tr);
   }
 }
 
@@ -545,7 +582,19 @@ async function refreshApp(id) {
     detail = await fetchJSON(`/hooks/${enc}`);
   } catch {
     // 404: not loaded (deleted, or a stale link). Anything else transient
-    // lands here too; the next poll retries.
+    // lands here too; the next poll retries. Before giving up, check the
+    // state store: a removed/renamed hook's namespace can outlive it, and
+    // its keys/values must stay inspectable (the overview's State (KV)
+    // table links here for exactly that case).
+    try {
+      const listing = await fetchJSON(`/kv/${enc}`);
+      if (listing && listing.keys && listing.keys.length > 0) {
+        await renderAppOrphanKV(id, listing);
+        return;
+      }
+    } catch {
+      /* no state store / transient failure: fall through to plain missing */
+    }
     renderAppMissing(id);
     return;
   }
@@ -563,10 +612,34 @@ async function refreshApp(id) {
 function renderAppMissing(id) {
   document.getElementById("app-title").textContent = id;
   document.getElementById("app-desc").textContent = "";
-  document.getElementById("app-missing").hidden = false;
+  const missing = document.getElementById("app-missing");
+  missing.textContent = "No such hook.";
+  missing.hidden = false;
   document.getElementById("app-body").hidden = true;
   document.getElementById("app-disabled-badge").hidden = true;
   document.getElementById("app-toggle").hidden = true;
+}
+
+// The app page for a namespace whose hook is gone (orphaned state): the
+// hook sections stay hidden, but the State (KV) key/value browser renders
+// exactly as it would for a live state hook — leftover data is the case
+// the operator most needs to inspect, not the one to hide.
+async function renderAppOrphanKV(id, listing) {
+  renderAppMissing(id);
+  const missing = document.getElementById("app-missing");
+  missing.textContent =
+    "No such hook is loaded — showing this namespace's stored state (orphaned; left by a removed or renamed hook).";
+  document.getElementById("app-body").hidden = false;
+  setAppOrphanMode(true);
+  await renderAppKV({ id, state: true }, listing);
+}
+
+// Orphan mode hides every app-body section that needs a loaded hook,
+// leaving only the State (KV) browser; renderApp flips it back off.
+function setAppOrphanMode(orphan) {
+  document.querySelector("#app-body .app-cards").hidden = orphan;
+  document.getElementById("app-runs-section").hidden = orphan;
+  document.getElementById("app-events-section").hidden = orphan;
 }
 
 function fillDl(dl, rows) {
@@ -581,6 +654,7 @@ function renderApp(detail, runs, events) {
   const info = detail.info;
   document.getElementById("app-missing").hidden = true;
   document.getElementById("app-body").hidden = false;
+  setAppOrphanMode(false);
   document.getElementById("app-title").textContent = info.id;
   document.getElementById("app-desc").textContent = info.description || "";
 
@@ -609,8 +683,9 @@ function renderApp(detail, runs, events) {
       ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
       : "none"],
     ["State (KV)", !info.state ? "off"
-      : detail.kv ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
-      : "on — no data yet"],
+      : kvSectionLink(detail.kv
+        ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
+        : "on — no data yet")],
   ]);
 
   const st = detail.stats;
@@ -699,9 +774,26 @@ function fmtTTL(seconds) {
   return fmtDuration(seconds * 1000);
 }
 
+// The Info card's State (KV) summary line jumps down to the key/value
+// browser. A click handler rather than a real fragment href: an
+// "#app-kv-section" href would replace the #hook= fragment and route
+// back to the overview.
+function kvSectionLink(text) {
+  const a = el("a", { href: "#", class: "kv-jump", title: "view stored keys and values below" }, text);
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    document.getElementById("app-kv-section").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  return a;
+}
+
 async function renderAppKV(info, listing) {
   const section = document.getElementById("app-kv-section");
   section.hidden = !info.state;
+  // Consume the one-shot &kv=1 landing scroll even for a state-less hook,
+  // so it can never fire on a later poll of some other page.
+  const wantScroll = pendingKVScroll;
+  pendingKVScroll = false;
   if (!info.state) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
@@ -726,6 +818,7 @@ async function renderAppKV(info, listing) {
     tbody.appendChild(tr);
     if (open) tbody.appendChild(await kvValueRow(info.id, k.key));
   }
+  if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // The expanded row under a clicked key: metadata line + the value itself.
@@ -973,8 +1066,12 @@ async function loadVersion() {
 }
 
 // Switching between the overview and a per-app page re-renders immediately;
-// the poll keeps whichever view is active fresh.
-window.addEventListener("hashchange", refresh);
+// the poll keeps whichever view is active fresh. Navigation is also what
+// (re-)arms the one-shot State (KV) landing scroll.
+window.addEventListener("hashchange", () => {
+  pendingKVScroll = hashWantsKV();
+  refresh();
+});
 
 loadConfig();
 loadVersion();
