@@ -265,6 +265,15 @@ function setStreamLive(live: boolean): void {
 	console.info(`timeline: run stream ${live ? 'connected' : 'down (EventSource retries on its fixed 2s cadence)'}`);
 }
 
+// THE one freshness clock. Every byte of received data — SSE snapshot,
+// SSE run delta, hb keepalive, or a successful fallback-poll page — lands
+// here; nothing else may decide freshness. (The component ALSO auto-stamps
+// on setData/mergeData since js-snippets#37, so rendered data can never
+// coexist with a frozen clock — this explicit stamp additionally covers
+// hb keepalives and no-change polls, where nothing merges.) Detection is
+// per-call, not captured at init: a mixed-version tab (component upgraded
+// under an open page) must never wedge freshness on a stale capability
+// snapshot.
 function fresh(): void {
 	chart?.markFresh();
 }
@@ -277,11 +286,13 @@ function ingestDelta(r: RunState): void {
 	noteOldest(r);
 	chart?.onDelta(r, prev);
 	window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: r.id, run: r } }));
+	fresh(); // data arrived — the freshness clock advances HERE, unconditionally
 }
 
 function ingestPage(page: RunState[]): void {
 	ingestRuns(page);
 	chart?.onPage(page);
+	fresh(); // ditto for page-shaped data (snapshot, resync, fallback poll)
 }
 
 /** On (re)connect and per fallback poll: any run we believe is live but
@@ -821,12 +832,14 @@ function initTimeline(): void {
 		return null;
 	};
 
-	// Staleness marking (landing in js-snippets — feature-detect): the
+	// Staleness marking (feature-detected per call, never captured): the
 	// component dims/flags the chart when markFresh hasn't been called for
 	// staleAfterMs. With it, a dead feed LOOKS dead instead of extrapolating
 	// running bars; without it, the fallback poll still keeps data honest.
-	const supportsFreshness = typeof tl.markFresh === 'function';
-	if (supportsFreshness) tl.staleAfterMs = STALE_AFTER_MS;
+	// staleAfterMs is set EXPLICITLY whenever the API exists — the
+	// component's own default (10s, tuned for 2s pollers) would otherwise
+	// hatch a healthy push stream between 10s-apart heartbeats.
+	if (typeof tl.markFresh === 'function') tl.staleAfterMs = STALE_AFTER_MS;
 
 	// Click-through: a bar opens the same run modal the tables use; a lane
 	// label opens the hook's drill-down page (same href the hooks table uses).
@@ -935,6 +948,11 @@ function initTimeline(): void {
 			seeded = true;
 			laneOrderKey = '';
 			tl.setData(data);
+			// Default zoom: a 10-minute window on initial load (the
+			// component defaults to 15). Ending exactly at now keeps the
+			// follow pin engaged; only the INITIAL span changes — user
+			// pans/zooms and jumpToNow keep their own span from then on.
+			tl.setViewport(now - 10 * 60_000, now);
 			armBackfill(); // coverage exists now — history paging may engage
 		} else {
 			// MERGE, never setData: later snapshots/resyncs must not wipe the
@@ -1012,7 +1030,7 @@ function initTimeline(): void {
 		onDelta: applyDelta,
 		rebuild: rebuildAll,
 		markFresh: () => {
-			if (supportsFreshness) tl.markFresh!();
+			if (typeof tl.markFresh === 'function') tl.markFresh();
 		},
 	};
 
