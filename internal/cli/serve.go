@@ -401,6 +401,10 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	logger.Info("shutting down")
+	// Disconnect /runs/stream clients FIRST: adminSrv.Shutdown waits for
+	// in-flight handlers, and a stream handler holds its response open
+	// until its subscription closes (or its client goes away).
+	srv.CloseStreams()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hookSrv.Shutdown(shutdownCtx); err != nil {

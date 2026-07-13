@@ -65,7 +65,7 @@ The server listens on two TCP ports plus a Unix socket:
   labels that window and `stats.skipped` is the skip bucket — see the
   skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/{id}/cancel`, `/reload`, `/events`
+  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s; fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/images` (per-hook image state), the operator kill
   switch (`POST /hooks/{id}/disable|enable`,
@@ -459,6 +459,26 @@ The companion repo is `wow-look-at-my/webhooks`.
   deferred `runStore.Close()` runs after
   `rn.Wait()`, so every in-flight run records its terminal state before the
   DB closes — keep that ordering.
+- The run live tail (`internal/server/streamhub.go`, GET `/runs/stream` on
+  the admin port) hangs off `runs.Tracker.SetOnChange` — a nil-safe
+  notification seam like `events.Recorder`, invoked synchronously on the
+  MUTATING goroutine (runner dispatch, state API, cancel handlers) after
+  every observable run mutation, with an output-stripped snapshot. Two
+  invariants: (1) the hub's publish NEVER blocks — bounded per-client
+  buffered channels, non-blocking sends, and a client whose buffer is full
+  is dropped on the spot (channel closed → its handler returns → its
+  EventSource reconnects and resyncs from the connect snapshot; that
+  drop-and-resync IS the slow-client semantics, so never "fix" it with a
+  blocking send or an unbounded buffer — it would let one wedged browser
+  tab apply backpressure to run execution). (2) the handler subscribes
+  BEFORE reading the snapshot, so no mutation can fall between snapshot
+  and stream — anything landing in that window is buffered and delivered
+  after (clients merge by run id, so the duplicate is harmless). The
+  terminal notification fires AFTER the OnFinish seam (run store write
+  first). At shutdown `srv.CloseStreams()` runs before the admin server's
+  `Shutdown` — Shutdown drains in-flight handlers, and stream handlers
+  only return when their subscription closes or their client hangs up.
+  `streamHeartbeat` is a package var so tests can shrink it.
 - The per-hook KV store (`internal/kv`, the state socket) also persists to
   disk, under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
   place as the deploy key and `runs.db`) as one `kv/<namespace>.json` per
