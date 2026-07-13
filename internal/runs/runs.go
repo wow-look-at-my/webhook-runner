@@ -66,6 +66,14 @@ type RunState struct {
 	ID     string `json:"id"`
 	HookID string `json:"hook_id"`
 
+	// Title is the run's friendly display title — "owner/repo#47" instead
+	// of the opaque run id — rendered from the hook's run_title template at
+	// run creation, or set mid-run by the hook itself via the state API's
+	// POST /title (fleet sweeps only know their subject once they reach
+	// it). Optional and purely additive: "" means untitled, and every
+	// consumer (the dashboard feature-detects it) falls back to the id.
+	Title string `json:"title,omitempty"`
+
 	// Started is when the run was accepted and began tracking — the moment
 	// it was QUEUED, before any concurrency-group wait. The JSON name
 	// predates the queue-wait/processing split and is kept for
@@ -319,6 +327,33 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	if r.onFinish != nil {
 		r.onFinish(r.Snapshot(-1))
 	}
+}
+
+// SetTitle records the run's friendly display title (trimmed; the empty
+// string is ignored — titles are never cleared, only replaced, so a later
+// /title override wins over a template title but nothing un-names a run).
+// A finished run is immutable: its terminal snapshot already flowed through
+// OnFinish into the run store, so a late title would diverge live state
+// from history. Callers bound the length (the template renderer clamps,
+// the /title route rejects) — this is the model, not the gate.
+func (r *Run) SetTitle(title string) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.state.Finished.IsZero() {
+		return
+	}
+	r.state.Title = title
+}
+
+// Title returns the run's friendly display title, "" when untitled.
+func (r *Run) Title() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.Title
 }
 
 // SetRunning marks the run as actively executing and stamps StartedAt — the

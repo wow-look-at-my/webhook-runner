@@ -259,7 +259,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 
 	// Control: the same silent container with no declared wait is killed
 	// for silence.
-	ctrl, err := rn.Start(context.Background(), h, []byte("p"), http.Header{})
+	ctrl, err := rn.Start(context.Background(), h, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	select {
 	case <-ctrl.Done():
@@ -271,7 +271,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 
 	// Protected: identical silence, but announced via /wait — the wait
 	// touches the watchdog, the container finishes on its own, success.
-	run, err := rn.Start(context.Background(), h, []byte("p"), http.Header{})
+	run, err := rn.Start(context.Background(), h, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	respCh := make(chan *httptest.ResponseRecorder, 1)
 	go func() {

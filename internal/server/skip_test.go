@@ -225,7 +225,7 @@ func TestHookDetailStatsSkippedBucket(t *testing.T) {
 	ok := tr.New("gh")
 	ok.SetRunning()
 	ok.Finish(runs.StatusSuccess, 0, "")
-	s.runner.Skip(h, `skip_if[0]: header x-github-event == "workflow_run"`)
+	s.runner.Skip(h, `skip_if[0]: header x-github-event == "workflow_run"`, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/hooks/gh", nil)
 	w := httptest.NewRecorder()

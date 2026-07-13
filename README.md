@@ -96,6 +96,14 @@ graph LR
   `skipped` runs naming the matched condition, visible on the dashboard
   and counted in their own stats bucket. See
   [Skip conditions](#skip-conditions-skip_if).
+- **Friendly run titles**: a `run_title` template turns the dashboard's
+  opaque run ids into subjects — `"{{repository.full_name}}#{{pull_request.number}}"`
+  shows `wow-look-at-my/go-toolchain#47` on run rows, timeline chips, and
+  the activity feed. Placeholders use `skip_if`'s exact payload/header
+  addressing, degrade gracefully (no resolvable fields = no title, id
+  fallback), title skipped runs too, and a state hook whose subject is
+  only known mid-run can rename itself via `POST /title`. See
+  [Run titles](#run-titles-run_title).
 - **Immutable hook code**: every hook ships a `Dockerfile` next to its
   `hook.json` and runs an image webhook-runner builds from the hook
   directory, tagged by content hash — code is baked in, a hooks-repo pull
@@ -281,6 +289,7 @@ own data.
 | POST   | `/kv/{key}/release` | Release early, before the run ends (optional hygiene). `204` released; `404` not held (absent or expired); `409` held by a different run — ownership is verified server-side from the token. |
 | POST   | `/kv/{key}/steal` | **Destructively take the lock**: atomically transfer it to the calling run AND cancel the displaced holder (the existing cancel path kills its container; its terminal error reads `cancelled: lock "{key}" stolen by run …`, and its *other* locks release normally on finish — the stolen one is already the thief's). `200` `{"run_id","hook_id","acquired_at","expires_at","stolen_from":{"run_id","hook_id"}}`; `stolen_from` is absent when the lock was free — a steal of an uncontended lock is exactly an acquire, and a holder that finished first makes this a plain acquire (no error, race-safe). Namespace scoping means a run can only ever steal from — and cancel — runs of its **own** hook. Blocked waiters are not inherited: they keep polling, now against the new holder. Optional `{"ttl_seconds"}` as for acquire. |
 | POST   | `/wait`          | **Declared sleep.** Body `{"seconds": 1..600, "reason": "..."}` — both required (a wait must be explained; one call caps at 10 minutes, loop for longer). Blocks ~`seconds`, then returns `200` `{"waited": N}`. While it blocks, the run row on the dashboard shows `waiting Ns: reason` and the wait **counts as activity for the idle `timeout`** — a declared in-process sleep can never be reaped as silence (see [Timeouts](#timeouts)). Returns early with `{"waited": M, "interrupted": true, "cause": "run finished"\|"run cancelled"}` when the run ends or a cancel is requested. `400` invalid body; `409` when the calling run is no longer active. |
+| POST   | `/title`         | **Name the run mid-flight.** Body `{"title": "..."}` (trimmed, 1–200 characters). Sets the calling run's friendly display title — the live dashboard row, timeline chip, `/runs` JSON, and the persisted terminal snapshot all pick it up — replacing any [`run_title`](#run-titles-run_title) template title (last write wins). For runs whose subject is only known mid-run: a fleet sweep titles itself `sweep: owner/repo` once it knows which repo mattered. `204` on success; `400` empty/overlong; `409` when the calling run is no longer active. |
 
 ### Sync vs async
 
@@ -492,6 +501,51 @@ The caller gets `200 {"run_id", "status": "skipped", "reason": ...}` right
 away — synchronous hooks included, there is nothing to wait for.
 
 > **Deploy-first:** `skip_if` is a newer `hook.json` field, so deploy a
+> webhook-runner build that understands it before any hook sets it — old
+> binaries reject unknown fields and would drop the hook entirely.
+
+## Run titles (run_title)
+
+Run ids are opaque (`he7bnlspgphttrbonc5vps5d3q` tells an operator
+nothing); the run's *subject* is what matters. A hook can declare a title
+template:
+
+```json
+"run_title": "{{repository.full_name}}#{{pull_request.number}}"
+```
+
+Every run of that hook then shows `wow-look-at-my/go-toolchain#47` — on
+the runs tables, the timeline chips and tooltips, the run modal, and the
+activity feed's `run.started`/`run.finished`/`run.skipped` lines — with
+the run id demoted to a small secondary label.
+
+- `{{...}}` placeholders address the delivery exactly like
+  [`skip_if` keys](#skip-conditions-skip_if): a dotted path into the
+  parsed JSON payload (`"pull_request.number"`, array elements by numeric
+  index) or a request header via the `header:` prefix
+  (`{{header:x-github-event}}`, name case-insensitive). Same bounded
+  traversal, same leaf stringification (numbers as their JSON literal,
+  `true`/`false` as those words).
+- Resolution is **graceful and total** — it can never fail or block a
+  run. A missing path, an object/array, and JSON `null` render empty.
+  When *every* placeholder resolves empty, the run simply gets **no
+  title** (consumers fall back to the run id — more honest than literal
+  scaffolding like `PR #`); otherwise pure-separator literals stranded
+  next to empty placeholders are dropped (`{{repo}}#{{num}}` with no
+  `num` renders `owner/repo`, not `owner/repo#`) and whitespace folds.
+- A template with **no placeholders** is a static title, always set.
+- Titles resolve **once, at run creation, before `skip_if`** — a skipped
+  run still says which PR it was about.
+- **Scheduled runs** resolve against the synthetic schedule payload and
+  fall back to the title `schedule`, so a tick chip is never gibberish.
+- Titles cap at 200 characters (the renderer clamps). A **state hook**
+  can also (re)name its run mid-flight — `POST /title` on the
+  [state API](#state-kv-api-httplocalhost9002-in-state-hooks) — for
+  subjects only known once the run reaches them; the newest title wins.
+- A malformed template (unterminated `{{`, empty `{{}}`) **fails the
+  hook's load/validation**, same as a non-compiling `skip_if` regex.
+
+> **Deploy-first:** `run_title` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets it — old
 > binaries reject unknown fields and would drop the hook entirely.
 

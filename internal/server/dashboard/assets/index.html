@@ -190,7 +190,10 @@
 <dialog id="run-detail" aria-labelledby="run-detail-title">
   <div class="modal-body">
     <div class="modal-header">
-      <h2 id="run-detail-title">Run <code id="run-detail-id"></code></h2>
+      <!-- run-detail-name shows the run's friendly title when the server
+           sent one ("wow-look-at-my/go-toolchain#47"), else the word "Run";
+           the full id stays beside it in the small muted code chip. -->
+      <h2 id="run-detail-title"><span id="run-detail-name">Run</span> <code id="run-detail-id"></code></h2>
       <button id="run-detail-close" class="modal-close" aria-label="Close" title="Close (Esc)">&times;</button>
     </div>
     <dl id="run-detail-meta"></dl>
