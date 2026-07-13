@@ -392,6 +392,13 @@ a.hook-link code { color: var(--accent); }
 a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
 a.run-link { text-decoration: none; }
 a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+/* Plain-text jump link (the Info card's State (KV) summary): no <code>
+   child, so it carries the link color itself. */
+a.kv-jump { color: var(--accent); text-decoration: none; }
+a.kv-jump:hover { text-decoration: underline; }
+/* The overview State (KV) rows link into the per-hook KV browser; the
+   orphaned badge rides inside the link without picking up link styling. */
+#kv-table a.hook-link .badge { margin-left: 0.5rem; }
 /* A row of <code> chips (env var names, per-status counts): adjacent inline
    chips have NO whitespace between them, i.e. no soft-wrap opportunity at
    all -- the row is one unbreakable line. A wrapping flex row breaks

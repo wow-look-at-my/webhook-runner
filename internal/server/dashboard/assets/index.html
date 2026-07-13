@@ -97,6 +97,11 @@
 
   <section id="kv-section">
     <h2>State (KV)</h2>
+    <!-- Each namespace links to that hook's app page, landed on its
+         State (KV) key/value browser (namespace == hook ID). Orphaned
+         namespaces (hook removed/renamed) link there too: the app page
+         still renders the browser for leftover state. -->
+    <p class="window-note">Click a namespace to browse its stored keys and values.</p>
     <table id="kv-table">
       <thead><tr><th>Namespace (hook)</th><th>Keys</th><th>Size</th></tr></thead>
       <tbody></tbody>
