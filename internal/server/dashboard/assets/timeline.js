@@ -194,7 +194,9 @@ function rebuildWaiterIndex() {
   }
 }
 function stateFor(r) {
-  if (r.waiting_on && !isTerminal(r.status)) return "waiting";
+  if (r.waiting_on && !isTerminal(r.status) && !(r.wait_history && r.wait_history.length)) {
+    return "waiting";
+  }
   switch (r.status) {
     case "success":
     case "running":
@@ -207,10 +209,9 @@ function stateFor(r) {
     case "error":
     case "timeout":
       return "failed";
-    // unmissable emphasis
+    // unmissable emphasis (the failure IS the terminal fact)
     case "cancelled":
-      return "outline";
-    // hollow
+      return tsPresent(r.cancel_requested_at) ? "" : "outline";
     default:
       return "dim";
   }
@@ -238,12 +239,21 @@ function runToInterval(r) {
   if (end === null && isTerminal(r.status)) {
     end = tsPresent(r.started_at) ? Date.parse(r.started_at) : start;
   }
-  let segments;
+  const segments = [];
   if (tsPresent(r.started_at)) {
     const launched = Date.parse(r.started_at);
     if (launched > start) {
-      segments = [{ start, end: launched, kind: "queued" }];
+      segments.push({ start, end: launched, kind: "queued" });
     }
+  }
+  for (const ws of r.wait_history || []) {
+    const s0 = Date.parse(ws.start);
+    if (!Number.isFinite(s0)) continue;
+    const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
+    segments.push({ start: s0, end: e0, kind: "waiting" });
+  }
+  if (r.status === "cancelled" && tsPresent(r.cancel_requested_at)) {
+    segments.push({ start: Date.parse(r.cancel_requested_at), end, kind: "outline" });
   }
   return {
     id: r.id,
@@ -254,7 +264,7 @@ function runToInterval(r) {
     category: r.hook_id,
     // stable hue per hook
     state: stateFor(r),
-    segments,
+    segments: segments.length ? segments : void 0,
     data: r
   };
 }
@@ -376,6 +386,17 @@ function runTooltip(r) {
   }
   return frag;
 }
+function clusterTooltip(c) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(el("div", { class: "tt-title" }, `${c.ids.length} skipped deliveries \xB7 ${c.hookId}`));
+  frag.appendChild(ttRow("window", `${fmtTime(new Date(c.start).toISOString())} \u2013 ${fmtTime(new Date(c.end).toISOString())}`));
+  for (const id of c.ids.slice(-5).reverse()) {
+    frag.appendChild(ttRow("", shortRunId(id)));
+  }
+  if (c.ids.length > 5) frag.appendChild(ttRow("", `\u2026and ${c.ids.length - 5} more`));
+  frag.appendChild(ttRow("", "click opens the newest one"));
+  return frag;
+}
 function connectorTooltip(c, missing) {
   const frag = document.createDocumentFragment();
   frag.appendChild(el("div", { class: "tt-title" }, `lock ${c.label || ""}`.trim()));
@@ -396,11 +417,74 @@ function laneTooltip(lane) {
   frag.appendChild(ttRow("", "click to open this hook\u2019s page"));
   return frag;
 }
+var SKIP_CLUSTER_GAP_MS = 5e3;
+var SKIP_CLUSTER_PREFIX = "skipcluster:";
+var skipClusters = /* @__PURE__ */ new Map();
+function clusterIntervals(all) {
+  skipClusters.clear();
+  const out = [];
+  const skippedByHook = /* @__PURE__ */ new Map();
+  for (const r of all) {
+    if (r.status === "skipped") {
+      const list = skippedByHook.get(r.hook_id) ?? [];
+      list.push(r);
+      skippedByHook.set(r.hook_id, list);
+    } else {
+      out.push(runToInterval(r));
+    }
+  }
+  for (const [hookId, list] of skippedByHook) {
+    list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+    let bucket = [];
+    const flush = () => {
+      if (bucket.length === 0) return;
+      if (bucket.length === 1) {
+        out.push(runToInterval(bucket[0]));
+      } else {
+        const startMs = Date.parse(bucket[0].started);
+        const last = bucket[bucket.length - 1];
+        const endMs = tsPresent(last.finished) ? Date.parse(last.finished) : Date.parse(last.started);
+        const c = {
+          id: SKIP_CLUSTER_PREFIX + hookId + ":" + bucket[0].id,
+          hookId,
+          start: startMs,
+          end: Math.max(endMs, startMs),
+          ids: bucket.map((r) => r.id)
+        };
+        skipClusters.set(c.id, c);
+        out.push({
+          id: c.id,
+          laneId: hookId,
+          start: c.start,
+          end: c.end,
+          label: `\xD7${c.ids.length} skipped`,
+          category: hookId,
+          state: "dim",
+          data: c
+        });
+      }
+      bucket = [];
+    };
+    for (const r of list) {
+      if (bucket.length > 0) {
+        const prev = bucket[bucket.length - 1];
+        if (Date.parse(r.started) - Date.parse(prev.started) > SKIP_CLUSTER_GAP_MS) flush();
+      }
+      bucket.push(r);
+      if (bucket.length === 1 && list.length === 1) {
+      }
+    }
+    flush();
+  }
+  return out;
+}
 function initTimeline() {
   const tl = document.getElementById("runs-timeline");
   if (tl === null || typeof tl.setData !== "function") return;
   tl.tooltipFor = (hit) => {
     if (hit.type === "interval") {
+      const c = skipClusters.get(hit.interval.id);
+      if (c) return clusterTooltip(c);
       const r = runsById.get(hit.interval.id);
       return r ? runTooltip(r) : null;
     }
@@ -412,7 +496,8 @@ function initTimeline() {
   if (supportsFreshness) tl.staleAfterMs = STALE_AFTER_MS;
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
-    void showRun(detail.interval.id);
+    const c = skipClusters.get(detail.interval.id);
+    void showRun(c ? c.ids[c.ids.length - 1] : detail.interval.id);
   });
   tl.addEventListener("laneclick", (e) => {
     const detail = e.detail;
@@ -470,7 +555,9 @@ function initTimeline() {
     if (maybePrune(tl, now)) return;
     const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
     const data = {
-      intervals: page.map(runToInterval),
+      // Cluster over the FULL held set (a page is a window; clusters
+      // must not depend on pagination boundaries).
+      intervals: clusterIntervals([...runsById.values()]),
       coverage: { start: pageOldestMs, end: now }
     };
     if (!seeded) {
@@ -484,7 +571,23 @@ function initTimeline() {
     syncLanes(tl);
     tl.setConnectors(computeConnectors());
   };
+  let skipRebuild = null;
+  const scheduleSkipRebuild = () => {
+    if (skipRebuild !== null) return;
+    skipRebuild = setTimeout(() => {
+      skipRebuild = null;
+      try {
+        rebuildAll();
+      } catch (e) {
+        console.error("timeline: skip recluster failed:", e);
+      }
+    }, 250);
+  };
   const applyDelta = (r, prev) => {
+    if (r.status === "skipped" && seeded) {
+      scheduleSkipRebuild();
+      return;
+    }
     if (!seeded) {
       applyPage([...runsById.values()]);
       return;
@@ -507,7 +610,7 @@ function initTimeline() {
     laneOrderKey = lanes.map((l) => l.id).join("\n");
     tl.setData({
       lanes,
-      intervals: [...runsById.values()].map(runToInterval),
+      intervals: clusterIntervals([...runsById.values()]),
       connectors: computeConnectors(),
       coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 6e4, end: Date.now() }
     });
@@ -544,7 +647,7 @@ function maybePrune(tl, now) {
   laneOrderKey = lanes.map((l) => l.id).join("\n");
   tl.setData({
     lanes,
-    intervals: keep.map(runToInterval),
+    intervals: clusterIntervals(keep),
     connectors: computeConnectors(),
     coverage: { start: oldestStartedMs, end: now }
   });
