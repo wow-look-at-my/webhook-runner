@@ -1,5 +1,5 @@
 {
-  "image": "alpine:latest",
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "command": ["sh", "-c", "echo id=$HOOK_ID custom=$MY_VAR"],
   "env": {"MY_VAR": "e2e-value"},
   "timeout": "60s"

@@ -5,24 +5,43 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
-// Watch starts a goroutine that observes the hooks directory and updates
-// the registry as hook.json files are added, modified, or removed.
-//
-// The watcher debounces rapid-fire events (common when an editor saves via
-// a write-rename pattern) by waiting briefly after each event before
-// reloading. Reloads always re-scan the entire directory; this is simpler
-// than tracking per-folder state and remains cheap for any reasonable
-// number of hooks.
+// Watch observes the hooks directory and replaces the registry from disk
+// on every change. It is a thin wrapper over WatchFunc for callers that
+// only need the default "reload the registry" behavior.
 //
 // Watch blocks until ctx is canceled. It returns nil on graceful shutdown
 // or an error if the watcher cannot be initialized.
 func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) error {
+	return WatchFunc(ctx, root, func() {
+		hooks, errs := LoadDir(root)
+		for _, e := range errs {
+			log.Error("hook reload error", "err", e)
+		}
+		reg.Replace(hooks)
+		log.Info("hooks reloaded", "count", len(hooks))
+	}, log)
+}
+
+// WatchFunc observes the hooks directory and invokes onChange once at
+// startup and then, debounced, whenever a hook.json, the central
+// concurrency.json, or a hook directory is added, modified, or removed.
+// onChange owns the actual reload — this lets a caller fold the
+// concurrency-group config and registry update into one place rather than
+// the watcher reloading hooks on its own.
+//
+// The watcher debounces rapid-fire events (common when an editor saves via
+// a write-rename pattern) by waiting briefly after each event before
+// firing. Edits to a hook's own baked-in code/assets are ignored: they
+// only matter at image-build time, which happens on the next run.
+//
+// WatchFunc blocks until ctx is canceled. It returns nil on graceful
+// shutdown or an error if the watcher cannot be initialized.
+func WatchFunc(ctx context.Context, root string, onChange func(), log *slog.Logger) error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -33,15 +52,7 @@ func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) er
 		return err
 	}
 
-	reload := func() {
-		hooks, errs := LoadDir(root)
-		for _, e := range errs {
-			log.Error("hook reload error", "err", e)
-		}
-		reg.Replace(hooks)
-		log.Info("hooks reloaded", "count", len(hooks))
-	}
-	reload()
+	onChange()
 
 	const debounce = 200 * time.Millisecond
 	var pending *time.Timer
@@ -62,19 +73,13 @@ func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) er
 					_ = w.Add(ev.Name)
 				}
 			}
-			// Ignore events on files that are clearly unrelated
-			// (e.g. editor swap files). hook.json + the parent
-			// directory itself are the relevant inputs.
-			base := filepath.Base(ev.Name)
-			if base != "hook.json" && !strings.EqualFold(filepath.Ext(base), "") {
-				if !isHookJSONEvent(ev.Name) {
-					continue
-				}
+			if !isRelevantEvent(ev.Name) {
+				continue
 			}
 			if pending != nil {
 				pending.Stop()
 			}
-			pending = time.AfterFunc(debounce, reload)
+			pending = time.AfterFunc(debounce, onChange)
 		case err, ok := <-w.Errors:
 			if !ok {
 				return nil
@@ -84,26 +89,50 @@ func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) er
 	}
 }
 
-func isHookJSONEvent(p string) bool {
-	return filepath.Base(p) == "hook.json"
+// isRelevantEvent reports whether a filesystem event should trigger a
+// reload. The config files (hook.json and the central concurrency.json)
+// and directory-level changes matter; edits to a hook's own code/assets
+// (anything else with a file extension, e.g. a *.ts script) do not — those
+// are baked into the image at build time, on the next run.
+func isRelevantEvent(name string) bool {
+	base := filepath.Base(name)
+	if base == "hook.json" || base == "concurrency.json" {
+		return true
+	}
+	return filepath.Ext(base) == ""
 }
 
-// addRecursive adds the root directory and every immediate child directory
-// to the watcher. We don't go deeper than that — hook.json is always one
-// level under the root.
+// addRecursive adds the directories whose config files drive reloads. For
+// a legacy tree that is the root plus every immediate child (hook.json is
+// one level down). For a src-layout tree it additionally covers src/,
+// src/hooks/ and its children, and src/config/ (concurrency.json's new
+// home). src/sdk is deliberately NOT watched: shared-code edits matter at
+// image-build time (they change content hashes, so the next run rebuilds)
+// — they don't change the loaded config. A tree that flips layout on a
+// pull still reloads: new directories arriving under a watched parent are
+// added by the Create handler above, and the webhook/admin reload path
+// re-detects the layout on every invocation anyway.
 func addRecursive(w *fsnotify.Watcher, root string) error {
 	if err := w.Add(root); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	addChildren := func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
 		}
-		_ = w.Add(filepath.Join(root, e.Name()))
+		for _, e := range entries {
+			if e.IsDir() {
+				_ = w.Add(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+	addChildren(root)
+	if l := DetectLayout(root); l.SDK {
+		_ = w.Add(l.SrcDir())
+		_ = w.Add(l.HooksDir())
+		addChildren(l.HooksDir())
+		_ = w.Add(filepath.Join(l.SrcDir(), "config"))
 	}
 	return nil
 }

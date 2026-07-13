@@ -1,0 +1,9 @@
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  // No image/command: the Dockerfile bakes the code in and CMD runs it.
+  // Run by `webhook-runner test` inside the built image (WORKDIR /app).
+  "tests": [
+    ["sh", "-c", "test -f data.txt && echo built-tests-ok"]
+  ],
+  "timeout": "60s"
+}

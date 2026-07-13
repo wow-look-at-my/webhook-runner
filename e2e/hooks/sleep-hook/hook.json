@@ -1,0 +1,5 @@
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "command": ["sh", "-c", "echo sleeping && sleep 30"],
+  "timeout": "60s"
+}

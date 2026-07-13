@@ -4,40 +4,82 @@ package hooks
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-// DefaultTimeout is applied when a hook does not specify one explicitly.
+// DefaultTimeout is applied when a hook does not specify one explicitly:
+// five minutes of no container output kills the run (timeout is
+// activity-based — see Hook.TimeoutRaw), so every hook has hang protection
+// by default.
 const DefaultTimeout = 5 * time.Minute
+
+// DockerfileName is the file every hook must ship next to its hook.json:
+// hooks run images built from their own directory, code baked in.
+const DockerfileName = "Dockerfile"
 
 const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
 const DefaultAPIKeyHeader = "X-API-Key"
+
+// Script configures a hook to run a script file from the hook directory
+// without spelling out the command: the interpreter determines it
+// (e.g. "tsx <file>"). The script is baked into the hook's image like all
+// hook code, so the interpreter must be installed in that image. An
+// explicit Command overrides the derived one.
+type Script struct {
+	File        string   `json:"file"`
+	Interpreter string   `json:"interpreter"`
+	Args        []string `json:"args,omitempty"`
+}
 
 // Hook is the parsed in-memory representation of a single hook.json file.
 //
 // The ID is derived from the parent directory name and is not part of the
 // JSON document.
 type Hook struct {
-	ID              string             `json:"-"`
-	SourcePath      string             `json:"-"`
-	Description     string             `json:"description"`
-	Image           string             `json:"image"`
-	Command         []string           `json:"command"`
-	Networks        []string           `json:"networks,omitempty"`
-	Volumes         []string           `json:"volumes,omitempty"`
-	Env             map[string]string  `json:"env,omitempty"`
-	User            string             `json:"user,omitempty"`
-	Workdir         string             `json:"workdir,omitempty"`
-	TimeoutRaw      string             `json:"timeout,omitempty"`
-	ExtraDockerArgs []string           `json:"extra_docker_args,omitempty"`
+	ID         string `json:"-"`
+	SourcePath string `json:"-"`
+
+	// SrcRoot is the absolute path of the hooks repo's src/ directory when
+	// this hook was loaded from the src (SDK) layout, "" for legacy hooks.
+	// Set by the loader, never by JSON. It selects the docker build context
+	// (src/ instead of the hook dir) and widens the content hash to include
+	// src/sdk — see BuildContext and ContentHash.
+	SrcRoot         string              `json:"-"`
+	Schema          string              `json:"$schema,omitempty"`
+	Description     string              `json:"description"`
+	Command         []string            `json:"command,omitempty"`
+	Script          *Script             `json:"script,omitempty"`
+	Tests           [][]string          `json:"tests,omitempty"`
+	Networks        []string            `json:"networks,omitempty"`
+	Volumes         []string            `json:"volumes,omitempty"`
+	Env             map[string]string   `json:"env,omitempty"`
+	User            string              `json:"user,omitempty"`
+	Workdir         string              `json:"workdir,omitempty"`
+	TimeoutRaw      string              `json:"timeout,omitempty"`
+	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
+
+	// ConcurrencyGroup, when set, names a concurrency group the hook's runs
+	// must be scheduled through: at most that group's limit run at once and
+	// the rest queue (staying "pending" with their timeout NOT yet counting
+	// — see runner.execute). The group must be declared in the central
+	// concurrency.json at the hooks root; referencing an undeclared group is
+	// a load/validation error. Empty means unbounded (no queueing).
+	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 
 	APIKey       string `json:"api_key,omitempty"`
 	APIKeyHeader string `json:"api_key_header,omitempty"`
@@ -54,6 +96,66 @@ type Hook struct {
 	// must poll /runs/{run_id} for completion. The query parameter
 	// ?wait=true on a request also forces synchronous behavior.
 	Synchronous bool `json:"synchronous,omitempty"`
+
+	// State, when true, opts the hook into the persistent KV store: the
+	// runner bind-mounts the KV API's Unix socket into the container and
+	// injects HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN (a per-hook
+	// bearer token scoped to a namespace == this hook's ID), so the hook
+	// reaches the state API over that socket — no networking. The hook's data
+	// survives across its runs and across server restarts, isolated from
+	// every other hook. Omitted (the default) means no KV access.
+	State bool `json:"state,omitempty"`
+
+	// Schedule, when set, makes the scheduler fire this hook on a fixed
+	// interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger. A
+	// scheduled run is dispatched through the exact same pipeline as an
+	// HTTP-triggered one — tracked, gated by the hook's concurrency_group,
+	// KV-enabled, shown on the dashboard — with a synthetic payload that marks
+	// it as schedule-triggered. To stop a long sweep stacking on itself, the
+	// scheduler skips a tick whenever a previous run of the same hook is still
+	// in flight (skip-if-already-running). On startup (and when newly added or
+	// when its interval changes) the hook fires immediately, then every
+	// interval thereafter. Empty (the default) means HTTP-triggered only.
+	//
+	// Like state/concurrency_group, schedule is a newer hook.json field, so
+	// Parse's DisallowUnknownFields means old binaries reject it — deploy a
+	// webhook-runner that supports it before merging a hook that sets it.
+	Schedule string `json:"schedule,omitempty"`
+
+	// SkipIf declares conditions under which an (authenticated) delivery is
+	// SKIPPED instead of run: answered immediately, recorded as a
+	// first-class run with status "skipped" naming the matched condition,
+	// and given NO container — no image build, no concurrency slot, no
+	// docker run. List entries are ORed; keys within one condition are
+	// ANDed. Keys address the parsed JSON payload by dotted path or a
+	// request header via the "header:" prefix; matchers are a bare string
+	// (equality) or {eq,ne,in,exists,prefix,regex} — see skip.go. Malformed
+	// conditions (bad regex, unknown operator, empty condition) fail the
+	// hook's load/validation. Like state/concurrency_group/schedule this is
+	// a newer hook.json field: deploy a webhook-runner that supports it
+	// before merging a hook that sets it (old binaries reject it via
+	// DisallowUnknownFields).
+	SkipIf SkipConditions `json:"skip_if,omitempty"`
+
+	// RunTitle, when set, is a template for the friendly display title of
+	// this hook's runs — "{{repository.full_name}}#{{pull_request.number}}"
+	// renders "wow-look-at-my/go-toolchain#47" on the dashboard where the
+	// opaque run id used to be. {{...}} placeholders name a dotted payload
+	// path or a request header via the "header:" prefix — skip_if's exact
+	// key syntax and bounded traversal (see title.go for the resolution
+	// semantics: graceful, never blocking, all-placeholders-empty means no
+	// title). Resolved once at run creation, BEFORE skip evaluation, so
+	// skipped runs are titled too; a malformed template is a load/validation
+	// error. Like the other newer hook.json fields, old binaries reject it
+	// via DisallowUnknownFields: deploy a webhook-runner that supports it
+	// before merging a hook that sets it.
+	RunTitle string `json:"run_title,omitempty"`
+
+	// titleTmpl is RunTitle parsed by validate() at load time, so rendering
+	// never re-parses and a malformed template can never load. Hooks
+	// constructed in code (tests) may leave it nil — RenderRunTitle then
+	// parses on demand.
+	titleTmpl *titleTemplate
 }
 
 // GitHubStatusConfig configures the optional GitHub commit status update
@@ -64,9 +166,9 @@ type GitHubStatusConfig struct {
 	TargetURL string `json:"target_url,omitempty"`
 }
 
-// Timeout returns the parsed timeout, falling back to DefaultTimeout when
-// not set. Validation has already happened at load time, so the parse here
-// cannot fail.
+// Timeout returns the parsed no-output (activity) timeout, falling back to
+// DefaultTimeout when not set. Validation has already happened at load
+// time, so the parse here cannot fail.
 func (h *Hook) Timeout() time.Duration {
 	if h.TimeoutRaw == "" {
 		return DefaultTimeout
@@ -74,6 +176,20 @@ func (h *Hook) Timeout() time.Duration {
 	d, err := time.ParseDuration(h.TimeoutRaw)
 	if err != nil {
 		return DefaultTimeout
+	}
+	return d
+}
+
+// ScheduleInterval returns the parsed schedule duration, or 0 when the hook
+// is not scheduled. Validation has already happened at load time, so a parse
+// failure here is treated as "not scheduled" rather than panicking.
+func (h *Hook) ScheduleInterval() time.Duration {
+	if h.Schedule == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(h.Schedule)
+	if err != nil {
+		return 0
 	}
 	return d
 }
@@ -98,6 +214,39 @@ func (h *Hook) APIKeyHdr() string {
 	return DefaultAPIKeyHeader
 }
 
+// Dir returns the absolute path of the directory containing this hook's
+// hook.json, or "" for hooks not loaded from disk (tests). For Dockerfile
+// hooks it is the docker build context, so code and assets ship alongside
+// hook.json and get baked into the image.
+func (h *Hook) Dir() string {
+	if h.SourcePath == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(filepath.Dir(h.SourcePath))
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
+// SDKLayout reports whether this hook was loaded from the src (SDK)
+// layout — see internal/hooks/layout.go.
+func (h *Hook) SDKLayout() bool { return h.SrcRoot != "" }
+
+// BuildContext is the docker build context for this hook's image: the
+// hook's own directory under the legacy layout, the repo's src/ directory
+// under the SDK layout (so Dockerfiles COPY with the tree-mirror
+// convention — `COPY sdk/ /app/sdk/` + `COPY hooks/<id>/ /app/hooks/<id>/`
+// — and a hook's relative ../../sdk import resolves identically in-repo
+// and in-image). The Dockerfile itself is always the hook's own (the
+// runner passes -f for SDK builds).
+func (h *Hook) BuildContext() string {
+	if h.SrcRoot != "" {
+		return h.SrcRoot
+	}
+	return h.Dir()
+}
+
 // Parse decodes a hook.json document and validates the resulting hook.
 // The id and sourcePath are not part of the JSON; the caller supplies
 // them based on the file's location on disk.
@@ -110,18 +259,170 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	if err := h.resolveScript(); err != nil {
+		return nil, err
+	}
+	if !h.hasDockerfile() {
+		return nil, errors.New("hook must ship a Dockerfile next to hook.json (every hook runs an image built from its directory)")
+	}
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-func (h *Hook) validate() error {
-	if h.Image == "" {
-		return errors.New("image is required")
+func (h *Hook) resolveScript() error {
+	if h.Script == nil {
+		return nil
 	}
+	s := h.Script
+	if s.File == "" {
+		return errors.New("script.file is required")
+	}
+	if s.Interpreter == "" {
+		return errors.New("script.interpreter is required")
+	}
+
+	hookDir := filepath.Dir(h.SourcePath)
+	scriptAbs := filepath.Join(hookDir, s.File)
+
+	realScript, err := filepath.EvalSymlinks(scriptAbs)
+	if err != nil {
+		return fmt.Errorf("script.file %q: %w", s.File, err)
+	}
+	realHookDir, err := filepath.EvalSymlinks(hookDir)
+	if err != nil {
+		return fmt.Errorf("resolve hook directory: %w", err)
+	}
+	if !strings.HasPrefix(realScript, realHookDir+string(filepath.Separator)) {
+		return fmt.Errorf("script.file %q resolves outside hook directory", s.File)
+	}
+
 	if len(h.Command) == 0 {
-		return errors.New("command is required and must not be empty")
+		switch s.Interpreter {
+		case "bash":
+			h.Command = append([]string{"bash", s.File}, s.Args...)
+		case "pwsh":
+			h.Command = append([]string{"pwsh", "-File", s.File}, s.Args...)
+		case "node":
+			h.Command = append([]string{"node", s.File}, s.Args...)
+		case "tsx":
+			h.Command = append([]string{"tsx", s.File}, s.Args...)
+		default:
+			return fmt.Errorf("unsupported script.interpreter %q (must be bash, pwsh, node, or tsx)", s.Interpreter)
+		}
+	}
+	return nil
+}
+
+func (h *Hook) hasDockerfile() bool {
+	dir := h.Dir()
+	if dir == "" {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(dir, DockerfileName))
+	return err == nil && !fi.IsDir()
+}
+
+// ContentHash digests the files that determine this hook's image, tagging
+// the build so a changed hook rebuilds on its next run while an unchanged
+// one reuses the already built image.
+//
+// LEGACY layout: every file under the hook's directory, hashed as
+// relative path + content — byte-identical to the historical algorithm
+// (existing deployments must not re-tag on upgrade).
+//
+// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND src/sdk/
+// — never sibling hook dirs — hashed as src-relative path + file mode +
+// content. An sdk edit re-tags every src-layout hook (lazy rebuild on its
+// next run, intended even for non-consumers); an edit to hook A never
+// re-tags hook B. The COPY-surface convention follows from this: an
+// SDK-layout Dockerfile may COPY only from sdk/ and its own hooks/<id>/ —
+// anything else in the src context is undefined-staleness territory
+// (builds don't fail, but edits there never re-tag).
+func (h *Hook) ContentHash() (string, error) {
+	dir := h.Dir()
+	if dir == "" {
+		return "", errors.New("hook has no source directory")
+	}
+	digest := sha256.New()
+	if h.SrcRoot != "" {
+		if err := hashTree(digest, h.SrcRoot, dir, true); err != nil {
+			return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
+		}
+		// A src tree without shared code is fine: a missing sdk dir simply
+		// contributes nothing.
+		sdk := filepath.Join(h.SrcRoot, "sdk")
+		if fi, err := os.Stat(sdk); err == nil && fi.IsDir() {
+			if err := hashTree(digest, h.SrcRoot, sdk, true); err != nil {
+				return "", fmt.Errorf("hash sdk dir %s: %w", sdk, err)
+			}
+		}
+		return hex.EncodeToString(digest.Sum(nil))[:16], nil
+	}
+	if err := hashTree(digest, dir, dir, false); err != nil {
+		return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
+	}
+	return hex.EncodeToString(digest.Sum(nil))[:16], nil
+}
+
+// hashTree feeds every file under root into digest, ordered by
+// filepath.WalkDir's lexical walk: relative-to-base path, optionally the
+// file mode (the SDK layout hashes modes; legacy predates that and must
+// stay byte-identical), then the content.
+func hashTree(digest io.Writer, base, root string, withMode bool) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(base, p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(digest, "%s\x00", filepath.ToSlash(rel))
+		if withMode {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(digest, "%o\x00", info.Mode().Perm())
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		_, cpErr := io.Copy(digest, f)
+		f.Close()
+		if cpErr != nil {
+			return cpErr
+		}
+		fmt.Fprint(digest, "\x00")
+		return nil
+	})
+}
+
+// ReservedEnvKey reports whether the runner sets this env key itself; hook
+// env entries must not declare it and secrets-file entries are skipped.
+func ReservedEnvKey(k string) bool {
+	switch k {
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID",
+		"HOOK_KV_URL", "HOOK_KV_TOKEN", "HOOK_KV_SOCKET":
+		return true
+	}
+	return false
+}
+
+func (h *Hook) validate() error {
+	if h.Schema == "" {
+		return errors.New("$schema is required (point it at https://wow-look-at-my.github.io/webhook-runner/hook.schema.json)")
+	}
+	for i, tc := range h.Tests {
+		if len(tc) == 0 {
+			return fmt.Errorf("tests[%d] must not be empty", i)
+		}
 	}
 	if h.TimeoutRaw != "" {
 		d, err := time.ParseDuration(h.TimeoutRaw)
@@ -132,10 +433,29 @@ func (h *Hook) validate() error {
 			return fmt.Errorf("timeout must be positive, got %s", d)
 		}
 	}
+	if h.Schedule != "" {
+		d, err := time.ParseDuration(h.Schedule)
+		if err != nil {
+			return fmt.Errorf("invalid schedule %q: %w", h.Schedule, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("schedule must be positive, got %s", d)
+		}
+	}
 	for k := range h.Env {
-		if k == "HOOK_PAYLOAD_FILE" || k == "HOOK_HEADERS_FILE" {
+		if ReservedEnvKey(k) {
 			return fmt.Errorf("env key %q is reserved", k)
 		}
+	}
+	// Compiles every skip_if regex too, so evaluation never compiles at
+	// request time and a bad pattern can never load.
+	if err := h.SkipIf.compile(); err != nil {
+		return err
+	}
+	// Same rule for the run_title template: parsed here, once, so a
+	// malformed one is a load error — never a silently titleless run.
+	if err := h.compileRunTitle(); err != nil {
+		return err
 	}
 	if err := h.validateAuth(); err != nil {
 		return err
@@ -186,64 +506,8 @@ func parseEd25519PublicKey(s string) (ed25519.PublicKey, error) {
 }
 
 // stripComments returns a reader over the input with // and /* */ comments
-// removed, since the hook.json format documented to users contains JSONC-style
-// comments. The implementation is intentionally simple and string-state aware:
-// it preserves bytes inside string literals exactly.
+// removed, since the hook.json format documented to users contains
+// JSONC-style comments. The shared implementation lives in internal/jsonc.
 func stripComments(in []byte) *strings.Reader {
-	var out strings.Builder
-	out.Grow(len(in))
-	const (
-		stateNormal = iota
-		stateString
-		stateLineComment
-		stateBlockComment
-	)
-	state := stateNormal
-	escape := false
-	for i := 0; i < len(in); i++ {
-		c := in[i]
-		switch state {
-		case stateNormal:
-			if c == '/' && i+1 < len(in) {
-				switch in[i+1] {
-				case '/':
-					state = stateLineComment
-					i++
-					continue
-				case '*':
-					state = stateBlockComment
-					i++
-					continue
-				}
-			}
-			if c == '"' {
-				state = stateString
-			}
-			out.WriteByte(c)
-		case stateString:
-			out.WriteByte(c)
-			if escape {
-				escape = false
-				continue
-			}
-			if c == '\\' {
-				escape = true
-				continue
-			}
-			if c == '"' {
-				state = stateNormal
-			}
-		case stateLineComment:
-			if c == '\n' {
-				state = stateNormal
-				out.WriteByte(c)
-			}
-		case stateBlockComment:
-			if c == '*' && i+1 < len(in) && in[i+1] == '/' {
-				state = stateNormal
-				i++
-			}
-		}
-	}
-	return strings.NewReader(out.String())
+	return jsonc.NewReader(in)
 }

@@ -6,6 +6,7 @@ on:
 permissions:
   id-token: write
   contents: write
+  packages: write
   actions: read
 
 jobs:
@@ -13,6 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The dashboard's committed assets/timeline.js is authoritative and
+      # embedded as-is — the npx //go:generate directive that rebuilt it via
+      # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
+      # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
+      # driven by a small Go bootstrap is landing next.
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
@@ -27,6 +33,23 @@ jobs:
           name: go-build
           path: build
           files: webhook-runner_linux_amd64:webhook-runner
+      # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
+      # the committed test-only age key.
+      - name: Install sops
+        run: |
+          curl -fsSL https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64 -o /tmp/sops
+          sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+          sops --version
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/e2e.test.ts
+
+  # Builds the Dockerfile from the prebuilt go-build artifact and pushes
+  # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The deployed
+  # compose pulls this image; the push notifies docker-updater (GitHub package webhook).
+  publish-ghcr:
+    needs: e2e
+    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
+    # The reusable workflow's optional `updater-webhook-secret` notify is intentionally unwired:
+    # docker-updater is notified by the container push itself (GitHub package webhook on the GHCR
+    # push), so the CI-side notify is redundant here. Pass `updater-webhook-secret` if that ever changes.

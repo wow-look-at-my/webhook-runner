@@ -53,6 +53,23 @@ type Summary struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	Synchronous bool   `json:"synchronous,omitempty"`
+	// Schedule is the hook's fire interval (a Go duration, e.g. "5m") when it
+	// is scheduled, else empty. Surfaced so the dashboard/admin can show that
+	// a hook fires on a timer, not just on HTTP triggers.
+	Schedule string `json:"schedule,omitempty"`
+}
+
+// All returns every loaded hook, alphabetically sorted by ID. Callers
+// must treat the hooks as read-only.
+func (r *Registry) All() []*Hook {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*Hook, 0, len(r.hooks))
+	for _, h := range r.hooks {
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // List returns a stable, alphabetically-sorted list of hook summaries.
@@ -61,7 +78,7 @@ func (r *Registry) List() []Summary {
 	defer r.mu.RUnlock()
 	out := make([]Summary, 0, len(r.hooks))
 	for id, h := range r.hooks {
-		out = append(out, Summary{ID: id, Description: h.Description, Synchronous: h.Synchronous})
+		out = append(out, Summary{ID: id, Description: h.Description, Synchronous: h.Synchronous, Schedule: h.Schedule})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

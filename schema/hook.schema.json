@@ -2,24 +2,34 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "title": "webhook-runner hook configuration",
-  "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root.",
+  "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root, next to the mandatory Dockerfile that bakes the hook's code into its image.",
   "type": "object",
-  "required": ["image", "command"],
+  "required": ["$schema"],
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "URI of the JSON Schema this hook.json is validated against. Set it to https://wow-look-at-my.github.io/webhook-runner/hook.schema.json."
+    },
     "description": {
       "type": "string",
       "description": "Human-readable description of what this hook does."
-    },
-    "image": {
-      "type": "string",
-      "description": "Docker image to run (e.g. \"alpine:latest\")."
     },
     "command": {
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1,
-      "description": "Command and arguments passed to docker run after the image name."
+      "description": "Optional override of the image's CMD, passed to docker run after the image name. Every hook runs the image webhook-runner builds from the Dockerfile in its directory (tagged by content hash) — code is baked in and immutable per run; when command is omitted, the image's CMD/ENTRYPOINT runs."
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1
+      },
+      "description": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's built image, so tests exercise exactly the baked code (copy test files into the image and set WORKDIR so relative paths resolve). Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered."
     },
     "networks": {
       "type": "array",
@@ -34,11 +44,16 @@
     "env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Extra environment variables. HOOK_PAYLOAD_FILE and HOOK_HEADERS_FILE are reserved.",
+      "description": "Extra environment variables. Values may reference secrets as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment (expanded at container start; unresolvable names expand to \"\" with a warning). Entries of secrets.sops.env are also injected into the container directly, with explicit env entries winning on conflict. HOOK_PAYLOAD_FILE, HOOK_HEADERS_FILE, HOOK_ID, HOOK_RUN_ID, and (for state hooks) HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN are reserved.",
       "not": {
         "anyOf": [
           { "required": ["HOOK_PAYLOAD_FILE"] },
-          { "required": ["HOOK_HEADERS_FILE"] }
+          { "required": ["HOOK_HEADERS_FILE"] },
+          { "required": ["HOOK_ID"] },
+          { "required": ["HOOK_RUN_ID"] },
+          { "required": ["HOOK_KV_SOCKET"] },
+          { "required": ["HOOK_KV_URL"] },
+          { "required": ["HOOK_KV_TOKEN"] }
         ]
       }
     },
@@ -53,12 +68,83 @@
     "timeout": {
       "type": "string",
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
-      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"). Default: 5m."
+      "description": "Kill the run after this long with no container output; any output resets the clock. Applied per run after its concurrency slot is acquired. Default: 5m."
     },
     "synchronous": {
       "type": "boolean",
       "default": false,
       "description": "When true, the server holds the HTTP response open until the container exits. Default: false (returns 202 immediately)."
+    },
+    "state": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, opt the hook into the persistent KV store. The runner injects HOOK_KV_URL (http://localhost:9002) and HOOK_KV_TOKEN (a per-hook bearer token whose namespace is this hook's ID), and a proxy shim entrypoint, so the hook reaches the state API at a plain localhost URL with any HTTP client (no networking, no published port). The hook's data persists across its runs and across server restarts, isolated from other hooks. Default: false (no KV access)."
+    },
+    "schedule": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
+      "description": "Go duration (e.g. \"5m\", \"1h\") to fire this hook on a fixed interval, in addition to any HTTP trigger. A scheduled run goes through the same pipeline as an HTTP-triggered one (tracked, gated by concurrency_group, KV-enabled, shown on the dashboard) with a synthetic payload marking it schedule-triggered. On startup, and whenever the schedule is newly added or its interval changes, the hook fires immediately, then every interval; the scheduler skips a tick while a previous run of the same hook is still in flight (skip-if-already-running). Omit for HTTP-triggered only."
+    },
+    "concurrency_group": {
+      "type": "string",
+      "description": "Name of a concurrency group declared in concurrency.json at the hooks root. At most that group's limit of runs (counted across every hook sharing the group) execute at once; the rest queue as 'pending' with their timeout not yet counting. Referencing a group not declared in concurrency.json is a load/validation error. Omit for unbounded concurrency."
+    },
+    "skip_if": {
+      "type": "array",
+      "description": "Declarative skip conditions. An authenticated delivery matching any condition (entries are ORed) is SKIPPED: answered immediately, recorded as a first-class run with status 'skipped' naming the matched condition, and given NO container (no image build, no concurrency slot, no docker run). Keys within one condition are ANDed. A key is a dotted path into the parsed JSON payload (\"action\", \"workflow_run.conclusion\", array elements by numeric index) or a request header via the \"header:\" prefix (\"header:x-github-event\", name case-insensitive). Comparisons are over stringified scalar leaves (numbers as their JSON literal, true/false/null as those words); objects/arrays are not leaves, and a missing path does not match — evaluation is total and fails toward running the hook. Evaluated only AFTER authentication. Malformed conditions (unknown operator, non-compiling regex, empty condition) are a load/validation error.",
+      "items": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Shorthand for {\"eq\": ...}: the path/header must stringify to exactly this value."
+            },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": false,
+              "properties": {
+                "eq": {
+                  "type": "string",
+                  "description": "Matches a leaf whose stringified value equals this exactly."
+                },
+                "ne": {
+                  "type": "string",
+                  "description": "Matches a leaf whose stringified value differs. A missing path does NOT match (absence is not inequality)."
+                },
+                "in": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "Matches a leaf whose stringified value equals any listed value."
+                },
+                "exists": {
+                  "type": "boolean",
+                  "description": "true matches when the path resolves to anything (header present); false when it does not."
+                },
+                "prefix": {
+                  "type": "string",
+                  "description": "Matches a leaf whose stringified value starts with this."
+                },
+                "regex": {
+                  "type": "string",
+                  "format": "regex",
+                  "description": "Matches a leaf containing a match of this Go (RE2 — linear-time, no backtracking) pattern; anchor with ^ and $ for a full match. Compiled at load time — a non-compiling pattern fails validation."
+                }
+              },
+              "description": "Operator object; when several operators are set, all must accept (AND)."
+            }
+          ]
+        }
+      }
+    },
+    "run_title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Template for the friendly display title of this hook's runs, shown by the dashboard in place of the opaque run id (e.g. \"{{repository.full_name}}#{{pull_request.number}}\" renders \"wow-look-at-my/go-toolchain#47\"). A {{...}} placeholder names a dotted path into the parsed JSON payload (\"pull_request.number\", array elements by numeric index) or a request header via the \"header:\" prefix — exactly skip_if's key syntax and bounded traversal. Resolution is graceful and never blocks a run: each placeholder becomes the scalar leaf's string form (numbers as their JSON literal, true/false as those words); a missing path, an object/array, and JSON null become empty; when EVERY placeholder resolves empty the run simply gets no title (consumers fall back to the run id), otherwise pure-separator literals stranded next to empty placeholders are dropped and whitespace collapses. A template with no placeholders is a static title, always set. Resolved once at run creation, before skip_if — skipped runs are titled too; schedule-triggered runs resolve against the synthetic schedule payload and fall back to \"schedule\". Titles are capped at 200 characters, and a state hook can rename its run mid-flight via POST /title on the state API. A malformed template (unterminated \"{{\", empty \"{{}}\") is a load/validation error.",
+      "examples": ["{{repository.full_name}}#{{pull_request.number}}"]
     },
     "extra_docker_args": {
       "type": "array",
@@ -67,7 +153,7 @@
     },
     "api_key": {
       "type": "string",
-      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). Recommended for most hooks."
+      "description": "API key for bearer-token authentication. Checked against the X-API-Key header (or api_key_header). May reference a secret as ${NAME}, resolved from the hook's sops-encrypted secrets.sops.env first, then the runner host's environment; if the reference is unresolvable the hook fails closed (all requests rejected). Recommended for most hooks."
     },
     "api_key_header": {
       "type": "string",
@@ -85,6 +171,28 @@
     "secret": {
       "type": "string",
       "description": "Legacy: shared secret for HMAC-SHA256 signature verification. Prefer api_key or public_key."
+    },
+    "script": {
+      "type": "object",
+      "required": ["file", "interpreter"],
+      "additionalProperties": false,
+      "description": "Run a script file from the hook directory: derives the container command as <interpreter> <file> [args...]. Like all hook code, the script is baked into the hook's image by its Dockerfile (never mounted), so the interpreter must be installed in that image. An explicit command overrides the derived one.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Script file path relative to the hook directory. Must not be a symlink escaping the hook directory."
+        },
+        "interpreter": {
+          "type": "string",
+          "enum": ["bash", "pwsh", "node", "tsx"],
+          "description": "Script interpreter used to invoke the file. Must be installed in the hook's image (e.g. via a shared base image that ships it)."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional arguments passed after the script path."
+        }
+      }
     },
     "github_status": {
       "type": "object",
@@ -115,6 +223,7 @@
   },
   "oneOf": [
     {
+      "required": ["api_key"],
       "properties": {
         "api_key": { "type": "string" },
         "public_key": false,
@@ -122,6 +231,7 @@
       }
     },
     {
+      "required": ["public_key"],
       "properties": {
         "api_key": false,
         "public_key": { "type": "string" },
@@ -129,6 +239,7 @@
       }
     },
     {
+      "required": ["secret"],
       "properties": {
         "api_key": false,
         "public_key": false,

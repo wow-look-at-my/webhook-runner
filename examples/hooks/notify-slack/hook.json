@@ -1,6 +1,29 @@
 {
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "description": "Forward the webhook to a Slack channel",
-  "image": "curlimages/curl:8.7.1",
+
+  // Friendly run titles: the dashboard shows "wow-look-at-my/go-toolchain#47"
+  // instead of the opaque run id. {{...}} placeholders are dotted payload
+  // paths or "header:<name>" — skip_if's exact key syntax. Degradation is
+  // graceful: missing fields render empty, and if EVERY placeholder is
+  // empty the run just has no title (the id fallback). Skipped runs are
+  // titled too — resolution happens before skip_if.
+  "run_title": "{{repository.full_name}}#{{pull_request.number}}",
+
+  // Declarative skips: a delivery matching any entry (ORed) is answered
+  // immediately with NO container — the run is recorded with status
+  // "skipped" and its output names the matched condition. The classic use:
+  // GitHub's webhook checkboxes bundle events, so you receive event types
+  // you can't unsubscribe from. Keys within one entry are ANDed; a key is a
+  // dotted payload path or "header:<name>"; a matcher is a bare string
+  // (equality) or {eq,ne,in,exists,prefix,regex}.
+  "skip_if": [
+    // The flood case: drop every workflow_run event outright.
+    { "header:x-github-event": "workflow_run" },
+    // AND within one entry: only bot-sender label shuffling is skipped.
+    { "action": { "in": ["labeled", "unlabeled"] }, "sender.type": "Bot" }
+  ],
+
   "command": [
     "sh", "-c",
     "curl -fsS -X POST -H 'content-type: application/json' --data-binary @$HOOK_PAYLOAD_FILE \"$SLACK_WEBHOOK_URL\""
