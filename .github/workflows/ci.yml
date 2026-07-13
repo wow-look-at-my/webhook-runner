@@ -14,31 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The go:generate directive (internal/server/dashboard/dashboard.go)
-      # rebuilds the dashboard's timeline.js via ts0, which needs Node 22 and
-      # clones the private wow-look-at-my/ts0 repo — npm falls back from the
-      # unauthenticated codeload tarball to a git clone, so authenticate the
-      # https (and npm's canonical ssh) GitHub URLs for the org.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Authenticate git for the private ts0 install
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.PRIVATE_ORG_REPO_READ }}@github.com/wow-look-at-my/".insteadOf "https://github.com/wow-look-at-my/"
-          git config --global --add url."https://x-access-token:${{ secrets.PRIVATE_ORG_REPO_READ }}@github.com/wow-look-at-my/".insteadOf "ssh://git@github.com/wow-look-at-my/"
+      # The dashboard's committed assets/timeline.js is authoritative and
+      # embedded as-is — the npx //go:generate directive that rebuilt it via
+      # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
+      # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
+      # driven by a small Go bootstrap is landing next.
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
-          # Approval hash for the //go:generate directive above — it changes
-          # whenever the directive's text changes (a failing run prints the
-          # new one; update it here and in CLAUDE.md).
-          generate: e5b4190bd967
-      # go-toolchain just regenerated the committed bundle in the workspace:
-      # a stale assets/timeline.js — or one whose TypeScript no longer
-      # type-checks (ts0 fails the generate step directly) — turns the build
-      # red here instead of shipping.
-      - name: Generated dashboard assets are fresh
-        run: git diff --exit-code -- internal/server/dashboard/assets/
 
   e2e:
     runs-on: ubuntu-latest
