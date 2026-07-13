@@ -1,9 +1,30 @@
 "use strict";
 
-const POLL_MS = 3000;
+// -- Push-first sections, fixed-cadence fallback ------------------------------
+//
+// While timeline.js's /runs/stream EventSource is live (window.whrStreamLive),
+// the server pushes coarse `changed` signals naming the admin sections whose
+// payloads moved (hooks/images/concurrency/kv/events); timeline.js republishes
+// them as whr:sections-changed and each named section refetches ONCE (see the
+// section feed below). An idle dashboard therefore makes ZERO polling
+// requests. The interval at the bottom is the FALLBACK, exactly like the runs
+// feed's: it refreshes only while the stream is down (or timeline.js never
+// loaded), on a fixed cadence — never a growing backoff, never gives up.
+const FALLBACK_POLL_MS = 5000;
+// Signal bursts coalesce: the first signal refetches immediately (leading
+// edge), followers within the window fold into one trailing pass — a busy
+// server costs at most one refetch per section per window, an idle one zero.
+const SECTION_COALESCE_MS = 1000;
+// Every fetch is bounded: a fetch that cannot settle must fail, not wedge
+// the section feed's single-flight pass (the same AbortSignal.timeout rule
+// the runs feed adopted after the stuck-bars post-mortem).
+const FETCH_TIMEOUT_MS = 15000;
 
 async function fetchJSON(url) {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   return res.json();
 }
@@ -346,6 +367,45 @@ function renderRunOutput(view) {
   }
 }
 
+// -- The section feed ---------------------------------------------------------
+//
+// One async fetch+render per section. `hooks` also republishes its payload
+// for timeline.js (window.whrHooks + whr:hooks-data) — this is the ONLY
+// place /hooks is fetched, which fixed the old page-load double-fetch (both
+// scripts used to fetch it independently). `runs` is the overview TABLE
+// (hidden by default; the timeline is the primary runs view) and fetches
+// nothing while hidden. renderKV needs the loaded-hook id set, so the kv
+// section reads the roster the hooks section last published.
+let lastHookIds = new Set();
+
+function publishHooks(hooks) {
+  lastHookIds = new Set(hooks.map((h) => h.id));
+  window.whrHooks = hooks;
+  window.dispatchEvent(new CustomEvent("whr:hooks-data", { detail: { hooks } }));
+}
+
+const sectionFetchers = {
+  hooks: async () => {
+    const hooks = await fetchJSON("/hooks");
+    publishHooks(hooks);
+    renderHooks(hooks);
+  },
+  runs: async () => {
+    const runsSection = document.getElementById("runs-section");
+    if (!runsSection || runsSection.hidden) return;
+    renderRuns(await fetchJSON("/runs?max=50"));
+  },
+  images: async () => renderImages(await fetchJSON("/images")),
+  events: async () => renderEvents(await fetchJSON("/events?max=100")),
+  kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
+  concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
+};
+
+function stampUpdated() {
+  document.getElementById("updated").textContent =
+    "updated " + new Date().toLocaleTimeString();
+}
+
 async function refresh() {
   try {
     await fetchJSON("/health");
@@ -359,33 +419,130 @@ async function refresh() {
     if (hookId) {
       await refreshApp(hookId);
     } else {
-      // The runs TABLE is hidden by default (the timeline, fed by
-      // /runs/stream, is the primary runs view) — never burn a /runs
-      // request per tick for a hidden table. An idle dashboard makes
-      // ZERO /runs requests; showing the table re-enables its fetch.
-      const runsSection = document.getElementById("runs-section");
-      const wantRunsTable = runsSection && !runsSection.hidden;
-      const [hooks, runs, images, events, kv, groups] = await Promise.all([
-        fetchJSON("/hooks"),
-        wantRunsTable ? fetchJSON("/runs?max=50") : Promise.resolve(null),
-        fetchJSON("/images"),
-        fetchJSON("/events?max=100"),
-        fetchJSON("/kv"),
-        fetchJSON("/concurrency"),
+      // hooks first: the kv render keys off the roster it publishes.
+      await sectionFetchers.hooks();
+      await Promise.all([
+        sectionFetchers.runs(),
+        sectionFetchers.images(),
+        sectionFetchers.events(),
+        sectionFetchers.kv(),
+        sectionFetchers.concurrency(),
       ]);
-      renderHooks(hooks);
-      if (runs) renderRuns(runs);
-      renderImages(images);
-      renderEvents(events);
-      renderKV(kv, new Set(hooks.map((h) => h.id)));
-      renderConcurrency(groups);
     }
-    document.getElementById("updated").textContent =
-      "updated " + new Date().toLocaleTimeString();
+    stampUpdated();
   } catch (e) {
     console.error(e);
   }
 }
+
+// -- Push reactor --------------------------------------------------------------
+//
+// whr:sections-changed marks sections dirty; runSectionWork drains the set —
+// leading-edge immediate, bursts coalescing into one trailing pass per
+// SECTION_COALESCE_MS — refetching ONLY what changed. On the per-hook app
+// view the granular sections collapse into one "app" token (refreshApp is a
+// handful of small fetches whose pieces map 1:1 onto the same signals).
+// Failed refetches re-mark their sections and retry on the same fixed
+// cadence while the stream is live; when it is not, the batch is dropped —
+// the fallback poll and the on-reconnect full refresh own recovery then.
+const dirtySections = new Set();
+const APP_SECTIONS = new Set(["hooks", "events", "kv"]);
+let sectionWorkTimer = null;
+let sectionWorkRunning = false;
+let lastSectionWork = 0;
+
+function scheduleSectionWork() {
+  if (sectionWorkTimer !== null || sectionWorkRunning) return;
+  const wait = Math.max(0, lastSectionWork + SECTION_COALESCE_MS - Date.now());
+  sectionWorkTimer = setTimeout(() => {
+    sectionWorkTimer = null;
+    void runSectionWork();
+  }, wait);
+}
+
+async function runSectionWork() {
+  if (sectionWorkRunning) return;
+  sectionWorkRunning = true;
+  lastSectionWork = Date.now();
+  const secs = [...dirtySections];
+  dirtySections.clear();
+  try {
+    // Stream down: drop the batch — the fallback poll refreshes everything
+    // on its own cadence, and reconnect does a full resync anyway.
+    if (window.whrStreamLive !== true) return;
+    const hookId = currentHookId();
+    if (hookId) {
+      if (secs.includes("app")) await refreshApp(hookId);
+      stampUpdated();
+      return;
+    }
+    if (secs.includes("hooks")) await sectionFetchers.hooks();
+    const rest = secs.filter((s) => s !== "hooks" && s !== "app" && sectionFetchers[s]);
+    const results = await Promise.allSettled(rest.map((s) => sectionFetchers[s]()));
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.error(`section ${rest[i]} refresh failed:`, r.reason);
+        dirtySections.add(rest[i]);
+      }
+    });
+    stampUpdated();
+  } catch (e) {
+    // The hooks fetch (or refreshApp) failed: put the batch back for the
+    // fixed-cadence retry.
+    console.error("section refresh failed:", e);
+    for (const s of secs) dirtySections.add(s);
+  } finally {
+    sectionWorkRunning = false;
+    if (dirtySections.size > 0) scheduleSectionWork();
+  }
+}
+
+window.addEventListener("whr:sections-changed", (e) => {
+  const secs = (e.detail && e.detail.sections) || [];
+  const hookId = currentHookId();
+  for (const s of secs) {
+    if (hookId) {
+      if (APP_SECTIONS.has(s)) dirtySections.add("app");
+    } else if (sectionFetchers[s]) {
+      dirtySections.add(s); // unknown future sections are ignored
+    }
+  }
+  if (dirtySections.size > 0) scheduleSectionWork();
+});
+
+// Run deltas already stream (timeline.js): they drive the OVERVIEW runs
+// table (when shown) and the app view's runs list/stats without any extra
+// server-side signal.
+window.addEventListener("whr:run-delta", (e) => {
+  const hookId = currentHookId();
+  const run = e.detail && e.detail.run;
+  if (hookId) {
+    if (run && run.hook_id === hookId) dirtySections.add("app");
+  } else {
+    const runsSection = document.getElementById("runs-section");
+    if (runsSection && !runsSection.hidden) dirtySections.add("runs");
+  }
+  if (dirtySections.size > 0) scheduleSectionWork();
+});
+
+// A just-revealed runs table starts stale (hidden tables fetch nothing).
+window.addEventListener("whr:runs-table-shown", () => {
+  if (currentHookId()) return;
+  dirtySections.add("runs");
+  scheduleSectionWork();
+});
+
+// Stream recovery: signals missed while down are unknowable — do ONE full
+// refresh per (re)connect, then go push-only again. A live stream is also
+// proof of server contact, so the badge flips healthy without a /health
+// round trip; while the stream is down the fallback poll's /health probe
+// owns the badge.
+window.addEventListener("whr:stream-state", (e) => {
+  if (!e.detail || !e.detail.live) return;
+  setBadge(true);
+  dirtySections.clear();
+  refresh();
+});
 
 function setBadge(ok) {
   const b = document.getElementById("health-badge");
@@ -1298,5 +1455,13 @@ window.addEventListener("hashchange", () => {
 
 loadConfig();
 loadVersion();
+// Boot paint immediately; after that the stream's push signals own
+// freshness and this interval is the pure FALLBACK — a no-op while the
+// stream is live, a fixed-cadence full refresh while it is down (or if
+// timeline.js never loaded, leaving whrStreamLive undefined). Armed once,
+// never cleared, never grows: the runs-feed supervisor pattern.
 refresh();
-setInterval(refresh, POLL_MS);
+setInterval(() => {
+  if (window.whrStreamLive === true) return;
+  refresh();
+}, FALLBACK_POLL_MS);

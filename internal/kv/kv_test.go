@@ -333,3 +333,40 @@ func TestNoLingeringTempFiles(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, ".*tmp*"))
 	require.Empty(t, matches)
 }
+
+// The onMutate seam (the dashboard's "kv changed" push signal): fires on
+// every successful entry mutation, never on no-ops, failures, or idle
+// sweeps.
+func TestOnMutateSeam(t *testing.T) {
+	s := newStore(t)
+	var n int
+	s.SetOnMutate(func() { n++ })
+
+	require.NoError(t, s.Set("ns", "a", []byte("1"), 0))
+	assert.Equal(t, 1, n, "Set fires")
+
+	require.NoError(t, s.Delete("ns", "a"))
+	assert.Equal(t, 2, n, "a deleting Delete fires")
+
+	require.NoError(t, s.Delete("ns", "a"))
+	assert.Equal(t, 2, n, "a no-op Delete must not fire")
+
+	_, err := s.Incr("ns", "c", 1, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "Incr fires")
+
+	// Expired entries are reclaimed by the sweep: one signal per sweep
+	// that removed anything, none for an idle sweep.
+	require.NoError(t, s.Set("ns", "t", []byte("x"), time.Millisecond))
+	assert.Equal(t, 4, n)
+	time.Sleep(10 * time.Millisecond)
+	s.sweep()
+	assert.Equal(t, 5, n, "a reclaiming sweep fires once")
+	s.sweep()
+	assert.Equal(t, 5, n, "an idle sweep must not fire")
+
+	// Rejected writes must not fire.
+	err = s.Set("ns", "big", make([]byte, s.cfg.MaxValueBytes+1), 0)
+	require.Error(t, err)
+	assert.Equal(t, 5, n, "a failed Set must not fire")
+}

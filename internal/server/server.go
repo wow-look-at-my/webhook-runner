@@ -150,8 +150,34 @@ func New(opts Options) *Server {
 	// buffers, slow clients dropped), so hooking it to the tracker's
 	// mutating goroutines is safe. Wired here — before any run can exist —
 	// because SetOnChange only applies to runs created after it.
+	//
+	// The same connection also carries coarse "section changed → refetch
+	// once" signals for the non-run admin sections, so an idle dashboard
+	// polls NOTHING (see streamhub.go). Three seams cover every section:
+	//   - run lifecycle (below): concurrency-group active/waiting/holder
+	//     state moves exactly with run lifecycle and waiting_on changes
+	//     (acquire = start, release = finish, queue join/position =
+	//     waiting_on) — a superset signal, cheap for the client to honor.
+	//   - the activity feed: every recorded event dirties "events", and
+	//     sectionsForEvent maps kinds to the sections they imply (reloads →
+	//     hooks/images/concurrency, image builds → images, kill-switch
+	//     flips → hooks, limit overrides → concurrency). The runner's
+	//     records flow through the same shared Recorder.
+	//   - kv entry mutations: the store's own seam (state-API writes and
+	//     sweeper reclaims alike).
 	if opts.Tracker != nil {
-		opts.Tracker.SetOnChange(s.stream.publish)
+		opts.Tracker.SetOnChange(func(st runs.RunState) {
+			s.stream.publish(st)
+			s.stream.signal("concurrency")
+		})
+	}
+	opts.Events.SetOnRecord(func(kind string) {
+		s.stream.signal(sectionsForEvent(kind)...)
+	})
+	if opts.KV != nil {
+		opts.KV.SetOnMutate(func() {
+			s.stream.signal("kv")
+		})
 	}
 	s.registerRoutes()
 	return s
