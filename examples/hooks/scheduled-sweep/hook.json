@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "description": "Example of a scheduled hook: fires on a timer, not (only) on HTTP POST",
+
+  // "schedule" is a Go duration. The hook fires immediately on startup (and
+  // whenever this schedule is newly added or its interval changes), then every
+  // interval thereafter. A scheduled run goes through the exact same pipeline
+  // as an HTTP-triggered one (tracked, dashboard-visible, gated by any
+  // concurrency_group). The scheduler skips a tick while a previous run of
+  // this hook is still in flight, so a sweep that runs longer than its
+  // interval never stacks on itself.
+  "schedule": "5m",
+
+  // A scheduled run still receives a payload in $HOOK_PAYLOAD_FILE: a small
+  // JSON object {"trigger":"schedule","hook":"<id>","time":"<RFC3339>"} so the
+  // code can tell a timer fire from an HTTP caller.
+  "command": ["sh", "-c", "echo scheduled sweep at $(date -u +%FT%TZ); cat $HOOK_PAYLOAD_FILE"],
+  "timeout": "5m"
+}
