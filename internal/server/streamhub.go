@@ -11,6 +11,10 @@ package server
 //	event: run                       (one per lifecycle change: created,
 //	data: { ...RunState... }          pending→running, waiting set/cleared,
 //	                                  title set, cancel requested, terminal)
+//	event: changed                   (coarse section-invalidation signal:
+//	data: {"sections":["kv", ...]}    the named admin sections changed since
+//	                                  the client last heard — refetch each
+//	                                  ONCE; carries no payload by design)
 //	: hb                             (comment heartbeat every ~10s, PLUS an
 //	event: hb                         `hb` event in the same write — comments
 //	data: 1                           keep proxies/idle detection honest, but
@@ -28,6 +32,17 @@ package server
 // semantics, not an error; it bounds memory and never applies backpressure
 // to run execution.
 //
+// Section signals ride the SAME connection but a DIFFERENT mechanism: a
+// per-subscriber dirty SET plus a 1-slot wake channel, not the delta
+// queue. A signal storm coalesces into one pending drain (the set is
+// bounded by the handful of section names), so signals can never overflow
+// a subscriber, never drop one, and never block a publisher — only run
+// deltas can drop a slow client. The payload is deliberately just the
+// section names ("changed → refetch once"): the client refetches the
+// section endpoint it already knows, so a dropped client that reconnects
+// simply refetches every section on open (its snapshot rule) and no
+// signal is ever load-bearing state.
+//
 // The subscribe-BEFORE-snapshot order in the handler means no lifecycle
 // change can fall between the snapshot read and the delta stream: anything
 // landing in that window is buffered in the channel and delivered right
@@ -40,6 +55,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +88,31 @@ type streamHub struct {
 
 type streamSub struct {
 	ch chan runs.RunState
+
+	// Section-signal state: dirty is the set of section names signaled
+	// since the handler last drained; kick (1-buffered) wakes the handler.
+	// A set + non-blocking wake coalesces bursts and is drop-proof by
+	// construction — see the package comment.
+	mu    sync.Mutex
+	dirty map[string]struct{}
+	kick  chan struct{}
+}
+
+// drainSections atomically takes the dirty set, returning its contents
+// sorted (empty when a wake raced an earlier drain).
+func (sub *streamSub) drainSections() []string {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if len(sub.dirty) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(sub.dirty))
+	for s := range sub.dirty {
+		out = append(out, s)
+	}
+	clear(sub.dirty)
+	sort.Strings(out)
+	return out
 }
 
 func newStreamHub() *streamHub {
@@ -81,7 +123,11 @@ func newStreamHub() *streamHub {
 // shutdown) the returned subscription is already closed, so the handler
 // exits immediately instead of racing the shutdown.
 func (h *streamHub) subscribe() *streamSub {
-	sub := &streamSub{ch: make(chan runs.RunState, streamClientBuffer)}
+	sub := &streamSub{
+		ch:    make(chan runs.RunState, streamClientBuffer),
+		dirty: map[string]struct{}{},
+		kick:  make(chan struct{}, 1),
+	}
 	h.mu.Lock()
 	if h.closed {
 		close(sub.ch)
@@ -116,6 +162,54 @@ func (h *streamHub) publish(st runs.RunState) {
 		}
 	}
 	h.mu.Unlock()
+}
+
+// signal marks the named dashboard sections dirty on every subscriber and
+// wakes their handlers. Never blocks and never drops anyone: the dirty set
+// is bounded by the section-name universe and the wake send is
+// non-blocking (a full kick just means a drain is already pending, which
+// will pick these sections up too).
+func (h *streamHub) signal(sections ...string) {
+	if len(sections) == 0 {
+		return
+	}
+	h.mu.Lock()
+	for sub := range h.subs {
+		sub.mu.Lock()
+		for _, name := range sections {
+			sub.dirty[name] = struct{}{}
+		}
+		sub.mu.Unlock()
+		select {
+		case sub.kick <- struct{}{}:
+		default:
+		}
+	}
+	h.mu.Unlock()
+}
+
+// sectionsForEvent maps a recorded activity-event kind to the dashboard
+// sections whose payloads that event implies changed. Every event dirties
+// "events" (it IS the activity feed); the extras cover the sections whose
+// state mutates alongside specific kinds. Over-signaling is harmless (the
+// client refetches one small endpoint once); under-signaling is the bug
+// class this map must avoid — prefer prefixes where every current and
+// plausible future kind in the family affects the section.
+func sectionsForEvent(kind string) []string {
+	out := []string{"events"}
+	switch {
+	case kind == "hooks.reloaded":
+		// A reload can change the hook roster, every content-hash image
+		// state, and the declared concurrency groups at once.
+		out = append(out, "hooks", "images", "concurrency")
+	case kind == "hook.load_error", kind == "hook.disabled", kind == "hook.enabled":
+		out = append(out, "hooks")
+	case strings.HasPrefix(kind, "image."):
+		out = append(out, "images")
+	case strings.HasPrefix(kind, "concurrency."):
+		out = append(out, "concurrency")
+	}
+	return out
 }
 
 // closeAll disconnects every subscriber and marks the hub closed (used at
@@ -187,9 +281,23 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 			if rc.Flush() != nil {
 				return
 			}
+		case <-sub.kick:
+			// Section signals: drain the coalesced dirty set into ONE
+			// changed event. An empty drain (a wake that raced an earlier
+			// drain) writes nothing.
+			secs := sub.drainSections()
+			if len(secs) == 0 {
+				continue
+			}
+			if err := writeSSEEvent(w, "changed", map[string][]string{"sections": secs}); err != nil {
+				return
+			}
+			if rc.Flush() != nil {
+				return
+			}
 		case <-hb.C:
 			// Comment for proxies + event for the client, one write.
-			if _, err := io.WriteString(w, ": hb\nevent: hb\ndata: 1\n\n"); err != nil {
+			if _, err := io.WriteString(w, ": hb\nevent: hb\ndata: {}\n\n"); err != nil {
 				return
 			}
 			if rc.Flush() != nil {
