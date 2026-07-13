@@ -83,3 +83,43 @@ func TestSegmentsFieldsOmittedWhenUnused(t *testing.T) {
 	assert.NotContains(t, string(b), "wait_history")
 	assert.NotContains(t, string(b), "cancel_requested_at")
 }
+
+// One logical wait = ONE history entry: a re-stamp of the same kind+key (a
+// queued group acquire whose position/holders changed, a blocked lock
+// changing hands) continues the open segment instead of fragmenting it.
+// Reproduced live before the fix: a single 7-deep queue wait shipped 14
+// contiguous micro-segments on every SSE delta.
+func TestSetWaitingOnRestampContinuesOpenSegment(t *testing.T) {
+	tr := NewTracker()
+	r := tr.New("h")
+
+	// Join the queue at position 7, then advance through the line: same
+	// logical wait, restamped once per queue movement.
+	var seq uint64
+	for pos := 7; pos >= 1; pos-- {
+		seq = r.SetWaitingOn(WaitingOn{Kind: WaitingOnGroup, Key: "model-gateway", Position: pos,
+			HolderRunIDs: []string{"a", "b", "c"}})
+	}
+	st := r.Snapshot(0)
+	require.Len(t, st.WaitHistory, 1, "restamps of the same wait must not fragment the history")
+	assert.True(t, st.WaitHistory[0].End.IsZero(), "the one segment is still open (still waiting)")
+	require.NotNil(t, st.WaitingOn)
+	assert.Equal(t, 1, st.WaitingOn.Position, "the live WaitingOn still tracks the newest restamp")
+
+	// A DIFFERENT wait (other key) closes the segment and opens a new one.
+	seq = r.SetWaitingOn(WaitingOn{Kind: WaitingOnLock, Key: "pr:1"})
+	st = r.Snapshot(0)
+	require.Len(t, st.WaitHistory, 2)
+	assert.False(t, st.WaitHistory[0].End.IsZero(), "the group wait closed when the lock wait began")
+	assert.True(t, st.WaitHistory[1].End.IsZero())
+
+	// Clear, then a NEW wait of the original kind+key: the previous segment
+	// is closed, so this is a fresh entry — continuation only applies to an
+	// OPEN segment.
+	r.ClearWaitingOn(seq)
+	r.SetWaitingOn(WaitingOn{Kind: WaitingOnGroup, Key: "model-gateway", Position: 3})
+	st = r.Snapshot(0)
+	require.Len(t, st.WaitHistory, 3)
+	assert.False(t, st.WaitHistory[1].End.IsZero())
+	assert.True(t, st.WaitHistory[2].End.IsZero())
+}
