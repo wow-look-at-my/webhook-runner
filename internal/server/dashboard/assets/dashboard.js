@@ -359,16 +359,22 @@ async function refresh() {
     if (hookId) {
       await refreshApp(hookId);
     } else {
+      // The runs TABLE is hidden by default (the timeline, fed by
+      // /runs/stream, is the primary runs view) — never burn a /runs
+      // request per tick for a hidden table. An idle dashboard makes
+      // ZERO /runs requests; showing the table re-enables its fetch.
+      const runsSection = document.getElementById("runs-section");
+      const wantRunsTable = runsSection && !runsSection.hidden;
       const [hooks, runs, images, events, kv, groups] = await Promise.all([
         fetchJSON("/hooks"),
-        fetchJSON("/runs?max=50"),
+        wantRunsTable ? fetchJSON("/runs?max=50") : Promise.resolve(null),
         fetchJSON("/images"),
         fetchJSON("/events?max=100"),
         fetchJSON("/kv"),
         fetchJSON("/concurrency"),
       ]);
       renderHooks(hooks);
-      renderRuns(runs);
+      if (runs) renderRuns(runs);
       renderImages(images);
       renderEvents(events);
       renderKV(kv, new Set(hooks.map((h) => h.id)));
@@ -1113,11 +1119,32 @@ document.getElementById("run-detail-view-toggle").addEventListener("click", (e) 
 // gated on "modal open, run known, not yet rendered terminal". A terminal
 // render is final — the run cannot change — so polling stops there; errors
 // inside refreshRunDetail are caught (the loop itself can never die).
+// PUSH-FIRST: while timeline.js's /runs/stream EventSource is live
+// (window.whrStreamLive), deltas drive the refresh at push latency and
+// this poll stands down; it takes over automatically whenever the stream
+// is down (or the timeline module never loaded — whrStreamLive undefined).
 setInterval(() => {
   if (!currentRunId || currentRunTerminal) return;
   if (!runDetailDialog.open) return;
+  if (window.whrStreamLive === true) return; // stream deltas own the refresh
   void refreshRunDetail(false);
 }, RUN_DETAIL_POLL_MS);
+// Stream deltas: refresh the open modal the moment ITS run changes (the
+// delta payload is list-shaped/output-stripped, so re-fetch /runs/{id}
+// for the full output rather than rendering the delta directly).
+window.addEventListener("whr:run-delta", (e) => {
+  if (!currentRunId || !runDetailDialog.open) return;
+  const d = e.detail;
+  if (d && d.id === currentRunId) void refreshRunDetail(false);
+});
+// Stream recovery: a change the modal's run made while the stream was down
+// may never re-emit a delta (e.g. it went terminal in the gap) — one
+// refresh on reconnect closes that hole.
+window.addEventListener("whr:stream-state", (e) => {
+  if (!e.detail || !e.detail.live) return;
+  if (!currentRunId || currentRunTerminal || !runDetailDialog.open) return;
+  void refreshRunDetail(false);
+});
 
 // The full log as plain text, each line prefixed with its timestamp when one
 // is known — the same content the raw view shows, ready to paste into a report.

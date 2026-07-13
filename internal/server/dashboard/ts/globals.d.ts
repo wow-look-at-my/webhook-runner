@@ -34,3 +34,16 @@ declare function showRun(id: string): Promise<void>;
 
 /** The #hook=<id> fragment's hook id, or null on the overview. */
 declare function currentHookId(): string | null;
+
+// -- Contracts this module PROVIDES to dashboard.js ---------------------------
+//
+// timeline.ts owns the /runs/stream EventSource and publishes its state so
+// the classic script can gate its own fallbacks (e.g. the run modal's fixed
+// 3s poll runs only while the stream is down):
+//   window.whrStreamLive          — true while the stream is open
+//   'whr:stream-state' (window)   — CustomEvent {detail: {live}} on change
+//   'whr:run-delta' (window)      — CustomEvent {detail: {id, run}} per run
+//                                    lifecycle delta from the stream
+declare interface Window {
+	whrStreamLive?: boolean;
+}
