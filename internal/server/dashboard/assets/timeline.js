@@ -69,10 +69,12 @@ function ingestDelta(r) {
   noteOldest(r);
   chart?.onDelta(r, prev);
   window.dispatchEvent(new CustomEvent("whr:run-delta", { detail: { id: r.id, run: r } }));
+  fresh();
 }
 function ingestPage(page) {
   ingestRuns(page);
   chart?.onPage(page);
+  fresh();
 }
 async function reconcileMissing(page) {
   const inPage = new Set(page.map((r) => r.id));
@@ -475,8 +477,7 @@ function initTimeline() {
     if (hit.type === "lane") return laneTooltip(hit.lane);
     return null;
   };
-  const supportsFreshness = typeof tl.markFresh === "function";
-  if (supportsFreshness) tl.staleAfterMs = STALE_AFTER_MS;
+  if (typeof tl.markFresh === "function") tl.staleAfterMs = STALE_AFTER_MS;
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
     const c = skipClusters.get(detail.interval.id);
@@ -547,6 +548,7 @@ function initTimeline() {
       seeded = true;
       laneOrderKey = "";
       tl.setData(data);
+      tl.setViewport(now - 10 * 6e4, now);
       armBackfill();
     } else {
       tl.mergeData(data);
@@ -603,7 +605,7 @@ function initTimeline() {
     onDelta: applyDelta,
     rebuild: rebuildAll,
     markFresh: () => {
-      if (supportsFreshness) tl.markFresh();
+      if (typeof tl.markFresh === "function") tl.markFresh();
     }
   };
   if (runsById.size > 0) applyPage([...runsById.values()]);
