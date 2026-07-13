@@ -407,6 +407,10 @@ async function clearLimitOverride(name, declared) {
   refresh();
 }
 
+// Which concurrency group's drill-down row is expanded (persists across the
+// poll's re-render, same pattern as appKVOpenKey).
+let concurrencyOpenGroup = null;
+
 function renderConcurrency(groups) {
   const tbody = document.querySelector("#concurrency-table tbody");
   tbody.innerHTML = "";
@@ -424,20 +428,66 @@ function renderConcurrency(groups) {
       revertBtn.addEventListener("click", () => clearLimitOverride(g.name, g.declared));
       actions.appendChild(revertBtn);
     }
-    tbody.appendChild(
-      el("tr", null,
-        el("td", null, el("code", null, g.name)),
-        el("td", null, String(g.declared)),
-        el("td", null,
-          String(g.limit),
-          g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-        ),
-        el("td", null, String(g.active)),
-        el("td", null, String(g.waiting)),
-        actions,
-      )
+    const open = concurrencyOpenGroup === g.name;
+    const tr = el("tr", { class: open ? "group-open" : "",
+      title: "click to see which runs hold this group's slots and which are queued" },
+      el("td", null, el("code", null, g.name)),
+      el("td", null, String(g.declared)),
+      el("td", null,
+        String(g.limit),
+        g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
+      ),
+      el("td", null, String(g.active)),
+      el("td", null, String(g.waiting)),
+      actions,
     );
+    // The whole row toggles the drill-down; the override buttons keep
+    // their own clicks.
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      concurrencyOpenGroup = open ? null : g.name;
+      refresh();
+    });
+    tbody.appendChild(tr);
+    if (open) tbody.appendChild(groupDetailRow(g));
   }
+}
+
+// The expanded row under a group: which runs hold its slots and which are
+// queued, in order — each a run link into the run modal. This is the
+// operator's self-serve answer to "the group reads 3/3 with 4 waiting;
+// WHAT is holding the slots?".
+function groupDetailRow(g) {
+  const td = el("td", { colspan: "6" });
+  const row = el("tr", { class: "group-detail-row" }, td);
+  const runLine = (r, note) => el("div", { class: "group-run" },
+    runLink(r.run_id),
+    " ",
+    r.hook_id ? el("code", null, r.hook_id) : null,
+    r.title ? el("span", { class: "group-run-title" }, " " + r.title) : null,
+    r.status ? el("span", { class: "status " + r.status, style: "margin-left: 0.4rem" }, r.status) : null,
+    el("span", { class: "group-run-since" }, note),
+  );
+  const holders = g.holders || [];
+  const waiting = g.waiting_runs || [];
+  if (!holders.length && !waiting.length) {
+    td.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
+    return row;
+  }
+  if (holders.length) {
+    td.appendChild(el("div", { class: "group-detail-head" },
+      `Holding ${holders.length === 1 ? "the slot" : holders.length + " slots"}:`));
+    for (const h of holders) {
+      td.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
+    }
+  }
+  if (waiting.length) {
+    td.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
+    waiting.forEach((r, i) => {
+      td.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
+    });
+  }
+  return row;
 }
 
 // Run cell for the tables: the friendly title (feature-detected — an

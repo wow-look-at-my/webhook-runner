@@ -506,3 +506,23 @@ td .run-title { font-weight: 500; }
 td .run-id-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
 td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
 #run-detail-title code { font-size: 0.65em; color: var(--muted); font-weight: 400; }
+
+/* Concurrency drill-down: group rows expand into a detail row listing the
+   runs holding the group's slots and the wait queue (each a run link into
+   the modal). Group rows are genuinely clickable, so they opt back IN to
+   the pointer cursor (overriding the blanket opt-out above); the detail
+   row itself is not clickable. */
+#concurrency-table tbody tr { cursor: pointer; }
+#concurrency-table tr.group-open td { border-bottom: 0; }
+#concurrency-table tr.group-detail-row { cursor: default; }
+#concurrency-table tr.group-detail-row:hover { background: transparent; }
+.group-detail-head {
+  color: var(--muted);
+  font-size: 0.7rem;
+  margin: 0.3rem 0 0.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.group-run { font-size: 0.85rem; margin: 0.1rem 0; }
+.group-run-title { color: var(--muted); }
+.group-run-since { color: var(--muted); font-size: 0.85em; margin-left: 0.4rem; }

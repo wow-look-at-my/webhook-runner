@@ -136,13 +136,20 @@ const (
 	// WaitingOnLock is a blocking lock acquire (POST /kv/{key}/acquire
 	// with "block": true) contending against another run's lock.
 	WaitingOnLock = "lock"
+	// WaitingOnGroup is a queued concurrency-group acquire: the run is
+	// still pending, waiting for a slot in its hook's concurrency_group.
+	// Key names the group; HolderRunIDs/Position say who holds the slots
+	// and how deep the queue is.
+	WaitingOnGroup = "group"
 )
 
 // WaitingOn is the one "what is this run paused on?" record the dashboard
 // renders: kind "wait" is a declared sleep with its mandatory Reason; kind
-// "lock" is a blocked acquire naming the contended Key and who holds it.
-// Until is when the pause resolves on its own — the sleep's end, or the
-// blocking acquire's give-up deadline.
+// "lock" is a blocked acquire naming the contended Key and who holds it;
+// kind "group" is a queued concurrency-group acquire naming the group (Key)
+// and the runs holding its slots. Until is when the pause resolves on its
+// own — the sleep's end, or the blocking acquire's give-up deadline (group
+// waits have none: they hold until a slot frees or the run is cancelled).
 type WaitingOn struct {
 	Kind   string    `json:"kind"`
 	Reason string    `json:"reason,omitempty"`
@@ -152,6 +159,16 @@ type WaitingOn struct {
 	// lock (kind "lock"); re-stamped as holders change while blocked.
 	HolderRunID  string `json:"holder_run_id,omitempty"`
 	HolderHookID string `json:"holder_hook_id,omitempty"`
+	// HolderRunIDs lists every run currently holding a slot of the
+	// contended resource (kind "group": the group's active runs), in
+	// acquire order. Advisory display data, re-stamped as holders change
+	// while the run waits. Callers must pass a fresh slice per stamp
+	// (SetWaitingOn replaces the pointer and never deep-copies).
+	HolderRunIDs []string `json:"holder_run_ids,omitempty"`
+	// Position is the run's 1-based place in the wait queue (1 = next in
+	// line, so "N ahead" renders as Position-1). 0/omitted = unknown or
+	// not a queued kind (lock contention has no queue order).
+	Position int `json:"position,omitempty"`
 }
 
 // Waiter identifies one run blocked on a cooperative lock the annotated run
@@ -280,7 +297,10 @@ func (r *Run) Snapshot(tail int) RunState {
 	if cp.WaitingOn != nil {
 		// SetWaitingOn always replaces the pointer, never mutates the
 		// pointee — but copy anyway so a snapshot can't alias live state.
+		// The holder slice gets the same treatment (stampers hand over a
+		// fresh slice, but a snapshot must not rely on caller discipline).
 		w := *cp.WaitingOn
+		w.HolderRunIDs = append([]string(nil), w.HolderRunIDs...)
 		cp.WaitingOn = &w
 	}
 	return cp
