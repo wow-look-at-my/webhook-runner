@@ -47,6 +47,10 @@ type Server struct {
 	overrides    *overrides.Store
 	version      VersionInfo
 
+	// stream fans run lifecycle updates out to GET /runs/stream clients;
+	// fed by the tracker's OnChange seam (wired in New). Never nil.
+	stream *streamHub
+
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
 	stateMux *http.ServeMux
@@ -136,9 +140,18 @@ func New(opts Options) *Server {
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
+		stream:       newStreamHub(),
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
 		stateMux:     http.NewServeMux(),
+	}
+	// The live tail: every run lifecycle mutation is fanned out to the
+	// /runs/stream subscribers. publish never blocks (bounded per-client
+	// buffers, slow clients dropped), so hooking it to the tracker's
+	// mutating goroutines is safe. Wired here — before any run can exist —
+	// because SetOnChange only applies to runs created after it.
+	if opts.Tracker != nil {
+		opts.Tracker.SetOnChange(s.stream.publish)
 	}
 	s.registerRoutes()
 	return s
@@ -179,6 +192,9 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)
+	// The SSE live tail. The literal "stream" segment wins over the
+	// {id} pattern below (most-specific match), so no run id collision.
+	s.adminMux.HandleFunc("GET /runs/stream", s.handleRunsStream)
 	s.adminMux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	s.adminMux.HandleFunc("POST /runs/{id}/cancel", s.handleAdminCancelRun)
 	s.adminMux.HandleFunc("POST /reload", s.handleReload)

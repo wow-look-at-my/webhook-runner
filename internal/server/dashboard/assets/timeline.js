@@ -3,15 +3,20 @@
 // ts/timeline.ts
 var COMPONENT_URL = "https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js";
 var COMPONENT_RETRY_MS = 5e3;
-var TIMELINE_POLL_MS = 2e3;
+var STREAM_PATH = "/runs/stream";
+var FALLBACK_POLL_MS = 5e3;
+var STREAM_GRACE_MS = 8e3;
+var FETCH_TIMEOUT_MS = 15e3;
+var RESYNC_MAX = 400;
+var RECONCILE_MAX = 20;
+var STALE_AFTER_MS = 25e3;
 var HOOKS_POLL_MS = 3e4;
-var POLL_MAX = 400;
 var BACKFILL_MAX = 200;
 var BACKFILL_MAX_PAGES = 30;
 var PRUNE_AT = 1e4;
 var PRUNE_TO = 8e3;
 var TABLE_PREF_KEY = "whr-show-runs-table";
-var TERMINAL_STATUSES = /* @__PURE__ */ new Set(["success", "failure", "timeout", "error", "cancelled"]);
+var TERMINAL_STATUSES = /* @__PURE__ */ new Set(["success", "failure", "timeout", "error", "cancelled", "skipped"]);
 function isTerminal(status) {
   return TERMINAL_STATUSES.has(status);
 }
@@ -33,6 +38,142 @@ function ingestRuns(page) {
   for (const r of page) {
     runsById.set(r.id, r);
     noteOldest(r);
+  }
+}
+var chart = null;
+async function fetchJSONBounded(url) {
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+  });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  return await res.json();
+}
+var streamLive = false;
+var streamDownSince = Date.now();
+var es = null;
+function setStreamLive(live) {
+  if (streamLive === live) return;
+  streamLive = live;
+  if (!live) streamDownSince = Date.now();
+  window.whrStreamLive = live;
+  window.dispatchEvent(new CustomEvent("whr:stream-state", { detail: { live } }));
+  console.info(`timeline: run stream ${live ? "connected" : "down (EventSource retries on its fixed 2s cadence)"}`);
+}
+function fresh() {
+  chart?.markFresh();
+}
+function ingestDelta(r) {
+  const prev = runsById.get(r.id);
+  runsById.set(r.id, r);
+  noteOldest(r);
+  chart?.onDelta(r, prev);
+  window.dispatchEvent(new CustomEvent("whr:run-delta", { detail: { id: r.id, run: r } }));
+}
+function ingestPage(page) {
+  ingestRuns(page);
+  chart?.onPage(page);
+}
+async function reconcileMissing(page) {
+  const inPage = new Set(page.map((r) => r.id));
+  const stale = [...runsById.values()].filter((r) => !isTerminal(r.status) && !inPage.has(r.id)).slice(0, RECONCILE_MAX);
+  let dropped = false;
+  for (const r of stale) {
+    try {
+      ingestDelta(await fetchJSONBounded(`/runs/${encodeURIComponent(r.id)}?tail=0`));
+    } catch (e) {
+      if (e instanceof Error && / 404$|: 404$/.test(e.message)) {
+        console.info(`timeline: run ${r.id} is gone server-side (lost in a restart) \u2014 dropping it`);
+        runsById.delete(r.id);
+        dropped = true;
+        continue;
+      }
+      console.error("timeline: reconcile of", r.id, "failed:", e);
+    }
+  }
+  if (dropped) chart?.rebuild();
+}
+async function resyncOnce() {
+  try {
+    const page = await fetchJSONBounded(`/runs?max=${RESYNC_MAX}`);
+    ingestPage(page);
+    fresh();
+    await reconcileMissing(page);
+  } catch (e) {
+    console.error("timeline: resync failed:", e);
+  }
+}
+function openStream() {
+  es = new EventSource(STREAM_PATH);
+  es.onopen = () => {
+    setStreamLive(true);
+    void resyncOnce();
+  };
+  es.onerror = () => {
+    setStreamLive(false);
+  };
+  es.addEventListener("snapshot", (e) => {
+    try {
+      ingestPage(JSON.parse(e.data));
+      fresh();
+    } catch (err) {
+      console.error("timeline: bad snapshot event:", err);
+    }
+  });
+  es.addEventListener("run", (e) => {
+    try {
+      ingestDelta(JSON.parse(e.data));
+      fresh();
+    } catch (err) {
+      console.error("timeline: bad run event:", err);
+    }
+  });
+  es.addEventListener("hb", () => fresh());
+}
+var fallbackInFlight = false;
+function startFeedSupervisor() {
+  setInterval(() => {
+    try {
+      if (es !== null && es.readyState === EventSource.CLOSED) {
+        setStreamLive(false);
+        openStream();
+      }
+      if (streamLive) return;
+      if (Date.now() - streamDownSince < STREAM_GRACE_MS) return;
+      if (fallbackInFlight) return;
+      fallbackInFlight = true;
+      fetchJSONBounded(`/runs?max=${RESYNC_MAX}`).then((page) => {
+        ingestPage(page);
+        fresh();
+        return reconcileMissing(page);
+      }).catch((e) => console.error("timeline: fallback poll failed:", e)).finally(() => {
+        fallbackInFlight = false;
+      });
+    } catch (e) {
+      console.error("timeline: feed supervisor tick failed:", e);
+    }
+  }, FALLBACK_POLL_MS);
+}
+var waiterIndex = /* @__PURE__ */ new Map();
+function holderIdsOf(r) {
+  const w = r?.waiting_on;
+  if (!w || r && isTerminal(r.status)) return [];
+  if (w.kind === "lock" && w.holder_run_id) return [w.holder_run_id];
+  if (w.kind === "group" && w.holder_run_ids) return w.holder_run_ids;
+  return [];
+}
+function rebuildWaiterIndex() {
+  waiterIndex = /* @__PURE__ */ new Map();
+  for (const r of runsById.values()) {
+    const w = r.waiting_on;
+    if (!w || isTerminal(r.status)) continue;
+    const what = w.kind === "lock" ? `lock ${w.key || "?"}` : w.kind === "group" ? `a slot in group ${w.key || "?"}` : null;
+    if (what === null) continue;
+    for (const holder of holderIdsOf(r)) {
+      const list = waiterIndex.get(holder) ?? [];
+      list.push({ runId: r.id, hookId: r.hook_id, what });
+      waiterIndex.set(holder, list);
+    }
   }
 }
 function stateFor(r) {
@@ -61,7 +202,18 @@ function runTitle(r) {
   return typeof r.title === "string" && r.title.trim() !== "" ? r.title : null;
 }
 function runLabel(r) {
-  return runTitle(r) ?? r.id.slice(0, 8);
+  const base = runTitle(r) ?? r.id.slice(0, 8);
+  const w = r.waiting_on;
+  if (w && w.kind === "group" && !isTerminal(r.status)) {
+    const ahead = typeof w.position === "number" && w.position > 0 ? w.position - 1 : null;
+    const place = ahead === null ? "" : ahead === 0 ? " \xB7 next" : ` \xB7 ${ahead} ahead`;
+    return `${base} \u29D7 ${w.key || "group"}${place}`;
+  }
+  const waiters = waiterIndex.get(r.id);
+  if (waiters && waiters.length > 0 && !isTerminal(r.status)) {
+    return `${base} \u23F3${waiters.length}`;
+  }
+  return base;
 }
 function runToInterval(r) {
   const start = Date.parse(r.started);
@@ -93,13 +245,23 @@ function computeConnectors() {
   const out = [];
   for (const r of runsById.values()) {
     const w = r.waiting_on;
-    if (w && w.kind === "lock" && w.holder_run_id && !isTerminal(r.status)) {
+    if (!w || isTerminal(r.status)) continue;
+    if (w.kind === "lock" && w.holder_run_id) {
       out.push({
         fromIntervalId: r.id,
         toIntervalId: w.holder_run_id,
         kind: "lock",
         label: w.key || "lock"
       });
+    } else if (w.kind === "group" && w.holder_run_ids) {
+      for (const holder of w.holder_run_ids) {
+        out.push({
+          fromIntervalId: r.id,
+          toIntervalId: holder,
+          kind: "group",
+          label: w.key || "group"
+        });
+      }
     }
   }
   return out;
@@ -146,6 +308,19 @@ function appendWaitingRows(frag, r) {
     }
     return;
   }
+  if (w.kind === "group") {
+    const ahead = typeof w.position === "number" && w.position > 0 ? w.position - 1 : null;
+    const place = ahead === null ? "" : ahead === 0 ? " \u2014 next in line" : ` \u2014 ${ahead} ahead`;
+    frag.appendChild(ttRow("waiting", `for a slot in group ${w.key || "?"}${place}`));
+    for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
+      const hr = runsById.get(holder);
+      frag.appendChild(ttRow("held by", shortRunId(holder) + (hr ? ` (${hr.hook_id})` : "")));
+    }
+    if ((w.holder_run_ids || []).length > 3) {
+      frag.appendChild(ttRow("", `\u2026and ${w.holder_run_ids.length - 3} more`));
+    }
+    return;
+  }
   const remaining = w.until && tsPresent(w.until) ? Math.max(0, Date.parse(w.until) - Date.now()) : null;
   let line = w.reason || "declared wait";
   if (remaining !== null) line += ` \u2014 ${fmtDuration(remaining)} left`;
@@ -174,10 +349,13 @@ function runTooltip(r) {
   frag.appendChild(ttRow("ran", runDuration(r) || "\u2014"));
   if (r.error) frag.appendChild(ttRow("error", trimText(r.error, 160)));
   appendWaitingRows(frag, r);
-  if (r.waiters && r.waiters.length > 0) {
-    frag.appendChild(
-      ttRow("holds", `${r.waiters.length} run(s) waiting on this run's lock(s)`)
-    );
+  const held = waiterIndex.get(r.id);
+  if (held && held.length > 0 && !isTerminal(r.status)) {
+    frag.appendChild(ttRow("holds", `${held.length} run(s) waiting on this run`));
+    for (const wr of held.slice(0, 3)) {
+      frag.appendChild(ttRow("", `${shortRunId(wr.runId)} (${wr.hookId}) \u2192 ${wr.what}`));
+    }
+    if (held.length > 3) frag.appendChild(ttRow("", `\u2026and ${held.length - 3} more`));
   }
   return frag;
 }
@@ -213,6 +391,8 @@ function initTimeline() {
     if (hit.type === "lane") return laneTooltip(hit.lane);
     return null;
   };
+  const supportsFreshness = typeof tl.markFresh === "function";
+  if (supportsFreshness) tl.staleAfterMs = STALE_AFTER_MS;
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
     void showRun(detail.interval.id);
@@ -234,7 +414,7 @@ function initTimeline() {
       }
       let cursorMs = Date.parse(cursor);
       for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
-        const rows = await fetchJSON(
+        const rows = await fetchJSONBounded(
           `/runs?before=${encodeURIComponent(cursor)}&max=${BACKFILL_MAX}`
         );
         if (rows.length === 0) return { exhausted: true };
@@ -260,64 +440,81 @@ function initTimeline() {
   };
   void (async () => {
     try {
-      const cfg = await fetchJSON("/config");
+      const cfg = await fetchJSONBounded("/config");
       if (cfg && typeof cfg.run_retention === "string" && cfg.run_retention !== "") {
         tl.setAttribute("history-end-text", `history ends here \u2014 retention ${cfg.run_retention}`);
       }
     } catch {
     }
   })();
-  let pollInFlight = false;
-  const pollRuns = async () => {
-    if (pollInFlight) return;
-    pollInFlight = true;
-    try {
-      const page = await fetchJSON(`/runs?max=${POLL_MAX}`);
-      const now = Date.now();
-      ingestRuns(page);
-      if (maybePrune(tl, now)) return;
-      const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
-      const data = {
-        intervals: page.map(runToInterval),
-        coverage: { start: pageOldestMs, end: now }
-      };
-      if (!seeded) {
-        seeded = true;
-        laneOrderKey = "";
-        tl.setData(data);
-        armBackfill();
-      } else {
-        tl.mergeData(data);
-      }
-      syncLanes(tl);
-      tl.setConnectors(computeConnectors());
-    } catch (e) {
-      console.error("timeline: poll failed:", e);
-    } finally {
-      pollInFlight = false;
+  const applyPage = (page) => {
+    const now = Date.now();
+    rebuildWaiterIndex();
+    if (maybePrune(tl, now)) return;
+    const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
+    const data = {
+      intervals: page.map(runToInterval),
+      coverage: { start: pageOldestMs, end: now }
+    };
+    if (!seeded) {
+      seeded = true;
+      laneOrderKey = "";
+      tl.setData(data);
+      armBackfill();
+    } else {
+      tl.mergeData(data);
+    }
+    syncLanes(tl);
+    tl.setConnectors(computeConnectors());
+  };
+  const applyDelta = (r, prev) => {
+    if (!seeded) {
+      applyPage([...runsById.values()]);
+      return;
+    }
+    const affected = /* @__PURE__ */ new Set([r.id]);
+    for (const holder of holderIdsOf(prev)) affected.add(holder);
+    for (const holder of holderIdsOf(r)) affected.add(holder);
+    rebuildWaiterIndex();
+    const intervals = [...affected].map((id) => runsById.get(id)).filter((x) => x !== void 0).map(runToInterval);
+    tl.mergeData({ intervals });
+    syncLanes(tl);
+    tl.setConnectors(computeConnectors());
+  };
+  const rebuildAll = () => {
+    oldestStartedRaw = null;
+    oldestStartedMs = Infinity;
+    for (const r of runsById.values()) noteOldest(r);
+    laneOrderKey = "";
+    const lanes = computeLanes();
+    laneOrderKey = lanes.map((l) => l.id).join("\n");
+    tl.setData({
+      lanes,
+      intervals: [...runsById.values()].map(runToInterval),
+      connectors: computeConnectors(),
+      coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 6e4, end: Date.now() }
+    });
+  };
+  chart = {
+    onPage: applyPage,
+    onDelta: applyDelta,
+    rebuild: rebuildAll,
+    markFresh: () => {
+      if (supportsFreshness) tl.markFresh();
     }
   };
+  if (runsById.size > 0) applyPage([...runsById.values()]);
   const pollHooks = async () => {
     try {
-      const hooks = await fetchJSON("/hooks");
+      const hooks = await fetchJSONBounded("/hooks");
       hookMeta = new Map(hooks.map((h) => [h.id, h]));
       syncLanes(tl);
     } catch (e) {
       console.error("timeline: hooks poll failed:", e);
     }
   };
-  const visible = () => !document.hidden && currentHookId() === null;
-  const tick = () => {
-    if (visible()) void pollRuns();
-  };
-  setInterval(tick, TIMELINE_POLL_MS);
-  setInterval(() => {
-    if (visible()) void pollHooks();
-  }, HOOKS_POLL_MS);
-  document.addEventListener("visibilitychange", tick);
-  window.addEventListener("hashchange", tick);
+  setInterval(() => void pollHooks(), HOOKS_POLL_MS);
   void pollHooks();
-  tick();
 }
 function syncLanes(tl) {
   const lanes = computeLanes();
@@ -328,6 +525,7 @@ function syncLanes(tl) {
 }
 function maybePrune(tl, now) {
   if (runsById.size <= PRUNE_AT) return false;
+  rebuildWaiterIndex();
   const keep = [...runsById.values()].sort((a, b) => Date.parse(b.started) - Date.parse(a.started)).slice(0, PRUNE_TO);
   runsById.clear();
   oldestStartedRaw = null;
@@ -393,6 +591,15 @@ async function loadComponentForever() {
 }
 async function boot() {
   initTableToggle();
+  void (async () => {
+    try {
+      ingestPage(await fetchJSONBounded(`/runs?max=${RESYNC_MAX}`));
+    } catch (e) {
+      console.error("timeline: initial seed fetch failed (the stream snapshot covers it):", e);
+    }
+  })();
+  openStream();
+  startFeedSupervisor();
   await loadComponentForever();
   document.getElementById("timeline-loading")?.remove();
   initTimeline();

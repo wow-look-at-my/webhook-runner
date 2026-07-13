@@ -192,6 +192,12 @@ type Run struct {
 	// read without the mutex. See Tracker.SetOnFinish.
 	onFinish func(RunState)
 
+	// onChange is copied from the tracker at New and immutable after —
+	// read without the mutex. See Tracker.SetOnChange. Invoked (with an
+	// output-stripped snapshot, outside the run mutex) after every
+	// observable lifecycle mutation; nil disables notifications.
+	onChange func(RunState)
+
 	// touch resets the runner's idle watchdog for this run. The runner
 	// registers it when it arms the watchdog (container launch); the state
 	// API's declared waits and blocking lock acquires call it (via
@@ -245,6 +251,17 @@ func (r *Run) Error() string {
 // status.
 func (r *Run) Done() <-chan struct{} { return r.done }
 
+// notifyChange invokes the tracker's OnChange observer, when one is set,
+// with an output-stripped snapshot (Snapshot(0) — the same shape /runs list
+// entries have). Callers invoke it OUTSIDE the run mutex, only after an
+// actual state mutation: no-op calls (a stale ClearWaitingOn, a SetTitle on
+// a finished run) must not emit.
+func (r *Run) notifyChange() {
+	if r.onChange != nil {
+		r.onChange(r.Snapshot(0))
+	}
+}
+
 // RequestCancel asks the runner to kill this run's container. It only
 // signals; the run reaches StatusCancelled when the runner observes the
 // signal and the container is actually gone. Calling it on a finished
@@ -265,6 +282,7 @@ func (r *Run) RequestCancelWithReason(reason string) {
 	r.mu.Unlock()
 	if !already {
 		close(r.cancel)
+		r.notifyChange()
 	}
 }
 
@@ -347,6 +365,11 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	if r.onFinish != nil {
 		r.onFinish(r.Snapshot(-1))
 	}
+	// Terminal notification AFTER the onFinish seam: by the time stream
+	// consumers hear it, the run store write has already been attempted, so
+	// a client reacting to the delta (e.g. fetching /runs/{id}) sees the
+	// persisted state too.
+	r.notifyChange()
 }
 
 // SetTitle records the run's friendly display title (trimmed; the empty
@@ -362,11 +385,13 @@ func (r *Run) SetTitle(title string) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if !r.state.Finished.IsZero() {
+		r.mu.Unlock()
 		return
 	}
 	r.state.Title = title
+	r.mu.Unlock()
+	r.notifyChange()
 }
 
 // Title returns the run's friendly display title, "" when untitled.
@@ -382,10 +407,15 @@ func (r *Run) Title() string {
 // differentiate "queued" from "spawned".
 func (r *Run) SetRunning() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	changed := false
 	if r.state.Status == StatusPending {
 		r.state.Status = StatusRunning
 		r.state.StartedAt = time.Now().UTC()
+		changed = true
+	}
+	r.mu.Unlock()
+	if changed {
+		r.notifyChange()
 	}
 }
 
@@ -429,13 +459,16 @@ func (r *Run) TouchActivity() {
 // run is never marked (returns 0, which ClearWaitingOn ignores).
 func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if !r.state.Finished.IsZero() {
+		r.mu.Unlock()
 		return 0
 	}
 	r.waitSeq++
+	seq := r.waitSeq
 	r.state.WaitingOn = &w
-	return r.waitSeq
+	r.mu.Unlock()
+	r.notifyChange()
+	return seq
 }
 
 // ClearWaitingOn clears the pause recorded by the SetWaitingOn that
@@ -444,11 +477,13 @@ func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
 // no-op — Finish already cleared the field.
 func (r *Run) ClearWaitingOn(seq uint64) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if seq == 0 || seq != r.waitSeq {
+	if seq == 0 || seq != r.waitSeq || r.state.WaitingOn == nil {
+		r.mu.Unlock()
 		return
 	}
 	r.state.WaitingOn = nil
+	r.mu.Unlock()
+	r.notifyChange()
 }
 
 // LastLines returns up to n trailing lines of output.
@@ -475,6 +510,7 @@ type Tracker struct {
 	byHook    map[string][]*Run
 	maxByHook int
 	onFinish  func(RunState)
+	onChange  func(RunState)
 }
 
 // NewTracker returns an empty tracker.
@@ -497,6 +533,22 @@ func (t *Tracker) SetOnFinish(fn func(RunState)) {
 	t.mu.Unlock()
 }
 
+// SetOnChange registers fn to be invoked after every observable lifecycle
+// mutation of runs created AFTER the call — creation, pending→running,
+// title set, waiting_on set/cleared, cancel requested, and the terminal
+// transition (after OnFinish) — each time with an output-stripped snapshot,
+// synchronously on the mutating goroutine. This is the live-stream seam
+// (the /runs/stream fan-out) without the runs package knowing about HTTP;
+// like OnFinish, set it before the first New. fn must be fast and must
+// never block: it runs on runner/state-API goroutines (the server's stream
+// hub only does a non-blocking channel send). nil disables notifications
+// (the events.Recorder nil-safety convention).
+func (t *Tracker) SetOnChange(fn func(RunState)) {
+	t.mu.Lock()
+	t.onChange = fn
+	t.mu.Unlock()
+}
+
 // New starts tracking a fresh run for the given hook ID. The run begins
 // in StatusPending; call SetRunning when the container actually starts.
 func (t *Tracker) New(hookID string) *Run {
@@ -512,6 +564,7 @@ func (t *Tracker) New(hookID string) *Run {
 	}
 	t.mu.Lock()
 	r.onFinish = t.onFinish
+	r.onChange = t.onChange
 	t.byID[r.state.ID] = r
 	t.byHook[hookID] = append(t.byHook[hookID], r)
 	if extra := len(t.byHook[hookID]) - t.maxByHook; extra > 0 {
@@ -521,6 +574,9 @@ func (t *Tracker) New(hookID string) *Run {
 		t.byHook[hookID] = append(t.byHook[hookID][:0], t.byHook[hookID][extra:]...)
 	}
 	t.mu.Unlock()
+	// The creation notification: a fresh pending run is a lifecycle event
+	// too (the dashboard shows queued runs the moment they are accepted).
+	r.notifyChange()
 	return r
 }
 

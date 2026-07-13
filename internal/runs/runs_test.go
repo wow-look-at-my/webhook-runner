@@ -409,3 +409,63 @@ func TestWaitingOnGroupFieldsJSONAndCopy(t *testing.T) {
 	assert.NotContains(t, string(b2), "holder_run_ids")
 	assert.NotContains(t, string(b2), "position")
 }
+
+// The OnChange seam: one notification per observable mutation, in order,
+// with output stripped; no-op mutations stay silent; nil-safe.
+func TestTrackerOnChangeNotifications(t *testing.T) {
+	tr := NewTracker()
+	var got []RunState
+	tr.SetOnChange(func(st RunState) { got = append(got, st) })
+
+	r := tr.New("h") // 1: created (pending)
+	r.AppendOutput("line 1")
+	r.SetRunning()                                                       // 2: running
+	r.SetRunning()                                                       // no-op: already running
+	seq := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "zzz"}) // 3
+	r.ClearWaitingOn(0)                                                  // no-op: zero token
+	r.ClearWaitingOn(seq)                                                // 4: cleared
+	r.ClearWaitingOn(seq)                                                // no-op: already cleared
+	r.SetTitle("")                                                       // no-op: empty
+	r.SetTitle("owner/repo#1")                                           // 5: titled
+	r.RequestCancel()                                                    // 6: cancel requested
+	r.RequestCancel()                                                    // no-op: second request
+	r.Finish(StatusCancelled, -1, "cancelled")                           // 7: terminal
+	r.Finish(StatusSuccess, 0, "")                                       // no-op: already finished
+	r.SetTitle("late")                                                   // no-op: finished
+
+	require.Len(t, got, 7)
+	assert.Equal(t, StatusPending, got[0].Status)
+	assert.Equal(t, StatusRunning, got[1].Status)
+	require.NotNil(t, got[2].WaitingOn)
+	assert.Equal(t, "zzz", got[2].WaitingOn.Reason)
+	assert.Nil(t, got[3].WaitingOn)
+	assert.Equal(t, "owner/repo#1", got[4].Title)
+	assert.True(t, got[5].CancelRequested)
+	assert.Equal(t, StatusCancelled, got[6].Status)
+	assert.False(t, got[6].Finished.IsZero())
+	for i, st := range got {
+		assert.Empty(t, st.Output, "notification %d must strip output", i)
+		assert.Equal(t, r.ID(), st.ID)
+	}
+
+	// nil observer (the default): everything above is a no-op, not a panic.
+	tr2 := NewTracker()
+	r2 := tr2.New("h")
+	r2.SetRunning()
+	r2.Finish(StatusSuccess, 0, "")
+}
+
+// The terminal notification fires AFTER the OnFinish persistence seam.
+func TestOnChangeTerminalAfterOnFinish(t *testing.T) {
+	tr := NewTracker()
+	var order []string
+	tr.SetOnFinish(func(RunState) { order = append(order, "finish") })
+	tr.SetOnChange(func(st RunState) {
+		if st.Status.Terminal() {
+			order = append(order, "change")
+		}
+	})
+	r := tr.New("h")
+	r.Finish(StatusSuccess, 0, "")
+	assert.Equal(t, []string{"finish", "change"}, order)
+}
