@@ -529,7 +529,7 @@ func TestConfigEndpoint(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&cfg))
 	assert.Equal(t, "git@github.com:wow-look-at-my/webhooks.git", cfg["hooks_repo"])
 	assert.Equal(t, "https://hooks.example.com", cfg["hook_base_url"])
-	assert.Equal(t, "my-secret", cfg["reload_secret"])
+	assert.Equal(t, "true", cfg["reload_secret_configured"]) // value never returned
 }
 
 func TestConfigEndpointEmpty(t *testing.T) {
@@ -745,4 +745,29 @@ func TestTriggerAPIKeySecretsDecryptFailureFailsClosed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	hook(s).ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// The reload secret's value must NEVER appear on /config — only the fact
+// that one is configured (the admin surface returns secret metadata, never
+// secret material).
+func TestConfigNeverLeaksReloadSecret(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(Options{
+		Registry:     hooks.NewRegistry(),
+		Tracker:      runs.NewTracker(),
+		Logger:       logger,
+		ReloadSecret: "super-secret-value-1234",
+	})
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
+	require.Equal(t, 200, rec.Code)
+	body := rec.Body.String()
+	assert.NotContains(t, body, "super-secret-value-1234")
+	assert.Contains(t, body, `"reload_secret_configured": "true"`)
+
+	// Unset: the flag is absent entirely.
+	s2 := New(Options{Registry: hooks.NewRegistry(), Tracker: runs.NewTracker(), Logger: logger})
+	rec2 := httptest.NewRecorder()
+	admin(s2).ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/config", nil))
+	assert.NotContains(t, rec2.Body.String(), "reload_secret")
 }

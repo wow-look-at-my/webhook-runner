@@ -1250,10 +1250,15 @@ async function loadConfig() {
     }
 
     const dl = document.createElement("dl");
+    // The secret VALUE never leaves the server (see handleConfig); the
+    // setup recipe shows a placeholder — the operator pastes the value
+    // from the server environment (WEBHOOK_RUNNER_HOOKS_REPO_SECRET).
     const fields = [
       ["Payload URL", reloadURL],
       ["Content type", "application/json"],
-      ["Secret", cfg.reload_secret || "(not configured)"],
+      ["Secret", cfg.reload_secret_configured
+        ? "<the value of WEBHOOK_RUNNER_HOOKS_REPO_SECRET on the runner host>"
+        : "(not configured)"],
       ["Events", "Just the push event"],
     ];
     for (const [k, v] of fields) {

@@ -570,8 +570,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	if s.hookBaseURL != "" {
 		cfg["hook_base_url"] = s.hookBaseURL
 	}
+	// The reload secret's VALUE is never returned — the admin surface's
+	// standing rule is metadata about secrets, never secret material
+	// (/hooks/{id} masks api_key the same way). The dashboard only needs
+	// to know whether one is configured to render its setup instructions;
+	// the operator holds the value in the server environment.
 	if s.reloadSecret != "" {
-		cfg["reload_secret"] = s.reloadSecret
+		cfg["reload_secret_configured"] = "true"
 	}
 	// The persisted-history window, compacted like stats.retention ("48h") —
 	// how far back /runs?before= paging can ever reach, so a client can mark
