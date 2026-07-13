@@ -440,9 +440,13 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 	var orphanMu sync.Mutex
 	announced := map[string]struct{}{}
 	return func() {
-		loaded, errs := hooks.LoadDir(hooksDir)
+		// Layout detection runs on EVERY reload: a hooks-repo pull can
+		// restructure the tree (legacy <-> src), and the load must follow
+		// it without a restart.
+		layout := hooks.DetectLayout(hooksDir)
+		loaded, errs := hooks.LoadLayout(layout)
 
-		cfg, cerr := concurrency.Load(hooksDir)
+		cfg, cerr := concurrency.LoadFile(layout.ConcurrencyPath())
 		if cerr != nil {
 			// An unparseable concurrency.json means we can't trust any
 			// group reference; treat the set as empty so referencing hooks
@@ -485,7 +489,7 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 
 		announceOrphanedOverrides(loaded, cfg, ov, &orphanMu, announced, logger, rec)
 
-		logger.Info("hooks reloaded", "count", len(loaded), "concurrency_groups", len(cfg.Groups), "scheduled", len(schedules))
+		logger.Info("hooks reloaded", "count", len(loaded), "layout", layout.String(), "concurrency_groups", len(cfg.Groups), "scheduled", len(schedules))
 		rec.Record("hooks.reloaded",
 			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d scheduled, %d error(s)", len(loaded), len(cfg.Groups), len(schedules), len(errs)),
 			nil)

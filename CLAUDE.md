@@ -197,6 +197,38 @@ The companion repo is `wow-look-at-my/webhooks`.
   Decrypt failures fail the run (status `error`) before the container
   starts — never run a secrets-bearing hook without its secrets. The e2e
   fixture key at `e2e/age-test-key.txt` is intentionally committed.
+- Hooks trees have TWO layouts (internal/hooks/layout.go), detected by ONE
+  rule — `<root>/src/hooks/` exists ⇒ src layout, else legacy — applied
+  identically in serve/validate/test because they all load through
+  hooks.LoadDir/LoadLayout. Under the src layout: hooks at
+  src/hooks/<id>/, shared dependency-free code at src/sdk/ (imported
+  relatively — ../../sdk/...), concurrency.json at
+  src/config/concurrency.json (concurrency.LoadFile at the
+  layout-resolved path; Load(root) is the legacy-only shorthand), and the
+  docker build runs with CONTEXT src/ + the hook's own Dockerfile via -f
+  (tree-mirror COPY convention: `COPY sdk/ /app/sdk/` +
+  `COPY hooks/<id>/ /app/hooks/<id>/` + `WORKDIR /app/hooks/<id>` so the
+  same relative import resolves in-repo and in-image). Layouts are NEVER
+  mixed — root-level hook dirs under the src layout are skipped with a
+  loud typed error (IgnoredLegacyDirError) naming each. Content hashing:
+  legacy stays BYTE-IDENTICAL to the historical algorithm (golden-hash
+  test — never change it, or every deployed hook re-tags on upgrade); the
+  src layout hashes src/hooks/<id>/ AND src/sdk/ (src-relative path +
+  mode + bytes, never sibling hooks), so an sdk edit re-tags every
+  src-layout hook while hook A's edit never re-tags hook B; the COPY
+  surface is therefore sdk/ + own hook dir ONLY (anything else in the
+  context builds fine but never re-tags — undefined staleness, document
+  don't debug). ZERO hooks loaded is a LOUD, typed failure
+  (ZeroHooksError) in BOTH layouts: validate exits non-zero, serve logs +
+  records it via the normal load-error event path every reload — the
+  guard that stops a premature repo restructure from taking the fleet
+  offline behind green CI. Layout detection re-runs on EVERY reload (a
+  hooks-repo pull can restructure the tree); the watcher additionally
+  watches src/, src/hooks/*, and src/config under the src layout (not
+  src/sdk — sdk edits matter at image-build time, not reload time).
+  SEQUENCING: the runner with this support deploys BEFORE the webhooks
+  repo's src/ restructure lands — an old binary scanning a new tree loads
+  zero hooks (now loud, still offline).
 - Hook code is never mounted — it is immutable per run. Every hook ships
   a `Dockerfile` next to hook.json (the loader rejects hooks without one)
   and runs an image built lazily from the hook directory
