@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -65,7 +65,7 @@ The server listens on two TCP ports plus a Unix socket:
   labels that window and `stats.skipped` is the skip bucket — see the
   skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s; fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
+  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/images` (per-hook image state), the operator kill
   switch (`POST /hooks/{id}/disable|enable`,
@@ -510,6 +510,35 @@ The companion repo is `wow-look-at-my/webhooks`.
   `Shutdown` — Shutdown drains in-flight handlers, and stream handlers
   only return when their subscription closes or their client hangs up.
   `streamHeartbeat` is a package var so tests can shrink it.
+  The SAME connection multiplexes the dashboard's section-invalidation
+  push (`event: changed`, `{"sections":[...]}` — "changed → refetch
+  once", never payloads): per-subscriber it is a bounded dirty SET + a
+  1-slot wake channel, NOT the delta queue, so signal storms coalesce
+  into one drain and signals can never overflow/drop/block anyone — only
+  run deltas drop a slow client, and a reconnecting client refetches
+  every section on open so no signal is load-bearing. Three seams feed
+  `streamHub.signal`, wired in `server.New`: (1) the tracker OnChange
+  wrapper also dirties "concurrency" (group active/waiting/holders move
+  exactly with run lifecycle/waiting_on — a deliberate superset); (2)
+  `events.Recorder.SetOnRecord` → `sectionsForEvent(kind)` (every event
+  dirties "events"; hooks.reloaded → hooks+images+concurrency,
+  hook.load_error/disabled/enabled → hooks, image.* → images,
+  concurrency.* → concurrency; rejection noise like hook.denied
+  deliberately does NOT dirty the roster); (3) `kv.Store.SetOnMutate`
+  (successful entry mutations + reclaiming sweeps; locks are not entries
+  and never signal; a lazily-expired entry only signals at its sweep, so
+  /kv views can lag expiry by ≤1 sweep interval). All three callbacks run
+  synchronously on mutating goroutines under their owners' mutexes —
+  keep them trivial (the hub only flips bounded dirty bits), never let
+  them call back into their owner. Client side: timeline.ts re-publishes
+  `changed` as `whr:sections-changed` (and dashboard.js's /hooks fetch
+  flows back as `whr:hooks-data` — timeline never fetches /hooks itself);
+  dashboard.js's section feed refetches named sections with leading-edge
+  + 1s trailing coalescing, single-flight, bounded fetches
+  (AbortSignal.timeout), full-refresh on every stream (re)open, and a
+  fixed 5s full-refresh fallback ONLY while the stream is down — zero
+  polling while it is live (proven by the node harness in
+  internal/server/dashboard/testjs/, run by CI).
 - The per-hook KV store (`internal/kv`, the state socket) also persists to
   disk, under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
   place as the deploy key and `runs.db`) as one `kv/<namespace>.json` per

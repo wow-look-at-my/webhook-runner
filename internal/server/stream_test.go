@@ -73,12 +73,14 @@ func nextEvent(t *testing.T, ch <-chan sseEvent, what string) sseEvent {
 	}
 }
 
-// nextRunEvent skips heartbeats and returns the next `run` delta.
+// nextRunEvent skips heartbeats and section-changed signals (run mutations
+// legitimately interleave `changed` events — the concurrency section rides
+// the same lifecycle seam) and returns the next `run` delta.
 func nextRunEvent(t *testing.T, ch <-chan sseEvent, what string) runs.RunState {
 	t.Helper()
 	for {
 		ev := nextEvent(t, ch, what)
-		if ev.name == "hb" {
+		if ev.name == "hb" || ev.name == "changed" {
 			continue
 		}
 		require.Equal(t, "run", ev.name, "expected a run delta for %s, got %q (%s)", what, ev.name, ev.data)
