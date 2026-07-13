@@ -492,8 +492,8 @@ timeline-view {
   --timeline-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --timeline-tooltip-bg: rgba(22, 27, 34, 0.97);
   --timeline-tooltip-fg: var(--fg);
-  height: 420px;
-  min-height: 240px;
+  height: 75vh;
+  min-height: 320px;
   border: 1px solid var(--border);
   border-radius: 6px;
 }
