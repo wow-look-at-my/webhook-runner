@@ -95,7 +95,11 @@ The server listens on two TCP ports plus a Unix socket:
   bytes can't inject markup). The overview's PRIMARY runs view is a
   realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
   hook, hue per hook): queue wait as a dim lead-in segment, declared
-  waits/blocked locks hatched (connector to the lock holder), failures
+  waits/blocked locks/queued group acquires hatched (connectors from the
+  waiter to every current holder; queued labels carry the position, holder
+  labels a waiter-count badge — derived CLIENT-side by inverting
+  waiting_on, because stream deltas never ship the server's waiters
+  field), failures
   emphasized, cancelled hollow, instant runs as pips; wheel/drag
   pan + zoom, and panning into the past pages `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).
