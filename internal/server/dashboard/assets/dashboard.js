@@ -98,7 +98,9 @@ function runDuration(r) {
 // reason", remaining time computed client-side from `until` so it counts
 // down on the poll cadence (clamped to 0s when it just elapsed). Kind
 // "lock" is a blocked acquire — it names the contended key and exactly who
-// holds it (run + hook).
+// holds it (run + hook). Kind "group" is a queued concurrency-group
+// acquire — it names the group, the run's place in line, and the holders.
+// Unknown future kinds degrade to their reason/kind text, never to silence.
 function waitNote(r) {
   const w = r.waiting_on;
   if (!w) return null;
@@ -109,29 +111,100 @@ function waitNote(r) {
     return el("span", { class: "wait-note", title: w.holder_run_id || "" },
       `waiting on lock ${w.key} held by ${holder}`);
   }
-  if (!tsPresent(w.until)) return null;
-  const left = new Date(w.until) - Date.now();
-  const t = left > 0 ? fmtDuration(left) : "0s";
+  if (w.kind === "group") {
+    const holders = w.holder_run_ids || [];
+    let text = `queued for a slot in group ${w.key || "?"}`;
+    if (w.position > 0) text += w.position === 1 ? " — next in line" : ` — ${w.position - 1} ahead`;
+    if (holders.length) text += `, held by ${holders.map(shortId).join(", ")}`;
+    return el("span", { class: "wait-note", title: holders.join("\n") }, text);
+  }
+  if (w.kind === "wait") {
+    if (!tsPresent(w.until)) return null;
+    const left = new Date(w.until) - Date.now();
+    const t = left > 0 ? fmtDuration(left) : "0s";
+    return el("span", { class: "wait-note" },
+      `waiting ${t}${w.reason ? ": " + w.reason : ""}`);
+  }
   return el("span", { class: "wait-note" },
-    `waiting ${t}${w.reason ? ": " + w.reason : ""}`);
+    `waiting${w.reason ? ": " + w.reason : w.kind ? " (" + w.kind + ")" : ""}`);
 }
 
-// The holder-side note: runs currently blocked on locks THIS run holds
-// (r.waiters, derived server-side). The tooltip lists exactly who waits on
-// which key.
+// The modal's "Waiting" row: the same facts as waitNote but with the
+// holder run ids as CLICKABLE run links (jumping the modal to the holder),
+// which a table-row note can't safely nest inside its row click handler.
+function waitDetail(r) {
+  const w = r.waiting_on;
+  if (!w) return null;
+  const frag = document.createDocumentFragment();
+  const linkList = (ids) => {
+    ids.forEach((id, i) => {
+      if (i > 0) frag.appendChild(document.createTextNode(", "));
+      frag.appendChild(runLink(id));
+    });
+  };
+  if (w.kind === "lock") {
+    frag.appendChild(document.createTextNode(`on lock ${w.key || "?"} held by `));
+    if (w.holder_run_id) {
+      linkList([w.holder_run_id]);
+      if (w.holder_hook_id) frag.appendChild(document.createTextNode(` (${w.holder_hook_id})`));
+    } else {
+      frag.appendChild(document.createTextNode("unknown"));
+    }
+    return frag;
+  }
+  if (w.kind === "group") {
+    let lead = `for a slot in group ${w.key || "?"}`;
+    if (w.position > 0) lead += w.position === 1 ? " — next in line" : ` — ${w.position - 1} ahead`;
+    const holders = w.holder_run_ids || [];
+    frag.appendChild(document.createTextNode(lead + (holders.length ? ", held by " : "")));
+    linkList(holders);
+    return frag;
+  }
+  const note = waitNote(r);
+  if (!note) return null;
+  frag.appendChild(note);
+  return frag;
+}
+
+// The holder-side note: runs currently blocked on resources THIS run holds
+// (r.waiters, derived server-side): cooperative locks (key "k") and
+// concurrency-group slots (key "group:g"). The tooltip lists exactly who
+// waits on what.
 function waitersNote(r) {
   const ws = r.waiters;
   if (!ws || !ws.length) return null;
   return el("span", { class: "wait-note", title: ws.map(waiterText).join("\n") },
-    `${ws.length} waiting on this run's lock${ws.length > 1 ? "s" : ""}`);
+    `${ws.length} run${ws.length > 1 ? "s" : ""} waiting on this run`);
+}
+
+// The modal's "Held up by this run" row: each waiter a clickable run link
+// with its hook and what it waits for.
+function waitersDetail(r) {
+  const ws = r.waiters;
+  if (!ws || !ws.length) return null;
+  const frag = document.createDocumentFragment();
+  ws.forEach((x, i) => {
+    if (i > 0) frag.appendChild(document.createTextNode("; "));
+    frag.appendChild(runLink(x.run_id));
+    frag.appendChild(document.createTextNode(` (${x.hook_id}) → ${waiterWants(x)}`));
+  });
+  return frag;
 }
 
 function shortId(id) {
   return id && id.length > 10 ? id.slice(0, 10) + "…" : id || "";
 }
 
+// What a waiter entry waits FOR: attachWaiters marks group waits with a
+// "group:" key prefix; anything else is a cooperative lock key.
+function waiterWants(x) {
+  if (!x.key) return "this run";
+  if (x.key.startsWith("group:")) return `a slot in group ${x.key.slice(6)}`;
+  return `lock ${x.key}`;
+}
+
 function waiterText(x) {
-  return `${shortId(x.run_id)} (${x.hook_id})${x.key ? ` → lock ${x.key}` : ""}`;
+  return `${shortId(x.run_id)} (${x.hook_id}) → ${waiterWants(x)}`;
 }
 
 // --- Views: the global overview vs the per-app (per-hook) drill-down ------
@@ -914,54 +987,104 @@ function runLink(id) {
   return a;
 }
 
+// --- Run-detail modal: live view of one run -------------------------------
+//
+// The modal is LIVE while open: a fixed 3s poll of /runs/{id} re-renders
+// meta and output in place — no close/reopen to see a status change, a new
+// output line, or a cancel taking effect. The poll is deliberately simple
+// (fixed cadence, no backoff, structurally cannot stop itself): it runs
+// whenever the dialog is open for a non-terminal run and stops only when
+// the dialog closes or the run reaches a terminal status (whose render IS
+// the final state — a terminal run never changes again). A later PR
+// upgrades the refresh trigger to server-push deltas (/runs/stream);
+// polling stays as its fallback.
+
+const TERMINAL_RUN_STATUSES = ["success", "failure", "timeout", "error", "cancelled", "skipped"];
+const RUN_DETAIL_POLL_MS = 3000;
+
+let currentRunId = null; // run shown in the open modal, null when closed
+let currentRunView = null; // the user's raw/conversation choice, null = auto
+let currentRunTerminal = false; // last rendered status was terminal
+
 async function showRun(id) {
+  currentRunId = id;
+  currentRunView = null;
+  currentRunTerminal = false;
+  await refreshRunDetail(true);
+}
+
+// Re-fetches the modal's run and re-renders in place. openDialog is true on
+// the initial open only (shows the dialog, resets output scroll); refreshes
+// preserve scroll position and the raw/conversation toggle choice.
+async function refreshRunDetail(openDialog) {
+  const id = currentRunId;
+  if (!id) return;
   try {
     const r = await fetchJSON(`/runs/${id}`);
-    // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
-    // generic "Run" word otherwise; the full id always sits beside it in
-    // the (small, muted) code chip.
-    document.getElementById("run-detail-name").textContent = r.title || "Run";
-    document.getElementById("run-detail-id").textContent = r.id;
-    const dl = document.getElementById("run-detail-meta");
-    dl.innerHTML = "";
-    // Queued→Started is the concurrency-group wait; Started→Finished is the
-    // actual container time — kept separate so a long queue never reads as
-    // a slow run.
-    const rows = [
-      ["Hook", r.hook_id],
-      ["Status", r.status],
-      ["Exit code", String(r.exit_code)],
-      ["Queued", fmtTime(r.started)],
-      ["Started", tsPresent(r.started_at) ? fmtTime(r.started_at) : "—"],
-      ["Finished", tsPresent(r.finished) ? fmtTime(r.finished) : "—"],
-      ["Waited", runWaited(r)],
-      ["Duration", runDuration(r)],
-    ];
-    // A live pause gets its own row (same text as the run-row note): a
-    // declared sleep, or the lock (and holder) a blocked acquire waits on.
-    const wn = waitNote(r);
-    if (wn) rows.push(["Waiting", wn]);
-    // The holder-side view: who is blocked on locks this run holds.
-    if (r.waiters && r.waiters.length) {
-      rows.push(["Lock waiters", r.waiters.map(waiterText).join("; ")]);
-    }
-    if (r.error) rows.push(["Error", r.error]);
-    for (const [k, v] of rows) {
-      dl.appendChild(el("dt", null, k));
-      dl.appendChild(el("dd", null, v));
-    }
-    currentRunLines = r.output || [];
-    currentRunTimes = r.output_times || [];
-    const entries = currentRunLines.map((text, i) => ({ text, time: currentRunTimes[i] }));
-    currentRunTurns = parseConversation(entries);
-    document.getElementById("run-detail-view-toggle").hidden = !currentRunTurns;
-    document.getElementById("run-detail-copy").disabled = currentRunLines.length === 0;
-    renderRunOutput(currentRunTurns ? "conversation" : "raw");
-    const dlg = document.getElementById("run-detail");
-    if (!dlg.open) dlg.showModal();
+    if (currentRunId !== id) return; // modal moved on while fetching
+    renderRunDetail(r, openDialog);
   } catch (e) {
-    console.error(e);
+    // Transient failure: keep showing the last rendered state; the next
+    // poll (or delta) retries. Never blank an open modal over one error.
+    console.error("run detail refresh:", e);
   }
+}
+
+function renderRunDetail(r, openDialog) {
+  currentRunTerminal = TERMINAL_RUN_STATUSES.includes(r.status);
+  // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
+  // generic "Run" word otherwise; the full id always sits beside it in
+  // the (small, muted) code chip.
+  document.getElementById("run-detail-name").textContent = r.title || "Run";
+  document.getElementById("run-detail-id").textContent = r.id;
+  const dl = document.getElementById("run-detail-meta");
+  dl.innerHTML = "";
+  // Queued→Started is the concurrency-group wait; Started→Finished is the
+  // actual container time — kept separate so a long queue never reads as
+  // a slow run.
+  const rows = [
+    ["Hook", r.hook_id],
+    ["Status", el("span", { class: "status " + r.status }, r.status,
+      r.cancel_requested && !currentRunTerminal ? el("span", { class: "wait-note" }, "cancel requested…") : null)],
+    ["Exit code", String(r.exit_code)],
+    ["Queued", fmtTime(r.started)],
+    ["Started", tsPresent(r.started_at) ? fmtTime(r.started_at) : "—"],
+    ["Finished", tsPresent(r.finished) ? fmtTime(r.finished) : "—"],
+    ["Waited", runWaited(r)],
+    ["Duration", runDuration(r)],
+  ];
+  // A live pause gets its own row, whatever its kind: a declared sleep, a
+  // blocked lock acquire (holder linked), or a concurrency-group queue
+  // wait (position + holders linked).
+  const wd = waitDetail(r);
+  if (wd) rows.push(["Waiting", wd]);
+  // The holder-side view: who is blocked on locks or group slots this run
+  // holds, each waiter a clickable run link.
+  const wds = waitersDetail(r);
+  if (wds) rows.push(["Held up by this run", wds]);
+  if (r.error) rows.push(["Error", r.error]);
+  for (const [k, v] of rows) {
+    dl.appendChild(el("dt", null, k));
+    dl.appendChild(el("dd", null, v));
+  }
+  // Output: preserve the reading position across refreshes — restore the
+  // scroll offset, or stay pinned to the bottom when the operator was
+  // tailing the end (renderRunOutput itself resets to the top).
+  const out = document.getElementById("run-detail-output");
+  const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
+  const prevScroll = out.scrollTop;
+  currentRunLines = r.output || [];
+  currentRunTimes = r.output_times || [];
+  const entries = currentRunLines.map((text, i) => ({ text, time: currentRunTimes[i] }));
+  currentRunTurns = parseConversation(entries);
+  document.getElementById("run-detail-view-toggle").hidden = !currentRunTurns;
+  document.getElementById("run-detail-copy").disabled = currentRunLines.length === 0;
+  let view = currentRunView || (currentRunTurns ? "conversation" : "raw");
+  if (view === "conversation" && !currentRunTurns) view = "raw"; // choice kept, content can't honor it
+  renderRunOutput(view);
+  if (!openDialog) out.scrollTop = atBottom ? out.scrollHeight : prevScroll;
+  const dlg = document.getElementById("run-detail");
+  if (openDialog && !dlg.open) dlg.showModal();
 }
 
 const runDetailDialog = document.getElementById("run-detail");
@@ -972,11 +1095,29 @@ document.getElementById("run-detail-close").addEventListener("click", () => {
 runDetailDialog.addEventListener("click", (e) => {
   if (e.target === runDetailDialog) runDetailDialog.close();
 });
+// Closing the dialog (button, backdrop, Escape — all paths fire "close")
+// stops the live refresh.
+runDetailDialog.addEventListener("close", () => {
+  currentRunId = null;
+});
 // Switch between the conversation and raw-log views of the same run output.
+// The choice persists across live refreshes until the modal is reopened.
 document.getElementById("run-detail-view-toggle").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-view]");
-  if (btn) renderRunOutput(btn.dataset.view);
+  if (btn) {
+    currentRunView = btn.dataset.view;
+    renderRunOutput(btn.dataset.view);
+  }
 });
+// The live refresh loop: one fixed-cadence interval for the page's life,
+// gated on "modal open, run known, not yet rendered terminal". A terminal
+// render is final — the run cannot change — so polling stops there; errors
+// inside refreshRunDetail are caught (the loop itself can never die).
+setInterval(() => {
+  if (!currentRunId || currentRunTerminal) return;
+  if (!runDetailDialog.open) return;
+  void refreshRunDetail(false);
+}, RUN_DETAIL_POLL_MS);
 
 // The full log as plain text, each line prefixed with its timestamp when one
 // is known — the same content the raw view shows, ready to paste into a report.
