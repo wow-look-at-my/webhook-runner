@@ -356,7 +356,20 @@ The companion repo is `wow-look-at-my/webhooks`.
   fail closed). The `concurrency.Manager` holds one buffered-channel
   semaphore per group; `Acquire` captures the channel in its release closure
   so a reload that swaps a group's semaphore can't lose or double-count a
-  token. `concurrency_group` is a new hook.json field (so `Parse`'s
+  token. Alongside the semaphores the Manager keeps ADVISORY queue
+  bookkeeping keyed by group NAME (who holds slots, who waits, in order —
+  `QueueDetail`, surfaced as `/concurrency`'s `holders`/`waiting_runs` and
+  the dashboard's expandable group rows): display data only, never part of
+  gating, and name-keyed on purpose so it survives semaphore swaps (holders
+  of a retired channel stay listed until they release). `Acquire` takes the
+  run ID plus an `onQueue` callback invoked (serialized under the manager
+  mutex — keep it fast, never call back into the Manager) when the run
+  first has to wait and again on every holder/position change; the runner's
+  `groupQueueObserver` mirrors those into the run's `waiting_on` {kind
+  "group", key, holder_run_ids, position} via the SetWaitingOn seq-token
+  machinery (deduped on identical states), cleared on acquire — and
+  `attachWaiters` inverts group waits onto the HOLDERS as waiters with key
+  `group:<name>`, exactly like lock waits. `concurrency_group` is a new hook.json field (so `Parse`'s
   `DisallowUnknownFields` means old binaries reject it — same deploy-first
   rule as above), and `concurrency.json` has its own published schema.
 - Hooks AND concurrency groups AND schedules reload together through one

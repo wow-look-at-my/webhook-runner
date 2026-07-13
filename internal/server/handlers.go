@@ -365,29 +365,44 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.Run
 }
 
 // attachWaiters decorates run snapshots with the runs currently blocked on
-// cooperative locks each of them holds — the holder-side view the dashboard
-// shows ("N runs waiting on this run's locks"). DERIVED, never stored: a
-// blocked acquire stamps its own run's WaitingOn with the holder it is
-// waiting on (re-stamped as holders change), so the live tracker already
-// contains the whole graph and one pass inverts it. Waiter lists are
-// sorted for stable JSON. Terminal/persisted runs never hold locks, so
-// they simply never match.
+// resources each of them holds — the holder-side view the dashboard shows
+// ("N runs waiting on this run"). DERIVED, never stored: a blocked acquire
+// stamps its own run's WaitingOn with the holder(s) it is waiting on
+// (re-stamped as holders change), so the live tracker already contains the
+// whole graph and one pass inverts it. Two kinds contribute: a lock wait
+// names its single holder (Key = the lock key), and a concurrency-group
+// wait names every current slot holder (Key = "group:<name>", so renderers
+// can tell the two apart). Waiter lists are sorted for stable JSON.
+// Terminal/persisted runs never hold locks or slots, so they simply never
+// match.
 func (s *Server) attachWaiters(states []runs.RunState) {
 	if s.tracker == nil || len(states) == 0 {
 		return
 	}
 	var byHolder map[string][]runs.Waiter
-	for _, r := range s.tracker.ListAll(0) {
-		snap := r.Snapshot(0)
-		w := snap.WaitingOn
-		if w == nil || w.Kind != runs.WaitingOnLock || w.HolderRunID == "" {
-			continue
+	add := func(holderID string, waiter runs.Waiter) {
+		if holderID == "" {
+			return
 		}
 		if byHolder == nil {
 			byHolder = make(map[string][]runs.Waiter)
 		}
-		byHolder[w.HolderRunID] = append(byHolder[w.HolderRunID],
-			runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: w.Key})
+		byHolder[holderID] = append(byHolder[holderID], waiter)
+	}
+	for _, r := range s.tracker.ListAll(0) {
+		snap := r.Snapshot(0)
+		w := snap.WaitingOn
+		if w == nil {
+			continue
+		}
+		switch w.Kind {
+		case runs.WaitingOnLock:
+			add(w.HolderRunID, runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: w.Key})
+		case runs.WaitingOnGroup:
+			for _, h := range w.HolderRunIDs {
+				add(h, runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: groupWaiterKey(w.Key)})
+			}
+		}
 	}
 	if byHolder == nil {
 		return
@@ -533,13 +548,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // it), and every whr-hook image on disk (admin port).
 func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.runner.ImageStatus(s.registry.All()))
-}
-
-// handleConcurrency reports the live state of every declared concurrency
-// group — its limit, how many runs are active, and how many are queued
-// behind it (admin port).
-func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.concurrency.Status())
 }
 
 // handleKVStats reports per-namespace key counts and byte totals for the
