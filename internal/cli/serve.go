@@ -401,6 +401,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	logger.Info("shutting down")
+	// Refuse NEW runs immediately: a run launched by this dying process
+	// races the state-socket handover (its shim would dial a socket the
+	// next server replaces) — deliveries get a retryable 503 instead, and
+	// GitHub redelivers webhooks. In-flight runs drain via rn.Wait below.
+	rn.BeginShutdown()
 	// Disconnect /runs/stream clients FIRST: adminSrv.Shutdown waits for
 	// in-flight handlers, and a stream handler holds its response open
 	// until its subscription closes (or its client goes away).
