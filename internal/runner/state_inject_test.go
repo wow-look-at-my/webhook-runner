@@ -41,7 +41,7 @@ func TestRunnerInjectsStateEnv(t *testing.T) {
 		KVSocket: "/tmp/whr/whr-state.sock",
 		KVShim:   "/tmp/whr/whr-shim",
 	})
-	run, err := r.Start(context.Background(), stateHook(t, dir, "stateful", true), []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), stateHook(t, dir, "stateful", true), []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
@@ -69,7 +69,7 @@ func TestRunnerSkipsStateEnvWhenNotOptedIn(t *testing.T) {
 		KVSocket: "/tmp/whr/whr-state.sock",
 		KVShim:   "/tmp/whr/whr-shim",
 	})
-	run, err := r.Start(context.Background(), stateHook(t, dir, "plain", false), []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), stateHook(t, dir, "plain", false), []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 

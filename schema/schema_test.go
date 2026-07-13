@@ -81,6 +81,37 @@ func TestSchemaAcceptsGoodSkipIf(t *testing.T) {
 	}
 }
 
+func TestSchemaAcceptsGoodRunTitle(t *testing.T) {
+	sch := compileHookSchema(t)
+	good := []string{
+		// The motivating PR shape.
+		`{"$schema":"s","run_title":"{{repository.full_name}}#{{pull_request.number}}"}`,
+		// Header placeholders and static titles are titles too.
+		`{"$schema":"s","run_title":"{{header:x-github-event}} delivery"}`,
+		`{"$schema":"s","run_title":"nightly sweep"}`,
+	}
+	for _, doc := range good {
+		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
+	}
+}
+
+func TestSchemaRejectsBadRunTitle(t *testing.T) {
+	sch := compileHookSchema(t)
+	bad := []string{
+		// Wrong types — the template is a string, full stop. (Malformed
+		// placeholder SYNTAX inside the string is the Go loader's check:
+		// JSON Schema can't parse templates.)
+		`{"$schema":"s","run_title":5}`,
+		`{"$schema":"s","run_title":["a"]}`,
+		`{"$schema":"s","run_title":{"tmpl":"a"}}`,
+		`{"$schema":"s","run_title":null}`,
+		`{"$schema":"s","run_title":""}`,
+	}
+	for _, doc := range bad {
+		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)
+	}
+}
+
 func TestSchemaRejectsBadSkipIf(t *testing.T) {
 	sch := compileHookSchema(t)
 	bad := []string{

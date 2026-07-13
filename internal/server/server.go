@@ -212,6 +212,9 @@ func (s *Server) registerRoutes() {
 	// First-class declared sleep: blocks ~N seconds, shows on the dashboard,
 	// and counts as activity for the idle timeout (see wait.go).
 	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))
+	// Friendly-title override: a run whose subject is only known mid-run
+	// (a fleet sweep reaching some repo) names itself (see title.go).
+	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
 }
 
 // runRequestContext returns a background context derived from the server

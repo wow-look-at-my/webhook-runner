@@ -41,7 +41,7 @@ func TestRunnerSkipBootsNoContainer(t *testing.T) {
 		OnFinish: func(*hooks.Hook, *runs.Run, []byte) { callbacks++ },
 	})
 
-	run := r.Skip(&hooks.Hook{ID: "h"}, `skip_if[0]: header x-github-event == "workflow_run"`)
+	run := r.Skip(&hooks.Hook{ID: "h"}, `skip_if[0]: header x-github-event == "workflow_run"`, "")
 	r.Wait()
 
 	snap := run.Snapshot(-1)

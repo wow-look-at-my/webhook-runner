@@ -180,8 +180,15 @@ func (r *Runner) Wait() { r.wg.Wait() }
 //
 // Caller-supplied payload and headers are written to disk before the
 // container starts; the temp files are removed when the run finishes.
-func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header) (*runs.Run, error) {
+//
+// title is the run's friendly display title, resolved by the caller from
+// the hook's run_title template ("" = untitled; the dashboard falls back
+// to the run id). The caller resolves it — not this package — because
+// resolution context is the caller's: the HTTP path renders it once before
+// skip evaluation, and the scheduler applies its own "schedule" fallback.
+func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title string) (*runs.Run, error) {
 	run := r.tracker.New(hook.ID)
+	run.SetTitle(title)
 
 	payloadPath, headersPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers)
 	if err != nil {
@@ -212,14 +219,31 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 // container. The onStart/onFinish callbacks (GitHub commit statuses) are
 // not invoked either — they report container work, and none happened.
 // Cancellation and timeout cannot apply: the run is terminal on return.
-func (r *Runner) Skip(hook *hooks.Hook, reason string) *runs.Run {
+//
+// title carries the run's friendly display title like Start's — set BEFORE
+// Finish, so the terminal snapshot the OnFinish seam persists is titled: a
+// skip should still say which PR it was about.
+func (r *Runner) Skip(hook *hooks.Hook, reason, title string) *runs.Run {
 	run := r.tracker.New(hook.ID)
+	run.SetTitle(title)
 	run.AppendOutput("skipped: " + reason)
 	run.Finish(runs.StatusSkipped, 0, "")
 	r.log.Info("hook skipped", "hook", hook.ID, "run", run.ID(), "reason", reason)
-	r.events.Record("run.skipped", fmt.Sprintf("%s run %s skipped: %s", hook.ID, run.ID(), reason),
+	r.events.Record("run.skipped", fmt.Sprintf("%s run %s skipped: %s", hook.ID, runRef(run), reason),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(runs.StatusSkipped)})
 	return run
+}
+
+// runRef names a run for the activity feed: the id, plus the friendly
+// title when one is set — `abc… (wow-look-at-my/go-toolchain#47)` — so the
+// feed's run-scoped lines are readable without a lookup. The id stays
+// first: it is the stable handle everything else (logs, /runs/{id},
+// container names) keys on.
+func runRef(run *runs.Run) string {
+	if t := run.Title(); t != "" {
+		return run.ID() + " (" + t + ")"
+	}
+	return run.ID()
 }
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
@@ -410,7 +434,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	r.log.Info("hook starting",
 		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
-	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, run.ID(), image),
+	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, runRef(run), image),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
 	if r.onStart != nil {
@@ -586,7 +610,9 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
+	// runRef, not run.ID(): a title set mid-run via the state API's /title
+	// lands here too, so the feed's terminal line names the subject.
+	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, runRef(run), status, exitCode)
 	if errMsg != "" && (status == runs.StatusTimeout ||
 		(status == runs.StatusCancelled && errMsg != "cancelled")) {
 		// Carry the reason (a timeout's "no output" verdict, a cancel's

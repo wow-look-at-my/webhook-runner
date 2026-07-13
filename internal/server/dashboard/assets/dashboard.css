@@ -497,3 +497,12 @@ timeline-view {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+
+/* Friendly run titles (feature-detected /runs field): in the run tables the
+   title leads and the full id demotes to a small muted second line; in the
+   run modal's heading the id chip reads as secondary next to the title (or
+   the plain "Run" word for untitled runs). */
+td .run-title { font-weight: 500; }
+td .run-id-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
+td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
+#run-detail-title code { font-size: 0.65em; color: var(--muted); font-weight: 400; }

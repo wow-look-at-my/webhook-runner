@@ -118,7 +118,11 @@ The server listens on two TCP ports plus a Unix socket:
   first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
   "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
   on the run's dashboard row, counts as activity for the idle `timeout`;
-  see the wait bullet under "Things easy to get wrong"). Hooks don't touch the socket directly: the runner
+  see the wait bullet under "Things easy to get wrong"), and the friendly
+  run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
+  chars — names the calling run mid-flight, replacing any run_title
+  template title; see the run-title bullet under "Things easy to get
+  wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
   `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
@@ -318,6 +322,38 @@ The companion repo is `wow-look-at-my/webhooks`.
   state/concurrency_group/schedule: old binaries reject the unknown
   `skip_if` field, so deploy webhook-runner before merging a hook that
   sets it.
+- Friendly run titles (`run_title` in hook.json, `internal/hooks/title.go`;
+  the mid-run override `POST /title` in internal/server/title.go): a
+  template whose `{{path.to.field}}` / `{{header:<name>}}` placeholders
+  resolve with skip_if's EXACT shared traversal
+  (parsePayloadTree/resolvePath/leafString — reuse, never fork) into
+  `RunState.Title` (json `title`, omitempty, purely additive — the
+  dashboard feature-detects it and falls back to the run id). Semantics
+  are graceful-total, never blocking: scalars stringify like skip_if
+  leaves EXCEPT JSON null → empty (titles must never render junk);
+  missing/non-leaf → empty; ALL placeholders empty (with ≥1 declared) →
+  NO title; pure-separator literals touching an empty placeholder drop;
+  placeholder-free templates are static titles. A malformed template
+  (unterminated `{{`, empty `{{}}`) is a load/validation error — the
+  skip_if regex rule — while RUN-TIME resolution never errors. Ordering
+  is load-bearing: `handleTrigger` renders the title ONCE, after auth,
+  BEFORE EvaluateSkip, and hands it to runner.Skip/Start — so skipped
+  runs are titled (SetTitle precedes Finish, putting the title in the
+  persisted OnFinish snapshot), and `Run.SetTitle` refuses terminal runs
+  so live state never diverges from history. Scheduled fires title via
+  `Hook.ScheduleRunTitle` (template against the synthetic tick payload,
+  else the `"schedule"` fallback — a tick chip is never gibberish).
+  Titles persist in the runstore META BLOB ONLY — the per-hook index
+  value format (`"<status> <finished-nanos> <startedat-nanos>"`) is
+  untouched (byte-asserted in runstore tests; don't let a title near
+  it). The activity feed carries titles inside the existing
+  run.started/run.finished/run.skipped message strings (`runRef` in
+  internal/runner — `id (title)`), never as event-schema changes.
+  Bounds: `hooks.MaxRunTitleLen` (200) — the renderer clamps rune-safe,
+  the /title route 400s instead (mirroring /wait's reason validation;
+  409 for a terminal/foreign run). Same deploy-first rule as the other
+  newer hook.json fields; older runners also 404 `/title` (hooks should
+  shrug, not wedge — it's decoration).
 - Concurrency groups (`internal/concurrency`) are declared centrally in
   `concurrency.json` at the hooks root, NOT per-hook: a hook only references
   a group by name via `concurrency_group`, and referencing an undeclared

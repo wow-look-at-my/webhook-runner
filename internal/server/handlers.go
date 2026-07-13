@@ -104,6 +104,13 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Friendly run title — resolved exactly ONCE per delivery, here, BEFORE
+	// skip evaluation, so whichever pipeline the delivery takes (skip or
+	// run) carries the same title: a skipped run should still say which PR
+	// it was about. Resolution is total and never fails ("" = untitled, the
+	// dashboard falls back to the run id), so it cannot reject a delivery.
+	title := hook.RenderRunTitle(body, r.Header)
+
 	// Declarative skip conditions — evaluated strictly AFTER authentication
 	// (an unauthenticated caller must never probe the conditions; it gets
 	// the 401 above with nothing recorded) and BEFORE any work: no image
@@ -112,7 +119,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	// records a real, terminal `skipped` run naming the matched condition,
 	// so "no work was done" is first-class on the runs table.
 	if reason, skip := hook.EvaluateSkip(body, r.Header); skip {
-		run := s.runner.Skip(hook, reason)
+		run := s.runner.Skip(hook, reason, title)
 		writeJSON(w, http.StatusOK, map[string]string{
 			"run_id": run.ID(),
 			"status": string(runs.StatusSkipped),
@@ -127,7 +134,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header)
+	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header, title)
 	if err != nil {
 		// The runner has already recorded the failure; return the run
 		// ID anyway so the client can fetch details.
