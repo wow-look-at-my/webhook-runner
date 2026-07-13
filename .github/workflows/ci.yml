@@ -14,6 +14,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # go-toolchain injects a transient GOMEMLIMIT guard (gomemlimit_gen.go)
+      # into every main package for the duration of the build and deletes it
+      # afterwards. It is deliberately NOT in .gitignore (go-toolchain strips
+      # such an entry as stale migration debris), but Go's main-module
+      # version stamping runs `git status --porcelain` WHILE the guard
+      # exists, sees an untracked file, and stamps every released binary
+      # vcs.modified — the deployed /version read "+dirty" on a clean master
+      # build. Listing the guard in the clone-local .git/info/exclude hides
+      # it from git without touching the working tree (nothing go-toolchain
+      # fights), so the guard keeps protecting the container while the
+      # binary stamps clean provenance. Verified: guard on + exclude =
+      # clean pseudo-version; the real fix belongs upstream in go-toolchain
+      # (exclude its own transient artifact), at which point this step
+      # becomes a harmless no-op.
+      - name: Keep the transient memlimit guard out of the version stamp
+        run: echo gomemlimit_gen.go >> .git/info/exclude
       # The dashboard's committed assets/timeline.js is authoritative and
       # embedded as-is — the npx //go:generate directive that rebuilt it via
       # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
