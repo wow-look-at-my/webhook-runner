@@ -221,12 +221,25 @@ function stateFor(r) {
 function runTitle(r) {
   return typeof r.title === "string" && r.title.trim() !== "" ? r.title : null;
 }
+function ordinal(n) {
+  const rem = n % 100;
+  if (rem >= 11 && rem <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
 function runLabel(r) {
   const base = runTitle(r) ?? r.id.slice(0, 8);
   const w = r.waiting_on;
   if (w && w.kind === "group" && !isTerminal(r.status)) {
-    const ahead = typeof w.position === "number" && w.position > 0 ? w.position - 1 : null;
-    const place = ahead === null ? "" : ahead === 0 ? " \xB7 next" : ` \xB7 ${ahead} ahead`;
+    const place = typeof w.position === "number" && w.position > 0 ? ` \xB7 ${ordinal(w.position)}` : "";
     return `${base} \u29D7 ${w.key || "group"}${place}`;
   }
   const waiters = waiterIndex.get(r.id);
@@ -269,31 +282,6 @@ function runToInterval(r) {
     segments: segments.length ? segments : void 0,
     data: r
   };
-}
-function computeConnectors() {
-  const out = [];
-  for (const r of runsById.values()) {
-    const w = r.waiting_on;
-    if (!w || isTerminal(r.status)) continue;
-    if (w.kind === "lock" && w.holder_run_id) {
-      out.push({
-        fromIntervalId: r.id,
-        toIntervalId: w.holder_run_id,
-        kind: "lock",
-        label: w.key || "lock"
-      });
-    } else if (w.kind === "group" && w.holder_run_ids) {
-      for (const holder of w.holder_run_ids) {
-        out.push({
-          fromIntervalId: r.id,
-          toIntervalId: holder,
-          kind: "group",
-          label: w.key || "group"
-        });
-      }
-    }
-  }
-  return out;
 }
 function computeLanes() {
   const ids = new Set(hookMeta.keys());
@@ -338,8 +326,7 @@ function appendWaitingRows(frag, r) {
     return;
   }
   if (w.kind === "group") {
-    const ahead = typeof w.position === "number" && w.position > 0 ? w.position - 1 : null;
-    const place = ahead === null ? "" : ahead === 0 ? " \u2014 next in line" : ` \u2014 ${ahead} ahead`;
+    const place = typeof w.position === "number" && w.position > 0 ? ` \u2014 ${ordinal(w.position)} in line` : "";
     frag.appendChild(ttRow("waiting", `for a slot in group ${w.key || "?"}${place}`));
     for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
       const hr = runsById.get(holder);
@@ -397,18 +384,6 @@ function clusterTooltip(c) {
   }
   if (c.ids.length > 5) frag.appendChild(ttRow("", `\u2026and ${c.ids.length - 5} more`));
   frag.appendChild(ttRow("", "click opens the newest one"));
-  return frag;
-}
-function connectorTooltip(c, missing) {
-  const frag = document.createDocumentFragment();
-  frag.appendChild(el("div", { class: "tt-title" }, `lock ${c.label || ""}`.trim()));
-  const describe = (id) => {
-    const r = runsById.get(id);
-    return r ? `${shortRunId(id)} (${r.hook_id})` : `${shortRunId(id)} (not loaded)`;
-  };
-  frag.appendChild(ttRow("waiter", describe(c.fromIntervalId)));
-  frag.appendChild(ttRow("holder", describe(c.toIntervalId)));
-  if (missing) frag.appendChild(ttRow("note", `${missing} endpoint not loaded`));
   return frag;
 }
 function laneTooltip(lane) {
@@ -490,7 +465,6 @@ function initTimeline() {
       const r = runsById.get(hit.interval.id);
       return r ? runTooltip(r) : null;
     }
-    if (hit.type === "connector") return connectorTooltip(hit.connector, hit.missingEndpoint);
     if (hit.type === "lane") return laneTooltip(hit.lane);
     return null;
   };
@@ -571,7 +545,6 @@ function initTimeline() {
       tl.mergeData(data);
     }
     syncLanes(tl);
-    tl.setConnectors(computeConnectors());
   };
   let skipRebuild = null;
   const scheduleSkipRebuild = () => {
@@ -601,7 +574,6 @@ function initTimeline() {
     const intervals = [...affected].map((id) => runsById.get(id)).filter((x) => x !== void 0).map(runToInterval);
     tl.mergeData({ intervals });
     syncLanes(tl);
-    tl.setConnectors(computeConnectors());
   };
   const rebuildAll = () => {
     oldestStartedRaw = null;
@@ -613,7 +585,8 @@ function initTimeline() {
     tl.setData({
       lanes,
       intervals: clusterIntervals([...runsById.values()]),
-      connectors: computeConnectors(),
+      connectors: [],
+      // rebuild replaces data — pin connectors to none
       coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 6e4, end: Date.now() }
     });
   };
@@ -650,7 +623,8 @@ function maybePrune(tl, now) {
   tl.setData({
     lanes,
     intervals: clusterIntervals(keep),
-    connectors: computeConnectors(),
+    connectors: [],
+    // prune replaces data — pin connectors to none
     coverage: { start: oldestStartedMs, end: now }
   });
   return true;

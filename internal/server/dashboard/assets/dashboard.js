@@ -135,7 +135,7 @@ function waitNote(r) {
   if (w.kind === "group") {
     const holders = w.holder_run_ids || [];
     let text = `queued for a slot in group ${w.key || "?"}`;
-    if (w.position > 0) text += w.position === 1 ? " — next in line" : ` — ${w.position - 1} ahead`;
+    if (w.position > 0) text += ` — ${ordinal(w.position)} in line`;
     if (holders.length) text += `, held by ${holders.map(shortId).join(", ")}`;
     return el("span", { class: "wait-note", title: holders.join("\n") }, text);
   }
@@ -175,7 +175,7 @@ function waitDetail(r) {
   }
   if (w.kind === "group") {
     let lead = `for a slot in group ${w.key || "?"}`;
-    if (w.position > 0) lead += w.position === 1 ? " — next in line" : ` — ${w.position - 1} ahead`;
+    if (w.position > 0) lead += ` — ${ordinal(w.position)} in line`;
     const holders = w.holder_run_ids || [];
     frag.appendChild(document.createTextNode(lead + (holders.length ? ", held by " : "")));
     linkList(holders);
@@ -210,6 +210,19 @@ function waitersDetail(r) {
     frag.appendChild(document.createTextNode(` (${x.hook_id}) → ${waiterWants(x)}`));
   });
   return frag;
+}
+
+// "1st", "2nd", "3rd", "4th", … (11th-13th included) — the queue-position
+// vocabulary shared with the timeline's ⧗ badge.
+function ordinal(n) {
+  const rem = n % 100;
+  if (rem >= 11 && rem <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
 }
 
 function shortId(id) {
