@@ -140,6 +140,12 @@
         }
       }
     },
+    "run_title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Template for the friendly display title of this hook's runs, shown by the dashboard in place of the opaque run id (e.g. \"{{repository.full_name}}#{{pull_request.number}}\" renders \"wow-look-at-my/go-toolchain#47\"). A {{...}} placeholder names a dotted path into the parsed JSON payload (\"pull_request.number\", array elements by numeric index) or a request header via the \"header:\" prefix — exactly skip_if's key syntax and bounded traversal. Resolution is graceful and never blocks a run: each placeholder becomes the scalar leaf's string form (numbers as their JSON literal, true/false as those words); a missing path, an object/array, and JSON null become empty; when EVERY placeholder resolves empty the run simply gets no title (consumers fall back to the run id), otherwise pure-separator literals stranded next to empty placeholders are dropped and whitespace collapses. A template with no placeholders is a static title, always set. Resolved once at run creation, before skip_if — skipped runs are titled too; schedule-triggered runs resolve against the synthetic schedule payload and fall back to \"schedule\". Titles are capped at 200 characters, and a state hook can rename its run mid-flight via POST /title on the state API. A malformed template (unterminated \"{{\", empty \"{{}}\") is a load/validation error.",
+      "examples": ["{{repository.full_name}}#{{pull_request.number}}"]
+    },
     "extra_docker_args": {
       "type": "array",
       "items": { "type": "string" },

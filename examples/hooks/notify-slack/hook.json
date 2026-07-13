@@ -2,6 +2,14 @@
   "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "description": "Forward the webhook to a Slack channel",
 
+  // Friendly run titles: the dashboard shows "wow-look-at-my/go-toolchain#47"
+  // instead of the opaque run id. {{...}} placeholders are dotted payload
+  // paths or "header:<name>" — skip_if's exact key syntax. Degradation is
+  // graceful: missing fields render empty, and if EVERY placeholder is
+  // empty the run just has no title (the id fallback). Skipped runs are
+  // titled too — resolution happens before skip_if.
+  "run_title": "{{repository.full_name}}#{{pull_request.number}}",
+
   // Declarative skips: a delivery matching any entry (ORed) is answered
   // immediately with NO container — the run is recorded with status
   // "skipped" and its output names the matched condition. The classic use:

@@ -440,6 +440,19 @@ function renderConcurrency(groups) {
   }
 }
 
+// Run cell for the tables: the friendly title (feature-detected — an
+// additive /runs field older servers simply don't send) leads when present,
+// with the full run id demoted to a small muted second line; untitled runs
+// keep the plain id code exactly as before.
+function runCell(r) {
+  const code = el("code", null, r.id);
+  if (!r.title) return el("td", null, code);
+  return el("td", null,
+    el("div", { class: "run-title" }, r.title),
+    el("div", { class: "run-id-sub" }, code),
+  );
+}
+
 function renderRuns(rs) {
   const tbody = document.querySelector("#runs-table tbody");
   tbody.innerHTML = "";
@@ -450,7 +463,7 @@ function renderRuns(rs) {
       el("td", null, el("code", null, r.hook_id)),
       el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
       el("td", null, String(r.exit_code)),
-      el("td", null, el("code", null, r.id)),
+      runCell(r),
     );
     tr.addEventListener("click", () => showRun(r.id));
     tbody.appendChild(tr);
@@ -659,7 +672,7 @@ function renderApp(detail, runs, events) {
       el("td", null, runWaited(r)),
       el("td", null, runDuration(r)),
       el("td", null, String(r.exit_code)),
-      el("td", null, el("code", null, r.id)),
+      runCell(r),
     );
     tr.addEventListener("click", () => showRun(r.id));
     tbody.appendChild(tr);
@@ -761,6 +774,10 @@ function runLink(id) {
 async function showRun(id) {
   try {
     const r = await fetchJSON(`/runs/${id}`);
+    // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
+    // generic "Run" word otherwise; the full id always sits beside it in
+    // the (small, muted) code chip.
+    document.getElementById("run-detail-name").textContent = r.title || "Run";
     document.getElementById("run-detail-id").textContent = r.id;
     const dl = document.getElementById("run-detail-meta");
     dl.innerHTML = "";
