@@ -81,17 +81,27 @@ func Parse(data []byte) (*Config, error) {
 	return c, nil
 }
 
-// Load reads <root>/concurrency.json. A missing file is not an error: it
-// yields an empty Config (no groups declared), which makes any hook that
-// references a group fail validation — exactly the "groups must be
-// declared" contract.
+// Load reads <root>/concurrency.json — the LEGACY location. Layout-aware
+// callers (serve, validate) should resolve the path through
+// hooks.Layout.ConcurrencyPath and call LoadFile; this stays for callers
+// that know they have a legacy tree.
 func Load(root string) (*Config, error) {
-	data, err := os.ReadFile(filepath.Join(root, FileName))
+	return LoadFile(filepath.Join(root, FileName))
+}
+
+// LoadFile reads a concurrency.json at an explicit path (the hooks
+// layout decides where that is: <root>/concurrency.json for legacy trees,
+// <root>/src/config/concurrency.json for the src layout). A missing file
+// is not an error: it yields an empty Config (no groups declared), which
+// makes any hook that references a group fail validation — exactly the
+// "groups must be declared" contract.
+func LoadFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Config{Groups: map[string]Group{}}, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", FileName, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return Parse(data)
 }
