@@ -131,6 +131,10 @@ func TestRunnerMidRunTitleReachesFinishedEvent(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
+	// Done() closes inside run.Finish, BEFORE the runner goroutine records
+	// the run.finished event — wait for the goroutine itself or reading the
+	// recorder races the write (this was a real CI flake).
+	r.Wait()
 
 	var finishedMsg string
 	for _, ev := range rec.List(0) {
