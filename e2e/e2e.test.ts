@@ -125,6 +125,9 @@ try {
     assert.equal(run.status, "success");
     assert.equal(run.exit_code, 0);
     assert.equal(run.hook_id, "echo-test");
+    // The hook's run_title template ("echo {{sender}}") resolved against
+    // this delivery's payload — the friendly-title path, end to end.
+    assert.equal(run.title, "echo e2e-test");
     const output = run.output.join("\n");
     assert.ok(output.includes("hello-e2e"), "missing hello-e2e");
     assert.ok(output.includes("e2e-test"), "missing payload content");

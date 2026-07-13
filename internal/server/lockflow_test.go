@@ -184,7 +184,7 @@ func TestStateLockBlockingFeedsWatchdog(t *testing.T) {
 	_, err = store.AcquireLock("locker", "gate", holder.ID(), 0)
 	require.NoError(t, err)
 
-	run, err := rn.Start(context.Background(), h, []byte("p"), http.Header{})
+	run, err := rn.Start(context.Background(), h, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	respCh := make(chan *httptest.ResponseRecorder, 1)
 	go func() {

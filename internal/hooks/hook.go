@@ -129,6 +129,26 @@ type Hook struct {
 	// before merging a hook that sets it (old binaries reject it via
 	// DisallowUnknownFields).
 	SkipIf SkipConditions `json:"skip_if,omitempty"`
+
+	// RunTitle, when set, is a template for the friendly display title of
+	// this hook's runs — "{{repository.full_name}}#{{pull_request.number}}"
+	// renders "wow-look-at-my/go-toolchain#47" on the dashboard where the
+	// opaque run id used to be. {{...}} placeholders name a dotted payload
+	// path or a request header via the "header:" prefix — skip_if's exact
+	// key syntax and bounded traversal (see title.go for the resolution
+	// semantics: graceful, never blocking, all-placeholders-empty means no
+	// title). Resolved once at run creation, BEFORE skip evaluation, so
+	// skipped runs are titled too; a malformed template is a load/validation
+	// error. Like the other newer hook.json fields, old binaries reject it
+	// via DisallowUnknownFields: deploy a webhook-runner that supports it
+	// before merging a hook that sets it.
+	RunTitle string `json:"run_title,omitempty"`
+
+	// titleTmpl is RunTitle parsed by validate() at load time, so rendering
+	// never re-parses and a malformed template can never load. Hooks
+	// constructed in code (tests) may leave it nil — RenderRunTitle then
+	// parses on demand.
+	titleTmpl *titleTemplate
 }
 
 // GitHubStatusConfig configures the optional GitHub commit status update
@@ -365,6 +385,11 @@ func (h *Hook) validate() error {
 	// Compiles every skip_if regex too, so evaluation never compiles at
 	// request time and a bad pattern can never load.
 	if err := h.SkipIf.compile(); err != nil {
+		return err
+	}
+	// Same rule for the run_title template: parsed here, once, so a
+	// malformed one is a load error — never a silently titleless run.
+	if err := h.compileRunTitle(); err != nil {
 		return err
 	}
 	if err := h.validateAuth(); err != nil {

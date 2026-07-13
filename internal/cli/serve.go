@@ -568,7 +568,11 @@ func buildScheduleFire(registry *hooks.Registry, tracker *runs.Tracker, ov *over
 		rec.Record("schedule.fired",
 			fmt.Sprintf("%s: scheduled run starting (every %s)", hookID, h.Schedule),
 			map[string]string{"hook": hookID, "schedule": h.Schedule})
-		if _, err := rn.Start(context.Background(), h, schedulePayload(hookID), scheduleHeaders(hookID)); err != nil {
+		// The friendly title resolves against the synthetic payload/headers a
+		// tick actually delivers; ScheduleRunTitle falls back to "schedule"
+		// when that yields nothing, so a tick chip is never gibberish.
+		payload, headers := schedulePayload(hookID), scheduleHeaders(hookID)
+		if _, err := rn.Start(context.Background(), h, payload, headers, h.ScheduleRunTitle(payload, headers)); err != nil {
 			logger.Error("scheduled run failed to start", "hook", hookID, "err", err)
 		}
 	}
