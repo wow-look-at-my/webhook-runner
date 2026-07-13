@@ -189,7 +189,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-hb.C:
 			// Comment for proxies + event for the client, one write.
-			if _, err := io.WriteString(w, ": hb\nevent: hb\ndata: 1\n\n"); err != nil {
+			if _, err := io.WriteString(w, ": hb\nevent: hb\ndata: {}\n\n"); err != nil {
 				return
 			}
 			if rc.Flush() != nil {
