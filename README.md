@@ -138,9 +138,13 @@ graph LR
   instructions stay collapsed. The **primary runs view is a realtime
   swimlane timeline** (a canvas `<timeline-view>`, one lane per hook with
   a stable hue per hook): each run's queue wait draws as a dim lead-in
-  ahead of its processing time, declared waits and blocked lock acquires
-  hatch (with a connector from the waiter to the lock's holder when the
-  runner reports one), failures are unmissable, cancelled runs render
+  ahead of its processing time, and declared waits, blocked lock
+  acquires, and queued group acquires hatch. Waits are indicated ON the
+  spans (no connector lines): a queued run's label carries the group and
+  its live place in line ("⧗ model-gateway · 3rd", counting down as the
+  queue advances), a run that others wait on carries "⏳N", and the run
+  modal links holders and waiters for click-through. Failures are
+  unmissable, cancelled runs render
   hollow, and instant runs become diamond pips. It follows "now" live;
   wheel/drag pans, ctrl/cmd+wheel (or pinch) zooms, and dragging into the
   past auto-loads history via `/runs?before=` until retention runs out;

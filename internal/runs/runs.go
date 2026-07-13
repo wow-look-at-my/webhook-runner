@@ -504,6 +504,21 @@ func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
 	r.waitSeq++
 	seq := r.waitSeq
 	r.state.WaitingOn = &w
+	// A re-stamp of the SAME logical wait — same kind and key, e.g. a
+	// queued group acquire whose position or holder set just changed, or a
+	// blocked lock changing hands — CONTINUES the trailing open segment:
+	// one logical wait is one history entry. (Without this, every restamp
+	// closed and reopened the segment — a single 7-deep queue wait
+	// accumulated 14 entries in reproduction — bloating each SSE delta and
+	// fragmenting the rendered hatch.) Only a different wait closes the
+	// open segment and opens a new one.
+	if n := len(r.state.WaitHistory); n > 0 {
+		if last := &r.state.WaitHistory[n-1]; last.End.IsZero() && last.Kind == w.Kind && last.Key == w.Key {
+			r.mu.Unlock()
+			r.notifyChange()
+			return seq
+		}
+	}
 	r.closeOpenWaitSegmentLocked(time.Now().UTC())
 	if len(r.state.WaitHistory) < MaxWaitSegments {
 		r.state.WaitHistory = append(r.state.WaitHistory, WaitSegment{

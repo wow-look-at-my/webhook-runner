@@ -95,11 +95,20 @@ The server listens on two TCP ports plus a Unix socket:
   bytes can't inject markup). The overview's PRIMARY runs view is a
   realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
   hook, hue per hook): queue wait as a dim lead-in segment, declared
-  waits/blocked locks/queued group acquires hatched (connectors from the
-  waiter to every current holder; queued labels carry the position, holder
-  labels a waiter-count badge — derived CLIENT-side by inverting
-  waiting_on, because stream deltas never ship the server's waiters
-  field), failures
+  waits/blocked locks/queued group acquires hatched. Wait indication is
+  ON-SPAN ONLY — the adapter deliberately feeds the component ZERO
+  connectors (operator ruling: no cross-canvas lines; the generic
+  connector capability stays upstream in js-snippets): a queued run's
+  label badge carries the group and its live place in line ("⧗
+  model-gateway · 3rd", re-stamped as the queue advances), a holder's
+  badge carries how many runs it is holding up ("⏳N" — derived
+  CLIENT-side by inverting waiting_on, because stream deltas never ship
+  the server's waiters field), and holder/waiter click-through lives in
+  the run modal's links. One logical wait is ONE wait_history entry:
+  internal/runs.SetWaitingOn CONTINUES the trailing open segment on a
+  same-kind+key restamp (queue position/holder churn) instead of
+  fragmenting it (pre-fix, a single 7-deep queue wait shipped 14
+  micro-segments on every SSE delta). Failures
   emphasized, cancelled hollow, instant runs as pips; wheel/drag
   pan + zoom, and panning into the past pages `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).

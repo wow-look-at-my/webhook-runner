@@ -6,8 +6,9 @@
  * This file is the webhook-runner adapter: it knows the /runs, /hooks,
  * /config and /runs/stream shapes and the runner's semantics (queued vs
  * started_at vs finished, terminal statuses, waiting_on/waiters) and
- * translates them into the component's generic lanes/intervals/connectors
- * model. The component itself is NOT part of this repo: the browser imports
+ * translates them into the component's generic lanes/intervals model
+ * (deliberately NO connectors — wait indication lives on the spans; see
+ * runLabel). The component itself is NOT part of this repo: the browser imports
  * it at runtime from js-snippets' GitHub Pages (live at master head — the
  * org's standard js-snippets consumption model), so component fixes reach
  * this dashboard on js-snippets merge with no runner change. Fix component
@@ -111,7 +112,6 @@
 // NOT a static side-effect import: a static import that fails would kill
 // this whole module, and the load must retry forever instead.
 import type {
-	TimelineConnector,
 	TimelineData,
 	TimelineHit,
 	TimelineInterval,
@@ -526,17 +526,34 @@ function runTitle(r: RunState): string | null {
 	return typeof r.title === 'string' && r.title.trim() !== '' ? r.title : null;
 }
 
+/** "1st", "2nd", "3rd", "4th", … (11th-13th included). */
+function ordinal(n: number): string {
+	const rem = n % 100;
+	if (rem >= 11 && rem <= 13) return `${n}th`;
+	switch (n % 10) {
+		case 1:
+			return `${n}st`;
+		case 2:
+			return `${n}nd`;
+		case 3:
+			return `${n}rd`;
+		default:
+			return `${n}th`;
+	}
+}
+
 /** Bar label: never hardcode "label = run id" — the title wins when present.
- * Live queue/holder facts ride as suffix badges: a run queued on a group
- * shows the group and its place in line; a run others wait on shows how
- * many it is holding up. Both derive from the same manager bookkeeping the
- * /concurrency drill-down shows (via waiting_on / the inverted index). */
+ * Wait indication lives HERE, on the span (no connectors): a queued run's
+ * badge carries the group and its REAL place in line ("⧗ model-gateway ·
+ * 3rd" — the server re-stamps position as the queue advances, so it counts
+ * down live); a run others wait on carries how many it is holding up
+ * ("⏳N"). Both derive from the same manager bookkeeping the /concurrency
+ * drill-down shows (via waiting_on / the inverted index). */
 function runLabel(r: RunState): string {
 	const base = runTitle(r) ?? r.id.slice(0, 8);
 	const w = r.waiting_on;
 	if (w && w.kind === 'group' && !isTerminal(r.status)) {
-		const ahead = typeof w.position === 'number' && w.position > 0 ? w.position - 1 : null;
-		const place = ahead === null ? '' : ahead === 0 ? ' · next' : ` · ${ahead} ahead`;
+		const place = typeof w.position === 'number' && w.position > 0 ? ` · ${ordinal(w.position)}` : '';
 		return `${base} ⧗ ${w.key || 'group'}${place}`;
 	}
 	const waiters = waiterIndex.get(r.id);
@@ -590,36 +607,14 @@ function runToInterval(r: RunState): TimelineInterval {
 	};
 }
 
-/** Live waits become connectors: waiter → holder, labeled by what is
- * contended. Locks have one holder; a group wait fans out to EVERY current
- * slot holder (the queued run is behind all of them). Connector kinds are
- * cosmetic to the component (dedup key + tooltip fallback), so the new
- * 'group' kind is safe on any component build. */
-function computeConnectors(): TimelineConnector[] {
-	const out: TimelineConnector[] = [];
-	for (const r of runsById.values()) {
-		const w = r.waiting_on;
-		if (!w || isTerminal(r.status)) continue;
-		if (w.kind === 'lock' && w.holder_run_id) {
-			out.push({
-				fromIntervalId: r.id,
-				toIntervalId: w.holder_run_id,
-				kind: 'lock',
-				label: w.key || 'lock',
-			});
-		} else if (w.kind === 'group' && w.holder_run_ids) {
-			for (const holder of w.holder_run_ids) {
-				out.push({
-					fromIntervalId: r.id,
-					toIntervalId: holder,
-					kind: 'group',
-					label: w.key || 'group',
-				});
-			}
-		}
-	}
-	return out;
-}
+// Waits draw NO connector lines (operator ruling: "make the lines go
+// away"): the adapter feeds the component zero connectors, so no
+// cross-canvas geometry, pixels, or hit-targets exist. Wait indication
+// lives ON the spans instead — the queued run's "⧗ group · Nth" badge and
+// the holder's "⏳N" badge (runLabel), the hatched wait segments
+// (runToInterval), the tooltips, and the run modal's clickable
+// holder/waiter links (dashboard.js). The component's generic connector
+// capability is untouched upstream in js-snippets.
 
 /**
  * Lane order: ALPHABETICAL by hook id — deterministic, stable, and
@@ -681,8 +676,8 @@ function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
 		return;
 	}
 	if (w.kind === 'group') {
-		const ahead = typeof w.position === 'number' && w.position > 0 ? w.position - 1 : null;
-		const place = ahead === null ? '' : ahead === 0 ? ' — next in line' : ` — ${ahead} ahead`;
+		const place =
+			typeof w.position === 'number' && w.position > 0 ? ` — ${ordinal(w.position)} in line` : '';
 		frag.appendChild(ttRow('waiting', `for a slot in group ${w.key || '?'}${place}`));
 		for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
 			const hr = runsById.get(holder);
@@ -745,19 +740,6 @@ function clusterTooltip(c: SkipCluster): Node {
 	}
 	if (c.ids.length > 5) frag.appendChild(ttRow('', `…and ${c.ids.length - 5} more`));
 	frag.appendChild(ttRow('', 'click opens the newest one'));
-	return frag;
-}
-
-function connectorTooltip(c: TimelineConnector, missing?: 'from' | 'to'): Node {
-	const frag = document.createDocumentFragment();
-	frag.appendChild(el('div', { class: 'tt-title' }, `lock ${c.label || ''}`.trim()));
-	const describe = (id: string): string => {
-		const r = runsById.get(id);
-		return r ? `${shortRunId(id)} (${r.hook_id})` : `${shortRunId(id)} (not loaded)`;
-	};
-	frag.appendChild(ttRow('waiter', describe(c.fromIntervalId)));
-	frag.appendChild(ttRow('holder', describe(c.toIntervalId)));
-	if (missing) frag.appendChild(ttRow('note', `${missing} endpoint not loaded`));
 	return frag;
 }
 
@@ -867,9 +849,8 @@ function initTimeline(): void {
 			const r = runsById.get(hit.interval.id);
 			return r ? runTooltip(r) : null;
 		}
-		if (hit.type === 'connector') return connectorTooltip(hit.connector, hit.missingEndpoint);
 		if (hit.type === 'lane') return laneTooltip(hit.lane);
-		return null;
+		return null; // connectors are never fed, so no connector hits exist
 	};
 
 	// Staleness marking (feature-detected per call, never captured): the
@@ -1000,7 +981,6 @@ function initTimeline(): void {
 			tl.mergeData(data);
 		}
 		syncLanes(tl);
-		tl.setConnectors(computeConnectors());
 	};
 
 	// A skipped-run delta re-clusters instead of merging its own interval —
@@ -1044,7 +1024,6 @@ function initTimeline(): void {
 			.map(runToInterval);
 		tl.mergeData({ intervals });
 		syncLanes(tl);
-		tl.setConnectors(computeConnectors());
 	};
 
 	// Full rebuild (the only way to REMOVE an interval — mergeData upserts).
@@ -1060,7 +1039,7 @@ function initTimeline(): void {
 		tl.setData({
 			lanes,
 			intervals: clusterIntervals([...runsById.values()]),
-			connectors: computeConnectors(),
+			connectors: [], // rebuild replaces data — pin connectors to none
 			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 60_000, end: Date.now() },
 		});
 	};
@@ -1117,7 +1096,7 @@ function maybePrune(tl: TimelineViewElement, now: number): boolean {
 	tl.setData({
 		lanes,
 		intervals: clusterIntervals(keep),
-		connectors: computeConnectors(),
+		connectors: [], // prune replaces data — pin connectors to none
 		coverage: { start: oldestStartedMs, end: now },
 	});
 	return true;
