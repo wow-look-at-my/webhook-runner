@@ -3,27 +3,72 @@
  * timeline (one lane per hook) rendered by the generic <timeline-view>
  * canvas element from wow-look-at-my/js-snippets.
  *
- * This file is the webhook-runner adapter: it knows the /runs, /hooks and
- * /config shapes and the runner's semantics (queued vs started_at vs
- * finished, terminal statuses, waiting_on/waiters) and translates them into
- * the component's generic lanes/intervals/connectors model. The component
- * itself is NOT part of this repo: the browser imports it at runtime from
- * js-snippets' GitHub Pages (live at master head — the org's standard
- * js-snippets consumption model), so component fixes reach this dashboard
- * on js-snippets merge with no runner change. Fix component bugs upstream
- * in js-snippets; only adapter logic lives here. The import's types come
- * from js-snippets-timeline.d.ts (an INTERIM hand-maintained shim — see
- * its header).
+ * This file is the webhook-runner adapter: it knows the /runs, /hooks,
+ * /config and /runs/stream shapes and the runner's semantics (queued vs
+ * started_at vs finished, terminal statuses, waiting_on/waiters) and
+ * translates them into the component's generic lanes/intervals/connectors
+ * model. The component itself is NOT part of this repo: the browser imports
+ * it at runtime from js-snippets' GitHub Pages (live at master head — the
+ * org's standard js-snippets consumption model), so component fixes reach
+ * this dashboard on js-snippets merge with no runner change. Fix component
+ * bugs upstream in js-snippets; only adapter logic lives here. The import's
+ * types come from js-snippets-timeline.d.ts (an INTERIM hand-maintained
+ * shim — see its header).
  *
- * Built by ts0 (see ../ts0.json and the //go:generate directive in
- * dashboard.go) into assets/timeline.js — an ES module (the component URL
- * passes through unbundled) loaded via <script type="module"> AFTER
- * dashboard.js (module scripts defer; the classic dashboard.js has long
- * executed) and reusing its globals (fetchJSON, el, fmtTime, tsPresent,
- * showRun, … — declared in globals.d.ts). If the Pages fetch fails, the
- * chart section shows "chart loading…" and the load retries on a fixed
- * cadence forever (see boot() at the bottom); dashboard.js's tables are
- * never affected either way.
+ * Built by ts0 (see ../ts0.json) into assets/timeline.js — an ES module
+ * (the component URL passes through unbundled) loaded via
+ * <script type="module"> AFTER dashboard.js (module scripts defer; the
+ * classic dashboard.js has long executed) and reusing its globals
+ * (fetchJSON, el, fmtTime, tsPresent, showRun, … — declared in
+ * globals.d.ts). If the Pages fetch fails, the chart section shows
+ * "chart loading…" and the load retries on a fixed cadence forever (see
+ * boot() at the bottom); dashboard.js's tables are never affected either
+ * way.
+ *
+ * -- The live feed: SSE primary, fixed-cadence poll fallback ---------------
+ *
+ * Run data arrives over ONE EventSource on /runs/stream: a connect
+ * `snapshot` (the live+recent window), then one `run` delta per lifecycle
+ * change, plus `hb` heartbeats (~10s). An idle dashboard makes ZERO /runs
+ * requests; updates land at push latency. The old 2s /runs poll survives
+ * only as the FALLBACK: while the stream is down beyond a short grace
+ * period, a fixed 5s poll (never growing, never giving up) keeps the chart
+ * honest until the stream reconnects, and every stream (re)open does ONE
+ * full /runs resync then goes stream-only again.
+ *
+ * WHY the poll was demoted — the stuck-running-bars post-mortem. The 2s
+ * poll design had three independent ways to show fiction:
+ *
+ *  1. THE WEDGE (the probable killer): pollRuns used a single-flight guard
+ *     (`if (pollInFlight) return`) around a fetch with NO timeout. One
+ *     fetch that never settles — a network change mid-request, a proxy
+ *     holding a half-open connection — left pollInFlight=true FOREVER.
+ *     Every later tick returned at the guard, nothing was ever logged
+ *     (nothing rejected), and the canvas kept extrapolating "running" bars
+ *     to the live edge indefinitely. Silent, permanent, invisible.
+ *  2. THE GATE: polling was visibility-gated (`!document.hidden` AND the
+ *     overview being the active view) while the canvas kept rendering —
+ *     a hidden tab or a #hook= drill-down froze the DATA but not the
+ *     DRAWING, so ongoing bars grew fictionally until a visibilitychange
+ *     tick happened to land (and if that tick wedged per 1, forever).
+ *  3. THE MERGE HOLE: each poll merged only the newest max=400 window. A
+ *     run whose terminal transition happened while it was outside that
+ *     window (busy server + a long gated stretch) kept its stale
+ *     "running" status in runsById with nothing ever retiring it.
+ *
+ * The new feed is immune by construction: the stream is not visibility
+ * gated and pushes every terminal transition; the fallback poll loop is
+ * structurally unkillable (one setInterval armed once and never cleared,
+ * body wrapped in try/catch, fetches bounded by AbortSignal.timeout so the
+ * in-flight guard cannot wedge); markFresh is called ONLY on real data or
+ * heartbeats, so the component's staleness marking (feature-detected)
+ * shows honest "stale" state instead of fiction whenever the feed truly
+ * dies; and each resync retires stale non-terminal runs that fell out of
+ * the window (reconcileMissing). EventSource reconnects itself on error at
+ * the server-directed fixed 2s retry — we never layer our own backoff on
+ * top; the supervisor only replaces a source the browser has permanently
+ * CLOSED (e.g. the endpoint 404ing on an older server), again on a fixed
+ * cadence.
  *
  * Runner semantics encoded here:
  *   - `started` is the QUEUED/accepted instant; `started_at` (absent while
@@ -45,8 +90,10 @@
  *     never round-tripped through Date). The walk is BOUNDED by the
  *     requested window (stop as soon as a page's oldest predates the
  *     range floor), single-flight (a concurrent second walk throws), and
- *     armed only after the first poll seeds coverage — so a page load
+ *     armed only after the first data seeds coverage — so a page load
  *     fetches the visible window only, never an exhaustive history walk.
+ *     History paging stays request/response BY DESIGN (it is user-driven
+ *     and bounded); only the live tail is push.
  */
 
 // Types only — erased at compile time. The component itself is loaded at
@@ -85,14 +132,16 @@ interface RunState {
 	cancel_requested?: boolean;
 	/** Feature-detected (first-class waits): why a live run is paused. */
 	waiting_on?: {
-		kind?: string; // "wait" | "lock"
+		kind?: string; // "wait" | "lock" | "group"
 		reason?: string;
 		until?: string;
 		key?: string;
 		holder_run_id?: string;
 		holder_hook_id?: string;
+		holder_run_ids?: string[];
+		position?: number;
 	};
-	/** Feature-detected: live runs whose lock acquire this run is blocking. */
+	/** Feature-detected: live runs whose acquire this run is blocking. */
 	waiters?: Array<{ run_id: string; hook_id: string; key?: string }>;
 }
 
@@ -106,9 +155,23 @@ interface HookSummary {
 
 const COMPONENT_URL = 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
-const TIMELINE_POLL_MS = 2000; // /runs poll (independent of dashboard.js's 3s)
-const HOOKS_POLL_MS = 30_000; // /hooks poll (lane roster)
-const POLL_MAX = 400; // newest window fetched per poll
+const STREAM_PATH = '/runs/stream';
+// One supervisor/fallback tick: FIXED cadence, forever. Handles both the
+// fallback poll (stream down) and replacing a permanently-CLOSED source.
+const FALLBACK_POLL_MS = 5000;
+// How long the stream may be down before the fallback poll engages. The
+// server-directed EventSource retry is 2s, so a blip reconnects well within
+// the grace period and never wakes the poll at all.
+const STREAM_GRACE_MS = 8000;
+// Every feed fetch is bounded: a fetch that cannot settle must fail, not
+// wedge an in-flight guard (root cause #1 above).
+const FETCH_TIMEOUT_MS = 15000;
+const RESYNC_MAX = 400; // /runs window fetched at boot, on stream open, by the fallback poll
+const RECONCILE_MAX = 20; // stale non-terminal runs re-checked per resync
+// Component staleness marking (feature-detected): with 10s heartbeats,
+// ~2.5 missed beats = the feed is genuinely dead, say so on the chart.
+const STALE_AFTER_MS = 25_000;
+const HOOKS_POLL_MS = 30_000; // /hooks poll (lane roster metadata only)
 // Page size for ?before= history paging. Deliberately NOT raised: with the
 // walk bounded to the requested window a pan needs 1-2 pages, and at
 // observed production density a 200-run page is already ~3.5MB — a larger
@@ -120,7 +183,7 @@ const PRUNE_TO = 8_000; // newest runs kept when it does
 const TABLE_PREF_KEY = 'whr-show-runs-table';
 
 /** Statuses that mean the run is over (mirror internal/runs.Status). */
-const TERMINAL_STATUSES = new Set(['success', 'failure', 'timeout', 'error', 'cancelled']);
+const TERMINAL_STATUSES = new Set(['success', 'failure', 'timeout', 'error', 'cancelled', 'skipped']);
 
 function isTerminal(status: string): boolean {
 	return TERMINAL_STATUSES.has(status);
@@ -128,7 +191,7 @@ function isTerminal(status: string): boolean {
 
 // -- State --------------------------------------------------------------------
 
-/** Every run this page has seen, newest poll data winning, keyed by id. */
+/** Every run this page has seen, newest data winning, keyed by id. */
 const runsById = new Map<string, RunState>();
 /** Raw `started` of the oldest run held — the next ?before= cursor. */
 let oldestStartedRaw: string | null = null;
@@ -136,7 +199,7 @@ let oldestStartedMs = Infinity;
 /** GET /hooks roster (registered hooks appear as lanes even when idle). */
 let hookMeta = new Map<string, HookSummary>();
 let laneOrderKey = '';
-let seeded = false; // first successful poll went through setData
+let seeded = false; // first data application went through setData
 
 function noteOldest(r: RunState): void {
 	const ms = Date.parse(r.started);
@@ -152,6 +215,179 @@ function ingestRuns(page: RunState[]): void {
 		runsById.set(r.id, r);
 		noteOldest(r);
 	}
+}
+
+// -- The live feed -------------------------------------------------------------
+
+/** The chart's hooks into the feed; attached once the component loads. */
+interface FeedConsumer {
+	onPage(page: RunState[]): void;
+	onDelta(r: RunState): void;
+	/** Rebuild from runsById outright — used after removals, which
+	 * mergeData cannot express. */
+	rebuild(): void;
+	markFresh(): void;
+}
+let chart: FeedConsumer | null = null;
+
+/** Bounded fetch: identical contract to fetchJSON, but it CANNOT hang
+ * forever (AbortSignal.timeout) — the wedge-proofing for every feed path. */
+async function fetchJSONBounded<T>(url: string): Promise<T> {
+	const res = await fetch(url, {
+		headers: { Accept: 'application/json' },
+		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+	});
+	if (!res.ok) throw new Error(`${url}: ${res.status}`);
+	return (await res.json()) as T;
+}
+
+let streamLive = false;
+let streamDownSince = Date.now(); // page load starts "down" until onopen
+let es: EventSource | null = null;
+
+/** Publish stream state: dashboard.js gates its own fallbacks (the modal's
+ * 3s poll) on window.whrStreamLive; the event lets it react to recovery. */
+function setStreamLive(live: boolean): void {
+	if (streamLive === live) return;
+	streamLive = live;
+	if (!live) streamDownSince = Date.now();
+	window.whrStreamLive = live;
+	window.dispatchEvent(new CustomEvent('whr:stream-state', { detail: { live } }));
+	console.info(`timeline: run stream ${live ? 'connected' : 'down (EventSource retries on its fixed 2s cadence)'}`);
+}
+
+function fresh(): void {
+	chart?.markFresh();
+}
+
+/** One run delta: update the store, the chart, and anyone else listening
+ * (dashboard.js's run modal refreshes in place off this event). */
+function ingestDelta(r: RunState): void {
+	const prev = runsById.get(r.id);
+	runsById.set(r.id, r);
+	noteOldest(r);
+	chart?.onDelta(r);
+	window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: r.id, run: r } }));
+	void prev; // (kept for symmetry; per-delta diffing lives chart-side)
+}
+
+function ingestPage(page: RunState[]): void {
+	ingestRuns(page);
+	chart?.onPage(page);
+}
+
+/** On (re)connect and per fallback poll: any run we believe is live but
+ * which fell out of the fetched window gets checked individually — the
+ * permanent fix for merge-hole fiction (#3): nothing can stay "running"
+ * forever just because its terminal update happened out of view. */
+async function reconcileMissing(page: RunState[]): Promise<void> {
+	const inPage = new Set(page.map((r) => r.id));
+	const stale = [...runsById.values()]
+		.filter((r) => !isTerminal(r.status) && !inPage.has(r.id))
+		.slice(0, RECONCILE_MAX);
+	let dropped = false;
+	for (const r of stale) {
+		try {
+			ingestDelta(await fetchJSONBounded<RunState>(`/runs/${encodeURIComponent(r.id)}?tail=0`));
+		} catch (e) {
+			// 404 = the server genuinely no longer knows this run: it was in
+			// flight during a restart, which loses live runs by design (they
+			// never reached a terminal state, so history has nothing). Keeping
+			// it would freeze a fictional "running" bar forever — remove it
+			// and let the chart reflect server truth.
+			if (e instanceof Error && / 404$|: 404$/.test(e.message)) {
+				console.info(`timeline: run ${r.id} is gone server-side (lost in a restart) — dropping it`);
+				runsById.delete(r.id);
+				dropped = true;
+				continue;
+			}
+			console.error('timeline: reconcile of', r.id, 'failed:', e);
+		}
+	}
+	if (dropped) chart?.rebuild();
+}
+
+/** ONE full resync per stream (re)open, then stream-only. */
+async function resyncOnce(): Promise<void> {
+	try {
+		const page = await fetchJSONBounded<RunState[]>(`/runs?max=${RESYNC_MAX}`);
+		ingestPage(page);
+		fresh();
+		await reconcileMissing(page);
+	} catch (e) {
+		// Benign: the connect snapshot covers the same window; the next
+		// delta or heartbeat keeps freshness honest.
+		console.error('timeline: resync failed:', e);
+	}
+}
+
+function openStream(): void {
+	es = new EventSource(STREAM_PATH);
+	es.onopen = () => {
+		setStreamLive(true);
+		void resyncOnce();
+	};
+	// On error EventSource retries BY ITSELF at the server-directed fixed
+	// 2s cadence (readyState CONNECTING). No backoff of ours on top, no
+	// close/reopen loop — the supervisor below only replaces a source the
+	// browser has permanently CLOSED.
+	es.onerror = () => {
+		setStreamLive(false);
+	};
+	es.addEventListener('snapshot', (e) => {
+		try {
+			ingestPage(JSON.parse((e as MessageEvent<string>).data) as RunState[]);
+			fresh();
+		} catch (err) {
+			console.error('timeline: bad snapshot event:', err);
+		}
+	});
+	es.addEventListener('run', (e) => {
+		try {
+			ingestDelta(JSON.parse((e as MessageEvent<string>).data) as RunState);
+			fresh();
+		} catch (err) {
+			console.error('timeline: bad run event:', err);
+		}
+	});
+	// Heartbeats are the idle-stream freshness signal (data may legitimately
+	// be quiet for hours; the FEED being alive is what markFresh attests).
+	es.addEventListener('hb', () => fresh());
+}
+
+/** The feed supervisor + fallback poll: one interval, armed once, never
+ * cleared, every branch guarded — structurally unkillable (the answer to
+ * root causes #1 and #2). While the stream is up it does nothing. */
+let fallbackInFlight = false;
+function startFeedSupervisor(): void {
+	setInterval(() => {
+		try {
+			// A permanently-CLOSED EventSource never retries on its own —
+			// that happens when the endpoint itself refuses (e.g. an older
+			// server without /runs/stream). Replace it on this same fixed
+			// cadence: not a backoff, never gives up.
+			if (es !== null && es.readyState === EventSource.CLOSED) {
+				setStreamLive(false);
+				openStream();
+			}
+			if (streamLive) return;
+			if (Date.now() - streamDownSince < STREAM_GRACE_MS) return;
+			if (fallbackInFlight) return; // bounded fetch — cannot wedge this guard
+			fallbackInFlight = true;
+			fetchJSONBounded<RunState[]>(`/runs?max=${RESYNC_MAX}`)
+				.then((page) => {
+					ingestPage(page);
+					fresh(); // markFresh only on SUCCESS — staleness stays honest
+					return reconcileMissing(page);
+				})
+				.catch((e) => console.error('timeline: fallback poll failed:', e))
+				.finally(() => {
+					fallbackInFlight = false;
+				});
+		} catch (e) {
+			console.error('timeline: feed supervisor tick failed:', e);
+		}
+	}, FALLBACK_POLL_MS);
 }
 
 // -- Run → timeline translation ------------------------------------------------
@@ -172,7 +408,7 @@ function stateFor(r: RunState): string {
 		case 'cancelled':
 			return 'outline'; // hollow
 		default:
-			// Unknown status (e.g. a future 'skipped'): render safely dim.
+			// Unknown status (e.g. a future value): render safely dim.
 			// Zero-duration runs become instant pips on their own.
 			return 'dim';
 	}
@@ -328,7 +564,7 @@ function runTooltip(r: RunState): Node {
 	appendWaitingRows(frag, r);
 	if (r.waiters && r.waiters.length > 0) {
 		frag.appendChild(
-			ttRow('holds', `${r.waiters.length} run(s) waiting on this run's lock(s)`),
+			ttRow('holds', `${r.waiters.length} run(s) waiting on this run`),
 		);
 	}
 	return frag;
@@ -371,6 +607,13 @@ function initTimeline(): void {
 		if (hit.type === 'lane') return laneTooltip(hit.lane);
 		return null;
 	};
+
+	// Staleness marking (landing in js-snippets — feature-detect): the
+	// component dims/flags the chart when markFresh hasn't been called for
+	// staleAfterMs. With it, a dead feed LOOKS dead instead of extrapolating
+	// running bars; without it, the fallback poll still keeps data honest.
+	const supportsFreshness = typeof tl.markFresh === 'function';
+	if (supportsFreshness) tl.staleAfterMs = STALE_AFTER_MS;
 
 	// Click-through: a bar opens the same run modal the tables use; a lane
 	// label opens the hook's drill-down page (same href the hooks table uses).
@@ -417,7 +660,7 @@ function initTimeline(): void {
 			}
 			let cursorMs = Date.parse(cursor);
 			for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
-				const rows = await fetchJSON<RunState[]>(
+				const rows = await fetchJSONBounded<RunState[]>(
 					`/runs?before=${encodeURIComponent(cursor)}&max=${BACKFILL_MAX}`,
 				);
 				if (rows.length === 0) return { exhausted: true };
@@ -441,8 +684,8 @@ function initTimeline(): void {
 			backfillInFlight = false;
 		}
 	};
-	// Armed only after the first poll seeds coverage (see pollRuns): first
-	// paint is the poll's own window — a page load issues ZERO ?before=
+	// Armed only after the first data seeds coverage (see applyPage): first
+	// paint is the feed's own window — a page load issues ZERO ?before=
 	// requests until the user actually pans into uncovered history.
 	const armBackfill = (): void => {
 		if (tl.loadRange === null) tl.loadRange = backfill;
@@ -451,7 +694,7 @@ function initTimeline(): void {
 	// "history ends here — retention 48h" when the server reports a run store.
 	void (async () => {
 		try {
-			const cfg = await fetchJSON<{ run_retention?: string }>('/config');
+			const cfg = await fetchJSONBounded<{ run_retention?: string }>('/config');
 			if (cfg && typeof cfg.run_retention === 'string' && cfg.run_retention !== '') {
 				tl.setAttribute('history-end-text', `history ends here — retention ${cfg.run_retention}`);
 			}
@@ -460,63 +703,89 @@ function initTimeline(): void {
 		}
 	})();
 
-	// -- Polling ---------------------------------------------------------------
+	// -- Feed → chart -----------------------------------------------------------
 
-	let pollInFlight = false;
-	const pollRuns = async (): Promise<void> => {
-		if (pollInFlight) return;
-		pollInFlight = true;
-		try {
-			const page = await fetchJSON<RunState[]>(`/runs?max=${POLL_MAX}`);
-			const now = Date.now();
-			ingestRuns(page);
-			if (maybePrune(tl, now)) return; // prune did a full setData already
-			const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
-			const data: TimelineData = {
-				intervals: page.map(runToInterval),
-				coverage: { start: pageOldestMs, end: now },
-			};
-			if (!seeded) {
-				seeded = true;
-				laneOrderKey = '';
-				tl.setData(data);
-				armBackfill(); // coverage exists now — history paging may engage
-			} else {
-				tl.mergeData(data);
-			}
-			syncLanes(tl);
-			tl.setConnectors(computeConnectors());
-		} catch (e) {
-			console.error('timeline: poll failed:', e);
-		} finally {
-			pollInFlight = false;
+	const applyPage = (page: RunState[]): void => {
+		const now = Date.now();
+		if (maybePrune(tl, now)) return; // prune did a full setData already
+		const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
+		const data: TimelineData = {
+			intervals: page.map(runToInterval),
+			coverage: { start: pageOldestMs, end: now },
+		};
+		if (!seeded) {
+			seeded = true;
+			laneOrderKey = '';
+			tl.setData(data);
+			armBackfill(); // coverage exists now — history paging may engage
+		} else {
+			// MERGE, never setData: later snapshots/resyncs must not wipe the
+			// backfilled history the component already holds.
+			tl.mergeData(data);
 		}
+		syncLanes(tl);
+		tl.setConnectors(computeConnectors());
 	};
 
+	const applyDelta = (r: RunState): void => {
+		if (!seeded) {
+			// No coverage yet (deltas can precede the first page when the
+			// stream connects before the seed fetch returns): render what we
+			// hold as the seed.
+			applyPage([...runsById.values()]);
+			return;
+		}
+		tl.mergeData({ intervals: [runToInterval(r)] });
+		syncLanes(tl);
+		tl.setConnectors(computeConnectors());
+	};
+
+	// Full rebuild (the only way to REMOVE an interval — mergeData upserts).
+	// Coverage restarts at the held window, so deeper panning re-pages from
+	// the server; same trade maybePrune makes.
+	const rebuildAll = (): void => {
+		oldestStartedRaw = null;
+		oldestStartedMs = Infinity;
+		for (const r of runsById.values()) noteOldest(r);
+		laneOrderKey = '';
+		const lanes = computeLanes();
+		laneOrderKey = lanes.map((l) => l.id).join('\n');
+		tl.setData({
+			lanes,
+			intervals: [...runsById.values()].map(runToInterval),
+			connectors: computeConnectors(),
+			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 60_000, end: Date.now() },
+		});
+	};
+
+	chart = {
+		onPage: applyPage,
+		onDelta: applyDelta,
+		rebuild: rebuildAll,
+		markFresh: () => {
+			if (supportsFreshness) tl.markFresh!();
+		},
+	};
+
+	// The chart attached after the feed started: render everything already
+	// ingested (seed fetch and/or connect snapshot that raced the component
+	// load).
+	if (runsById.size > 0) applyPage([...runsById.values()]);
+
+	// Lane metadata (descriptions, kill-switch state) changes rarely: a
+	// gentle fixed poll, try/caught, never cleared. NOT visibility-gated —
+	// the gate is one of the documented ways the old feed died.
 	const pollHooks = async (): Promise<void> => {
 		try {
-			const hooks = await fetchJSON<HookSummary[]>('/hooks');
+			const hooks = await fetchJSONBounded<HookSummary[]>('/hooks');
 			hookMeta = new Map(hooks.map((h) => [h.id, h]));
 			syncLanes(tl);
 		} catch (e) {
 			console.error('timeline: hooks poll failed:', e);
 		}
 	};
-
-	// Poll only while the timeline can be seen: tab visible AND the overview
-	// main is the active view (the #hook= drill-down hides it).
-	const visible = (): boolean => !document.hidden && currentHookId() === null;
-	const tick = (): void => {
-		if (visible()) void pollRuns();
-	};
-	setInterval(tick, TIMELINE_POLL_MS);
-	setInterval(() => {
-		if (visible()) void pollHooks();
-	}, HOOKS_POLL_MS);
-	document.addEventListener('visibilitychange', tick);
-	window.addEventListener('hashchange', tick);
+	setInterval(() => void pollHooks(), HOOKS_POLL_MS);
 	void pollHooks();
-	tick();
 }
 
 /** Re-apply lane order only when it actually changed (setLanes re-ingests). */
@@ -590,16 +859,20 @@ function initTableToggle(): void {
 	});
 }
 
-// -- Boot: load the component (retrying forever), then wire the timeline ---------
+// -- Boot: feed first, then the component (retrying forever) ---------------------
 //
-// The <timeline-view> module lives on js-snippets' GitHub Pages and is
-// imported at runtime. That fetch can fail (origin briefly unreachable), and
-// a failure must NOT leave the chart section permanently dead: the load
-// retries on a FIXED short cadence forever — no growing backoff, no attempt
-// cap, never parks silently — with a visible "chart loading…" note in the
-// section until it succeeds. Retries cache-bust the URL (?retry=N) because
-// a failed module fetch can be memoized in the browser's module map — a
-// bare re-import would reject from cache without ever hitting the network.
+// The FEED (EventSource + fallback supervisor + seed fetch) starts before —
+// and independently of — the <timeline-view> component load: runsById fills,
+// whr:run-delta events flow to dashboard.js (the run modal's live refresh),
+// and stream state publishes, even if GitHub Pages is unreachable. The
+// component module lives on js-snippets' Pages and is imported at runtime;
+// that fetch can fail, and a failure must NOT leave the chart section
+// permanently dead: the load retries on a FIXED short cadence forever — no
+// growing backoff, no attempt cap, never parks silently — with a visible
+// "chart loading…" note in the section until it succeeds. Retries cache-bust
+// the URL (?retry=N) because a failed module fetch can be memoized in the
+// browser's module map — a bare re-import would reject from cache without
+// ever hitting the network.
 
 function loadingNote(): HTMLElement | null {
 	let note = document.getElementById('timeline-loading');
@@ -628,6 +901,17 @@ async function boot(): Promise<void> {
 	// The table toggle must work even while (or if) the chart is loading —
 	// the runs table is the fallback view and depends only on this module.
 	initTableToggle();
+	// Seed fetch (coverage for the first paint), then the stream, then the
+	// unkillable supervisor. None of these wait on the component.
+	void (async () => {
+		try {
+			ingestPage(await fetchJSONBounded<RunState[]>(`/runs?max=${RESYNC_MAX}`));
+		} catch (e) {
+			console.error('timeline: initial seed fetch failed (the stream snapshot covers it):', e);
+		}
+	})();
+	openStream();
+	startFeedSupervisor();
 	await loadComponentForever();
 	document.getElementById('timeline-loading')?.remove();
 	initTimeline();

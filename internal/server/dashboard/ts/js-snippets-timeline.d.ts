@@ -172,5 +172,13 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 		set followNow(v: boolean);
 		/** Snap back to the live edge (the jump pill's action). */
 		jumpToNow(): void;
+		/** Staleness marking (OPTIONAL — landing upstream; consumers must
+		 * feature-detect with `typeof el.markFresh === 'function'`): call
+		 * markFresh() whenever the data feed proves alive (data or
+		 * heartbeat); if staleAfterMs elapses without one, the component
+		 * renders the chart as stale (frozen bars + note) instead of
+		 * extrapolating ongoing intervals as fiction. */
+		markFresh?(): void;
+		staleAfterMs?: number;
 	}
 }
