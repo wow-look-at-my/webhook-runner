@@ -102,22 +102,37 @@ func isRelevantEvent(name string) bool {
 	return filepath.Ext(base) == ""
 }
 
-// addRecursive adds the root directory and every immediate child directory
-// to the watcher. We don't go deeper than that — hook.json is always one
-// level under the root.
+// addRecursive adds the directories whose config files drive reloads. For
+// a legacy tree that is the root plus every immediate child (hook.json is
+// one level down). For a src-layout tree it additionally covers src/,
+// src/hooks/ and its children, and src/config/ (concurrency.json's new
+// home). src/sdk is deliberately NOT watched: shared-code edits matter at
+// image-build time (they change content hashes, so the next run rebuilds)
+// — they don't change the loaded config. A tree that flips layout on a
+// pull still reloads: new directories arriving under a watched parent are
+// added by the Create handler above, and the webhook/admin reload path
+// re-detects the layout on every invocation anyway.
 func addRecursive(w *fsnotify.Watcher, root string) error {
 	if err := w.Add(root); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	addChildren := func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
 		}
-		_ = w.Add(filepath.Join(root, e.Name()))
+		for _, e := range entries {
+			if e.IsDir() {
+				_ = w.Add(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+	addChildren(root)
+	if l := DetectLayout(root); l.SDK {
+		_ = w.Add(l.SrcDir())
+		_ = w.Add(l.HooksDir())
+		addChildren(l.HooksDir())
+		_ = w.Add(filepath.Join(l.SrcDir(), "config"))
 	}
 	return nil
 }

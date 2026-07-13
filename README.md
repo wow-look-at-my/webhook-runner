@@ -910,6 +910,58 @@ The content-hash tag is what makes runs immutable and rebuilds automatic:
 No registry is involved: the hooks repo stays the single source of truth,
 and the runner host turns it into immutable local images.
 
+## Hooks-tree layouts (legacy and src/)
+
+webhook-runner serves two tree shapes, detected — never configured — by
+one rule applied identically in `serve`, `validate`, and `test`:
+**`<root>/src/hooks/` existing as a directory selects the src layout;
+anything else is legacy.**
+
+```
+LEGACY                        SRC (SDK layout)
+<root>/                       <root>/
+  my-hook/hook.json             src/
+  my-hook/Dockerfile              hooks/my-hook/hook.json     # ids/routes unchanged
+  concurrency.json                hooks/my-hook/Dockerfile
+                                  sdk/…                       # shared, dependency-free code
+                                  config/concurrency.json
+```
+
+The src layout exists for shared code: hooks import from `src/sdk/`
+relatively (`../../sdk/util.ts`), and Dockerfiles follow the
+**tree-mirror COPY convention** — the build context is `src/` (the runner
+passes the hook's own Dockerfile with `-f`), and the image mirrors the
+tree so the same relative import resolves in-repo and in-image:
+
+```dockerfile
+COPY sdk/ /app/sdk/
+COPY hooks/my-hook/ /app/hooks/my-hook/
+WORKDIR /app/hooks/my-hook
+```
+
+Rules that keep it predictable:
+
+- **Never mixed.** Under the src layout, root-level hook dirs are ignored
+  with a loud per-directory error naming them — a hook must never
+  silently vanish from the registry because it sat at the wrong level.
+- **Content hashing** (src layout): a deterministic walk of
+  `src/hooks/<id>/` **and** `src/sdk/` (relative path + file mode +
+  bytes) — never sibling hook dirs. An sdk edit re-tags every src-layout
+  hook (each lazily rebuilds on its next run); an edit to hook A never
+  re-tags hook B. Legacy hashing is byte-identical to previous releases,
+  so upgrading the runner never re-tags existing deployments.
+- **COPY surface**: an src-layout Dockerfile may COPY only from `sdk/`
+  and its own `hooks/<id>/`. Anything else in the `src/` context is
+  undefined-staleness territory — the build won't fail, but edits there
+  never re-tag the hook.
+- **Zero hooks is a loud failure.** A root that yields no hooks (empty,
+  or a mis-laid-out tree — e.g. an src-restructured repo served by an
+  older binary) fails `validate` with a clear message and records an
+  error-grade event on every `serve` reload. A fleet must never go
+  offline behind a green check.
+- `concurrency.json` moves to `src/config/concurrency.json` under the src
+  layout; secrets (`secrets.sops.env`) stay per-hook-directory in both.
+
 ## Subcommands
 
 - `webhook-runner [hooks-dir]` — start the server.
