@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Manager enforces per-group concurrency limits with one buffered-channel
@@ -16,10 +17,173 @@ import (
 // the Manager and re-applied by Update itself, so a hooks reload can never
 // open a window where the declared limit is briefly back in effect — the
 // effective limit changes atomically with the reload.
+//
+// Besides the semaphores (the gating mechanism), the Manager keeps ADVISORY
+// queue bookkeeping per group NAME: which run IDs currently hold slots
+// (acquire order) and which are waiting (registration order). It exists so
+// the dashboard can answer "what is holding the slots and who is queued" —
+// it is display data, never consulted for gating, and it deliberately
+// survives semaphore swaps (a reload or live limit override swaps the
+// channel; runs holding old-channel slots stay listed until they release,
+// which is exactly what an operator staring at a wedge needs to see).
 type Manager struct {
 	mu        sync.Mutex
 	groups    map[string]*groupSem
 	overrides map[string]int // group -> operator limit override (>= 1)
+	// queues is the advisory holder/waiter bookkeeping, keyed by group
+	// name (NOT by groupSem: it must survive semaphore swaps). Entries are
+	// pruned when both lists empty.
+	queues map[string]*groupQueue
+}
+
+// groupQueue is one group's advisory holder/waiter bookkeeping.
+type groupQueue struct {
+	holders []holderRec  // runs currently holding slots, acquire order
+	waiting []*waiterRec // runs blocked on a slot, registration order
+}
+
+type holderRec struct {
+	id    string
+	since time.Time
+}
+
+type waiterRec struct {
+	id     string
+	since  time.Time
+	notify func(QueueState)
+}
+
+// QueueState is a queued run's live place in its group's queue, delivered
+// to the Acquire onQueue callback: who holds the slots right now and the
+// run's 1-based position in the wait line (1 = next; "N ahead" renders as
+// Position-1). Holders is a fresh copy, safe to retain. Advisory display
+// data — see the Manager comment.
+type QueueState struct {
+	Holders  []string
+	Position int
+}
+
+// GroupRun is one run in a group's advisory queue detail: a holder (Since =
+// when it took the slot) or a waiter (Since = when it started waiting).
+type GroupRun struct {
+	ID    string
+	Since time.Time
+}
+
+// QueueDetail returns a group's advisory holder and waiter lists (holders
+// in acquire order, waiters in registration order). Copies, safe to retain.
+func (m *Manager) QueueDetail(group string) (holders, waiting []GroupRun) {
+	if m == nil {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q := m.queues[group]
+	if q == nil {
+		return nil, nil
+	}
+	for _, h := range q.holders {
+		holders = append(holders, GroupRun{ID: h.id, Since: h.since})
+	}
+	for _, w := range q.waiting {
+		waiting = append(waiting, GroupRun{ID: w.id, Since: w.since})
+	}
+	return holders, waiting
+}
+
+// queueFor returns (creating if needed) the advisory record for a group.
+// Caller holds m.mu.
+func (m *Manager) queueFor(group string) *groupQueue {
+	q := m.queues[group]
+	if q == nil {
+		q = &groupQueue{}
+		m.queues[group] = q
+	}
+	return q
+}
+
+// pruneQueue drops a group's advisory record once it is empty. Caller
+// holds m.mu.
+func (m *Manager) pruneQueue(group string) {
+	if q := m.queues[group]; q != nil && len(q.holders) == 0 && len(q.waiting) == 0 {
+		delete(m.queues, group)
+	}
+}
+
+// addHolder / dropHolder / addWaiter / dropWaiter maintain the advisory
+// lists. Empty run IDs (callers without an identity) are not tracked.
+// Callers hold m.mu.
+func (m *Manager) addHolder(group, id string) {
+	if id == "" {
+		return
+	}
+	m.queueFor(group).holders = append(m.queueFor(group).holders, holderRec{id: id, since: time.Now().UTC()})
+}
+
+func (m *Manager) dropHolder(group, id string) {
+	q := m.queues[group]
+	if q == nil || id == "" {
+		return
+	}
+	for i, h := range q.holders {
+		if h.id == id {
+			q.holders = append(q.holders[:i], q.holders[i+1:]...)
+			break
+		}
+	}
+	m.pruneQueue(group)
+}
+
+func (m *Manager) dropWaiter(group string, w *waiterRec) {
+	q := m.queues[group]
+	if q == nil {
+		return
+	}
+	for i, cand := range q.waiting {
+		if cand == w {
+			q.waiting = append(q.waiting[:i], q.waiting[i+1:]...)
+			break
+		}
+	}
+	m.pruneQueue(group)
+}
+
+// queueState builds the QueueState a waiter sees right now. Caller holds
+// m.mu; the holder slice is a fresh copy.
+func (m *Manager) queueState(group string, w *waiterRec) QueueState {
+	q := m.queues[group]
+	st := QueueState{Position: 0}
+	if q == nil {
+		return st
+	}
+	st.Holders = make([]string, 0, len(q.holders))
+	for _, h := range q.holders {
+		st.Holders = append(st.Holders, h.id)
+	}
+	for i, cand := range q.waiting {
+		if cand == w {
+			st.Position = i + 1
+			break
+		}
+	}
+	return st
+}
+
+// notifyWaiters re-delivers fresh QueueStates to every waiter of a group
+// whose view changed (a holder came or went, or the line moved). Callbacks
+// run synchronously under m.mu — they are serialized by design and must be
+// fast and never call back into the Manager (the runner's observer just
+// stamps the run's waiting_on).
+func (m *Manager) notifyWaiters(group string) {
+	q := m.queues[group]
+	if q == nil {
+		return
+	}
+	for _, w := range q.waiting {
+		if w.notify != nil {
+			w.notify(m.queueState(group, w))
+		}
+	}
 }
 
 type groupSem struct {
@@ -37,7 +201,7 @@ type groupSem struct {
 
 // NewManager builds a Manager from the given config (nil cfg = no groups).
 func NewManager(cfg *Config) *Manager {
-	m := &Manager{groups: map[string]*groupSem{}, overrides: map[string]int{}}
+	m := &Manager{groups: map[string]*groupSem{}, overrides: map[string]int{}, queues: map[string]*groupQueue{}}
 	m.Update(cfg)
 	return m
 }
@@ -163,10 +327,17 @@ func (m *Manager) Declared(group string) (limit int, ok bool) {
 //     (the caller should treat the run as cancelled-before-start).
 //   - A group not declared in the current config returns an error; the
 //     runner fails such a run closed rather than running it unbounded.
-//   - onWait, if non-nil, is called at most once — the moment the run has
-//     to actually queue (no slot was immediately available). Callers use
-//     it to record a "queued" event without spamming one per run.
-func (m *Manager) Acquire(group string, cancel <-chan struct{}, onWait func()) (release func(), acquired bool, err error) {
+//   - runID identifies the caller in the group's advisory queue bookkeeping
+//     (QueueDetail, QueueState.Holders). Empty is allowed: the caller gates
+//     normally but stays invisible in the queue views.
+//   - onQueue, if non-nil, is called the moment the run has to actually
+//     queue (no slot was immediately available) — callers use that first
+//     call to record a one-time "queued" event — and again every time the
+//     queued run's view changes (a holder came or went, the line moved),
+//     each time with a fresh QueueState. Calls are serialized under the
+//     Manager's mutex: they must be fast and must not call back into the
+//     Manager. A run that gets its slot immediately never sees onQueue.
+func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue func(QueueState)) (release func(), acquired bool, err error) {
 	if group == "" {
 		return func() {}, true, nil
 	}
@@ -175,35 +346,68 @@ func (m *Manager) Acquire(group string, cancel <-chan struct{}, onWait func()) (
 	}
 	m.mu.Lock()
 	gs := m.groups[group]
-	m.mu.Unlock()
 	if gs == nil {
+		m.mu.Unlock()
 		return nil, false, fmt.Errorf("unknown concurrency group %q", group)
 	}
 
-	// Fast path: grab a free slot without reporting a queue wait.
+	// Fast path: grab a free slot without reporting a queue wait. Taken
+	// under m.mu so the holder registration is atomic with the grab.
 	select {
 	case gs.ch <- struct{}{}:
-		return releaser(gs.ch), true, nil
+		m.addHolder(group, runID)
+		m.mu.Unlock()
+		return m.releaser(group, runID, gs.ch), true, nil
 	default:
 	}
 
-	if onWait != nil {
-		onWait()
+	// Queue: register in the advisory wait line and tell the caller it is
+	// actually waiting (first onQueue call = the old one-shot onWait).
+	w := &waiterRec{id: runID, since: time.Now().UTC(), notify: onQueue}
+	if runID != "" {
+		m.queueFor(group).waiting = append(m.queueFor(group).waiting, w)
 	}
+	if onQueue != nil {
+		onQueue(m.queueState(group, w))
+	}
+	m.mu.Unlock()
+
 	gs.waiting.Add(1)
 	defer gs.waiting.Add(-1)
 	select {
 	case gs.ch <- struct{}{}:
-		return releaser(gs.ch), true, nil
+		m.mu.Lock()
+		m.dropWaiter(group, w)
+		m.addHolder(group, runID)
+		// Everyone still waiting sees a new holder and a shorter line.
+		m.notifyWaiters(group)
+		m.mu.Unlock()
+		return m.releaser(group, runID, gs.ch), true, nil
 	case <-cancel:
+		m.mu.Lock()
+		m.dropWaiter(group, w)
+		m.notifyWaiters(group)
+		m.mu.Unlock()
 		return nil, false, nil
 	}
 }
 
-// releaser returns a single-use release closure for the given channel.
-func releaser(ch chan struct{}) func() {
+// releaser returns a single-use release closure for the given channel. It
+// also retires the run from the group's advisory holder list and refreshes
+// the remaining waiters' view — by group NAME, so it stays correct across
+// semaphore swaps (the token still returns to the exact channel it came
+// from; see groupSem.ch).
+func (m *Manager) releaser(group, runID string, ch chan struct{}) func() {
 	var once sync.Once
-	return func() { once.Do(func() { <-ch }) }
+	return func() {
+		once.Do(func() {
+			<-ch
+			m.mu.Lock()
+			m.dropHolder(group, runID)
+			m.notifyWaiters(group)
+			m.mu.Unlock()
+		})
+	}
 }
 
 // GroupStatus is a snapshot of one group's live utilization. Limit is the
