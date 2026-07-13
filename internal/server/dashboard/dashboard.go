@@ -15,13 +15,12 @@
 // component itself is imported by the browser at runtime from
 // wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
 // compiled by ts0 (type-check + bundle, config in ts0.json; the component
-// URL passes through unbundled) via the go:generate directive below. The
-// bundle is committed so a fresh clone builds and embeds without Node; CI
-// regenerates it and fails on any diff, so it can't go stale. The
-// directive runs ts0 through npm 11's exec (npm 10's npx cannot install git
-// dependencies that need a prepare build) pinned to a full ts0 commit —
-// bump the SHA deliberately, and remember any edit to the directive changes
-// the go-toolchain --generate approval hash.
+// URL passes through unbundled). The committed bundle is authoritative and
+// embedded as-is: the npx //go:generate directive that rebuilt it was
+// removed (the build must not need node/npm/npx), so regeneration is
+// temporarily a manual step — run ts0 yourself after editing ts/ and commit
+// the regenerated bundle. A prebuilt ts0 binary served from buildhost,
+// fetched by a small Go bootstrap, is landing next to re-automate this.
 package dashboard
 
 import (
@@ -43,9 +42,9 @@ type Asset struct {
 }
 
 // CSS and JS are the dashboard's static assets; TimelineJS is the generated
-// runs-timeline bundle (see the go:generate directive above); Index is
-// index.html with its asset references rewritten to the content-addressed
-// names.
+// runs-timeline bundle (ts0 output, committed — see the package comment);
+// Index is index.html with its asset references rewritten to the
+// content-addressed names.
 var (
 	CSS        Asset
 	JS         Asset
