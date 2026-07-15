@@ -213,7 +213,7 @@ function stateFor(r) {
       return "failed";
     // unmissable emphasis (the failure IS the terminal fact)
     case "cancelled":
-      return tsPresent(r.cancel_requested_at) ? "" : "outline";
+      return "cancelled";
     default:
       return "dim";
   }

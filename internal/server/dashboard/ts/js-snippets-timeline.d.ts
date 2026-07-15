@@ -47,7 +47,7 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 		label?: string;
 		/** Color key: same category = same hue. Defaults to lane.group, then laneId. */
 		category?: string;
-		/** Style-map key: rendering treatment (e.g. 'failed', 'dim', 'hatch'). */
+		/** Style-map key: rendering treatment (e.g. 'failed', 'dim', 'cancelled'). */
 		state?: string;
 		segments?: TimelineSegment[];
 		/** Opaque consumer payload — echoed back in events and tooltip callbacks. */

@@ -509,11 +509,15 @@ function stateFor(r: RunState): string {
 		case 'timeout':
 			return 'failed'; // unmissable emphasis (the failure IS the terminal fact)
 		case 'cancelled':
-			// True lifecycle: the run was NOT cancelled from birth. The bar
-			// stays neutral; the kill tail (cancel_requested_at → finished)
-			// renders as an outline SEGMENT (see runToInterval). Without the
-			// timestamp (old servers), keep the legacy whole-bar hollow.
-			return tsPresent(r.cancel_requested_at) ? '' : 'outline';
+			// First-class terminal treatment (a component built-in since the
+			// feedback round): hollow body + dashed category-hue border —
+			// "stopped, not failed" at any zoom, never the emphasis color,
+			// never a solid success-look body. The kill tail
+			// (cancel_requested_at → finished) STAYS a separate terminal-cut
+			// segment (see runToInterval) composing over it. States are
+			// freeform strings, so this is purely additive: an older cached
+			// component treats the unknown key as the neutral default.
+			return 'cancelled';
 		default:
 			// Unknown status (e.g. a future value): render safely dim.
 			// Zero-duration runs become instant pips on their own.
@@ -589,8 +593,11 @@ function runToInterval(r: RunState): TimelineInterval {
 		const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
 		segments.push({ start: s0, end: e0, kind: 'waiting' });
 	}
-	// The kill tail: cancelled runs render UNCANCELLED until the request
-	// actually arrived, then hollow from the request to the death.
+	// The kill tail: the span up to the cancel request renders as the run's
+	// normal life; the request → death tail is an 'outline' segment, which
+	// the component draws as a TERMINAL CUT (dark scrim + bright cut line,
+	// kept >= ~3 device px at any zoom — a sub-second docker-kill latency
+	// tail can never vanish) composed over the cancelled treatment.
 	if (r.status === 'cancelled' && tsPresent(r.cancel_requested_at)) {
 		segments.push({ start: Date.parse(r.cancel_requested_at as string), end, kind: 'outline' });
 	}
