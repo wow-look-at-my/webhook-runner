@@ -279,6 +279,26 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
+- `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
+  EXACTLY two docker-run flags — `--privileged` and
+  `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
+  live-run path (`runner.execute`, before extra_docker_args + the image)
+  AND the `webhook-runner test` path (`runner.runOneTest`, before the
+  image); that run/test parity is load-bearing so a dind hook's declared
+  `tests` can start a nested daemon under `webhook-runner test`. The
+  anonymous /var/lib/docker volume is REQUIRED, not decorative: an inner
+  daemon's overlay2 storage can't stack on the outer container's overlay
+  rootfs, so it needs a real volume — and `--rm` (always passed)
+  auto-removes it, so inner storage never leaks between runs. The host's
+  docker daemon is NEVER exposed (no host socket mount); the nested daemon
+  is a throwaway. `--privileged` is host-root-equivalent, so this is an
+  AUDITED capability — enable it only for trusted, operator-curated hooks.
+  It is deliberately first-class rather than `extra_docker_args`: those raw
+  args are appended only on the live-run path (they can't cover the test
+  path) and would still leave the volume hand-written, whereas `dind`
+  covers both paths with one greppable boolean. New hook.json field ⇒ same
+  deploy-first rule as `state`/`schedule` (old binaries reject it via
+  DisallowUnknownFields).
 - `script` (hook.json) is parse-time sugar for `command`:
   `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
   pwsh, node, or tsx), resolving the file with `EvalSymlinks` and
