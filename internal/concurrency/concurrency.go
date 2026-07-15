@@ -91,7 +91,7 @@ func Load(root string) (*Config, error) {
 
 // LoadFile reads a concurrency.json at an explicit path (the hooks
 // layout decides where that is: <root>/concurrency.json for legacy trees,
-// <root>/src/config/concurrency.json for the src layout). A missing file
+// <root>/cfg/concurrency.json for the src layout). A missing file
 // is not an error: it yields an empty Config (no groups declared), which
 // makes any hook that references a group fail validation — exactly the
 // "groups must be declared" contract.

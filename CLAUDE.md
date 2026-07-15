@@ -282,8 +282,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   hooks.LoadDir/LoadLayout. Under the src layout: hooks at
   src/hooks/<id>/, shared dependency-free code at src/sdk/ (imported
   relatively — ../../sdk/...), concurrency.json at
-  src/config/concurrency.json (concurrency.LoadFile at the
-  layout-resolved path; Load(root) is the legacy-only shorthand), and the
+  cfg/concurrency.json — repo-root cfg/, deliberately OUTSIDE src/
+  (concurrency config is repo-wide config, not source) — read by
+  concurrency.LoadFile at the layout-resolved path (Load(root) is the
+  legacy-only shorthand), and the
   docker build runs with CONTEXT src/ + the hook's own Dockerfile via -f
   (tree-mirror COPY convention: `COPY sdk/ /app/sdk/` +
   `COPY hooks/<id>/ /app/hooks/<id>/` + `WORKDIR /app/hooks/<id>` so the
@@ -313,7 +315,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   guard that stops a premature repo restructure from taking the fleet
   offline behind green CI. Layout detection re-runs on EVERY reload (a
   hooks-repo pull can restructure the tree); the watcher additionally
-  watches src/, src/hooks/*, and src/config under the src layout (not
+  watches src/, src/hooks/*, and root cfg/ under the src layout (not
   src/sdk — sdk edits matter at image-build time, not reload time).
   SEQUENCING: the runner with this support deploys BEFORE the webhooks
   repo's src/ restructure lands — an old binary scanning a new tree loads

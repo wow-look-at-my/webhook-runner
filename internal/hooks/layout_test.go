@@ -60,7 +60,7 @@ func TestDetectLayout(t *testing.T) {
 	assert.True(t, l.SDK)
 	assert.Equal(t, "src", l.String())
 	assert.Equal(t, filepath.Join(src, "src", "hooks"), l.HooksDir())
-	assert.Equal(t, filepath.Join(src, "src", "config", "concurrency.json"), l.ConcurrencyPath())
+	assert.Equal(t, filepath.Join(src, "cfg", "concurrency.json"), l.ConcurrencyPath())
 	assert.Equal(t, filepath.Join(src, "src"), l.SrcDir())
 	assert.Equal(t, filepath.Join(src, "src", "sdk"), l.SDKDir())
 

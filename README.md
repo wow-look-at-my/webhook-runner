@@ -1055,11 +1055,11 @@ anything else is legacy.**
 ```
 LEGACY                        SRC (SDK layout)
 <root>/                       <root>/
-  my-hook/hook.json             src/
-  my-hook/Dockerfile              hooks/my-hook/hook.json     # ids/routes unchanged
-  concurrency.json                hooks/my-hook/Dockerfile
-                                  sdk/…                       # shared, dependency-free code
-                                  config/concurrency.json
+  my-hook/hook.json             cfg/concurrency.json        # repo-wide config, outside src/
+  my-hook/Dockerfile            src/
+  concurrency.json                hooks/my-hook/hook.json   # ids/routes unchanged
+                                  hooks/my-hook/Dockerfile
+                                  sdk/…                     # shared, dependency-free code
 ```
 
 The src layout exists for shared code: hooks import from `src/sdk/`
@@ -1102,8 +1102,10 @@ Rules that keep it predictable:
   older binary) fails `validate` with a clear message and records an
   error-grade event on every `serve` reload. A fleet must never go
   offline behind a green check.
-- `concurrency.json` moves to `src/config/concurrency.json` under the src
-  layout; secrets (`secrets.sops.env`) stay per-hook-directory in both.
+- `concurrency.json` moves to `cfg/concurrency.json` under the src layout
+  — repo-root `cfg/`, deliberately outside `src/`, because concurrency
+  config is repo-wide config, not source; secrets (`secrets.sops.env`)
+  stay per-hook-directory in both.
 
 ## Subcommands
 
