@@ -459,15 +459,20 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 }
 
 // handleReload triggers a reload on the admin port (no auth — the admin
-// port is behind zero trust).
+// port is behind zero trust). With a reload gate configured, OnReload is
+// wired to the gate's Force: admin /reload DELIBERATELY bypasses the CI
+// gate (jump to the remote tip, recorded verified — the operator vouched).
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 	s.events.Record("reload.requested", "reload requested via admin port", map[string]string{"source": "admin"})
 	s.runReload(w)
 }
 
-// handleReloadWebhook triggers a reload on the hook port, authenticated
-// with the HMAC-SHA256 secret in WEBHOOK_RUNNER_HOOKS_REPO_SECRET. This
-// is the endpoint a GitHub push webhook should target.
+// handleReloadWebhook accepts the hooks repo's GitHub webhook on the hook
+// port, authenticated with the HMAC-SHA256 secret in
+// WEBHOOK_RUNNER_HOOKS_REPO_SECRET. With a reload gate configured the flow
+// is event-aware: a push only records the pending tip, and a green gating
+// commit status is what switches the tree (internal/reloadgate). Without a
+// gate, any verified POST pulls + reloads (legacy behavior).
 func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
@@ -483,8 +488,27 @@ func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
-	s.runReload(w)
+	if s.gate == nil {
+		s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
+		s.runReload(w)
+		return
+	}
+
+	event := r.Header.Get("X-GitHub-Event")
+	if event == "push" {
+		// Feed continuity: pushes stay announced exactly as before. The
+		// gate records its own held/red/switched events; the server only
+		// maps its verdict onto HTTP.
+		s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
+	}
+	status, err := s.gate.HandleEvent(event, body)
+	if err != nil {
+		s.log.Error("reload failed", "err", err)
+		s.events.Record("reload.failed", "reload failed: "+err.Error(), nil)
+		writeError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
 // runReload executes the configured reload and reports the outcome.

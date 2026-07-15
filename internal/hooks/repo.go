@@ -41,22 +41,56 @@ func CloneRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, er
 		return r, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return nil, fmt.Errorf("create parent directory: %w", err)
+	if err := r.clone(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// OpenRepo opens the clone of url at dir WITHOUT moving an existing working
+// tree: if dir already contains a git repository it is used exactly as-is
+// (no fetch, no reset) — the reload CI gate decides when the tree moves. A
+// missing dir is still cloned fresh (branch tip; the gate then flags it
+// unverified until the first green). CloneRepo keeps the legacy
+// pull-on-open behavior.
+func OpenRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, error) {
+	r := &Repo{
+		url:        url,
+		branch:     branch,
+		dir:        dir,
+		sshKeyPath: sshKeyPath,
+		log:        log,
+	}
+
+	if isGitRepo(dir) {
+		log.Info("hooks repo already cloned, leaving working tree untouched", "dir", dir)
+		return r, nil
+	}
+
+	if err := r.clone(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// clone performs the initial shallow, single-branch clone into r.dir.
+func (r *Repo) clone() error {
+	if err := os.MkdirAll(filepath.Dir(r.dir), 0o755); err != nil {
+		return fmt.Errorf("create parent directory: %w", err)
 	}
 
 	args := []string{"clone", "--depth=1", "--single-branch"}
-	if branch != "" {
-		args = append(args, "--branch", branch)
+	if r.branch != "" {
+		args = append(args, "--branch", r.branch)
 	}
-	args = append(args, url, dir)
+	args = append(args, r.url, r.dir)
 
 	out, err := r.gitCmd(args...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("git clone %s: %w\n%s", url, err, out)
+		return fmt.Errorf("git clone %s: %w\n%s", r.url, err, out)
 	}
-	log.Info("hooks repo cloned", "url", url, "branch", branch, "dir", dir)
-	return r, nil
+	r.log.Info("hooks repo cloned", "url", r.url, "branch", r.branch, "dir", r.dir)
+	return nil
 }
 
 // Dir returns the local path to the cloned repository.
@@ -81,6 +115,79 @@ func (r *Repo) Pull() error {
 	}
 
 	r.log.Info("hooks repo updated")
+	return nil
+}
+
+// Head returns the commit the working tree is currently checked out at.
+func (r *Repo) Head() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out, err := r.gitCmd("-C", r.dir, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// FetchBranch fetches the tracked branch from origin at the given history
+// depth WITHOUT touching the working tree, and returns the fetched tip.
+func (r *Repo) FetchBranch(depth int) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	fetchArgs := []string{"-C", r.dir, "fetch", fmt.Sprintf("--depth=%d", depth), "origin"}
+	if r.branch != "" {
+		fetchArgs = append(fetchArgs, r.branch)
+	}
+	if out, err := r.gitCmd(fetchArgs...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git fetch: %w\n%s", err, out)
+	}
+
+	out, err := r.gitCmd("-C", r.dir, "rev-parse", "FETCH_HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse FETCH_HEAD: %w\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// RecentCommits lists up to max commits reachable from the last fetch
+// (FETCH_HEAD), newest first. Call FetchBranch first — a fresh clone has
+// no FETCH_HEAD yet.
+func (r *Repo) RecentCommits(max int) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out, err := r.gitCmd("-C", r.dir, "rev-list", fmt.Sprintf("--max-count=%d", max), "FETCH_HEAD").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git rev-list: %w\n%s", err, out)
+	}
+	return strings.Fields(string(out)), nil
+}
+
+// ResetTo hard-resets the working tree to sha, which must already be
+// present locally (see FetchBranch / FetchSHA).
+func (r *Repo) ResetTo(sha string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if out, err := r.gitCmd("-C", r.dir, "reset", "--hard", sha).CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset: %w\n%s", err, out)
+	}
+	r.log.Info("hooks repo reset", "sha", sha)
+	return nil
+}
+
+// FetchSHA fetches one commit by sha from origin at the given depth —
+// the startup last-good restore path (GitHub serves reachable-sha
+// fetches).
+func (r *Repo) FetchSHA(sha string, depth int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if out, err := r.gitCmd("-C", r.dir, "fetch", fmt.Sprintf("--depth=%d", depth), "origin", sha).CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch %s: %w\n%s", sha, err, out)
+	}
 	return nil
 }
 
