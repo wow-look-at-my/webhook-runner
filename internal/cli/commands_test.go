@@ -130,6 +130,24 @@ func TestValidateCommand(t *testing.T) {
 	errOut.Reset()
 	require.Error(t, cmd.RunE(cmd, []string{bad}))
 	assert.Contains(t, errOut.String(), "undeclared concurrency group")
+
+	// A MIXED layout — a stray top-level hook alongside src/hooks/ — must
+	// turn validate RED with a clear message (the failsafe for an
+	// incomplete move to the src layout), never a silent skip.
+	mixed := t.TempDir()
+	srcHook := filepath.Join(mixed, "src", "hooks", "alpha")
+	require.NoError(t, os.MkdirAll(srcHook, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcHook, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcHook, "hook.json"),
+		[]byte(`{"$schema":"s","command":["x"]}`), 0o644))
+	writeTestHook(t, mixed, "leftover") // a top-level hook dir left behind
+	out.Reset()
+	errOut.Reset()
+	require.Error(t, cmd.RunE(cmd, []string{mixed}), "mixed layout must fail validate")
+	assert.Contains(t, errOut.String(), "mixed hook layout")
+	assert.Contains(t, errOut.String(), "leftover")
+	assert.Contains(t, errOut.String(), "hard error")
+	assert.Contains(t, out.String(), "ok  alpha", "the src hook still validates; only the stray top-level dir is rejected")
 }
 
 func TestTestCommand(t *testing.T) {

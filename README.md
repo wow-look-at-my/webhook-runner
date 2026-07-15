@@ -1076,9 +1076,17 @@ WORKDIR /app/hooks/my-hook
 
 Rules that keep it predictable:
 
-- **Never mixed.** Under the src layout, root-level hook dirs are ignored
-  with a loud per-directory error naming them — a hook must never
-  silently vanish from the registry because it sat at the wrong level.
+- **Never mixed — a hard error.** Under the src layout, a root-level hook
+  dir is a **hard error**, never a silent skip: it is NOT loaded, and the
+  per-directory error naming it fails `validate` (non-zero exit) and is
+  logged + recorded on every `serve` reload. So a stray top-level hook
+  left behind by an incomplete move to the src layout turns CI **red**
+  instead of quietly vanishing from the registry. The message reads
+  `mixed hook layout: top-level hook directory <dir> is not allowed when
+  src/hooks/ exists ...`. This guard is **scoped to mixed layouts only** —
+  it fires solely when `src/hooks/` exists, so a pure-legacy tree (no
+  `src/hooks/` sibling, e.g. this repo's `examples/hooks/` and
+  `e2e/hooks/` fixtures) is never scanned for it and stays fully valid.
 - **Content hashing** (src layout): a deterministic walk of
   `src/hooks/<id>/` **and** `src/sdk/` (relative path + file mode +
   bytes) — never sibling hook dirs. An sdk edit re-tags every src-layout
