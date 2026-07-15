@@ -117,6 +117,7 @@ function makeSandbox() {
 	let serverUp = true;
 	const routes = (url) => {
 		if (url.startsWith('/health')) return { status: 'ok', version: 'test' };
+		if (url.startsWith('/attention')) return { count: 0, entries: [] };
 		if (url.startsWith('/hooks')) return [{ id: 'a', description: 'alpha' }, { id: 'b' }];
 		if (url.startsWith('/runs')) return [];
 		if (url.startsWith('/images')) return [];
@@ -251,7 +252,7 @@ test('page load fetches /hooks exactly once and paints every section', async () 
 	const h = await boot();
 	const hookFetches = h.urls().filter((u) => u === '/hooks');
 	assert.equal(hookFetches.length, 1, `/hooks must be fetched exactly once at boot, saw: ${h.urls().join(', ')}`);
-	for (const want of ['/health', '/hooks', '/images', '/events?max=100', '/kv', '/concurrency']) {
+	for (const want of ['/health', '/hooks', '/attention', '/images', '/events?max=100', '/kv', '/concurrency']) {
 		assert.ok(h.urls().includes(want), `boot must fetch ${want}`);
 	}
 	// The single fetch is REPUBLISHED for timeline.js instead of refetched.
@@ -298,6 +299,29 @@ test('signal bursts coalesce: leading edge + one trailing pass', async () => {
 	h.clear();
 	await h.advance(60_000);
 	assert.deepEqual(h.urls(), [], 'a drained burst leaves no residual polling');
+});
+
+test('an attention signal refetches /attention on BOTH views (the banner is global)', async () => {
+	const h = await boot();
+	h.streamState(true);
+	await h.settle();
+	await h.advance(2_000); // stand clear of the resync's coalesce window
+	h.clear();
+	// Overview: the attention section refetches like any other.
+	h.signal(['attention']);
+	await h.advance(1_000);
+	assert.deepEqual(h.urls(), ['/attention'], 'one attention signal = one /attention refetch');
+	// App view (#hook=…): granular sections normally fold into "app", but
+	// attention stays granular — the banner renders on this view too.
+	h.sandbox.location.hash = '#hook=a';
+	h.clear();
+	h.signal(['attention']);
+	await h.advance(1_000);
+	assert.deepEqual(h.urls(), ['/attention'], 'the app view must refetch /attention, nothing else');
+	h.sandbox.location.hash = '';
+	h.clear();
+	await h.advance(60_000);
+	assert.deepEqual(h.urls(), [], 'and silence again afterwards');
 });
 
 test('hooks signal republishes the roster for timeline.js', async () => {
