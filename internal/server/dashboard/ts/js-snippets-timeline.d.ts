@@ -131,6 +131,15 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 	/** Tooltip content callback: string or Node (never injected as HTML). */
 	export type TooltipFn = (hit: TimelineHit) => string | Node | null | undefined;
 
+	/** A consumer-supplied row for the "?" legend panel: a glyph sample
+	 * (rendered verbatim) plus its plain-language meaning. */
+	export interface TimelineLegendEntry {
+		/** The glyph/badge sample (e.g. '⧗', '⏳3'). */
+		glyph: string;
+		/** What it means. */
+		text: string;
+	}
+
 	/** Color override callback: return a CSS color, or null for the default. */
 	export type ColorFn = (interval: TimelineInterval, lane: TimelineLane) => string | null | undefined;
 
@@ -188,5 +197,9 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 		 * extrapolating ongoing intervals as fiction. */
 		markFresh?(): void;
 		staleAfterMs?: number;
+		/** Consumer legend rows, appended under the component-owned glyph
+		 * vocabulary in the "?" legend panel (OPTIONAL — landing upstream;
+		 * consumers must feature-detect with `'legendEntries' in el`). */
+		legendEntries?: TimelineLegendEntry[];
 	}
 }
