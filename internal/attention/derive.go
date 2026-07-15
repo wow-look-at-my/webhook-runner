@@ -34,6 +34,14 @@ const (
 	KeyReportedPrefix = "reported:"
 	// KeyTmpDir: the boot-scoped containerized-without-TMPDIR verdict.
 	KeyTmpDir = "tmpdir"
+	// KeyReloadHeld: a newer hooks-repo commit is held by the reload CI
+	// gate — awaiting the gating status, or that status came back red.
+	// Reported/resolved by internal/reloadgate ("reload" source, no hook).
+	KeyReloadHeld = "held"
+	// KeyReloadUnverified: the serving hooks tree has no recorded green
+	// gating status (fresh install, or the last-good commit vanished).
+	// Reported/resolved by internal/reloadgate ("reload" source, no hook).
+	KeyReloadUnverified = "unverified"
 )
 
 // Recognized activity-event kinds the standard rules subscribe to.
