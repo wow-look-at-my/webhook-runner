@@ -90,6 +90,13 @@
  *     `title`, and any new status values are FEATURE-DETECTED: absent
  *     fields degrade to the plain rendering (short run id as the label),
  *     unknown statuses render dim instead of crashing.
+ *   - Skipped runs are born terminal with zero duration (started ==
+ *     finished): each feeds through as its OWN instant interval at its
+ *     true timestamp, with its real label/tooltip/modal link. The
+ *     COMPONENT clusters visually-overlapping instant markers into ×N
+ *     point markers (scale-aware — splitting apart as you zoom in), so a
+ *     redelivery burst can't blow up lane height and the adapter does no
+ *     pre-merging.
  *   - Lanes are ordered ALPHABETICALLY by hook id — stable and
  *     viewport-independent. (Most-recent-activity ordering made rows jump
  *     around as runs entered/left the window; if activity ordering is
@@ -509,11 +516,15 @@ function stateFor(r: RunState): string {
 		case 'timeout':
 			return 'failed'; // unmissable emphasis (the failure IS the terminal fact)
 		case 'cancelled':
-			// True lifecycle: the run was NOT cancelled from birth. The bar
-			// stays neutral; the kill tail (cancel_requested_at → finished)
-			// renders as an outline SEGMENT (see runToInterval). Without the
-			// timestamp (old servers), keep the legacy whole-bar hollow.
-			return tsPresent(r.cancel_requested_at) ? '' : 'outline';
+			// First-class terminal treatment (a component built-in since the
+			// feedback round): hollow body + dashed category-hue border —
+			// "stopped, not failed" at any zoom, never the emphasis color,
+			// never a solid success-look body. The kill tail
+			// (cancel_requested_at → finished) STAYS a separate terminal-cut
+			// segment (see runToInterval) composing over it. States are
+			// freeform strings, so this is purely additive: an older cached
+			// component treats the unknown key as the neutral default.
+			return 'cancelled';
 		default:
 			// Unknown status (e.g. a future value): render safely dim.
 			// Zero-duration runs become instant pips on their own.
@@ -589,8 +600,11 @@ function runToInterval(r: RunState): TimelineInterval {
 		const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
 		segments.push({ start: s0, end: e0, kind: 'waiting' });
 	}
-	// The kill tail: cancelled runs render UNCANCELLED until the request
-	// actually arrived, then hollow from the request to the death.
+	// The kill tail: the span up to the cancel request renders as the run's
+	// normal life; the request → death tail is an 'outline' segment, which
+	// the component draws as a TERMINAL CUT (dark scrim + bright cut line,
+	// kept >= ~3 device px at any zoom — a sub-second docker-kill latency
+	// tail can never vanish) composed over the cancelled treatment.
 	if (r.status === 'cancelled' && tsPresent(r.cancel_requested_at)) {
 		segments.push({ start: Date.parse(r.cancel_requested_at as string), end, kind: 'outline' });
 	}
@@ -731,18 +745,6 @@ function runTooltip(r: RunState): Node {
 	return frag;
 }
 
-function clusterTooltip(c: SkipCluster): Node {
-	const frag = document.createDocumentFragment();
-	frag.appendChild(el('div', { class: 'tt-title' }, `${c.ids.length} skipped deliveries · ${c.hookId}`));
-	frag.appendChild(ttRow('window', `${fmtTime(new Date(c.start).toISOString())} – ${fmtTime(new Date(c.end).toISOString())}`));
-	for (const id of c.ids.slice(-5).reverse()) {
-		frag.appendChild(ttRow('', shortRunId(id)));
-	}
-	if (c.ids.length > 5) frag.appendChild(ttRow('', `…and ${c.ids.length - 5} more`));
-	frag.appendChild(ttRow('', 'click opens the newest one'));
-	return frag;
-}
-
 function laneTooltip(lane: TimelineLane): Node {
 	const frag = document.createDocumentFragment();
 	frag.appendChild(el('div', { class: 'tt-title' }, lane.id));
@@ -752,89 +754,15 @@ function laneTooltip(lane: TimelineLane): Node {
 	return frag;
 }
 
-// -- Skip clustering ----------------------------------------------------------
-//
-// Skipped deliveries are zero-duration run records; a redelivery burst (50
-// skips in 2s) would otherwise claim 50 coincident pips, each its own
-// sub-track — exploding the lane's height until the next window recalc
-// (the "tall pile of hollow boxes"). Same-hook skipped runs whose starts
-// sit within SKIP_CLUSTER_GAP_MS of the previous one collapse into ONE
-// interval carrying the count and the member ids: the label says "×N
-// skipped", the tooltip lists members, and a click opens the newest
-// member's run modal — every skip stays reachable, and a skip storm can
-// never scale lane height.
-const SKIP_CLUSTER_GAP_MS = 5000;
-const SKIP_CLUSTER_PREFIX = 'skipcluster:';
-
-interface SkipCluster {
-	id: string;
-	hookId: string;
-	start: number;
-	end: number;
-	ids: string[]; // member run ids, oldest→newest
-}
-/** Live registry of rendered clusters (tooltip + click resolution). */
-const skipClusters = new Map<string, SkipCluster>();
-
-function clusterIntervals(all: RunState[]): TimelineInterval[] {
-	skipClusters.clear();
-	const out: TimelineInterval[] = [];
-	const skippedByHook = new Map<string, RunState[]>();
-	for (const r of all) {
-		if (r.status === 'skipped') {
-			const list = skippedByHook.get(r.hook_id) ?? [];
-			list.push(r);
-			skippedByHook.set(r.hook_id, list);
-		} else {
-			out.push(runToInterval(r));
-		}
-	}
-	for (const [hookId, list] of skippedByHook) {
-		list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
-		let bucket: RunState[] = [];
-		const flush = (): void => {
-			if (bucket.length === 0) return;
-			if (bucket.length === 1) {
-				out.push(runToInterval(bucket[0]));
-			} else {
-				const startMs = Date.parse(bucket[0].started);
-				const last = bucket[bucket.length - 1];
-				const endMs = tsPresent(last.finished) ? Date.parse(last.finished as string) : Date.parse(last.started);
-				const c: SkipCluster = {
-					id: SKIP_CLUSTER_PREFIX + hookId + ':' + bucket[0].id,
-					hookId,
-					start: startMs,
-					end: Math.max(endMs, startMs),
-					ids: bucket.map((r) => r.id),
-				};
-				skipClusters.set(c.id, c);
-				out.push({
-					id: c.id,
-					laneId: hookId,
-					start: c.start,
-					end: c.end,
-					label: `×${c.ids.length} skipped`,
-					category: hookId,
-					state: 'dim',
-					data: c,
-				});
-			}
-			bucket = [];
-		};
-		for (const r of list) {
-			if (bucket.length > 0) {
-				const prev = bucket[bucket.length - 1];
-				if (Date.parse(r.started) - Date.parse(prev.started) > SKIP_CLUSTER_GAP_MS) flush();
-			}
-			bucket.push(r);
-			if (bucket.length === 1 && list.length === 1) {
-				// single-member fast path handled by flush
-			}
-		}
-		flush();
-	}
-	return out;
-}
+// (The adapter-side skip pre-merge that used to live here is GONE: skipped
+// runs — zero-duration instants — now feed through as INDIVIDUAL intervals
+// at their true timestamps, each with its own label/tooltip/modal link. The
+// component clusters visually-overlapping instant markers itself, scale-
+// aware: within ~12px they merge into ONE ×N point marker occupying ONE
+// packing slot — so a redelivery burst still can't blow up lane height —
+// and zooming in progressively splits every cluster back into true-time
+// pips. The old fixed 5s data-space buckets rendered as duration bars and
+// never split on zoom; a pile of instants has no length.)
 
 // -- The element + wiring --------------------------------------------------------
 
@@ -842,10 +770,11 @@ function initTimeline(): void {
 	const tl = document.getElementById('runs-timeline') as TimelineViewElement | null;
 	if (tl === null || typeof tl.setData !== 'function') return; // markup missing / element failed to register
 
+	// ×N instant-cluster hits never land here: the component builds cluster
+	// summary tooltips itself and never consults tooltipFor for them — so
+	// every interval id received IS a run id.
 	tl.tooltipFor = (hit: TimelineHit) => {
 		if (hit.type === 'interval') {
-			const c = skipClusters.get(hit.interval.id);
-			if (c) return clusterTooltip(c);
 			const r = runsById.get(hit.interval.id);
 			return r ? runTooltip(r) : null;
 		}
@@ -865,10 +794,12 @@ function initTimeline(): void {
 	// Click-through: a bar opens the same run modal the tables use; a lane
 	// label opens the hook's drill-down page (same href the hooks table uses).
 	tl.addEventListener('intervalclick', (e: Event) => {
+		// Single intervals only — a ×N cluster click ZOOMS to its member
+		// extent component-side (splitting the cluster) and never dispatches
+		// intervalclick — so this id is always a run id, and every skipped
+		// run opens ITS OWN run modal again.
 		const detail = (e as CustomEvent<{ interval: TimelineInterval }>).detail;
-		const c = skipClusters.get(detail.interval.id);
-		// A cluster opens its NEWEST member; the tooltip lists the rest.
-		void showRun(c ? c.ids[c.ids.length - 1] : detail.interval.id);
+		void showRun(detail.interval.id);
 	});
 	tl.addEventListener('laneclick', (e: Event) => {
 		const detail = (e as CustomEvent<{ lane: TimelineLane }>).detail;
@@ -960,9 +891,7 @@ function initTimeline(): void {
 		if (maybePrune(tl, now)) return; // prune did a full setData already
 		const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
 		const data: TimelineData = {
-			// Cluster over the FULL held set (a page is a window; clusters
-			// must not depend on pagination boundaries).
-			intervals: clusterIntervals([...runsById.values()]),
+			intervals: [...runsById.values()].map(runToInterval),
 			coverage: { start: pageOldestMs, end: now },
 		};
 		if (!seeded) {
@@ -983,27 +912,11 @@ function initTimeline(): void {
 		syncLanes(tl);
 	};
 
-	// A skipped-run delta re-clusters instead of merging its own interval —
-	// debounced so a redelivery burst (50 deltas in 2s) coalesces into a
-	// couple of rebuilds instead of 50 pip upserts (the lane-height bomb).
-	let skipRebuild: ReturnType<typeof setTimeout> | null = null;
-	const scheduleSkipRebuild = (): void => {
-		if (skipRebuild !== null) return;
-		skipRebuild = setTimeout(() => {
-			skipRebuild = null;
-			try {
-				rebuildAll();
-			} catch (e) {
-				console.error('timeline: skip recluster failed:', e);
-			}
-		}, 250);
-	};
-
+	// Skipped runs need no special-casing: each is a zero-duration instant
+	// interval upserted like any other delta — the component's scale-aware
+	// ×N clustering absorbs redelivery bursts (one packing slot per
+	// cluster), so no adapter-side pre-merge or rebuild debounce exists.
 	const applyDelta = (r: RunState, prev: RunState | undefined): void => {
-		if (r.status === 'skipped' && seeded) {
-			scheduleSkipRebuild();
-			return;
-		}
 		if (!seeded) {
 			// No coverage yet (deltas can precede the first page when the
 			// stream connects before the seed fetch returns): render what we
@@ -1038,7 +951,7 @@ function initTimeline(): void {
 		laneOrderKey = lanes.map((l) => l.id).join('\n');
 		tl.setData({
 			lanes,
-			intervals: clusterIntervals([...runsById.values()]),
+			intervals: [...runsById.values()].map(runToInterval),
 			connectors: [], // rebuild replaces data — pin connectors to none
 			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 60_000, end: Date.now() },
 		});
@@ -1095,7 +1008,7 @@ function maybePrune(tl: TimelineViewElement, now: number): boolean {
 	laneOrderKey = lanes.map((l) => l.id).join('\n');
 	tl.setData({
 		lanes,
-		intervals: clusterIntervals(keep),
+		intervals: keep.map(runToInterval),
 		connectors: [], // prune replaces data — pin connectors to none
 		coverage: { start: oldestStartedMs, end: now },
 	});

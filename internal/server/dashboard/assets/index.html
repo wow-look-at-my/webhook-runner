@@ -71,8 +71,10 @@
     <!-- The primary runs view: a realtime swimlane timeline, one lane per
          hook (stable hue per hook). A bar runs queued→finished with the
          queue wait as a dim lead-in; hatching = a declared wait or a
-         blocked lock (with a connector to the holder), emphasis = failure,
-         hollow = cancelled, diamond pips = instant runs. Wheel/drag pans,
+         blocked lock, emphasis = failure, hollow + dashed border =
+         cancelled (the kill tail marked as a terminal cut), diamond pips =
+         instant runs (overlapping pips cluster into ×N markers that split
+         apart on zoom). Wheel/drag pans,
          ctrl/cmd+wheel zooms, and dragging into the past pages history via
          /runs?before= until retention runs out. Clicking a bar opens the
          run modal; clicking a lane label opens that hook's page. Rendered
