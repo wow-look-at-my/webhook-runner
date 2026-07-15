@@ -37,6 +37,11 @@ import (
 // hooks repo.
 const fetchDepth = 100
 
+// statusBranchesCap is GitHub's hard cap on a status payload's branches
+// array: a list of exactly this length may have had the tracked branch
+// squeezed out by other branches holding the same sha.
+const statusBranchesCap = 10
+
 // GitRepo is the narrow slice of git the gate needs, implemented by
 // *hooks.Repo (an interface so tests can script it).
 type GitRepo interface {
@@ -277,7 +282,6 @@ func (g *Gate) HandleEvent(event string, body []byte) (string, error) {
 func (g *Gate) handlePush(body []byte) (string, error) {
 	var p struct {
 		Ref        string `json:"ref"`
-		After      string `json:"after"`
 		Repository struct {
 			DefaultBranch string `json:"default_branch"`
 		} `json:"repository"`
@@ -348,10 +352,18 @@ func (g *Gate) handleStatus(body []byte) (string, error) {
 	}
 	// Branch prefilter: a status naming branches that don't include the
 	// tracked one is for someone else's head — drop it before any git op.
-	// GitHub lists at most 10 branches; an empty list falls through to the
-	// ordering rule, which is the real authority anyway.
+	// An empty list falls through to the ordering rule, which is the real
+	// authority anyway. GitHub caps the array at statusBranchesCap (10),
+	// so a full list may have squeezed the tracked branch out: a SUCCESS
+	// at the cap skips the prefilter and lets the ordering rule decide —
+	// its fresh fetch + recent-history membership still blocks a
+	// foreign-branch green, the bypass just costs one fetch. failure and
+	// error keep the plain prefilter: a squeezed-out red only affects the
+	// hold label, and bypassing there would let a foreign PR-head red
+	// mislabel the hold.
 	tracked := g.trackedBranch(p.Repository.DefaultBranch)
-	if len(p.Branches) > 0 {
+	maybeTruncated := p.State == "success" && len(p.Branches) == statusBranchesCap
+	if len(p.Branches) > 0 && !maybeTruncated {
 		found := false
 		for _, b := range p.Branches {
 			if b.Name == tracked {

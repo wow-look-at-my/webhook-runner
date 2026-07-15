@@ -322,6 +322,46 @@ func TestGreenNotInHistoryIgnoredStale(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "reload.ignored_stale")
 }
 
+func TestGreenAtBranchesCapBypassesPrefilter(t *testing.T) {
+	// GitHub caps the status payload's branches array at 10; with the sha
+	// on more branches than that the tracked one can be squeezed out. A
+	// green at exactly the cap must skip the prefilter and reach the
+	// ordering rule, which vouches for the sha via the fresh fetch.
+	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
+	f := servingFixture(t, repo, "A")
+
+	branches := make([]string, statusBranchesCap)
+	for i := range branches {
+		branches[i] = fmt.Sprintf("claude/parked-%d", i)
+	}
+	status, err := f.gate.HandleEvent("status", statusBody(t, "B", "success", "all-builds", branches...))
+	require.NoError(t, err)
+	assert.Equal(t, "reloaded", status)
+	assert.Equal(t, []string{"B"}, repo.resets)
+	assert.Equal(t, 1, *f.applies)
+	st := readState(t, f.statePath)
+	assert.Equal(t, "B", st.ServingSHA)
+	assert.True(t, st.Verified)
+}
+
+func TestGreenSwitchesWhenServingFellOutOfWindow(t *testing.T) {
+	// Enough commits landed while the runner was held that the serving sha
+	// fell out of the fetchDepth window: RecentCommits no longer lists it.
+	// A green for the current tip must still switch — an absent serving
+	// position can never mean "older than the sha".
+	repo := &fakeRepo{tip: "T", commits: []string{"T", "S", "R"}}
+	f := servingFixture(t, repo, "A")
+
+	status, err := f.gate.HandleEvent("status", statusBody(t, "T", "success", "all-builds", "master"))
+	require.NoError(t, err)
+	assert.Equal(t, "reloaded", status)
+	assert.Equal(t, []string{"T"}, repo.resets)
+	assert.Equal(t, 1, *f.applies)
+	st := readState(t, f.statePath)
+	assert.Equal(t, "T", st.ServingSHA)
+	assert.True(t, st.Verified)
+}
+
 func TestRedeliveredGreenAppliesOnce(t *testing.T) {
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
@@ -377,12 +417,12 @@ func TestIgnoredDeliveriesTouchNothing(t *testing.T) {
 		event string
 		body  []byte
 	}{
-		"wrong context":       {"status", nil}, // filled below
-		"foreign branch only": {"status", nil},
-		"pending state":       {"status", nil},
-		"ping":                {"ping", []byte(`{"zen":"ok"}`)},
-		"unknown event":       {"issues", []byte(`{}`)},
-		"non-tracked ref":     {"push", nil},
+		"wrong context":              {"status", nil}, // filled below
+		"foreign branches below cap": {"status", nil},
+		"pending state":              {"status", nil},
+		"ping":                       {"ping", []byte(`{"zen":"ok"}`)},
+		"unknown event":              {"issues", []byte(`{}`)},
+		"non-tracked ref":            {"push", nil},
 	}
 	for name := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -396,8 +436,11 @@ func TestIgnoredDeliveriesTouchNothing(t *testing.T) {
 			switch name {
 			case "wrong context":
 				body = statusBody(t, "B", "success", "some-other-check", "master")
-			case "foreign branch only":
-				body = statusBody(t, "B", "success", "all-builds", "claude/x")
+			case "foreign branches below cap":
+				// Below statusBranchesCap the list is provably complete, so
+				// the prefilter drops a green whose branches miss the
+				// tracked one without a single git op.
+				body = statusBody(t, "B", "success", "all-builds", "claude/x", "claude/y", "claude/z")
 			case "pending state":
 				body = statusBody(t, "B", "pending", "all-builds", "master")
 			case "non-tracked ref":
@@ -469,6 +512,35 @@ func TestStartupVanishedShaFallsToTipUnverified(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "reload.unverified")
 	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
 	assert.Zero(t, *f.applies)
+}
+
+func TestStartupTotalGitFailureKeepsLastGoodRecord(t *testing.T) {
+	// Every git op fails (dead remote, broken clone): startup must degrade
+	// to serving whatever the tree holds — no apply, loud — and must NOT
+	// rewrite the state file, so the last-good record survives untouched
+	// for the next boot.
+	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
+	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
+	repo := &fakeRepo{
+		headErr:  fmt.Errorf("head: repo broken"),
+		fetchErr: fmt.Errorf("remote unreachable"),
+		resetErr: fmt.Errorf("reset: repo broken"),
+		// known stays nil, so FetchSHA errors too.
+	}
+	f := newFixtureAt(t, repo, statePath)
+
+	f.gate.Startup()
+
+	assert.Zero(t, *f.applies, "degraded startup must not apply")
+	assert.Empty(t, repo.resets, "the tree never moved")
+	assert.Contains(t, eventKinds(f.rec), "reload.failed")
+	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
+
+	// The no-persist-on-degrade guarantee: the on-disk record still names
+	// the original last-good sha.
+	st := readState(t, f.statePath)
+	assert.Equal(t, "A", st.ServingSHA)
+	assert.True(t, st.Verified)
 }
 
 func TestStartupFreshThenGreenVerifies(t *testing.T) {
