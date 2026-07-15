@@ -466,9 +466,16 @@ function startFeedSupervisor(): void {
 interface WaiterRef {
 	runId: string;
 	hookId: string;
-	what: string; // "lock k" | "a slot in group g"
+	kind: 'lock' | 'group';
+	/** Lock key or group name ('?' when the server omitted it). */
+	key: string;
 }
 let waiterIndex = new Map<string, WaiterRef[]>();
+
+/** Display form of what a waiter is queued on: "lock k" | "a slot in group g". */
+function waiterWhat(w: WaiterRef): string {
+	return w.kind === 'lock' ? `lock ${w.key}` : `a slot in group ${w.key}`;
+}
 
 function holderIdsOf(r: RunState | undefined): string[] {
 	const w = r?.waiting_on;
@@ -483,13 +490,11 @@ function rebuildWaiterIndex(): void {
 	for (const r of runsById.values()) {
 		const w = r.waiting_on;
 		if (!w || isTerminal(r.status)) continue;
-		const what =
-			w.kind === 'lock' ? `lock ${w.key || '?'}` :
-			w.kind === 'group' ? `a slot in group ${w.key || '?'}` : null;
-		if (what === null) continue;
+		const kind = w.kind === 'lock' ? 'lock' : w.kind === 'group' ? 'group' : null;
+		if (kind === null) continue;
 		for (const holder of holderIdsOf(r)) {
 			const list = waiterIndex.get(holder) ?? [];
-			list.push({ runId: r.id, hookId: r.hook_id, what });
+			list.push({ runId: r.id, hookId: r.hook_id, kind, key: w.key || '?' });
 			waiterIndex.set(holder, list);
 		}
 	}
@@ -690,9 +695,11 @@ function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
 		return;
 	}
 	if (w.kind === 'group') {
+		// The ⧗ badge ("⧗ model-gateway · 3rd") in plain language, from the
+		// SAME waiting_on fields: "waiting for model-gateway · 3rd in line".
 		const place =
-			typeof w.position === 'number' && w.position > 0 ? ` — ${ordinal(w.position)} in line` : '';
-		frag.appendChild(ttRow('waiting', `for a slot in group ${w.key || '?'}${place}`));
+			typeof w.position === 'number' && w.position > 0 ? ` · ${ordinal(w.position)} in line` : '';
+		frag.appendChild(ttRow('waiting', `for ${w.key || 'group'}${place}`));
 		for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
 			const hr = runsById.get(holder);
 			frag.appendChild(ttRow('held by', shortRunId(holder) + (hr ? ` (${hr.hook_id})` : '')));
@@ -736,9 +743,22 @@ function runTooltip(r: RunState): Node {
 	appendWaitingRows(frag, r);
 	const held = waiterIndex.get(r.id);
 	if (held && held.length > 0 && !isTerminal(r.status)) {
-		frag.appendChild(ttRow('holds', `${held.length} run(s) waiting on this run`));
+		// The ⏳N badge in plain language, from the SAME inverted index (N is
+		// exactly the badge count): when every waiter is queued on one group
+		// slot — the common case — name it ("holds the model-gateway slot ·
+		// 2 waiting"); mixed lock/group waiters keep the generic count, with
+		// the per-waiter rows below spelling out each one.
+		const oneGroup = held.every((h) => h.kind === 'group' && h.key === held[0].key);
+		frag.appendChild(
+			ttRow(
+				'holds',
+				oneGroup
+					? `the ${held[0].key} slot · ${held.length} waiting`
+					: `${held.length} run(s) waiting on this run`,
+			),
+		);
 		for (const wr of held.slice(0, 3)) {
-			frag.appendChild(ttRow('', `${shortRunId(wr.runId)} (${wr.hookId}) → ${wr.what}`));
+			frag.appendChild(ttRow('', `${shortRunId(wr.runId)} (${wr.hookId}) → ${waiterWhat(wr)}`));
 		}
 		if (held.length > 3) frag.appendChild(ttRow('', `…and ${held.length - 3} more`));
 	}
@@ -790,6 +810,18 @@ function initTimeline(): void {
 	// component's own default (10s, tuned for 2s pollers) would otherwise
 	// hatch a healthy push stream between 10s-apart heartbeats.
 	if (typeof tl.markFresh === 'function') tl.staleAfterMs = STALE_AFTER_MS;
+
+	// Teach the "?" legend panel the badge glyphs THIS adapter composes into
+	// labels (runLabel) — the component's built-in rows only cover its own
+	// vocabulary. Feature-detected: the live Pages component may predate
+	// legendEntries, in which case an old component keeps exactly today's
+	// behavior (built-in legend rows only, no errors).
+	if ('legendEntries' in tl) {
+		tl.legendEntries = [
+			{ glyph: '⧗', text: 'waiting for a concurrency-group slot (group · place in line)' },
+			{ glyph: '⏳N', text: 'holding a slot N queued runs are waiting on' },
+		];
+	}
 
 	// Click-through: a bar opens the same run modal the tables use; a lane
 	// label opens the hook's drill-down page (same href the hooks table uses).

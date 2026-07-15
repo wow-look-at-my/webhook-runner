@@ -108,7 +108,12 @@ The server listens on two TCP ports plus a Unix socket:
   badge carries how many runs it is holding up ("⏳N" — derived
   CLIENT-side by inverting waiting_on, because stream deltas never ship
   the server's waiters field), and holder/waiter click-through lives in
-  the run modal's links. One logical wait is ONE wait_history entry:
+  the run modal's links. The adapter registers both badge glyphs as
+  consumer rows in the component's "?" legend (`legendEntries`,
+  feature-detected — an older Pages component just shows its built-in
+  rows), and run tooltips spell them out in plain language from the same
+  data ("waiting for <group> · Nth in line" / "holds the <group> slot ·
+  N waiting"). One logical wait is ONE wait_history entry:
   internal/runs.SetWaitingOn CONTINUES the trailing open segment on a
   same-kind+key restamp (queue position/holder churn) instead of
   fragmenting it (pre-fix, a single 7-deep queue wait shipped 14

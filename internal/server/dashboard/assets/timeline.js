@@ -174,6 +174,9 @@ function startFeedSupervisor() {
   }, FALLBACK_POLL_MS);
 }
 var waiterIndex = /* @__PURE__ */ new Map();
+function waiterWhat(w) {
+  return w.kind === "lock" ? `lock ${w.key}` : `a slot in group ${w.key}`;
+}
 function holderIdsOf(r) {
   const w = r?.waiting_on;
   if (!w || r && isTerminal(r.status)) return [];
@@ -186,11 +189,11 @@ function rebuildWaiterIndex() {
   for (const r of runsById.values()) {
     const w = r.waiting_on;
     if (!w || isTerminal(r.status)) continue;
-    const what = w.kind === "lock" ? `lock ${w.key || "?"}` : w.kind === "group" ? `a slot in group ${w.key || "?"}` : null;
-    if (what === null) continue;
+    const kind = w.kind === "lock" ? "lock" : w.kind === "group" ? "group" : null;
+    if (kind === null) continue;
     for (const holder of holderIdsOf(r)) {
       const list = waiterIndex.get(holder) ?? [];
-      list.push({ runId: r.id, hookId: r.hook_id, what });
+      list.push({ runId: r.id, hookId: r.hook_id, kind, key: w.key || "?" });
       waiterIndex.set(holder, list);
     }
   }
@@ -326,8 +329,8 @@ function appendWaitingRows(frag, r) {
     return;
   }
   if (w.kind === "group") {
-    const place = typeof w.position === "number" && w.position > 0 ? ` \u2014 ${ordinal(w.position)} in line` : "";
-    frag.appendChild(ttRow("waiting", `for a slot in group ${w.key || "?"}${place}`));
+    const place = typeof w.position === "number" && w.position > 0 ? ` \xB7 ${ordinal(w.position)} in line` : "";
+    frag.appendChild(ttRow("waiting", `for ${w.key || "group"}${place}`));
     for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
       const hr = runsById.get(holder);
       frag.appendChild(ttRow("held by", shortRunId(holder) + (hr ? ` (${hr.hook_id})` : "")));
@@ -367,9 +370,15 @@ function runTooltip(r) {
   appendWaitingRows(frag, r);
   const held = waiterIndex.get(r.id);
   if (held && held.length > 0 && !isTerminal(r.status)) {
-    frag.appendChild(ttRow("holds", `${held.length} run(s) waiting on this run`));
+    const oneGroup = held.every((h) => h.kind === "group" && h.key === held[0].key);
+    frag.appendChild(
+      ttRow(
+        "holds",
+        oneGroup ? `the ${held[0].key} slot \xB7 ${held.length} waiting` : `${held.length} run(s) waiting on this run`
+      )
+    );
     for (const wr of held.slice(0, 3)) {
-      frag.appendChild(ttRow("", `${shortRunId(wr.runId)} (${wr.hookId}) \u2192 ${wr.what}`));
+      frag.appendChild(ttRow("", `${shortRunId(wr.runId)} (${wr.hookId}) \u2192 ${waiterWhat(wr)}`));
     }
     if (held.length > 3) frag.appendChild(ttRow("", `\u2026and ${held.length - 3} more`));
   }
@@ -395,6 +404,12 @@ function initTimeline() {
     return null;
   };
   if (typeof tl.markFresh === "function") tl.staleAfterMs = STALE_AFTER_MS;
+  if ("legendEntries" in tl) {
+    tl.legendEntries = [
+      { glyph: "\u29D7", text: "waiting for a concurrency-group slot (group \xB7 place in line)" },
+      { glyph: "\u23F3N", text: "holding a slot N queued runs are waiting on" }
+    ];
+  }
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
     void showRun(detail.interval.id);

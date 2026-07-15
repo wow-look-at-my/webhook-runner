@@ -164,7 +164,10 @@ graph LR
   spans (no connector lines): a queued run's label carries the group and
   its live place in line ("⧗ model-gateway · 3rd", counting down as the
   queue advances), a run that others wait on carries "⏳N", and the run
-  modal links holders and waiters for click-through. Failures are
+  modal links holders and waiters for click-through; the chart's "?"
+  legend explains both badges, and run tooltips spell them out in plain
+  language ("waiting for model-gateway · 3rd in line", "holds the
+  model-gateway slot · 2 waiting"). Failures are
   unmissable, cancelled runs render
   hollow with a dashed border and a marked kill tail, and instant runs
   become diamond pips — overlapping pips cluster into ×N markers that
