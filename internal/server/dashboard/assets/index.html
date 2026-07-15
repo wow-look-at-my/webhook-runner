@@ -16,10 +16,36 @@
   </div>
 </header>
 
+<!-- The misconfiguration cry-for-help: whenever GET /attention reports any
+     ACTIVE problem (a dropped hook, an unresolvable ${NAME} reference, a
+     sops decrypt failure, the zero-hooks guard, the containerized-TMPDIR
+     hazard, a recognized event-derived problem) this banner pins itself
+     above BOTH views (it sits outside <main>, position: sticky) until the
+     underlying state resolves — entries self-clear, no acknowledgement.
+     "View" jumps to the Needs attention panel on the overview. -->
+<div id="attention-banner" class="attention-banner" hidden>
+  <span class="attention-banner-icon" aria-hidden="true">&#9888;</span>
+  <span id="attention-banner-text"></span>
+  <a href="#" id="attention-banner-link">view</a>
+</div>
+
 <!-- Two views share the page: the global overview, and a per-app drill-down
      (an "app" is one hook, for now) selected by the #hook=<id> fragment.
      dashboard.js toggles between them on hashchange — no server routing. -->
 <main id="overview-view">
+  <!-- Hidden while healthy (the banner above is the alert); every row is
+       one active problem with what's wrong, which hook (linked), where the
+       entry derives from, and how long it has been active. Rows disappear
+       on their own when the underlying state resolves (a fixing reload, a
+       hook's all-clear signal); only the TMPDIR hazard needs a restart. -->
+  <section id="attention-section" hidden>
+    <h2>Needs attention</h2>
+    <table id="attention-table">
+      <thead><tr><th>Problem</th><th>Hook</th><th>Source</th><th>Active for</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section id="setup-section" hidden>
     <h2>Hooks repo</h2>
     <p id="setup-repo"></p>
@@ -71,8 +97,10 @@
     <!-- The primary runs view: a realtime swimlane timeline, one lane per
          hook (stable hue per hook). A bar runs queued→finished with the
          queue wait as a dim lead-in; hatching = a declared wait or a
-         blocked lock (with a connector to the holder), emphasis = failure,
-         hollow = cancelled, diamond pips = instant runs. Wheel/drag pans,
+         blocked lock, emphasis = failure, hollow + dashed border =
+         cancelled (the kill tail marked as a terminal cut), diamond pips =
+         instant runs (overlapping pips cluster into ×N markers that split
+         apart on zoom). Wheel/drag pans,
          ctrl/cmd+wheel zooms, and dragging into the past pages history via
          /runs?before= until retention runs out. Clicking a bar opens the
          run modal; clicking a lane label opens that hook's page. Rendered

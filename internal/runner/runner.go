@@ -432,6 +432,17 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	if hook.Workdir != "" {
 		args = append(args, "--workdir", hook.Workdir)
 	}
+	// Docker-in-Docker: --privileged (host-root-equivalent) grants the
+	// container the capabilities to run its own nested dockerd, and the
+	// anonymous /var/lib/docker volume gives that inner daemon container-local
+	// storage on a real filesystem — its overlay driver can't stack on the
+	// outer container's overlay rootfs. --rm above auto-removes the anonymous
+	// volume, so inner storage never leaks between runs. The host's daemon is
+	// never exposed (no socket mount). Injected before extra_docker_args and
+	// the image so a hook's raw args and command still trail.
+	if hook.Dind {
+		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+	}
 	args = append(args, hook.ExtraDockerArgs...)
 	args = append(args, image)
 	if stateForwarding {
