@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
@@ -137,10 +138,25 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	rec.Record("server.started", "webhook-runner started", map[string]string{
 		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
 	})
+	// The aggregated "needs attention" problem set behind GET /attention
+	// and the dashboard's red banner: the persistent, self-clearing view
+	// of ACTIVE misconfigurations (vs the feed's scroll-away events).
+	// State-derived sources re-derive inside every loadAndApply below;
+	// the standard rules subscribe the recognized event-derived classes.
+	agg := attention.New()
+	attention.RegisterStandardEventRules(agg)
 	// A containerized server whose temp dir isn't host-shared breaks every
 	// hook run (payload mounts resolve on the docker HOST) — detect the
 	// topology at startup and say so loudly. See runner.WarnIfContainerized.
-	runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv")
+	// The verdict is boot-scoped attention state: a running process's env
+	// can't change, so the entry stands until a restart with TMPDIR set.
+	if runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv") {
+		agg.Report(attention.Entry{
+			Source:  attention.SourceServer,
+			Key:     attention.KeyTmpDir,
+			Message: runner.TmpDirHazardMessage,
+		})
+	}
 	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
 	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
 	// key material (e.g. SOPS_AGE_KEY_FILE) is plain sops configuration on
@@ -281,7 +297,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// referencing an undeclared group is rejected (not registered) rather
 	// than allowed to run unbounded. Both the filesystem watcher and the
 	// admin/webhook reload path go through this one function.
-	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, ovStore, logger, rec)
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, ovStore, agg, secrets, logger, rec)
 
 	onReload := buildReloadFunc(repo, loadAndApply, rec)
 
@@ -298,6 +314,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Secrets:      secrets,
 		Concurrency:  concurrencyMgr,
 		Events:       rec,
+		Attention:    agg,
 		Logger:       logger,
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,
@@ -441,7 +458,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 // or group no longer exists in the fresh config): the override is KEPT
 // (inert; it re-applies if the target comes back) and announced with one
 // override.orphaned event per orphaning, never silently dropped.
-func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, ov *overrides.Store, logger *slog.Logger, rec *events.Recorder) func() {
+//
+// The attention aggregator (agg) is re-derived here too: the collected
+// load errors become the current "load"/"zero-hooks" problem sets, and
+// ApplyServeProbe statically re-checks each LOADED hook's ${NAME}
+// api_key/env references and sops decrypt (via the shared secrets loader)
+// — serve-path only, exactly like the reload itself; `validate` stays
+// environment-independent. That per-reload re-derivation IS the clear
+// rule for those sources: fix the config, reload, entry gone.
+func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, logger *slog.Logger, rec *events.Recorder) func() {
 	// Orphan announcements are deduped per target across reloads: one event
 	// when a reload first finds an override pointing at nothing, not one
 	// per reload tick. A target that comes back is forgotten here, so a
@@ -495,6 +520,15 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			sched.Update(schedules)
 		}
 		registry.Replace(loaded)
+
+		// Re-derive the state-sourced attention entries from THIS load:
+		// the retained per-hook errors above, the zero-hooks guard, and
+		// the static resolvability probe of every loaded hook. Entries
+		// whose problem persisted keep their Since; fixed ones clear.
+		loadEnts, zeroEnts := attention.FromLoadErrors(errs)
+		agg.ReplaceSource(attention.SourceLoad, loadEnts)
+		agg.ReplaceSource(attention.SourceZeroHooks, zeroEnts)
+		attention.ApplyServeProbe(agg, loaded, secrets)
 
 		announceOrphanedOverrides(loaded, cfg, ov, &orphanMu, announced, logger, rec)
 
