@@ -128,6 +128,17 @@ The server listens on two TCP ports plus a Unix socket:
   triggers history navigation), and panning into the past pages
   `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).
+  COVERAGE'S TRAILING EDGE IS THE ADAPTER'S JOB: the component hatches
+  every uncovered range up to now as unknown history, so on a live
+  stream the adapter must keep vouching [last claim, now] — run deltas
+  fold a `coverage` claim into their merge, hb/changed keepalives make a
+  throttled coverage-only claim (`claimLiveCoverage`) — bounding the
+  trailing hatch to ~one heartbeat; a dead feed stops claiming (growing
+  hatch + stale note = the truth) and the reconnect snapshot back-fills
+  the gap. Pre-#73 this held only by accident (the skip-driven
+  rebuildAll re-registered coverage to now; deleting it hatched the
+  whole live window over live bars — the 2026-07-15 incident); the
+  testjs timeline-coverage harness pins the contract.
   A bar click opens the run modal, a lane-label click opens `#hook={id}`,
   and the old runs table stays behind a persisted "Show table" toggle.
   waiting_on/waiters and unknown statuses are feature-detected, so the
