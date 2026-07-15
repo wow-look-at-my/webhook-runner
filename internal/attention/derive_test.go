@@ -40,7 +40,7 @@ func TestFromLoadErrors(t *testing.T) {
 	assert.Contains(t, byHook["parse-fail"].Message, "decode hook.json: bad")
 	assert.Contains(t, byHook["parse-fail"].Message, "dropped")
 	assert.Contains(t, byHook["ghost-group"].Message, `undeclared concurrency group "nope"`)
-	assert.Contains(t, byHook["legacy-hook"].Message, "ignored legacy-shaped hook dir")
+	assert.Contains(t, byHook["legacy-hook"].Message, "mixed hook layout")
 	generic := byHook[""]
 	assert.Contains(t, generic.Message, "parse concurrency.json")
 	assert.Equal(t, "err:parse concurrency.json: unexpected token", generic.Key)
