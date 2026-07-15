@@ -487,6 +487,20 @@ pre.kv-value { margin: 0 0 0.35rem; max-height: 40vh; word-break: break-word; }
   border: 1px solid var(--border);
 }
 .table-toggle:hover { color: var(--fg); filter: none; background: rgba(255,255,255,0.1); }
+/* Back-swipe containment (page level): horizontal wheel/trackpad deltas
+   that miss the chart canvas — over the section chrome, the component's
+   own pill/notes, or as momentum after the pointer leaves the plot — reach
+   the ROOT scroller, where browsers arm the history-back navigation
+   gesture. The component consumes horizontal deltas over its canvas; this
+   covers the page AROUND it. It must sit on html: the viewport reads
+   overscroll-behavior from the root element (per spec it does NOT
+   propagate from body), and #timeline-section is not a scroll container,
+   so a rule there would be a no-op. 'none' rather than 'contain': both
+   disable the navigation gesture, but the page has no legitimate
+   horizontal overscroll affordance to preserve, so the rubber-band flash
+   goes too. Vertical behavior (scroll chaining, pull-to-refresh) is
+   deliberately untouched. */
+html { overscroll-behavior-x: none; }
 timeline-view {
   --timeline-bg: var(--panel);
   --timeline-fg: var(--fg);
