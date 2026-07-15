@@ -487,6 +487,20 @@ pre.kv-value { margin: 0 0 0.35rem; max-height: 40vh; word-break: break-word; }
   border: 1px solid var(--border);
 }
 .table-toggle:hover { color: var(--fg); filter: none; background: rgba(255,255,255,0.1); }
+/* Back-swipe containment (page level): horizontal wheel/trackpad deltas
+   that miss the chart canvas — over the section chrome, the component's
+   own pill/notes, or as momentum after the pointer leaves the plot — reach
+   the ROOT scroller, where browsers arm the history-back navigation
+   gesture. The component consumes horizontal deltas over its canvas; this
+   covers the page AROUND it. It must sit on html: the viewport reads
+   overscroll-behavior from the root element (per spec it does NOT
+   propagate from body), and #timeline-section is not a scroll container,
+   so a rule there would be a no-op. 'none' rather than 'contain': both
+   disable the navigation gesture, but the page has no legitimate
+   horizontal overscroll affordance to preserve, so the rubber-band flash
+   goes too. Vertical behavior (scroll chaining, pull-to-refresh) is
+   deliberately untouched. */
+html { overscroll-behavior-x: none; }
 timeline-view {
   --timeline-bg: var(--panel);
   --timeline-fg: var(--fg);
@@ -533,3 +547,41 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
 .group-run { font-size: 0.85rem; margin: 0.1rem 0; }
 .group-run-title { color: var(--muted); }
 .group-run-since { color: var(--muted); font-size: 0.85em; margin-left: 0.4rem; }
+
+/* Needs attention: the misconfiguration cry-for-help. The banner sits
+   OUTSIDE <main> (so both the overview and the per-hook app view show it)
+   and is sticky: whenever any problem is active it stays pinned to the top
+   of the viewport, impossible to scroll away from. It renders only while
+   GET /attention reports count > 0 and disappears the moment the last
+   entry self-clears. */
+.attention-banner {
+  position: sticky;
+  top: 0;
+  z-index: 40; /* above the page; the run modal (native <dialog>) still wins */
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 2rem;
+  background: #8f1d1d;
+  border-top: 2px solid var(--failure);
+  border-bottom: 1px solid #5c1010;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.attention-banner-icon { color: #ffd7d5; }
+.attention-banner a {
+  color: #fff;
+  text-decoration: underline;
+  font-weight: 500;
+}
+/* The panel lists one active problem per row. Problem text may be long
+   (loader errors quote the reason), so it wraps rather than stretching
+   the table off-screen; rows are informational, with only the hook link
+   clickable, so they opt out of the blanket row pointer. */
+#attention-section h2 { color: var(--failure); }
+#attention-table { border: 1px solid rgba(248, 81, 73, 0.4); }
+#attention-table td.attention-msg { max-width: 46rem; overflow-wrap: anywhere; }
+#attention-table td.attention-age { white-space: nowrap; }
+#attention-table tbody tr:hover { cursor: default; }
+#attention-table tbody tr.attention-hook-row:hover { cursor: pointer; }

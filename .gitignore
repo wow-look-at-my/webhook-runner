@@ -32,5 +32,5 @@ go.work.sum
 # .vscode/
 /build/
 
-# ts0 fetched by the dashboard go:generate one-liner (see internal/server/dashboard/dashboard.go)
+# ts0 fetched by the dashboard go:generate script (see internal/server/dashboard/generate-timeline.sh)
 /internal/server/dashboard/.cache/

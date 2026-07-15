@@ -39,11 +39,25 @@ declare function currentHookId(): string | null;
 //
 // timeline.ts owns the /runs/stream EventSource and publishes its state so
 // the classic script can gate its own fallbacks (e.g. the run modal's fixed
-// 3s poll runs only while the stream is down):
+// 3s poll and the section tables' fixed 5s poll run only while the stream
+// is down):
 //   window.whrStreamLive          — true while the stream is open
 //   'whr:stream-state' (window)   — CustomEvent {detail: {live}} on change
 //   'whr:run-delta' (window)      — CustomEvent {detail: {id, run}} per run
 //                                    lifecycle delta from the stream
+//   'whr:sections-changed' (window) — CustomEvent {detail: {sections}}: the
+//                                    server's coarse "these admin sections
+//                                    changed, refetch once" signal
+//   'whr:runs-table-shown' (window) — the runs table just became visible
+//                                    (it starts stale; refill it)
+//
+// -- Contracts dashboard.js PROVIDES to this module ----------------------------
+//
+// dashboard.js owns the single /hooks fetch and republishes the payload
+// (this module never fetches /hooks — see applyHooksData):
+//   window.whrHooks               — the latest GET /hooks payload
+//   'whr:hooks-data' (window)     — CustomEvent {detail: {hooks}} per fetch
 declare interface Window {
 	whrStreamLive?: boolean;
+	whrHooks?: Array<{ id: string; description?: string; schedule?: string; disabled?: boolean }>;
 }

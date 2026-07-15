@@ -6,8 +6,9 @@
  * This file is the webhook-runner adapter: it knows the /runs, /hooks,
  * /config and /runs/stream shapes and the runner's semantics (queued vs
  * started_at vs finished, terminal statuses, waiting_on/waiters) and
- * translates them into the component's generic lanes/intervals/connectors
- * model. The component itself is NOT part of this repo: the browser imports
+ * translates them into the component's generic lanes/intervals model
+ * (deliberately NO connectors — wait indication lives on the spans; see
+ * runLabel). The component itself is NOT part of this repo: the browser imports
  * it at runtime from js-snippets' GitHub Pages (live at master head — the
  * org's standard js-snippets consumption model), so component fixes reach
  * this dashboard on js-snippets merge with no runner change. Fix component
@@ -37,6 +38,14 @@
  * period, a fixed 5s poll (never growing, never giving up) keeps the chart
  * honest until the stream reconnects, and every stream (re)open does ONE
  * full /runs resync then goes stream-only again.
+ *
+ * The SAME connection multiplexes `changed` events — coarse "these admin
+ * sections changed, refetch each once" signals (hooks/images/concurrency/
+ * kv/events) — which this module re-publishes as whr:sections-changed for
+ * dashboard.js, whose section tables follow the exact same push-first/
+ * fixed-fallback pattern. One stream feeds the whole dashboard; an idle
+ * page makes zero requests of any kind. The /hooks lane roster likewise
+ * arrives via whr:hooks-data from dashboard.js instead of a poll here.
  *
  * WHY the poll was demoted — the stuck-running-bars post-mortem. The 2s
  * poll design had three independent ways to show fiction:
@@ -83,6 +92,13 @@
  *     `title`, and any new status values are FEATURE-DETECTED: absent
  *     fields degrade to the plain rendering (short run id as the label),
  *     unknown statuses render dim instead of crashing.
+ *   - Skipped runs are born terminal with zero duration (started ==
+ *     finished): each feeds through as its OWN instant interval at its
+ *     true timestamp, with its real label/tooltip/modal link. The
+ *     COMPONENT clusters visually-overlapping instant markers into ×N
+ *     point markers (scale-aware — splitting apart as you zoom in), so a
+ *     redelivery burst can't blow up lane height and the adapter does no
+ *     pre-merging.
  *   - Lanes are ordered ALPHABETICALLY by hook id — stable and
  *     viewport-independent. (Most-recent-activity ordering made rows jump
  *     around as runs entered/left the window; if activity ordering is
@@ -106,7 +122,6 @@
 // URL: a static import that fails would kill this whole module, and the
 // load must retry forever instead.
 import type {
-	TimelineConnector,
 	TimelineData,
 	TimelineHit,
 	TimelineInterval,
@@ -180,7 +195,6 @@ const RECONCILE_MAX = 20; // stale non-terminal runs re-checked per resync
 // Component staleness marking (feature-detected): with 10s heartbeats,
 // ~2.5 missed beats = the feed is genuinely dead, say so on the chart.
 const STALE_AFTER_MS = 25_000;
-const HOOKS_POLL_MS = 30_000; // /hooks poll (lane roster metadata only)
 // Page size for ?before= history paging. Deliberately NOT raised: with the
 // walk bounded to the requested window a pan needs 1-2 pages, and at
 // observed production density a 200-run page is already ~3.5MB — a larger
@@ -205,10 +219,29 @@ const runsById = new Map<string, RunState>();
 /** Raw `started` of the oldest run held — the next ?before= cursor. */
 let oldestStartedRaw: string | null = null;
 let oldestStartedMs = Infinity;
-/** GET /hooks roster (registered hooks appear as lanes even when idle). */
+/** /hooks roster (registered hooks appear as lanes even when idle) — fed
+ * by dashboard.js, never fetched here: the classic script owns the single
+ * /hooks fetch (boot, stream-open resyncs, changed{hooks} push signals,
+ * fallback polls) and republishes the payload as window.whrHooks + a
+ * whr:hooks-data event. Consuming that killed both this module's old 30s
+ * roster poll and the page-load double-fetch (two scripts each fetching
+ * /hooks). */
 let hookMeta = new Map<string, HookSummary>();
+/** The mounted <timeline-view>, once initTimeline ran (lane resync target). */
+let timelineEl: TimelineViewElement | null = null;
 let laneOrderKey = '';
 let seeded = false; // first data application went through setData
+
+function applyHooksData(hooks: HookSummary[]): void {
+	hookMeta = new Map(hooks.map((h) => [h.id, h]));
+	if (timelineEl) syncLanes(timelineEl);
+}
+// Seed from whatever dashboard.js already fetched (its boot refresh usually
+// beats this module's evaluation), then track pushes.
+if (window.whrHooks) applyHooksData(window.whrHooks);
+window.addEventListener('whr:hooks-data', (e) => {
+	applyHooksData((e as CustomEvent<{ hooks: HookSummary[] }>).detail.hooks);
+});
 
 function noteOldest(r: RunState): void {
 	const ms = Date.parse(r.started);
@@ -375,6 +408,20 @@ function openStream(): void {
 	// Heartbeats are the idle-stream freshness signal (data may legitimately
 	// be quiet for hours; the FEED being alive is what markFresh attests).
 	es.addEventListener('hb', () => fresh());
+	// Coarse "section changed → refetch once" signals for the non-run admin
+	// sections (hooks/images/concurrency/kv/events), multiplexed onto this
+	// same connection. This module only re-publishes them: dashboard.js
+	// owns those sections' fetching and rendering, and gates its own
+	// fallback poll on window.whrStreamLive exactly like the runs feed.
+	es.addEventListener('changed', (e) => {
+		try {
+			const d = JSON.parse((e as MessageEvent<string>).data) as { sections?: string[] };
+			fresh(); // server data on the feed is liveness too
+			window.dispatchEvent(new CustomEvent('whr:sections-changed', { detail: { sections: d.sections ?? [] } }));
+		} catch (err) {
+			console.error('timeline: bad changed event:', err);
+		}
+	});
 }
 
 /** The feed supervisor + fallback poll: one interval, armed once, never
@@ -472,11 +519,15 @@ function stateFor(r: RunState): string {
 		case 'timeout':
 			return 'failed'; // unmissable emphasis (the failure IS the terminal fact)
 		case 'cancelled':
-			// True lifecycle: the run was NOT cancelled from birth. The bar
-			// stays neutral; the kill tail (cancel_requested_at → finished)
-			// renders as an outline SEGMENT (see runToInterval). Without the
-			// timestamp (old servers), keep the legacy whole-bar hollow.
-			return tsPresent(r.cancel_requested_at) ? '' : 'outline';
+			// First-class terminal treatment (a component built-in since the
+			// feedback round): hollow body + dashed category-hue border —
+			// "stopped, not failed" at any zoom, never the emphasis color,
+			// never a solid success-look body. The kill tail
+			// (cancel_requested_at → finished) STAYS a separate terminal-cut
+			// segment (see runToInterval) composing over it. States are
+			// freeform strings, so this is purely additive: an older cached
+			// component treats the unknown key as the neutral default.
+			return 'cancelled';
 		default:
 			// Unknown status (e.g. a future value): render safely dim.
 			// Zero-duration runs become instant pips on their own.
@@ -489,17 +540,34 @@ function runTitle(r: RunState): string | null {
 	return typeof r.title === 'string' && r.title.trim() !== '' ? r.title : null;
 }
 
+/** "1st", "2nd", "3rd", "4th", … (11th-13th included). */
+function ordinal(n: number): string {
+	const rem = n % 100;
+	if (rem >= 11 && rem <= 13) return `${n}th`;
+	switch (n % 10) {
+		case 1:
+			return `${n}st`;
+		case 2:
+			return `${n}nd`;
+		case 3:
+			return `${n}rd`;
+		default:
+			return `${n}th`;
+	}
+}
+
 /** Bar label: never hardcode "label = run id" — the title wins when present.
- * Live queue/holder facts ride as suffix badges: a run queued on a group
- * shows the group and its place in line; a run others wait on shows how
- * many it is holding up. Both derive from the same manager bookkeeping the
- * /concurrency drill-down shows (via waiting_on / the inverted index). */
+ * Wait indication lives HERE, on the span (no connectors): a queued run's
+ * badge carries the group and its REAL place in line ("⧗ model-gateway ·
+ * 3rd" — the server re-stamps position as the queue advances, so it counts
+ * down live); a run others wait on carries how many it is holding up
+ * ("⏳N"). Both derive from the same manager bookkeeping the /concurrency
+ * drill-down shows (via waiting_on / the inverted index). */
 function runLabel(r: RunState): string {
 	const base = runTitle(r) ?? r.id.slice(0, 8);
 	const w = r.waiting_on;
 	if (w && w.kind === 'group' && !isTerminal(r.status)) {
-		const ahead = typeof w.position === 'number' && w.position > 0 ? w.position - 1 : null;
-		const place = ahead === null ? '' : ahead === 0 ? ' · next' : ` · ${ahead} ahead`;
+		const place = typeof w.position === 'number' && w.position > 0 ? ` · ${ordinal(w.position)}` : '';
 		return `${base} ⧗ ${w.key || 'group'}${place}`;
 	}
 	const waiters = waiterIndex.get(r.id);
@@ -535,8 +603,11 @@ function runToInterval(r: RunState): TimelineInterval {
 		const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
 		segments.push({ start: s0, end: e0, kind: 'waiting' });
 	}
-	// The kill tail: cancelled runs render UNCANCELLED until the request
-	// actually arrived, then hollow from the request to the death.
+	// The kill tail: the span up to the cancel request renders as the run's
+	// normal life; the request → death tail is an 'outline' segment, which
+	// the component draws as a TERMINAL CUT (dark scrim + bright cut line,
+	// kept >= ~3 device px at any zoom — a sub-second docker-kill latency
+	// tail can never vanish) composed over the cancelled treatment.
 	if (r.status === 'cancelled' && tsPresent(r.cancel_requested_at)) {
 		segments.push({ start: Date.parse(r.cancel_requested_at as string), end, kind: 'outline' });
 	}
@@ -553,36 +624,14 @@ function runToInterval(r: RunState): TimelineInterval {
 	};
 }
 
-/** Live waits become connectors: waiter → holder, labeled by what is
- * contended. Locks have one holder; a group wait fans out to EVERY current
- * slot holder (the queued run is behind all of them). Connector kinds are
- * cosmetic to the component (dedup key + tooltip fallback), so the new
- * 'group' kind is safe on any component build. */
-function computeConnectors(): TimelineConnector[] {
-	const out: TimelineConnector[] = [];
-	for (const r of runsById.values()) {
-		const w = r.waiting_on;
-		if (!w || isTerminal(r.status)) continue;
-		if (w.kind === 'lock' && w.holder_run_id) {
-			out.push({
-				fromIntervalId: r.id,
-				toIntervalId: w.holder_run_id,
-				kind: 'lock',
-				label: w.key || 'lock',
-			});
-		} else if (w.kind === 'group' && w.holder_run_ids) {
-			for (const holder of w.holder_run_ids) {
-				out.push({
-					fromIntervalId: r.id,
-					toIntervalId: holder,
-					kind: 'group',
-					label: w.key || 'group',
-				});
-			}
-		}
-	}
-	return out;
-}
+// Waits draw NO connector lines (operator ruling: "make the lines go
+// away"): the adapter feeds the component zero connectors, so no
+// cross-canvas geometry, pixels, or hit-targets exist. Wait indication
+// lives ON the spans instead — the queued run's "⧗ group · Nth" badge and
+// the holder's "⏳N" badge (runLabel), the hatched wait segments
+// (runToInterval), the tooltips, and the run modal's clickable
+// holder/waiter links (dashboard.js). The component's generic connector
+// capability is untouched upstream in js-snippets.
 
 /**
  * Lane order: ALPHABETICAL by hook id — deterministic, stable, and
@@ -644,8 +693,8 @@ function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
 		return;
 	}
 	if (w.kind === 'group') {
-		const ahead = typeof w.position === 'number' && w.position > 0 ? w.position - 1 : null;
-		const place = ahead === null ? '' : ahead === 0 ? ' — next in line' : ` — ${ahead} ahead`;
+		const place =
+			typeof w.position === 'number' && w.position > 0 ? ` — ${ordinal(w.position)} in line` : '';
 		frag.appendChild(ttRow('waiting', `for a slot in group ${w.key || '?'}${place}`));
 		for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
 			const hr = runsById.get(holder);
@@ -699,31 +748,6 @@ function runTooltip(r: RunState): Node {
 	return frag;
 }
 
-function clusterTooltip(c: SkipCluster): Node {
-	const frag = document.createDocumentFragment();
-	frag.appendChild(el('div', { class: 'tt-title' }, `${c.ids.length} skipped deliveries · ${c.hookId}`));
-	frag.appendChild(ttRow('window', `${fmtTime(new Date(c.start).toISOString())} – ${fmtTime(new Date(c.end).toISOString())}`));
-	for (const id of c.ids.slice(-5).reverse()) {
-		frag.appendChild(ttRow('', shortRunId(id)));
-	}
-	if (c.ids.length > 5) frag.appendChild(ttRow('', `…and ${c.ids.length - 5} more`));
-	frag.appendChild(ttRow('', 'click opens the newest one'));
-	return frag;
-}
-
-function connectorTooltip(c: TimelineConnector, missing?: 'from' | 'to'): Node {
-	const frag = document.createDocumentFragment();
-	frag.appendChild(el('div', { class: 'tt-title' }, `lock ${c.label || ''}`.trim()));
-	const describe = (id: string): string => {
-		const r = runsById.get(id);
-		return r ? `${shortRunId(id)} (${r.hook_id})` : `${shortRunId(id)} (not loaded)`;
-	};
-	frag.appendChild(ttRow('waiter', describe(c.fromIntervalId)));
-	frag.appendChild(ttRow('holder', describe(c.toIntervalId)));
-	if (missing) frag.appendChild(ttRow('note', `${missing} endpoint not loaded`));
-	return frag;
-}
-
 function laneTooltip(lane: TimelineLane): Node {
 	const frag = document.createDocumentFragment();
 	frag.appendChild(el('div', { class: 'tt-title' }, lane.id));
@@ -733,89 +757,15 @@ function laneTooltip(lane: TimelineLane): Node {
 	return frag;
 }
 
-// -- Skip clustering ----------------------------------------------------------
-//
-// Skipped deliveries are zero-duration run records; a redelivery burst (50
-// skips in 2s) would otherwise claim 50 coincident pips, each its own
-// sub-track — exploding the lane's height until the next window recalc
-// (the "tall pile of hollow boxes"). Same-hook skipped runs whose starts
-// sit within SKIP_CLUSTER_GAP_MS of the previous one collapse into ONE
-// interval carrying the count and the member ids: the label says "×N
-// skipped", the tooltip lists members, and a click opens the newest
-// member's run modal — every skip stays reachable, and a skip storm can
-// never scale lane height.
-const SKIP_CLUSTER_GAP_MS = 5000;
-const SKIP_CLUSTER_PREFIX = 'skipcluster:';
-
-interface SkipCluster {
-	id: string;
-	hookId: string;
-	start: number;
-	end: number;
-	ids: string[]; // member run ids, oldest→newest
-}
-/** Live registry of rendered clusters (tooltip + click resolution). */
-const skipClusters = new Map<string, SkipCluster>();
-
-function clusterIntervals(all: RunState[]): TimelineInterval[] {
-	skipClusters.clear();
-	const out: TimelineInterval[] = [];
-	const skippedByHook = new Map<string, RunState[]>();
-	for (const r of all) {
-		if (r.status === 'skipped') {
-			const list = skippedByHook.get(r.hook_id) ?? [];
-			list.push(r);
-			skippedByHook.set(r.hook_id, list);
-		} else {
-			out.push(runToInterval(r));
-		}
-	}
-	for (const [hookId, list] of skippedByHook) {
-		list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
-		let bucket: RunState[] = [];
-		const flush = (): void => {
-			if (bucket.length === 0) return;
-			if (bucket.length === 1) {
-				out.push(runToInterval(bucket[0]));
-			} else {
-				const startMs = Date.parse(bucket[0].started);
-				const last = bucket[bucket.length - 1];
-				const endMs = tsPresent(last.finished) ? Date.parse(last.finished as string) : Date.parse(last.started);
-				const c: SkipCluster = {
-					id: SKIP_CLUSTER_PREFIX + hookId + ':' + bucket[0].id,
-					hookId,
-					start: startMs,
-					end: Math.max(endMs, startMs),
-					ids: bucket.map((r) => r.id),
-				};
-				skipClusters.set(c.id, c);
-				out.push({
-					id: c.id,
-					laneId: hookId,
-					start: c.start,
-					end: c.end,
-					label: `×${c.ids.length} skipped`,
-					category: hookId,
-					state: 'dim',
-					data: c,
-				});
-			}
-			bucket = [];
-		};
-		for (const r of list) {
-			if (bucket.length > 0) {
-				const prev = bucket[bucket.length - 1];
-				if (Date.parse(r.started) - Date.parse(prev.started) > SKIP_CLUSTER_GAP_MS) flush();
-			}
-			bucket.push(r);
-			if (bucket.length === 1 && list.length === 1) {
-				// single-member fast path handled by flush
-			}
-		}
-		flush();
-	}
-	return out;
-}
+// (The adapter-side skip pre-merge that used to live here is GONE: skipped
+// runs — zero-duration instants — now feed through as INDIVIDUAL intervals
+// at their true timestamps, each with its own label/tooltip/modal link. The
+// component clusters visually-overlapping instant markers itself, scale-
+// aware: within ~12px they merge into ONE ×N point marker occupying ONE
+// packing slot — so a redelivery burst still can't blow up lane height —
+// and zooming in progressively splits every cluster back into true-time
+// pips. The old fixed 5s data-space buckets rendered as duration bars and
+// never split on zoom; a pile of instants has no length.)
 
 // -- The element + wiring --------------------------------------------------------
 
@@ -823,16 +773,16 @@ function initTimeline(): void {
 	const tl = document.getElementById('runs-timeline') as TimelineViewElement | null;
 	if (tl === null || typeof tl.setData !== 'function') return; // markup missing / element failed to register
 
+	// ×N instant-cluster hits never land here: the component builds cluster
+	// summary tooltips itself and never consults tooltipFor for them — so
+	// every interval id received IS a run id.
 	tl.tooltipFor = (hit: TimelineHit) => {
 		if (hit.type === 'interval') {
-			const c = skipClusters.get(hit.interval.id);
-			if (c) return clusterTooltip(c);
 			const r = runsById.get(hit.interval.id);
 			return r ? runTooltip(r) : null;
 		}
-		if (hit.type === 'connector') return connectorTooltip(hit.connector, hit.missingEndpoint);
 		if (hit.type === 'lane') return laneTooltip(hit.lane);
-		return null;
+		return null; // connectors are never fed, so no connector hits exist
 	};
 
 	// Staleness marking (feature-detected per call, never captured): the
@@ -847,10 +797,12 @@ function initTimeline(): void {
 	// Click-through: a bar opens the same run modal the tables use; a lane
 	// label opens the hook's drill-down page (same href the hooks table uses).
 	tl.addEventListener('intervalclick', (e: Event) => {
+		// Single intervals only — a ×N cluster click ZOOMS to its member
+		// extent component-side (splitting the cluster) and never dispatches
+		// intervalclick — so this id is always a run id, and every skipped
+		// run opens ITS OWN run modal again.
 		const detail = (e as CustomEvent<{ interval: TimelineInterval }>).detail;
-		const c = skipClusters.get(detail.interval.id);
-		// A cluster opens its NEWEST member; the tooltip lists the rest.
-		void showRun(c ? c.ids[c.ids.length - 1] : detail.interval.id);
+		void showRun(detail.interval.id);
 	});
 	tl.addEventListener('laneclick', (e: Event) => {
 		const detail = (e as CustomEvent<{ lane: TimelineLane }>).detail;
@@ -942,9 +894,7 @@ function initTimeline(): void {
 		if (maybePrune(tl, now)) return; // prune did a full setData already
 		const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
 		const data: TimelineData = {
-			// Cluster over the FULL held set (a page is a window; clusters
-			// must not depend on pagination boundaries).
-			intervals: clusterIntervals([...runsById.values()]),
+			intervals: [...runsById.values()].map(runToInterval),
 			coverage: { start: pageOldestMs, end: now },
 		};
 		if (!seeded) {
@@ -963,30 +913,13 @@ function initTimeline(): void {
 			tl.mergeData(data);
 		}
 		syncLanes(tl);
-		tl.setConnectors(computeConnectors());
 	};
 
-	// A skipped-run delta re-clusters instead of merging its own interval —
-	// debounced so a redelivery burst (50 deltas in 2s) coalesces into a
-	// couple of rebuilds instead of 50 pip upserts (the lane-height bomb).
-	let skipRebuild: ReturnType<typeof setTimeout> | null = null;
-	const scheduleSkipRebuild = (): void => {
-		if (skipRebuild !== null) return;
-		skipRebuild = setTimeout(() => {
-			skipRebuild = null;
-			try {
-				rebuildAll();
-			} catch (e) {
-				console.error('timeline: skip recluster failed:', e);
-			}
-		}, 250);
-	};
-
+	// Skipped runs need no special-casing: each is a zero-duration instant
+	// interval upserted like any other delta — the component's scale-aware
+	// ×N clustering absorbs redelivery bursts (one packing slot per
+	// cluster), so no adapter-side pre-merge or rebuild debounce exists.
 	const applyDelta = (r: RunState, prev: RunState | undefined): void => {
-		if (r.status === 'skipped' && seeded) {
-			scheduleSkipRebuild();
-			return;
-		}
 		if (!seeded) {
 			// No coverage yet (deltas can precede the first page when the
 			// stream connects before the seed fetch returns): render what we
@@ -1007,7 +940,6 @@ function initTimeline(): void {
 			.map(runToInterval);
 		tl.mergeData({ intervals });
 		syncLanes(tl);
-		tl.setConnectors(computeConnectors());
 	};
 
 	// Full rebuild (the only way to REMOVE an interval — mergeData upserts).
@@ -1022,8 +954,8 @@ function initTimeline(): void {
 		laneOrderKey = lanes.map((l) => l.id).join('\n');
 		tl.setData({
 			lanes,
-			intervals: clusterIntervals([...runsById.values()]),
-			connectors: computeConnectors(),
+			intervals: [...runsById.values()].map(runToInterval),
+			connectors: [], // rebuild replaces data — pin connectors to none
 			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 60_000, end: Date.now() },
 		});
 	};
@@ -1042,20 +974,11 @@ function initTimeline(): void {
 	// load).
 	if (runsById.size > 0) applyPage([...runsById.values()]);
 
-	// Lane metadata (descriptions, kill-switch state) changes rarely: a
-	// gentle fixed poll, try/caught, never cleared. NOT visibility-gated —
-	// the gate is one of the documented ways the old feed died.
-	const pollHooks = async (): Promise<void> => {
-		try {
-			const hooks = await fetchJSONBounded<HookSummary[]>('/hooks');
-			hookMeta = new Map(hooks.map((h) => [h.id, h]));
-			syncLanes(tl);
-		} catch (e) {
-			console.error('timeline: hooks poll failed:', e);
-		}
-	};
-	setInterval(() => void pollHooks(), HOOKS_POLL_MS);
-	void pollHooks();
+	// Lane metadata (descriptions, kill-switch state) is push-fed via
+	// whr:hooks-data (see applyHooksData) — register as its resync target
+	// and apply whatever roster has already arrived.
+	timelineEl = tl;
+	if (hookMeta.size > 0) syncLanes(tl);
 }
 
 /** Re-apply lane order only when it actually changed (setLanes re-ingests). */
@@ -1088,8 +1011,8 @@ function maybePrune(tl: TimelineViewElement, now: number): boolean {
 	laneOrderKey = lanes.map((l) => l.id).join('\n');
 	tl.setData({
 		lanes,
-		intervals: clusterIntervals(keep),
-		connectors: computeConnectors(),
+		intervals: keep.map(runToInterval),
+		connectors: [], // prune replaces data — pin connectors to none
 		coverage: { start: oldestStartedMs, end: now },
 	});
 	return true;
@@ -1113,6 +1036,10 @@ function applyTablePref(show: boolean): void {
 	if (section) section.hidden = !show;
 	const btn = document.getElementById('timeline-table-toggle');
 	if (btn) btn.textContent = show ? 'Hide table' : 'Show table';
+	// A just-revealed table starts stale (nothing fetches /runs for a
+	// hidden one): tell dashboard.js so it refills immediately instead of
+	// waiting for the next run delta.
+	if (show) window.dispatchEvent(new CustomEvent('whr:runs-table-shown'));
 }
 
 function initTableToggle(): void {
