@@ -11,7 +11,7 @@
 //      and it never grows and never gives up.
 //   5. Stream recovery does ONE full resync, then goes silent again.
 //
-// Run: node --test internal/server/dashboard/testjs/
+// Run: node --test internal/server/dashboard/testjs/*.test.mjs
 // No dependencies; node's built-in test runner.
 
 import { test } from 'node:test';
