@@ -1084,19 +1084,21 @@ module; the component URL passes through unbundled via esbuild
 `external`).
 
 To change the timeline: edit files under `ts/`, then run the
-`//go:generate` one-liner in `internal/server/dashboard/dashboard.go` —
+`//go:generate` in `internal/server/dashboard/dashboard.go` (it invokes
+`generate-timeline.sh` from that directory) —
 `go-toolchain --generate <hash>` (a bare `go-toolchain` run prints the
 current hash), or `go generate ./internal/server/dashboard/` directly —
 and commit the regenerated `assets/timeline.js` (plus any changed
-`ts/js-snippets/` declarations) together with the source. The one-liner
+`ts/js-snippets/` declarations) together with the source. The script
 just curls: a pinned ts0 build from [buildhost](https://pazer.build)
-(the `?v=N` in the directive) and the component `.d.ts` pair from
+(the `?v=N` in `generate-timeline.sh`) and the component `.d.ts` pair from
 js-snippets' Pages, then runs `node ts0.cjs build`. It needs curl and
 Node 22+ — no npm, no npx, no git auth. To bump the ts0 pin, change
-`?v=N` in the directive and re-key the go-toolchain approval hash (the
-bare run prints the new one; update `generate:` in `ci.yml` to match —
-any edit to the directive line, or anything that moves it, re-keys the
-hash). **Never edit `assets/timeline.js` by hand** — it carries a
+`?v=N` in `generate-timeline.sh` — the directive line is untouched by a
+pin bump, and the go-toolchain approval hash re-keys only when the
+directive line itself is edited or moved (the bare run prints the new
+one; `generate:` in `ci.yml` must carry the matching hash).
+**Never edit `assets/timeline.js` by hand** — it carries a
 DO-NOT-EDIT banner; the committed bundle is what ships.
 
 ## Notes

@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that the go:generate one-liner in dashboard.go compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types = the component's real .d.ts pair, fetched from Pages by the same generate into the committed ts/js-snippets/); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that dashboard.go's go:generate (running generate-timeline.sh) compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types = the component's real .d.ts pair, fetched from Pages by the same generate into the committed ts/js-snippets/); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -819,9 +819,11 @@ The companion repo is `wow-look-at-my/webhooks`.
   adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
   (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
   banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
-  the ONE-LINE `//go:generate` in dashboard.go: curl a PINNED ts0 build
-  from buildhost (`?v=N`, never branch=latest) + the two `.d.ts` from
-  Pages, then `node .cache/ts0.cjs build` (.cache/ is gitignored). It
+  dashboard.go's `//go:generate sh generate-timeline.sh` — the script
+  (same directory, run with cwd = the package dir) curls a PINNED ts0
+  build from buildhost (`?v=N`, never branch=latest) + the two `.d.ts`
+  from Pages, then runs `node .cache/ts0.cjs build` (.cache/ is
+  gitignored). It
   needs curl and Node 22+ — deliberately NO npm/npx and NO git auth (the
   previous npx pipeline and a Go-bootstrap rewrite were both scrapped for
   exactly that). Run it as `go-toolchain --generate <hash>` (bare
@@ -830,7 +832,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   freshness gate `git diff --exit-code -- internal/server/dashboard/assets/
   internal/server/dashboard/ts/js-snippets/` after — a stale bundle, stale
   fetched types, or upstream component API drift all fail CI). To bump the
-  ts0 pin: change `?v=N` in the directive, then re-key the approval hash
-  in ci.yml (any edit to the directive line — including the pin — or
-  anything that shifts its file:line changes the hash; the bare run prints
-  the new one).
+  ts0 pin: change `?v=N` in generate-timeline.sh — the directive line is
+  untouched by a pin bump, and the approval hash re-keys only when the
+  directive line itself is edited or moved (the bare run prints the new
+  one).
