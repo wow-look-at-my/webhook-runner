@@ -403,6 +403,10 @@ const sectionFetchers = {
     publishHooks(hooks);
     renderHooks(hooks);
   },
+  // The needs-attention surface is GLOBAL: the red banner renders on both
+  // views (it lives outside <main>), so this section refetches on its
+  // signal whichever view is active — see the push reactor below.
+  attention: async () => renderAttention(await fetchJSON("/attention")),
   runs: async () => {
     const runsSection = document.getElementById("runs-section");
     if (!runsSection || runsSection.hidden) return;
@@ -430,11 +434,13 @@ async function refresh() {
   setView(hookId);
   try {
     if (hookId) {
-      await refreshApp(hookId);
+      // The attention banner is global — keep it fresh on the app view too.
+      await Promise.all([refreshApp(hookId), sectionFetchers.attention()]);
     } else {
       // hooks first: the kv render keys off the roster it publishes.
       await sectionFetchers.hooks();
       await Promise.all([
+        sectionFetchers.attention(),
         sectionFetchers.runs(),
         sectionFetchers.images(),
         sectionFetchers.events(),
@@ -485,6 +491,9 @@ async function runSectionWork() {
     if (window.whrStreamLive !== true) return;
     const hookId = currentHookId();
     if (hookId) {
+      // "attention" is the one granular section that renders on the app
+      // view too (the global banner); everything else folds into "app".
+      if (secs.includes("attention")) await sectionFetchers.attention();
       if (secs.includes("app")) await refreshApp(hookId);
       stampUpdated();
       return;
@@ -514,7 +523,9 @@ window.addEventListener("whr:sections-changed", (e) => {
   const secs = (e.detail && e.detail.sections) || [];
   const hookId = currentHookId();
   for (const s of secs) {
-    if (hookId) {
+    if (s === "attention") {
+      dirtySections.add("attention"); // global: the banner shows on both views
+    } else if (hookId) {
       if (APP_SECTIONS.has(s)) dirtySections.add("app");
     } else if (sectionFetchers[s]) {
       dirtySections.add(s); // unknown future sections are ignored
@@ -636,6 +647,87 @@ function renderHooks(hooks) {
     );
   }
 }
+
+// --- Needs attention: the misconfiguration cry-for-help ---------------------
+//
+// GET /attention is the aggregated set of ACTIVE problems (dropped hooks,
+// unresolvable ${NAME} references, sops decrypt failures, the zero-hooks
+// guard, the containerized-TMPDIR hazard, recognized event-derived
+// problems). While any are active a red banner pins itself above BOTH
+// views and the overview grows a "Needs attention" panel listing each
+// problem with its hook and how long it has been active. Entries
+// self-clear server-side when the underlying state resolves (typically on
+// the reload that fixes it), so a healthy server shows neither.
+
+// Where an entry derives from, for the panel's Source column.
+function attentionSourceLabel(source) {
+  switch (source) {
+    case "load": return "config (hook dropped)";
+    case "zero-hooks": return "config (no hooks)";
+    case "secrets": return "secrets / references";
+    case "server": return "server (needs restart)";
+    case "event": return "runtime event";
+    default: return source;
+  }
+}
+
+// One-shot smooth-scroll to the panel, armed by the banner's "view" link
+// when it has to route back to the overview first (the pendingKVScroll
+// pattern: consumed by the render, never re-fired by a later refetch).
+let pendingAttentionScroll = false;
+
+function renderAttention(data) {
+  const entries = (data && data.entries) || [];
+  const banner = document.getElementById("attention-banner");
+  banner.hidden = entries.length === 0;
+  document.getElementById("attention-banner-text").textContent =
+    entries.length === 1
+      ? "1 problem needs attention"
+      : `${entries.length} problems need attention`;
+
+  const section = document.getElementById("attention-section");
+  section.hidden = entries.length === 0;
+  const tbody = document.querySelector("#attention-table tbody");
+  tbody.innerHTML = "";
+  for (const e of entries) {
+    const tr = el("tr", { class: e.hook ? "attention-hook-row" : "" },
+      el("td", { class: "attention-msg" }, e.message),
+      el("td", null, e.hook
+        ? el("a", { href: hookHref(e.hook), class: "hook-link" }, el("code", null, e.hook))
+        : "—"),
+      el("td", null, attentionSourceLabel(e.source)),
+      // Age since the problem FIRST became active (stable across
+      // re-derivations while it persists); tooltip = the absolute time.
+      el("td", { class: "attention-age", title: fmtTime(e.since) },
+        fmtDuration(Date.now() - new Date(e.since)) || "0s"),
+    );
+    if (e.hook) {
+      tr.addEventListener("click", (ev) => {
+        if (ev.target.closest("a")) return;
+        location.hash = hookHref(e.hook);
+      });
+    }
+    tbody.appendChild(tr);
+  }
+  if (pendingAttentionScroll && !currentHookId()) {
+    pendingAttentionScroll = false;
+    if (entries.length) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+// The banner's "view" jump: on the overview, scroll straight to the panel;
+// on an app page, route back to the overview first and let its render
+// consume the one-shot scroll.
+document.getElementById("attention-banner-link").addEventListener("click", (e) => {
+  e.preventDefault();
+  if (currentHookId()) {
+    pendingAttentionScroll = true;
+    location.hash = "";
+  } else {
+    const section = document.getElementById("attention-section");
+    if (!section.hidden) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+});
 
 // --- Concurrency groups: declared vs effective + live override -------------
 

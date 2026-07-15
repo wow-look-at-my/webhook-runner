@@ -25,14 +25,15 @@ type Recorder struct {
 	next  int
 	total int
 
-	// onRecord, when set, is invoked with each recorded event's kind,
+	// onRecord, when set, is invoked with each recorded event,
 	// synchronously on the recording goroutine (under the ring mutex, so
 	// keep it trivial). It is the server's "activity happened" seam — the
-	// stream hub turns it into dashboard section-changed signals. It must
+	// stream hub turns it into dashboard section-changed signals, and the
+	// attention aggregator derives entries from recognized kinds. It must
 	// be fast, must never block, and must never call back into the
 	// Recorder. Set once at wiring time, before concurrent Records (the
 	// SetOnChange convention).
-	onRecord func(kind string)
+	onRecord func(ev Event)
 }
 
 // NewRecorder returns a recorder retaining the most recent max events.
@@ -44,9 +45,9 @@ func NewRecorder(max int) *Recorder {
 }
 
 // SetOnRecord registers fn to be invoked after every recorded event with
-// that event's kind. Nil-receiver safe like Record; a nil fn disables the
+// that event. Nil-receiver safe like Record; a nil fn disables the
 // callback. See the field comment for the contract.
-func (r *Recorder) SetOnRecord(fn func(kind string)) {
+func (r *Recorder) SetOnRecord(fn func(ev Event)) {
 	if r == nil {
 		return
 	}
@@ -62,11 +63,12 @@ func (r *Recorder) Record(kind, msg string, fields map[string]string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.buf[r.next] = Event{Time: time.Now().UTC(), Kind: kind, Msg: msg, Fields: fields}
+	ev := Event{Time: time.Now().UTC(), Kind: kind, Msg: msg, Fields: fields}
+	r.buf[r.next] = ev
 	r.next = (r.next + 1) % len(r.buf)
 	r.total++
 	if r.onRecord != nil {
-		r.onRecord(kind)
+		r.onRecord(ev)
 	}
 }
 

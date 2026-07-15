@@ -52,6 +52,19 @@ func TestParseMinimal(t *testing.T) {
 	assert.Empty(t, h.Command)
 }
 
+// dind is a plain opt-in bool (like state): Parse round-trips it, and it
+// defaults to false when omitted. (An unknown field is still rejected — see
+// the "unknown field" case in TestParseRejects.)
+func TestParseDind(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","dind":true}`)
+	require.Nil(t, err)
+	assert.True(t, h.Dind)
+
+	h, err = parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.False(t, h.Dind, "dind defaults to false when omitted")
+}
+
 // Omitting timeout falls back to DefaultTimeout — every hook keeps hang
 // protection (5 minutes of silence) by default.
 func TestTimeoutDefaultsWhenOmitted(t *testing.T) {

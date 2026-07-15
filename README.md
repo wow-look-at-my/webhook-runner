@@ -112,6 +112,13 @@ graph LR
 - **Hooks ship their own tests**: a `tests` array in `hook.json` declares
   test commands; `webhook-runner test <hooks-dir>` runs each one in the
   hook's built image, so CI never hardcodes per-hook test invocations.
+- **Docker-in-Docker**: a hook can opt into `"dind": true` to run its own
+  nested container daemon — the runner starts its container with
+  `--privileged` plus an anonymous `/var/lib/docker` volume, fully isolated
+  from the host's daemon (no host docker socket is ever mounted). The same
+  two flags apply on the `webhook-runner test` path. `--privileged` is
+  host-root-equivalent, so enable it only for trusted, operator-curated
+  hooks. See [Docker-in-Docker](#docker-in-docker-dind).
 - **Secrets without plaintext**: `env` values and `api_key` may reference
   secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
   committed to the hooks repo (`secrets.sops.env`) or from the runner
@@ -128,6 +135,20 @@ graph LR
   data dir: they survive restarts **and** hooks-repo reloads, and every flip
   is an activity event. See
   [Operational overrides](#operational-overrides-the-kill-switch).
+- **Needs attention**: a persistent, impossible-to-miss misconfiguration
+  surface. `GET /attention` (admin port) aggregates every ACTIVE problem —
+  hooks dropped at load/validation (with the reason), unresolvable
+  `${NAME}` `api_key`/`env` references, sops decrypt failures, the
+  zero-hooks guard, the containerized-without-TMPDIR hazard, and
+  recognized event-derived problems (a delivery denied over a broken
+  api_key reference; a seam for future hook-emitted signals) — each with
+  what's wrong and since when. The dashboard pins a red banner above both
+  views whenever the count is non-zero and lists the entries in a "Needs
+  attention" panel. Entries **clear themselves when the underlying state
+  resolves**: the state-derived ones re-derive on every hooks reload (fix
+  the config, reload, entry gone), only the TMPDIR verdict needs a
+  restart. No acknowledgement, no dismissal — the panel is empty exactly
+  when nothing is wrong.
 - **Dashboard**: HTML view at `/` on the admin port showing the
   full internal state — loaded hooks, per-hook image status (built /
   will-build-next-run, images on disk), runs, and a live activity
@@ -145,7 +166,9 @@ graph LR
   queue advances), a run that others wait on carries "⏳N", and the run
   modal links holders and waiters for click-through. Failures are
   unmissable, cancelled runs render
-  hollow, and instant runs become diamond pips. It follows "now" live;
+  hollow with a dashed border and a marked kill tail, and instant runs
+  become diamond pips — overlapping pips cluster into ×N markers that
+  split apart as you zoom in. It follows "now" live;
   wheel/drag pans, ctrl/cmd+wheel (or pinch) zooms, and dragging into the
   past auto-loads history via `/runs?before=` until retention runs out;
   live run updates arrive over `/runs/stream` (SSE), and the same single
@@ -252,10 +275,11 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/runs`             | Runs across all hooks, newest-first: live (active + recent) merged with the persisted completed history, deduped by run ID; `?hook={id}` narrows to one hook, `?max=` caps the page (default 100). `?before=<RFC3339 timestamp>` (fractional seconds optional) pages into history: only runs queued **strictly before** that instant — pass the oldest `started` you already hold as the next cursor, so consecutive pages tile with no gap or overlap (a malformed value is a `400`; omitted means unpaged). Each run carries `started` (when it was accepted/queued) and, separately, `started_at` (when its container actually launched — absent while pending, or if it never started), so queue wait (`started`→`started_at`) and processing time (`started_at`→`finished`) never blur together. A run queued on a concurrency group carries `waiting_on` `{kind: "group", key: <group>, holder_run_ids, position}` (position is 1-based; holders re-stamped live), and each slot HOLDER lists the queued runs in `waiters` with `key: "group:<name>"` — same derived mechanics as lock waits. |
 | GET    | `/runs/{id}`        | Status + retained output for one run — served from the live tracker, falling back to the persisted history for runs evicted from it or finished before a restart. |
 | POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
-| GET    | `/runs/stream`      | **Server-Sent Events live tail** of run lifecycle — and the whole dashboard's push channel. On connect: a `retry: 2000` directive (fixed client reconnect delay), then one `snapshot` event (the current live+recent runs — same shape as `/runs`, output stripped), then one `run` event per lifecycle change (created/queued, pending→running, waiting_on set/cleared, title set, cancel requested, terminal with exit/error), plus a heartbeat every ~10s (an SSE comment for proxies AND an `hb` event the client can key freshness off). The same connection multiplexes `changed` events — `{"sections":["hooks","kv",...]}` — coarse "these admin sections changed, refetch each once" signals covering `/hooks`, `/images`, `/concurrency`, `/kv`, and `/events` (fed by hook reloads, kill-switch flips, image builds, limit overrides, kv writes, run lifecycle, and every activity event). Signals are a coalescing dirty-set per client: a burst folds into one event, and signals can never drop a client. Fan-out never blocks run execution: each client has a bounded run-delta buffer and a client that can't keep up is **dropped** — its EventSource reconnects, resyncs from the fresh connect snapshot, and refetches every section once (signals carry no payload, so none are load-bearing). This is what lets an idle dashboard make zero requests of any kind. |
+| GET    | `/runs/stream`      | **Server-Sent Events live tail** of run lifecycle — and the whole dashboard's push channel. On connect: a `retry: 2000` directive (fixed client reconnect delay), then one `snapshot` event (the current live+recent runs — same shape as `/runs`, output stripped), then one `run` event per lifecycle change (created/queued, pending→running, waiting_on set/cleared, title set, cancel requested, terminal with exit/error), plus a heartbeat every ~10s (an SSE comment for proxies AND an `hb` event the client can key freshness off). The same connection multiplexes `changed` events — `{"sections":["hooks","kv",...]}` — coarse "these admin sections changed, refetch each once" signals covering `/hooks`, `/images`, `/concurrency`, `/kv`, `/events`, and `/attention` (fed by hook reloads, kill-switch flips, image builds, limit overrides, kv writes, run lifecycle, every activity event, and attention-set changes). Signals are a coalescing dirty-set per client: a burst folds into one event, and signals can never drop a client. Fan-out never blocks run execution: each client has a bounded run-delta buffer and a client that can't keep up is **dropped** — its EventSource reconnects, resyncs from the fresh connect snapshot, and refetches every section once (signals carry no payload, so none are load-bearing). This is what lets an idle dashboard make zero requests of any kind. |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
 | GET    | `/config`           | Dashboard setup info: `hooks_repo`, `hook_base_url`, `reload_secret` (each only when set), plus `run_retention` — the persisted run-history window as a compact duration (e.g. `48h`), i.e. how far back `/runs?before=` paging can ever reach — present only when the run store is configured. |
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), unresolved env references (`env.unresolved`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
+| GET    | `/attention`        | The **needs-attention** problem set: `{count, entries}` where each entry is `{source, hook, key, message, since}`, oldest first. Sources: `load` (hook dropped at load/validation — the reason quoted), `zero-hooks` (nothing loaded at all), `secrets` (unresolvable `${NAME}` `api_key`/`env` references or a failing sops decrypt, statically re-probed on every reload), `server` (the containerized-without-TMPDIR hazard — boot-scoped, needs a restart to clear), `event` (derived from recognized activity events: today a delivery denied over a broken api_key reference; reserved kinds `hook.reported_misconfigured`/`hook.reported_healthy` are the seam for future hook-emitted signals). Entries are value-free (they name references, never resolved values) and **self-clearing**: state-derived ones vanish on the reload that fixes them, the event-derived api_key one when a reload's probe finds the reference resolvable (or the hook is removed), reported ones on the hook's paired all-clear event. `since` = when the problem first became active (stable while it persists; in-memory, so a restart re-derives state entries at boot). The dashboard's red banner + "Needs attention" panel render this. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | Live state of every declared concurrency group: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it — plus the queue drill-down: `holders` (the runs occupying the slots, in acquire order) and `waiting_runs` (the queue, in order), each entry a `{run_id, hook_id, title, status, since, started, started_at}` enriched from the live tracker (an evicted run keeps its `run_id`/`since`). The dashboard renders this as an expandable group row: one click from a saturated group to any holder's or waiter's run modal. |
 | PUT    | `/concurrency/{group}/limit` | Override a group's limit live: body `{"limit": N}`, `N >= 1` (`0` is rejected — it would deadlock queued runs; to stop a group's hooks entirely, disable the hooks). `404` for undeclared groups. The swap is safe with runs in flight, and the override survives reloads and restarts until deleted. |
@@ -409,6 +433,54 @@ already assume). Values never appear on the public hook port, and
 > shim live under `TMPDIR`, which must be host-shared when the server runs in
 > a container — the same requirement payload files already have; see *Running
 > the server in a container*.
+
+## Docker-in-Docker (dind)
+
+A hook that needs to run its own containers — build an image, spin up a
+service, drive a nested `docker` CLI — can opt into Docker-in-Docker with
+`"dind": true`:
+
+```json
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "dind": true
+}
+```
+
+When set, the runner starts the hook's container with two extra flags,
+applied identically on the **live-run** and **`webhook-runner test`** paths:
+
+- `--privileged` — grants a nested `dockerd` the capabilities it needs.
+- `--mount type=volume,dst=/var/lib/docker` — an anonymous volume for the
+  inner daemon's storage.
+
+The `/var/lib/docker` volume is **required**, not incidental: a nested
+daemon's storage driver (overlay2) cannot stack its overlay filesystem on
+top of the outer container's own overlay rootfs, so `/var/lib/docker` must
+be a real volume rather than the layered container filesystem. Because every
+run is `docker run --rm ...`, that anonymous volume is removed when the run
+ends — inner image/layer storage never leaks between runs.
+
+The host's own docker daemon is **never exposed**: webhook-runner does not
+mount the host's docker socket, so the nested daemon is a fully isolated,
+throwaway daemon rather than a window onto the host. Start it inside the
+hook (e.g. `dockerd-entrypoint.sh dockerd &` on a `docker:dind` base image),
+wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
+`e2e/hooks/dind-hook/` for a worked smoke test.
+
+> **Security:** `--privileged` is effectively host-root — a privileged
+> container can reach the host kernel. `dind` is therefore an audited,
+> opt-in, per-hook capability; enable it only for **trusted,
+> operator-curated** hooks (the hooks repo is operator-controlled). It is
+> deliberately first-class rather than something assembled from
+> `extra_docker_args`: those raw args are appended only on the live-run path
+> (so they can never cover `webhook-runner test`) and would still leave you
+> hand-writing the volume, whereas `dind` applies the exact same two flags to
+> both paths and is auditable as a single boolean.
+
+> **Deploy-first:** `dind` is a newer `hook.json` field, so deploy a
+> webhook-runner build that understands it before any hook sets `"dind":
+> true` (older binaries reject unknown fields via `DisallowUnknownFields`).
 
 ## hook.json reference
 

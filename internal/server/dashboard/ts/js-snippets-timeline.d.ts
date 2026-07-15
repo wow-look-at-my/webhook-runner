@@ -47,7 +47,7 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 		label?: string;
 		/** Color key: same category = same hue. Defaults to lane.group, then laneId. */
 		category?: string;
-		/** Style-map key: rendering treatment (e.g. 'failed', 'dim', 'hatch'). */
+		/** Style-map key: rendering treatment (e.g. 'failed', 'dim', 'cancelled'). */
 		state?: string;
 		segments?: TimelineSegment[];
 		/** Opaque consumer payload — echoed back in events and tooltip callbacks. */
@@ -115,7 +115,13 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 	 */
 	export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: boolean } | void>;
 
-	/** What the pointer is over — handed to tooltipFor and hover/click events. */
+	/** What the pointer is over — handed to tooltipFor and hover/click events.
+	 * The upstream union also has a `{ type: 'cluster'; … }` variant for the
+	 * component-native ×N instant-marker clusters, deliberately NOT declared
+	 * here: tooltipFor is never consulted for clusters (their summary tooltip
+	 * is component-built) and a cluster click zooms to the member extent
+	 * instead of dispatching intervalclick — the adapter can never receive
+	 * one. */
 	export type TimelineHit =
 		| { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
 		| { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
@@ -138,6 +144,8 @@ declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js
 	 *
 	 * CustomEvents dispatched (listen with addEventListener):
 	 *   'intervalclick'  detail: { interval: TimelineInterval; lane: TimelineLane }
+	 *                    (single intervals only — a ×N instant-cluster click
+	 *                    zooms to the member extent instead of dispatching)
 	 *   'connectorclick' detail: { connector: TimelineConnector }
 	 *   'laneclick'      detail: { lane: TimelineLane }
 	 *   'intervalhover'  detail: { interval: TimelineInterval | null; lane: TimelineLane | null }

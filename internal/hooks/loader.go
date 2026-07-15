@@ -74,7 +74,7 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 			if errors.Is(err, errNoHookJSON) {
 				continue
 			}
-			errs = append(errs, fmt.Errorf("hook %q: %w", id, err))
+			errs = append(errs, HookLoadError{HookID: id, Err: err})
 			continue
 		}
 		if l.SDK {
@@ -91,6 +91,20 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	}
 	return hooks, errs
 }
+
+// HookLoadError attributes one hook directory's load/validation failure
+// (unparseable hook.json, missing Dockerfile or $schema, malformed
+// skip_if/run_title, …) to its hook ID, so consumers that retain load
+// errors — the attention aggregator's "needs attention" surface — can pin
+// the problem on the hook instead of string-parsing. The rendered text is
+// unchanged from the historical `hook %q: %v` wrap.
+type HookLoadError struct {
+	HookID string
+	Err    error
+}
+
+func (e HookLoadError) Error() string { return fmt.Sprintf("hook %q: %v", e.HookID, e.Err) }
+func (e HookLoadError) Unwrap() error { return e.Err }
 
 // ZeroHooksError: a hooks root yielded no hooks at all. Loud on purpose —
 // see LoadLayout.

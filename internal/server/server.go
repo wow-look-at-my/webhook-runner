@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
@@ -37,6 +38,7 @@ type Server struct {
 	secrets      *hooks.SecretsLoader
 	concurrency  *concurrency.Manager
 	events       *events.Recorder
+	attention    *attention.Aggregator
 	log          *slog.Logger
 	reloadSecret string
 	onReload     func() error
@@ -71,7 +73,13 @@ type Options struct {
 	// Events is the activity feed shown on the admin dashboard. nil is
 	// fine (events are dropped).
 	Events *events.Recorder
-	Logger *slog.Logger
+	// Attention is the aggregated "needs attention" problem set behind
+	// GET /attention and the dashboard's red banner. The server wires its
+	// onChange seam to the stream's "attention" section signal and feeds
+	// it every recorded activity event (the event-derived entry seam).
+	// nil is fine (the endpoint reports zero problems).
+	Attention *attention.Aggregator
+	Logger    *slog.Logger
 
 	// ReloadSecret is the HMAC-SHA256 secret used to authenticate
 	// POST /_reload on the hook port. When empty, the endpoint is
@@ -131,6 +139,7 @@ func New(opts Options) *Server {
 		secrets:      opts.Secrets,
 		concurrency:  opts.Concurrency,
 		events:       opts.Events,
+		attention:    opts.Attention,
 		log:          opts.Logger,
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,
@@ -171,8 +180,19 @@ func New(opts Options) *Server {
 			s.stream.signal("concurrency")
 		})
 	}
-	opts.Events.SetOnRecord(func(kind string) {
-		s.stream.signal(sectionsForEvent(kind)...)
+	opts.Events.SetOnRecord(func(ev events.Event) {
+		s.stream.signal(sectionsForEvent(ev.Kind)...)
+		// The attention aggregator's event seam: recognized kinds (see
+		// attention.RegisterStandardEventRules) become "needs attention"
+		// entries; everything else is a no-op. Any resulting set change
+		// signals "attention" via the aggregator's own onChange below.
+		s.attention.ObserveEvent(ev.Kind, ev.Fields["hook"], ev.Msg)
+	})
+	// The attention seam: any real change to the active problem set —
+	// a reload re-derivation, a boot verdict, an event-derived entry —
+	// dirties the dashboard's "attention" section (banner + panel).
+	opts.Attention.SetOnChange(func() {
+		s.stream.signal("attention")
 	})
 	if opts.KV != nil {
 		opts.KV.SetOnMutate(func() {
@@ -226,6 +246,9 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("POST /reload", s.handleReload)
 	s.adminMux.HandleFunc("GET /config", s.handleConfig)
 	s.adminMux.HandleFunc("GET /events", s.handleEvents)
+	// The persistent misconfiguration surface (see attention.go): the
+	// dashboard's red banner + Needs attention panel read this.
+	s.adminMux.HandleFunc("GET /attention", s.handleAttention)
 	s.adminMux.HandleFunc("GET /images", s.handleImages)
 	s.adminMux.HandleFunc("GET /concurrency", s.handleConcurrency)
 	s.adminMux.HandleFunc("GET /kv", s.handleKVStats)

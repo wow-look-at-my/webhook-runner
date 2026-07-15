@@ -23,6 +23,7 @@ internal/runner/           docker run dispatch + output streaming + image build/
 internal/runs/             in-memory run tracker (bounded) + the OnFinish persistence seam
 internal/runstore/         bbolt-backed persistent completed-run history (48h retention, GC sweeper)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
+internal/attention/        aggregated ACTIVE misconfigurations (the needs-attention surface: GET /attention + the dashboard's red banner; nil-aggregator safe)
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
@@ -65,9 +66,12 @@ The server listens on two TCP ports plus a Unix socket:
   labels that window and `stats.skipped` is the skip bucket — see the
   skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
+  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries), `/images` (per-hook image state), the operator kill
+  event carries), `/attention` (the aggregated needs-attention problem
+  set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
+  first — the dashboard's red banner + panel; see the attention bullet
+  under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill
   switch (`POST /hooks/{id}/disable|enable`,
   `PUT|DELETE /concurrency/{group}/limit` — see the overrides bullet under
   "Things easy to get wrong"), `/concurrency` (live per-group
@@ -109,8 +113,19 @@ The server listens on two TCP ports plus a Unix socket:
   same-kind+key restamp (queue position/holder churn) instead of
   fragmenting it (pre-fix, a single 7-deep queue wait shipped 14
   micro-segments on every SSE delta). Failures
-  emphasized, cancelled hollow, instant runs as pips; wheel/drag
-  pan + zoom, and panning into the past pages `/runs?before=` history
+  emphasized; cancelled runs map to the component's first-class
+  'cancelled' state (hollow + dashed category-hue border — "stopped, not
+  failed"), with the kill tail (cancel_requested_at→finished) still a
+  separate 'outline' segment the component draws as a terminal cut that
+  never vanishes; instant runs (e.g. skips) as pips, fed INDIVIDUALLY at
+  their true timestamps — the component clusters visually-overlapping
+  instants into scale-aware ×N markers that split on zoom (the old
+  adapter-side skip pre-merge is gone; each skip keeps its own tooltip
+  and modal click-through); wheel/drag
+  pan + zoom (plus `html { overscroll-behavior-x: none }` in
+  dashboard.css so a trackpad back-swipe around the canvas never
+  triggers history navigation), and panning into the past pages
+  `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).
   A bar click opens the run modal, a lane-label click opens `#hook={id}`,
   and the old runs table stays behind a persisted "Show table" toggle.
@@ -204,7 +219,12 @@ The companion repo is `wow-look-at-my/webhooks`.
 - Per-hook sops secrets (`hooks.SecretsLoader`, `secrets.sops.env`)
   decrypt by exec'ing the `sops` binary (`WEBHOOK_RUNNER_SOPS_BIN`
   overrides; key material like `SOPS_AGE_KEY_FILE` is plain sops config
-  on the service env), cached per file by mtime+size. Decrypted entries
+  on the service env), cached per file by mtime+size. The runtime image
+  (`Dockerfile`, alpine) bundles `sops` (and `age`) so the server can run
+  this exec in-container; the age *identity* is mounted at runtime via
+  `SOPS_AGE_KEY_FILE`, never baked in. The decrypt runs host-side in the
+  server process — the hook container only ever receives the plaintext
+  values as env vars, so hook images need nothing sops-related. Decrypted entries
   are also injected into the container env, with hook.json `env` winning
   on conflict (it's appended after, and docker keeps the last `-e`).
   Decrypt failures fail the run (status `error`) before the container
@@ -289,6 +309,26 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
+- `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
+  EXACTLY two docker-run flags — `--privileged` and
+  `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
+  live-run path (`runner.execute`, before extra_docker_args + the image)
+  AND the `webhook-runner test` path (`runner.runOneTest`, before the
+  image); that run/test parity is load-bearing so a dind hook's declared
+  `tests` can start a nested daemon under `webhook-runner test`. The
+  anonymous /var/lib/docker volume is REQUIRED, not decorative: an inner
+  daemon's overlay2 storage can't stack on the outer container's overlay
+  rootfs, so it needs a real volume — and `--rm` (always passed)
+  auto-removes it, so inner storage never leaks between runs. The host's
+  docker daemon is NEVER exposed (no host socket mount); the nested daemon
+  is a throwaway. `--privileged` is host-root-equivalent, so this is an
+  AUDITED capability — enable it only for trusted, operator-curated hooks.
+  It is deliberately first-class rather than `extra_docker_args`: those raw
+  args are appended only on the live-run path (they can't cover the test
+  path) and would still leave the volume hand-written, whereas `dind`
+  covers both paths with one greppable boolean. New hook.json field ⇒ same
+  deploy-first rule as `state`/`schedule` (old binaries reject it via
+  DisallowUnknownFields).
 - `script` (hook.json) is parse-time sugar for `command`:
   `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
   pwsh, node, or tsx), resolving the file with `EvalSymlinks` and
@@ -535,7 +575,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   1-slot wake channel, NOT the delta queue, so signal storms coalesce
   into one drain and signals can never overflow/drop/block anyone — only
   run deltas drop a slow client, and a reconnecting client refetches
-  every section on open so no signal is load-bearing. Three seams feed
+  every section on open so no signal is load-bearing. Four seams feed
   `streamHub.signal`, wired in `server.New`: (1) the tracker OnChange
   wrapper also dirties "concurrency" (group active/waiting/holders move
   exactly with run lifecycle/waiting_on — a deliberate superset); (2)
@@ -543,10 +583,15 @@ The companion repo is `wow-look-at-my/webhooks`.
   dirties "events"; hooks.reloaded → hooks+images+concurrency,
   hook.load_error/disabled/enabled → hooks, image.* → images,
   concurrency.* → concurrency; rejection noise like hook.denied
-  deliberately does NOT dirty the roster); (3) `kv.Store.SetOnMutate`
+  deliberately does NOT dirty the roster) — the same callback also feeds
+  each event to `attention.Aggregator.ObserveEvent` (the event-derived
+  entry seam; unrecognized kinds no-op); (3) `kv.Store.SetOnMutate`
   (successful entry mutations + reclaiming sweeps; locks are not entries
   and never signal; a lazily-expired entry only signals at its sweep, so
-  /kv views can lag expiry by ≤1 sweep interval). All three callbacks run
+  /kv views can lag expiry by ≤1 sweep interval); (4)
+  `attention.Aggregator.SetOnChange` → "attention" (fired only on REAL
+  set changes — an identical re-derivation on a quiet reload signals
+  nothing). All four callbacks run
   synchronously on mutating goroutines under their owners' mutexes —
   keep them trivial (the hub only flips bounded dirty bits), never let
   them call back into their owner. Client side: timeline.ts re-publishes
@@ -557,7 +602,65 @@ The companion repo is `wow-look-at-my/webhooks`.
   (AbortSignal.timeout), full-refresh on every stream (re)open, and a
   fixed 5s full-refresh fallback ONLY while the stream is down — zero
   polling while it is live (proven by the node harness in
-  internal/server/dashboard/testjs/, run by CI).
+  internal/server/dashboard/testjs/, run by CI). The "attention" section
+  is the one granular section the app view keeps (everything else folds
+  into one "app" token): the red banner renders on BOTH views, so its
+  signal refetches /attention wherever the operator is.
+- The needs-attention surface (`internal/attention`, `GET /attention`,
+  the dashboard's red banner + "Needs attention" panel) is the
+  PERSISTENT view of ACTIVE misconfigurations — the activity feed
+  announces them and scrolls on; the aggregator holds the current set
+  until each problem RESOLVES (no acknowledgement anywhere). Entry
+  identity is (source, hook, key); `since` is when the problem first
+  became active — preserved across re-derivations while it persists
+  (message may be reworded in place), reset on clear+recur. Sources and
+  their CLEAR rules (every rule can actually fire — don't add a source
+  without one):
+  - `load` (hook dropped at load/validation: parse error, missing
+    Dockerfile/$schema, malformed skip_if/run_title, undeclared
+    concurrency_group, IgnoredLegacyDirError, unreadable tree,
+    unparseable concurrency.json) and `zero-hooks`
+    (hooks.ZeroHooksError): STATE-derived — `buildLoadAndApply` re-derives
+    them from the retained load errors on EVERY reload (the loader's
+    per-hook failures are typed `hooks.HookLoadError` for attribution),
+    so they clear on the first reload where the hook loads / any hook
+    loads / the dir is removed.
+  - `secrets` (unresolvable `${NAME}` api_key/env references — including
+    an api_key that expands to empty — and sops decrypt failures):
+    STATE-derived by `attention.ApplyServeProbe`, a static probe run per
+    reload over the LOADED hooks with the request/run paths' exact
+    resolution order (secrets.sops.env first, then host env). Clears when
+    the reference resolves / the file decrypts / the hook goes away.
+    STRICTLY serve-path-only (called from buildLoadAndApply): `validate`
+    must stay environment-independent — never call the probe from a CLI
+    path. A hook whose sops decrypt fails gets ONE `sops` entry and no
+    per-reference entries (auth/runs fail on the decrypt first).
+  - `server` (the containerized-without-TMPDIR hazard,
+    runner.WarnIfContainerized's verdict): BOOT-scoped — computed once at
+    startup, and a running process's env can't change, so it CANNOT clear
+    without a restart (documented in the entry; a restart with TMPDIR set
+    boots without it).
+  - `event` (event-derived, via `RegisterStandardEventRules` — THE SEAM
+    for hook-emitted signals): recognized activity-event kinds feed
+    entries through per-kind RuleFuncs registered on the aggregator;
+    server.New's OnRecord wiring hands every recorded event to
+    `ObserveEvent`. Today: `hook.misconfigured` (request-time api_key
+    denial, recorded by auth.go) → entry keyed `api_key`, cleared by the
+    next reload whose probe finds the hook's api_key resolvable, or the
+    hook leaving the loaded set. RESERVED for the fleet's silent-fail
+    audit: `hook.reported_misconfigured` (one entry per distinct message,
+    keyed `reported:<message>`) paired with `hook.reported_healthy`
+    (clears ALL of that hook's reported entries); reported entries also
+    clear when the hook leaves the loaded set — but deliberately NOT on a
+    later successful run (a run can succeed while the feature it should
+    exercise stays inert). New hook-emitted classes plug in by recording
+    a recognized kind + registering a rule — no redesign.
+  Everything is IN-MEMORY (the events/requestLog stance): a restart
+  re-derives the state sources at the boot load (their `since` resets to
+  boot) and loses event-derived entries until their events recur. Entries
+  are VALUE-FREE — name the hook, the `${NAME}` reference, the file;
+  never a resolved secret value. The aggregator is nil-receiver-safe
+  everywhere (the events.Recorder convention).
 - The per-hook KV store (`internal/kv`, the state socket) also persists to
   disk, under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
   place as the deploy key and `runs.db`) as one `kv/<namespace>.json` per
