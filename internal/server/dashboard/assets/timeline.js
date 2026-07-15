@@ -10,6 +10,7 @@ var FETCH_TIMEOUT_MS = 15e3;
 var RESYNC_MAX = 400;
 var RECONCILE_MAX = 20;
 var STALE_AFTER_MS = 25e3;
+var LIVE_COVERAGE_MIN_STEP_MS = 1e3;
 var BACKFILL_MAX = 200;
 var BACKFILL_MAX_PAGES = 30;
 var PRUNE_AT = 1e4;
@@ -26,6 +27,12 @@ var hookMeta = /* @__PURE__ */ new Map();
 var timelineEl = null;
 var laneOrderKey = "";
 var seeded = false;
+var liveCoveredToMs = 0;
+function claimLiveCoverage(now) {
+  const start = liveCoveredToMs > 0 ? Math.min(liveCoveredToMs, now) : now;
+  if (now > liveCoveredToMs) liveCoveredToMs = now;
+  return { start, end: now };
+}
 function applyHooksData(hooks) {
   hookMeta = new Map(hooks.map((h) => [h.id, h]));
   if (timelineEl) syncLanes(timelineEl);
@@ -70,6 +77,7 @@ function setStreamLive(live) {
 }
 function fresh() {
   chart?.markFresh();
+  chart?.extendCoverage();
 }
 function ingestDelta(r) {
   const prev = runsById.get(r.id);
@@ -454,6 +462,7 @@ function initTimeline() {
     rebuildWaiterIndex();
     if (maybePrune(tl, now)) return;
     const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
+    liveCoveredToMs = Math.max(liveCoveredToMs, now);
     const data = {
       intervals: [...runsById.values()].map(runToInterval),
       coverage: { start: pageOldestMs, end: now }
@@ -479,7 +488,7 @@ function initTimeline() {
     for (const holder of holderIdsOf(r)) affected.add(holder);
     rebuildWaiterIndex();
     const intervals = [...affected].map((id) => runsById.get(id)).filter((x) => x !== void 0).map(runToInterval);
-    tl.mergeData({ intervals });
+    tl.mergeData({ intervals, coverage: claimLiveCoverage(Date.now()) });
     syncLanes(tl);
   };
   const rebuildAll = () => {
@@ -489,12 +498,14 @@ function initTimeline() {
     laneOrderKey = "";
     const lanes = computeLanes();
     laneOrderKey = lanes.map((l) => l.id).join("\n");
+    const now = Date.now();
+    liveCoveredToMs = Math.max(liveCoveredToMs, now);
     tl.setData({
       lanes,
       intervals: [...runsById.values()].map(runToInterval),
       connectors: [],
       // rebuild replaces data — pin connectors to none
-      coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 6e4, end: Date.now() }
+      coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : now - 6e4, end: now }
     });
   };
   chart = {
@@ -503,6 +514,12 @@ function initTimeline() {
     rebuild: rebuildAll,
     markFresh: () => {
       if (typeof tl.markFresh === "function") tl.markFresh();
+    },
+    extendCoverage: () => {
+      if (!seeded) return;
+      const now = Date.now();
+      if (now - liveCoveredToMs < LIVE_COVERAGE_MIN_STEP_MS) return;
+      tl.mergeData({ coverage: claimLiveCoverage(now) });
     }
   };
   if (runsById.size > 0) applyPage([...runsById.values()]);
@@ -527,6 +544,7 @@ function maybePrune(tl, now) {
   laneOrderKey = "";
   const lanes = computeLanes();
   laneOrderKey = lanes.map((l) => l.id).join("\n");
+  liveCoveredToMs = Math.max(liveCoveredToMs, now);
   tl.setData({
     lanes,
     intervals: keep.map(runToInterval),
