@@ -80,6 +80,11 @@
       "default": false,
       "description": "When true, opt the hook into the persistent KV store. The runner injects HOOK_KV_URL (http://localhost:9002) and HOOK_KV_TOKEN (a per-hook bearer token whose namespace is this hook's ID), and a proxy shim entrypoint, so the hook reaches the state API at a plain localhost URL with any HTTP client (no networking, no published port). The hook's data persists across its runs and across server restarts, isolated from other hooks. Default: false (no KV access)."
     },
+    "dind": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, run the hook's container with the privileges to host its OWN nested container daemon: the runner adds --privileged and an anonymous volume at /var/lib/docker (--mount type=volume,dst=/var/lib/docker), applied identically on the live-run and `webhook-runner test` paths. The nested daemon's storage lives on that real volume because an inner overlay driver cannot stack on the outer container's overlay rootfs; --rm auto-removes the anonymous volume so inner storage never leaks between runs. The host's docker daemon is NEVER exposed — no docker socket is mounted, and the nested daemon is isolated from it. This is an AUDITED, host-root-equivalent capability (--privileged grants effectively full access to the host): enable it only for trusted, operator-curated hooks. Default: false."
+    },
     "schedule": {
       "type": "string",
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",

@@ -112,6 +112,28 @@ func TestSchemaRejectsBadRunTitle(t *testing.T) {
 	}
 }
 
+func TestSchemaDind(t *testing.T) {
+	sch := compileHookSchema(t)
+	good := []string{
+		`{"$schema":"s","dind":true}`,
+		`{"$schema":"s","dind":false}`,
+	}
+	for _, doc := range good {
+		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
+	}
+	bad := []string{
+		// dind is a boolean, full stop.
+		`{"$schema":"s","dind":"true"}`,
+		`{"$schema":"s","dind":1}`,
+		`{"$schema":"s","dind":null}`,
+		// additionalProperties:false still rejects unknown keys.
+		`{"$schema":"s","dindd":true}`,
+	}
+	for _, doc := range bad {
+		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)
+	}
+}
+
 func TestSchemaRejectsBadSkipIf(t *testing.T) {
 	sch := compileHookSchema(t)
 	bad := []string{

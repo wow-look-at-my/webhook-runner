@@ -112,6 +112,13 @@ graph LR
 - **Hooks ship their own tests**: a `tests` array in `hook.json` declares
   test commands; `webhook-runner test <hooks-dir>` runs each one in the
   hook's built image, so CI never hardcodes per-hook test invocations.
+- **Docker-in-Docker**: a hook can opt into `"dind": true` to run its own
+  nested container daemon — the runner starts its container with
+  `--privileged` plus an anonymous `/var/lib/docker` volume, fully isolated
+  from the host's daemon (no host docker socket is ever mounted). The same
+  two flags apply on the `webhook-runner test` path. `--privileged` is
+  host-root-equivalent, so enable it only for trusted, operator-curated
+  hooks. See [Docker-in-Docker](#docker-in-docker-dind).
 - **Secrets without plaintext**: `env` values and `api_key` may reference
   secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
   committed to the hooks repo (`secrets.sops.env`) or from the runner
@@ -409,6 +416,54 @@ already assume). Values never appear on the public hook port, and
 > shim live under `TMPDIR`, which must be host-shared when the server runs in
 > a container — the same requirement payload files already have; see *Running
 > the server in a container*.
+
+## Docker-in-Docker (dind)
+
+A hook that needs to run its own containers — build an image, spin up a
+service, drive a nested `docker` CLI — can opt into Docker-in-Docker with
+`"dind": true`:
+
+```json
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "dind": true
+}
+```
+
+When set, the runner starts the hook's container with two extra flags,
+applied identically on the **live-run** and **`webhook-runner test`** paths:
+
+- `--privileged` — grants a nested `dockerd` the capabilities it needs.
+- `--mount type=volume,dst=/var/lib/docker` — an anonymous volume for the
+  inner daemon's storage.
+
+The `/var/lib/docker` volume is **required**, not incidental: a nested
+daemon's storage driver (overlay2) cannot stack its overlay filesystem on
+top of the outer container's own overlay rootfs, so `/var/lib/docker` must
+be a real volume rather than the layered container filesystem. Because every
+run is `docker run --rm ...`, that anonymous volume is removed when the run
+ends — inner image/layer storage never leaks between runs.
+
+The host's own docker daemon is **never exposed**: webhook-runner does not
+mount the host's docker socket, so the nested daemon is a fully isolated,
+throwaway daemon rather than a window onto the host. Start it inside the
+hook (e.g. `dockerd-entrypoint.sh dockerd &` on a `docker:dind` base image),
+wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
+`e2e/hooks/dind-hook/` for a worked smoke test.
+
+> **Security:** `--privileged` is effectively host-root — a privileged
+> container can reach the host kernel. `dind` is therefore an audited,
+> opt-in, per-hook capability; enable it only for **trusted,
+> operator-curated** hooks (the hooks repo is operator-controlled). It is
+> deliberately first-class rather than something assembled from
+> `extra_docker_args`: those raw args are appended only on the live-run path
+> (so they can never cover `webhook-runner test`) and would still leave you
+> hand-writing the volume, whereas `dind` applies the exact same two flags to
+> both paths and is auditable as a single boolean.
+
+> **Deploy-first:** `dind` is a newer `hook.json` field, so deploy a
+> webhook-runner build that understands it before any hook sets `"dind":
+> true` (older binaries reject unknown fields via `DisallowUnknownFields`).
 
 ## hook.json reference
 
