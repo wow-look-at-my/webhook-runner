@@ -16,10 +16,36 @@
   </div>
 </header>
 
+<!-- The misconfiguration cry-for-help: whenever GET /attention reports any
+     ACTIVE problem (a dropped hook, an unresolvable ${NAME} reference, a
+     sops decrypt failure, the zero-hooks guard, the containerized-TMPDIR
+     hazard, a recognized event-derived problem) this banner pins itself
+     above BOTH views (it sits outside <main>, position: sticky) until the
+     underlying state resolves — entries self-clear, no acknowledgement.
+     "View" jumps to the Needs attention panel on the overview. -->
+<div id="attention-banner" class="attention-banner" hidden>
+  <span class="attention-banner-icon" aria-hidden="true">&#9888;</span>
+  <span id="attention-banner-text"></span>
+  <a href="#" id="attention-banner-link">view</a>
+</div>
+
 <!-- Two views share the page: the global overview, and a per-app drill-down
      (an "app" is one hook, for now) selected by the #hook=<id> fragment.
      dashboard.js toggles between them on hashchange — no server routing. -->
 <main id="overview-view">
+  <!-- Hidden while healthy (the banner above is the alert); every row is
+       one active problem with what's wrong, which hook (linked), where the
+       entry derives from, and how long it has been active. Rows disappear
+       on their own when the underlying state resolves (a fixing reload, a
+       hook's all-clear signal); only the TMPDIR hazard needs a restart. -->
+  <section id="attention-section" hidden>
+    <h2>Needs attention</h2>
+    <table id="attention-table">
+      <thead><tr><th>Problem</th><th>Hook</th><th>Source</th><th>Active for</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section id="setup-section" hidden>
     <h2>Hooks repo</h2>
     <p id="setup-repo"></p>
