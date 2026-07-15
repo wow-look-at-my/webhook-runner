@@ -101,9 +101,9 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 11);
+    assert.equal(hooks.length, 12);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "dind-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
     // The scheduled hook advertises its interval in the summary.
     const scheduled = hooks.find((h: any) => h.id === "scheduled-hook");
     assert.equal(scheduled.schedule, "3s", "scheduled-hook should report its schedule");
@@ -240,6 +240,19 @@ try {
     const run: any = await r.json();
     assert.equal(run.status, "success");
     assert.ok(run.output.join("\n").includes("hello-from-baked-image"), "missing baked file content");
+  });
+
+  await test("dind hook runs a nested docker daemon (--privileged + /var/lib/docker volume)", async () => {
+    // dind:true → the runner adds --privileged and an anonymous
+    // /var/lib/docker volume, so the container hosts its own dockerd. Async
+    // + a generous poll: starting the nested daemon takes a few seconds.
+    const trigger = await fetch(`${base}/hook/dind-hook`, { method: "POST", body: "{}" });
+    assert.equal(trigger.status, 202);
+    const { run_id } = (await trigger.json()) as any;
+    const result = await pollRun(adminBase, run_id, 120_000);
+    assert.equal(result.status, "success", `dind run failed: ${(result.output ?? []).join("\n")}`);
+    assert.equal(result.exit_code, 0);
+    assert.ok(result.output.join("\n").includes("dind-smoke-ok"), "nested dockerd smoke check did not confirm");
   });
 
   await test("env ${VAR} expands from the runner host", async () => {
@@ -393,6 +406,9 @@ await test("webhook-runner test runs declared hook tests", async () => {
   const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
   assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
   assert.ok(r.stdout.includes("built-tests-ok"), "missing built-image test output");
+  // The dind hook's declared test starts a nested daemon under the same
+  // --privileged + volume injection — the test-path capability parity.
+  assert.ok(r.stdout.includes("dind-smoke-ok"), "missing dind nested-daemon test output");
   assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
 });
 
