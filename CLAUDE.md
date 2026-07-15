@@ -222,8 +222,18 @@ The companion repo is `wow-look-at-my/webhooks`.
   (tree-mirror COPY convention: `COPY sdk/ /app/sdk/` +
   `COPY hooks/<id>/ /app/hooks/<id>/` + `WORKDIR /app/hooks/<id>` so the
   same relative import resolves in-repo and in-image). Layouts are NEVER
-  mixed — root-level hook dirs under the src layout are skipped with a
-  loud typed error (IgnoredLegacyDirError) naming each. Content hashing:
+  mixed — a root-level hook dir under the src layout is a HARD ERROR
+  (IgnoredLegacyDirError, one per offending dir, naming it): NOT loaded,
+  and loud enough to fail `validate` (non-zero exit, message "mixed hook
+  layout: top-level hook directory <dir> is not allowed when src/hooks/
+  exists ...") and every `serve` reload (logged + recorded as
+  hook.load_error) — NEVER a silent skip, so a stray top-level hook left
+  by an incomplete move to the src layout turns CI RED instead of quietly
+  vanishing from the fleet. SCOPED to MIXED layouts ONLY: the guard
+  (`findIgnoredLegacyDirs`) fires solely when `src/hooks/` exists, so a
+  pure-legacy tree with no `src/hooks/` sibling — e.g. this repo's own
+  `examples/hooks/` and `e2e/hooks/` fixtures — is never scanned for it
+  and stays 100% valid. Content hashing:
   legacy stays BYTE-IDENTICAL to the historical algorithm (golden-hash
   test — never change it, or every deployed hook re-tags on upgrade); the
   src layout hashes src/hooks/<id>/ AND src/sdk/ (src-relative path +
