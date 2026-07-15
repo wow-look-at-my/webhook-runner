@@ -14,7 +14,9 @@ cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that dashboard.go's go:generate (running generate-timeline.sh) compiles via ts0 into the committed assets/timeline.js — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types = the component's real .d.ts pair, fetched from Pages by the same generate into the committed ts/js-snippets/); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
+internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
 internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
@@ -109,6 +111,12 @@ The server listens on two TCP ports plus a Unix socket:
   CLIENT-side by inverting waiting_on, because stream deltas never ship
   the server's waiters field), and holder/waiter click-through lives in
   the run modal's links. One logical wait is ONE wait_history entry:
+  the run modal's links. The adapter registers both badge glyphs as
+  consumer rows in the component's "?" legend (`legendEntries`,
+  feature-detected — an older Pages component just shows its built-in
+  rows), and run tooltips spell them out in plain language from the same
+  data ("waiting for <group> · Nth in line" / "holds the <group> slot ·
+  N waiting"). One logical wait is ONE wait_history entry:
   internal/runs.SetWaitingOn CONTINUES the trailing open segment on a
   same-kind+key restamp (queue position/holder churn) instead of
   fragmenting it (pre-fix, a single 7-deep queue wait shipped 14
@@ -127,6 +135,17 @@ The server listens on two TCP ports plus a Unix socket:
   triggers history navigation), and panning into the past pages
   `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).
+  COVERAGE'S TRAILING EDGE IS THE ADAPTER'S JOB: the component hatches
+  every uncovered range up to now as unknown history, so on a live
+  stream the adapter must keep vouching [last claim, now] — run deltas
+  fold a `coverage` claim into their merge, hb/changed keepalives make a
+  throttled coverage-only claim (`claimLiveCoverage`) — bounding the
+  trailing hatch to ~one heartbeat; a dead feed stops claiming (growing
+  hatch + stale note = the truth) and the reconnect snapshot back-fills
+  the gap. Pre-#73 this held only by accident (the skip-driven
+  rebuildAll re-registered coverage to now; deleting it hatched the
+  whole live window over live bars — the 2026-07-15 incident); the
+  testjs timeline-coverage harness pins the contract.
   A bar click opens the run modal, a lane-label click opens `#hook={id}`,
   and the old runs table stays behind a persisted "Show table" toggle.
   waiting_on/waiters and unknown statuses are feature-detected, so the
@@ -180,9 +199,16 @@ separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
 When `WEBHOOK_RUNNER_HOOKS_REPO` is set, the server clones the repo on
 startup (shallow, single-branch) into `WEBHOOK_RUNNER_HOOKS_DIR` (default
 `/var/lib/webhook-runner/hooks`). `POST /_reload` on the hook port
-accepts a GitHub push webhook (HMAC-SHA256 via `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`)
-and triggers `git fetch --depth=1` + `git reset --hard FETCH_HEAD` + reload.
-The admin port's `POST /reload` does the same without auth.
+accepts the repo's GitHub webhook — push AND status events (HMAC-SHA256
+via `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). Reloads are CI-GATED by default
+(`internal/reloadgate`; see the gate bullet under "Things easy to get
+wrong"): a push only fetches + records the new tip as pending, and the
+tree switches when a `status` event reports the gating context
+(`all-builds`, override via `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT`; set it
+EMPTY to disable the gate and restore the legacy
+any-signed-POST-pulls-and-reloads flow). The admin port's `POST /reload`
+is the operator's deliberate gate bypass: fetch + reset to the remote tip,
+recorded verified, no auth.
 
 For private repos, use an SSH URL (`git@github.com:...`). On first
 startup, the server auto-generates an Ed25519 deploy key and logs the
@@ -193,6 +219,28 @@ The companion repo is `wow-look-at-my/webhooks`.
 
 ## Things easy to get wrong
 
+- The hooks-repo reload CI gate (`internal/reloadgate`) is EVENT-DRIVEN
+  ONLY — no polling, no timers, no backoff anywhere (operator law: held
+  work retries on the next event, never on a clock). A `push` NEVER moves
+  the tree (it fetches + records the tip pending, loudly: `reload.held` +
+  the "reload"-source attention entries); the HMAC-verified `status` event
+  is the switch authority. The ordering rule for a green: the sha must be
+  in the freshly-fetched recent history (`fetchDepth` 100) AND not older
+  than the serving sha — stale/out-of-order greens are `ignored_stale`,
+  never applied. Admin `POST /reload` is the DELIBERATE bypass (Force:
+  reset to tip, recorded verified, `reload.forced`). The last-good sha
+  persists in `<data-dir>/reload-gate.json` (temp+rename; a persist
+  failure is loud but never blocks the reload) and is restored at boot
+  BEFORE the watcher's initial scan — gate mode never pulls-to-tip on
+  startup (`hooks.OpenRepo`, vs legacy `CloneRepo`'s pull-on-open), and
+  `Startup` never calls apply (the watcher's initial scan does the first
+  load). A missed green converges on the repo's next delivery, a GitHub
+  redelivery, or admin /reload — do NOT add a retry timer. Setting
+  `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT` to an EMPTY string disables the
+  gate (exact legacy behavior everywhere, including startup); unset means
+  `all-builds`. Operator setup: the hooks repo's webhook must send
+  `status` events in addition to `push` (same URL/secret), or every push
+  holds until an admin /reload.
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`)
   and kills the container by name on timeout. This is because if Go SIGKILLs
   the docker CLI process, the underlying container can survive briefly.
@@ -236,14 +284,26 @@ The companion repo is `wow-look-at-my/webhooks`.
   hooks.LoadDir/LoadLayout. Under the src layout: hooks at
   src/hooks/<id>/, shared dependency-free code at src/sdk/ (imported
   relatively — ../../sdk/...), concurrency.json at
-  src/config/concurrency.json (concurrency.LoadFile at the
-  layout-resolved path; Load(root) is the legacy-only shorthand), and the
+  cfg/concurrency.json — repo-root cfg/, deliberately OUTSIDE src/
+  (concurrency config is repo-wide config, not source) — read by
+  concurrency.LoadFile at the layout-resolved path (Load(root) is the
+  legacy-only shorthand), and the
   docker build runs with CONTEXT src/ + the hook's own Dockerfile via -f
   (tree-mirror COPY convention: `COPY sdk/ /app/sdk/` +
   `COPY hooks/<id>/ /app/hooks/<id>/` + `WORKDIR /app/hooks/<id>` so the
   same relative import resolves in-repo and in-image). Layouts are NEVER
-  mixed — root-level hook dirs under the src layout are skipped with a
-  loud typed error (IgnoredLegacyDirError) naming each. Content hashing:
+  mixed — a root-level hook dir under the src layout is a HARD ERROR
+  (IgnoredLegacyDirError, one per offending dir, naming it): NOT loaded,
+  and loud enough to fail `validate` (non-zero exit, message "mixed hook
+  layout: top-level hook directory <dir> is not allowed when src/hooks/
+  exists ...") and every `serve` reload (logged + recorded as
+  hook.load_error) — NEVER a silent skip, so a stray top-level hook left
+  by an incomplete move to the src layout turns CI RED instead of quietly
+  vanishing from the fleet. SCOPED to MIXED layouts ONLY: the guard
+  (`findIgnoredLegacyDirs`) fires solely when `src/hooks/` exists, so a
+  pure-legacy tree with no `src/hooks/` sibling — e.g. this repo's own
+  `examples/hooks/` and `e2e/hooks/` fixtures — is never scanned for it
+  and stays 100% valid. Content hashing:
   legacy stays BYTE-IDENTICAL to the historical algorithm (golden-hash
   test — never change it, or every deployed hook re-tags on upgrade); the
   src layout hashes src/hooks/<id>/ AND src/sdk/ (src-relative path +
@@ -257,7 +317,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   guard that stops a premature repo restructure from taking the fleet
   offline behind green CI. Layout detection re-runs on EVERY reload (a
   hooks-repo pull can restructure the tree); the watcher additionally
-  watches src/, src/hooks/*, and src/config under the src layout (not
+  watches src/, src/hooks/*, and root cfg/ under the src layout (not
   src/sdk — sdk edits matter at image-build time, not reload time).
   SEQUENCING: the runner with this support deploys BEFORE the webhooks
   repo's src/ restructure lands — an old binary scanning a new tree loads

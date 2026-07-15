@@ -112,6 +112,17 @@
  *     fetches the visible window only, never an exhaustive history walk.
  *     History paging stays request/response BY DESIGN (it is user-driven
  *     and bounded); only the live tail is push.
+ *   - COVERAGE'S TRAILING EDGE IS THIS ADAPTER'S JOB: the component hatches
+ *     every uncovered range up to now as unknown history, and only the
+ *     consumer can vouch that a live stream means "quiet == known-empty".
+ *     Every feed sign of life therefore extends the claim — deltas fold
+ *     `coverage` into their merge, hb/changed make a throttled coverage-only
+ *     claim (claimLiveCoverage) — so the hatch can trail the now-marker by
+ *     at most ~one heartbeat. A dead feed stops claiming, and the growing
+ *     hatch + stale note honestly mark the unknown until the reconnect
+ *     snapshot back-fills it. (Pre-#73 this held only by accident, via the
+ *     skip-driven rebuildAll's coverage reset — deleting it produced the
+ *     2026-07-15 full-window-crosshatch-over-live-bars incident.)
  */
 
 // Types only — erased at compile time, resolved against the committed
@@ -195,6 +206,11 @@ const RECONCILE_MAX = 20; // stale non-terminal runs re-checked per resync
 // Component staleness marking (feature-detected): with 10s heartbeats,
 // ~2.5 missed beats = the feed is genuinely dead, say so on the chart.
 const STALE_AFTER_MS = 25_000;
+// Minimum step for stream-vouched trailing-coverage claims (see
+// claimLiveCoverage): deltas fold theirs into the merge they already do,
+// so this only throttles the standalone hb/changed extensions — a signal
+// burst coalesces into at most one extra mergeData per second.
+const LIVE_COVERAGE_MIN_STEP_MS = 1_000;
 // Page size for ?before= history paging. Deliberately NOT raised: with the
 // walk bounded to the requested window a pan needs 1-2 pages, and at
 // observed production density a 200-run page is already ~3.5MB — a larger
@@ -231,6 +247,39 @@ let hookMeta = new Map<string, HookSummary>();
 let timelineEl: TimelineViewElement | null = null;
 let laneOrderKey = '';
 let seeded = false; // first data application went through setData
+
+// -- Stream-vouched trailing coverage ------------------------------------------
+//
+// The component hatches every UNCOVERED range in view up to `now` — the same
+// crosshatch as an unfetched history gap — because coverage is only what the
+// data explicitly vouched for; it cannot know a live SSE stream is attached.
+// While the stream delivers (run deltas, hb keepalives, changed signals),
+// every instant since the last claim IS vouched: the server pushes a delta
+// for every run change, so a quiet stretch is KNOWN-empty, not unknown.
+// This contract used to be met by ACCIDENT: every skipped-run delta forced a
+// debounced rebuildAll(), whose setData re-registered coverage up to
+// Date.now(), and this fleet skips constantly — so the trailing edge stayed
+// current. #73 removed the skip rebuild (correctly) and with it the only
+// thing extending coverage on a live stream: the hatch then grew from the
+// connect snapshot to the now-marker, over live bars (the 2026-07-15
+// full-window-crosshatch incident). claimLiveCoverage makes the contract
+// EXPLICIT: each claim covers [previous claim, now] — contiguous ranges the
+// component's tracker merges — bounding the trailing hatch to one heartbeat
+// (~10s) worst case. Deliberately NOT clock-driven: claims ride only real
+// feed bytes, so a dead stream's growing hatch (plus the component's stale
+// note) stays the truth, and the reconnect snapshot's [pageOldest, now]
+// claim back-fills the outage gap the moment the listing vouches for it.
+let liveCoveredToMs = 0; // trailing edge of the last claim (0 = nothing claimed yet)
+
+/** The next trailing-coverage claim: [last claim, now], advancing the mark.
+ * Callers hand it to mergeData/setData `coverage`; zero-width claims (a
+ * delta landing within the same ms, a clock stepping backwards) are no-ops
+ * in the tracker. */
+function claimLiveCoverage(now: number): { start: number; end: number } {
+	const start = liveCoveredToMs > 0 ? Math.min(liveCoveredToMs, now) : now;
+	if (now > liveCoveredToMs) liveCoveredToMs = now;
+	return { start, end: now };
+}
 
 function applyHooksData(hooks: HookSummary[]): void {
 	hookMeta = new Map(hooks.map((h) => [h.id, h]));
@@ -272,6 +321,9 @@ interface FeedConsumer {
 	 * mergeData cannot express. */
 	rebuild(): void;
 	markFresh(): void;
+	/** Extend stream-vouched trailing coverage to now (see liveCoveredToMs).
+	 * Rides the same triggers as markFresh; throttled internally. */
+	extendCoverage(): void;
 }
 let chart: FeedConsumer | null = null;
 
@@ -312,6 +364,9 @@ function setStreamLive(live: boolean): void {
 // snapshot.
 function fresh(): void {
 	chart?.markFresh();
+	// The same bytes that prove freshness vouch the trailing time range:
+	// nothing changed since the last claim, or its delta would have arrived.
+	chart?.extendCoverage();
 }
 
 /** One run delta: update the store, the chart, and anyone else listening
@@ -469,9 +524,16 @@ function startFeedSupervisor(): void {
 interface WaiterRef {
 	runId: string;
 	hookId: string;
-	what: string; // "lock k" | "a slot in group g"
+	kind: 'lock' | 'group';
+	/** Lock key or group name ('?' when the server omitted it). */
+	key: string;
 }
 let waiterIndex = new Map<string, WaiterRef[]>();
+
+/** Display form of what a waiter is queued on: "lock k" | "a slot in group g". */
+function waiterWhat(w: WaiterRef): string {
+	return w.kind === 'lock' ? `lock ${w.key}` : `a slot in group ${w.key}`;
+}
 
 function holderIdsOf(r: RunState | undefined): string[] {
 	const w = r?.waiting_on;
@@ -486,13 +548,11 @@ function rebuildWaiterIndex(): void {
 	for (const r of runsById.values()) {
 		const w = r.waiting_on;
 		if (!w || isTerminal(r.status)) continue;
-		const what =
-			w.kind === 'lock' ? `lock ${w.key || '?'}` :
-			w.kind === 'group' ? `a slot in group ${w.key || '?'}` : null;
-		if (what === null) continue;
+		const kind = w.kind === 'lock' ? 'lock' : w.kind === 'group' ? 'group' : null;
+		if (kind === null) continue;
 		for (const holder of holderIdsOf(r)) {
 			const list = waiterIndex.get(holder) ?? [];
-			list.push({ runId: r.id, hookId: r.hook_id, what });
+			list.push({ runId: r.id, hookId: r.hook_id, kind, key: w.key || '?' });
 			waiterIndex.set(holder, list);
 		}
 	}
@@ -693,9 +753,11 @@ function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
 		return;
 	}
 	if (w.kind === 'group') {
+		// The ⧗ badge ("⧗ model-gateway · 3rd") in plain language, from the
+		// SAME waiting_on fields: "waiting for model-gateway · 3rd in line".
 		const place =
-			typeof w.position === 'number' && w.position > 0 ? ` — ${ordinal(w.position)} in line` : '';
-		frag.appendChild(ttRow('waiting', `for a slot in group ${w.key || '?'}${place}`));
+			typeof w.position === 'number' && w.position > 0 ? ` · ${ordinal(w.position)} in line` : '';
+		frag.appendChild(ttRow('waiting', `for ${w.key || 'group'}${place}`));
 		for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
 			const hr = runsById.get(holder);
 			frag.appendChild(ttRow('held by', shortRunId(holder) + (hr ? ` (${hr.hook_id})` : '')));
@@ -739,9 +801,22 @@ function runTooltip(r: RunState): Node {
 	appendWaitingRows(frag, r);
 	const held = waiterIndex.get(r.id);
 	if (held && held.length > 0 && !isTerminal(r.status)) {
-		frag.appendChild(ttRow('holds', `${held.length} run(s) waiting on this run`));
+		// The ⏳N badge in plain language, from the SAME inverted index (N is
+		// exactly the badge count): when every waiter is queued on one group
+		// slot — the common case — name it ("holds the model-gateway slot ·
+		// 2 waiting"); mixed lock/group waiters keep the generic count, with
+		// the per-waiter rows below spelling out each one.
+		const oneGroup = held.every((h) => h.kind === 'group' && h.key === held[0].key);
+		frag.appendChild(
+			ttRow(
+				'holds',
+				oneGroup
+					? `the ${held[0].key} slot · ${held.length} waiting`
+					: `${held.length} run(s) waiting on this run`,
+			),
+		);
 		for (const wr of held.slice(0, 3)) {
-			frag.appendChild(ttRow('', `${shortRunId(wr.runId)} (${wr.hookId}) → ${wr.what}`));
+			frag.appendChild(ttRow('', `${shortRunId(wr.runId)} (${wr.hookId}) → ${waiterWhat(wr)}`));
 		}
 		if (held.length > 3) frag.appendChild(ttRow('', `…and ${held.length - 3} more`));
 	}
@@ -793,6 +868,18 @@ function initTimeline(): void {
 	// component's own default (10s, tuned for 2s pollers) would otherwise
 	// hatch a healthy push stream between 10s-apart heartbeats.
 	if (typeof tl.markFresh === 'function') tl.staleAfterMs = STALE_AFTER_MS;
+
+	// Teach the "?" legend panel the badge glyphs THIS adapter composes into
+	// labels (runLabel) — the component's built-in rows only cover its own
+	// vocabulary. Feature-detected: the live Pages component may predate
+	// legendEntries, in which case an old component keeps exactly today's
+	// behavior (built-in legend rows only, no errors).
+	if ('legendEntries' in tl) {
+		tl.legendEntries = [
+			{ glyph: '⧗', text: 'waiting for a concurrency-group slot (group · place in line)' },
+			{ glyph: '⏳N', text: 'holding a slot N queued runs are waiting on' },
+		];
+	}
 
 	// Click-through: a bar opens the same run modal the tables use; a lane
 	// label opens the hook's drill-down page (same href the hooks table uses).
@@ -893,6 +980,7 @@ function initTimeline(): void {
 		rebuildWaiterIndex(); // labels/tooltips read it during interval mapping
 		if (maybePrune(tl, now)) return; // prune did a full setData already
 		const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
+		liveCoveredToMs = Math.max(liveCoveredToMs, now); // page claims through now
 		const data: TimelineData = {
 			intervals: [...runsById.values()].map(runToInterval),
 			coverage: { start: pageOldestMs, end: now },
@@ -938,7 +1026,11 @@ function initTimeline(): void {
 			.map((id) => runsById.get(id))
 			.filter((x): x is RunState => x !== undefined)
 			.map(runToInterval);
-		tl.mergeData({ intervals });
+		// The delta also vouches the range since the last claim (fold the
+		// trailing-coverage extension into the merge this path already does —
+		// without it nothing extends coverage on a live stream, and the
+		// component hatches [connect snapshot, now] as unknown history).
+		tl.mergeData({ intervals, coverage: claimLiveCoverage(Date.now()) });
 		syncLanes(tl);
 	};
 
@@ -952,11 +1044,13 @@ function initTimeline(): void {
 		laneOrderKey = '';
 		const lanes = computeLanes();
 		laneOrderKey = lanes.map((l) => l.id).join('\n');
+		const now = Date.now();
+		liveCoveredToMs = Math.max(liveCoveredToMs, now); // rebuild claims through now
 		tl.setData({
 			lanes,
 			intervals: [...runsById.values()].map(runToInterval),
 			connectors: [], // rebuild replaces data — pin connectors to none
-			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 60_000, end: Date.now() },
+			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : now - 60_000, end: now },
 		});
 	};
 
@@ -966,6 +1060,16 @@ function initTimeline(): void {
 		rebuild: rebuildAll,
 		markFresh: () => {
 			if (typeof tl.markFresh === 'function') tl.markFresh();
+		},
+		extendCoverage: () => {
+			// hb keepalives and changed signals are the quiet-feed path: no
+			// interval merge carries the claim, so make a coverage-only one.
+			// Throttled so a signal burst can't spray rebuilds; the per-delta
+			// path claims inside its own merge and lands here as a no-op.
+			if (!seeded) return; // no baseline claim yet — the first page owns it
+			const now = Date.now();
+			if (now - liveCoveredToMs < LIVE_COVERAGE_MIN_STEP_MS) return;
+			tl.mergeData({ coverage: claimLiveCoverage(now) });
 		},
 	};
 
@@ -1009,6 +1113,7 @@ function maybePrune(tl: TimelineViewElement, now: number): boolean {
 	laneOrderKey = '';
 	const lanes = computeLanes();
 	laneOrderKey = lanes.map((l) => l.id).join('\n');
+	liveCoveredToMs = Math.max(liveCoveredToMs, now); // prune claims through now
 	tl.setData({
 		lanes,
 		intervals: keep.map(runToInterval),

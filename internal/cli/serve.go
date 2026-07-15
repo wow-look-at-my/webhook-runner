@@ -47,6 +47,14 @@ type serveOptions struct {
 	kvMaxKeys       int
 	runRetention    time.Duration
 	runRetentionMax int
+
+	// gateContext is the commit-status context that gates hooks-repo
+	// reloads ("" = gate disabled, legacy pull-on-any-signed-POST).
+	// gateContextSet marks an explicit flag value so applyServeEnv can
+	// tell "--hooks-gate-context=" (disable) from "not passed" (env,
+	// then the all-builds default).
+	gateContext    string
+	gateContextSet bool
 }
 
 func applyServeEnv(o *serveOptions) {
@@ -103,13 +111,27 @@ func applyServeEnv(o *serveOptions) {
 	if o.hookBaseURL == "" {
 		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
 	}
+	if !o.gateContextSet {
+		// LookupEnv, not Getenv: set-to-EMPTY deliberately disables the
+		// reload CI gate (legacy behavior), while unset means the default
+		// gating context. An explicit --hooks-gate-context flag wins.
+		if v, ok := os.LookupEnv("WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT"); ok {
+			o.gateContext = v
+		} else if o.gateContext == "" {
+			o.gateContext = "all-builds"
+		}
+		o.gateContextSet = true
+	}
 }
 
 func runServe(ctx context.Context, o *serveOptions) error {
 	logger := newLogger(o.logFormat)
 	slog.SetDefault(logger)
 
-	// If a hooks repo is configured, clone/pull it.
+	// If a hooks repo is configured, clone (or open) it. Gate mode never
+	// pulls-to-tip on boot: the reload gate restores the persisted
+	// last-good commit itself (gate.Startup below); an empty gate context
+	// keeps the exact legacy clone-or-pull behavior.
 	var repo *hooks.Repo
 	if o.hooksRepo != "" {
 		if o.hooksDir == "" {
@@ -119,7 +141,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		if err != nil {
 			return fmt.Errorf("hooks repo ssh key: %w", err)
 		}
-		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
+		if o.gateContext != "" {
+			repo, err = hooks.OpenRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
+		} else {
+			repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
+		}
 		if err != nil {
 			return fmt.Errorf("hooks repo: %w", err)
 		}
@@ -299,14 +325,17 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// admin/webhook reload path go through this one function.
 	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, ovStore, agg, secrets, logger, rec)
 
-	onReload := buildReloadFunc(repo, loadAndApply, rec)
+	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, rec, agg, logger)
+	if err != nil {
+		return err
+	}
 
 	// The build identity served by /health, /version, and the dashboard —
 	// the same string the `version` command prints, so every surface
 	// reports one consistent answer to "which build is deployed?".
 	vcsRev, vcsTime := buildVCS()
 
-	srv := server.New(server.Options{
+	srvOpts := server.Options{
 		Registry:     registry,
 		Runner:       rn,
 		Tracker:      tracker,
@@ -324,7 +353,13 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		RunStore:     runStore,
 		Overrides:    ovStore,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
-	})
+	}
+	if gate != nil {
+		// Assigned only when non-nil so the interface field stays truly
+		// nil (legacy flow) rather than wrapping a nil pointer.
+		srvOpts.Gate = gate
+	}
+	srv := server.New(srvOpts)
 
 	// Watcher runs for the lifetime of the server; its initial scan is what
 	// first populates the registry, concurrency manager, and scheduler.
@@ -403,7 +438,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		"github_status", gh.Enabled(),
 	}
 	if o.hooksRepo != "" {
-		attrs = append(attrs, "hooks_repo", o.hooksRepo)
+		gateLabel := "disabled"
+		if o.gateContext != "" {
+			gateLabel = o.gateContext
+		}
+		attrs = append(attrs, "hooks_repo", o.hooksRepo, "reload_gate", gateLabel)
 	}
 	logger.Info("webhook-runner started", attrs...)
 
@@ -622,24 +661,6 @@ func buildScheduleFire(registry *hooks.Registry, tracker *runs.Tracker, ov *over
 		if _, err := rn.Start(context.Background(), h, payload, headers, h.ScheduleRunTitle(payload, headers)); err != nil {
 			logger.Error("scheduled run failed to start", "hook", hookID, "err", err)
 		}
-	}
-}
-
-func buildReloadFunc(repo *hooks.Repo, loadAndApply func(), rec *events.Recorder) func() error {
-	if repo != nil {
-		return func() error {
-			if err := repo.Pull(); err != nil {
-				rec.Record("git.pull_failed", "hooks repo pull failed: "+err.Error(), nil)
-				return err
-			}
-			rec.Record("git.pulled", "hooks repo pulled", nil)
-			loadAndApply()
-			return nil
-		}
-	}
-	return func() error {
-		loadAndApply()
-		return nil
 	}
 }
 

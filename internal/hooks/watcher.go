@@ -105,8 +105,11 @@ func isRelevantEvent(name string) bool {
 // addRecursive adds the directories whose config files drive reloads. For
 // a legacy tree that is the root plus every immediate child (hook.json is
 // one level down). For a src-layout tree it additionally covers src/,
-// src/hooks/ and its children, and src/config/ (concurrency.json's new
-// home). src/sdk is deliberately NOT watched: shared-code edits matter at
+// src/hooks/ and its children, and cfg/ at the root (concurrency.json's
+// home; addChildren(root) usually covers it already — the explicit Add
+// states intent, and a cfg/ created later arrives via the Create handler
+// like any new dir under the watched root). src/sdk is deliberately NOT
+// watched: shared-code edits matter at
 // image-build time (they change content hashes, so the next run rebuilds)
 // — they don't change the loaded config. A tree that flips layout on a
 // pull still reloads: new directories arriving under a watched parent are
@@ -132,7 +135,7 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 		_ = w.Add(l.SrcDir())
 		_ = w.Add(l.HooksDir())
 		addChildren(l.HooksDir())
-		_ = w.Add(filepath.Join(l.SrcDir(), "config"))
+		_ = w.Add(filepath.Join(root, "cfg"))
 	}
 	return nil
 }

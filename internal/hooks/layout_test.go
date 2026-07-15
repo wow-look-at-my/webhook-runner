@@ -60,7 +60,7 @@ func TestDetectLayout(t *testing.T) {
 	assert.True(t, l.SDK)
 	assert.Equal(t, "src", l.String())
 	assert.Equal(t, filepath.Join(src, "src", "hooks"), l.HooksDir())
-	assert.Equal(t, filepath.Join(src, "src", "config", "concurrency.json"), l.ConcurrencyPath())
+	assert.Equal(t, filepath.Join(src, "cfg", "concurrency.json"), l.ConcurrencyPath())
 	assert.Equal(t, filepath.Join(src, "src"), l.SrcDir())
 	assert.Equal(t, filepath.Join(src, "src", "sdk"), l.SDKDir())
 
@@ -90,12 +90,60 @@ func TestLoadLayoutSrcTree(t *testing.T) {
 	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].SrcRoot)
 	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].BuildContext())
 
-	// Exactly one error: the ignored stray dir, named.
+	// Exactly one error: the mixed-layout stray dir, named. It must read as
+	// a HARD ERROR, not a silent skip (the operator's failsafe).
 	require.Len(t, errs, 1)
 	var ignored IgnoredLegacyDirError
 	require.True(t, errors.As(errs[0], &ignored), "want IgnoredLegacyDirError, got %v", errs[0])
 	assert.Contains(t, ignored.Dir, "stray")
 	assert.Contains(t, ignored.Error(), "src layout")
+	assert.Contains(t, ignored.Error(), "mixed hook layout")
+	assert.Contains(t, ignored.Error(), "hard error")
+	assert.Contains(t, ignored.Error(), "stray")
+}
+
+// -- The mixed-layout guard ----------------------------------------------------
+
+// A stray top-level hook alongside src/hooks/ is a HARD ERROR, never a
+// silent skip — the failsafe an incomplete move to the src layout must
+// trip. Scoped to MIXED layouts ONLY: pure-src and pure-legacy both load
+// clean, so the runner's own legacy fixtures (examples/hooks, e2e/hooks)
+// are unaffected.
+func TestMixedLayoutRejectsTopLevelHooks(t *testing.T) {
+	// (a) MIXED: src/hooks/<id> AND a top-level <other>/hook.json ⇒ the
+	//     typed error, naming the offending top-level dir, and it does NOT
+	//     leak into the loaded registry.
+	mixed := t.TempDir()
+	writeSrcHook(t, mixed, "alpha")
+	writeLegacyHook(t, mixed, "leftover")
+	loaded, errs := LoadDir(mixed)
+	require.Len(t, loaded, 1, "only the src hook loads; the top-level dir must be rejected")
+	require.Contains(t, loaded, "alpha")
+	require.NotContains(t, loaded, "leftover", "a mixed-layout top-level dir must never enter the registry")
+	require.Len(t, errs, 1)
+	var mix IgnoredLegacyDirError
+	require.True(t, errors.As(errs[0], &mix), "want IgnoredLegacyDirError, got %v", errs[0])
+	assert.Contains(t, mix.Dir, "leftover", "the error must name the offending top-level dir")
+	assert.Contains(t, mix.Error(), "not a silent skip")
+
+	// (b) PURE-SRC: only src/hooks/, no top-level hook dirs ⇒ loads clean.
+	pureSrc := t.TempDir()
+	writeSrcHook(t, pureSrc, "alpha")
+	writeSrcHook(t, pureSrc, "beta")
+	loaded, errs = LoadDir(pureSrc)
+	assert.Empty(t, errs, "a pure-src tree must load without errors")
+	assert.Len(t, loaded, 2)
+
+	// (c) PURE-LEGACY: only top-level hook dirs, no src/hooks/ ⇒ loads
+	//     clean and is never scanned for the mixed-layout error (this is
+	//     exactly the shape of examples/hooks and e2e/hooks).
+	pureLegacy := t.TempDir()
+	writeLegacyHook(t, pureLegacy, "one")
+	writeLegacyHook(t, pureLegacy, "two")
+	loaded, errs = LoadDir(pureLegacy)
+	assert.Empty(t, errs, "a pure-legacy tree must load without errors")
+	assert.Len(t, loaded, 2)
+	assert.False(t, DetectLayout(pureLegacy).SDK, "a top-level-only tree is legacy, never scanned for mixed-layout")
 }
 
 func TestLoadLayoutLegacyUnchanged(t *testing.T) {

@@ -10,6 +10,7 @@ var FETCH_TIMEOUT_MS = 15e3;
 var RESYNC_MAX = 400;
 var RECONCILE_MAX = 20;
 var STALE_AFTER_MS = 25e3;
+var LIVE_COVERAGE_MIN_STEP_MS = 1e3;
 var BACKFILL_MAX = 200;
 var BACKFILL_MAX_PAGES = 30;
 var PRUNE_AT = 1e4;
@@ -26,6 +27,12 @@ var hookMeta = /* @__PURE__ */ new Map();
 var timelineEl = null;
 var laneOrderKey = "";
 var seeded = false;
+var liveCoveredToMs = 0;
+function claimLiveCoverage(now) {
+  const start = liveCoveredToMs > 0 ? Math.min(liveCoveredToMs, now) : now;
+  if (now > liveCoveredToMs) liveCoveredToMs = now;
+  return { start, end: now };
+}
 function applyHooksData(hooks) {
   hookMeta = new Map(hooks.map((h) => [h.id, h]));
   if (timelineEl) syncLanes(timelineEl);
@@ -70,6 +77,7 @@ function setStreamLive(live) {
 }
 function fresh() {
   chart?.markFresh();
+  chart?.extendCoverage();
 }
 function ingestDelta(r) {
   const prev = runsById.get(r.id);
@@ -174,6 +182,9 @@ function startFeedSupervisor() {
   }, FALLBACK_POLL_MS);
 }
 var waiterIndex = /* @__PURE__ */ new Map();
+function waiterWhat(w) {
+  return w.kind === "lock" ? `lock ${w.key}` : `a slot in group ${w.key}`;
+}
 function holderIdsOf(r) {
   const w = r?.waiting_on;
   if (!w || r && isTerminal(r.status)) return [];
@@ -186,11 +197,11 @@ function rebuildWaiterIndex() {
   for (const r of runsById.values()) {
     const w = r.waiting_on;
     if (!w || isTerminal(r.status)) continue;
-    const what = w.kind === "lock" ? `lock ${w.key || "?"}` : w.kind === "group" ? `a slot in group ${w.key || "?"}` : null;
-    if (what === null) continue;
+    const kind = w.kind === "lock" ? "lock" : w.kind === "group" ? "group" : null;
+    if (kind === null) continue;
     for (const holder of holderIdsOf(r)) {
       const list = waiterIndex.get(holder) ?? [];
-      list.push({ runId: r.id, hookId: r.hook_id, what });
+      list.push({ runId: r.id, hookId: r.hook_id, kind, key: w.key || "?" });
       waiterIndex.set(holder, list);
     }
   }
@@ -326,8 +337,8 @@ function appendWaitingRows(frag, r) {
     return;
   }
   if (w.kind === "group") {
-    const place = typeof w.position === "number" && w.position > 0 ? ` \u2014 ${ordinal(w.position)} in line` : "";
-    frag.appendChild(ttRow("waiting", `for a slot in group ${w.key || "?"}${place}`));
+    const place = typeof w.position === "number" && w.position > 0 ? ` \xB7 ${ordinal(w.position)} in line` : "";
+    frag.appendChild(ttRow("waiting", `for ${w.key || "group"}${place}`));
     for (const holder of (w.holder_run_ids || []).slice(0, 3)) {
       const hr = runsById.get(holder);
       frag.appendChild(ttRow("held by", shortRunId(holder) + (hr ? ` (${hr.hook_id})` : "")));
@@ -367,9 +378,15 @@ function runTooltip(r) {
   appendWaitingRows(frag, r);
   const held = waiterIndex.get(r.id);
   if (held && held.length > 0 && !isTerminal(r.status)) {
-    frag.appendChild(ttRow("holds", `${held.length} run(s) waiting on this run`));
+    const oneGroup = held.every((h) => h.kind === "group" && h.key === held[0].key);
+    frag.appendChild(
+      ttRow(
+        "holds",
+        oneGroup ? `the ${held[0].key} slot \xB7 ${held.length} waiting` : `${held.length} run(s) waiting on this run`
+      )
+    );
     for (const wr of held.slice(0, 3)) {
-      frag.appendChild(ttRow("", `${shortRunId(wr.runId)} (${wr.hookId}) \u2192 ${wr.what}`));
+      frag.appendChild(ttRow("", `${shortRunId(wr.runId)} (${wr.hookId}) \u2192 ${waiterWhat(wr)}`));
     }
     if (held.length > 3) frag.appendChild(ttRow("", `\u2026and ${held.length - 3} more`));
   }
@@ -395,6 +412,12 @@ function initTimeline() {
     return null;
   };
   if (typeof tl.markFresh === "function") tl.staleAfterMs = STALE_AFTER_MS;
+  if ("legendEntries" in tl) {
+    tl.legendEntries = [
+      { glyph: "\u29D7", text: "waiting for a concurrency-group slot (group \xB7 place in line)" },
+      { glyph: "\u23F3N", text: "holding a slot N queued runs are waiting on" }
+    ];
+  }
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
     void showRun(detail.interval.id);
@@ -454,6 +477,7 @@ function initTimeline() {
     rebuildWaiterIndex();
     if (maybePrune(tl, now)) return;
     const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
+    liveCoveredToMs = Math.max(liveCoveredToMs, now);
     const data = {
       intervals: [...runsById.values()].map(runToInterval),
       coverage: { start: pageOldestMs, end: now }
@@ -479,7 +503,7 @@ function initTimeline() {
     for (const holder of holderIdsOf(r)) affected.add(holder);
     rebuildWaiterIndex();
     const intervals = [...affected].map((id) => runsById.get(id)).filter((x) => x !== void 0).map(runToInterval);
-    tl.mergeData({ intervals });
+    tl.mergeData({ intervals, coverage: claimLiveCoverage(Date.now()) });
     syncLanes(tl);
   };
   const rebuildAll = () => {
@@ -489,12 +513,14 @@ function initTimeline() {
     laneOrderKey = "";
     const lanes = computeLanes();
     laneOrderKey = lanes.map((l) => l.id).join("\n");
+    const now = Date.now();
+    liveCoveredToMs = Math.max(liveCoveredToMs, now);
     tl.setData({
       lanes,
       intervals: [...runsById.values()].map(runToInterval),
       connectors: [],
       // rebuild replaces data — pin connectors to none
-      coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : Date.now() - 6e4, end: Date.now() }
+      coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : now - 6e4, end: now }
     });
   };
   chart = {
@@ -503,6 +529,12 @@ function initTimeline() {
     rebuild: rebuildAll,
     markFresh: () => {
       if (typeof tl.markFresh === "function") tl.markFresh();
+    },
+    extendCoverage: () => {
+      if (!seeded) return;
+      const now = Date.now();
+      if (now - liveCoveredToMs < LIVE_COVERAGE_MIN_STEP_MS) return;
+      tl.mergeData({ coverage: claimLiveCoverage(now) });
     }
   };
   if (runsById.size > 0) applyPage([...runsById.values()]);
@@ -527,6 +559,7 @@ function maybePrune(tl, now) {
   laneOrderKey = "";
   const lanes = computeLanes();
   laneOrderKey = lanes.map((l) => l.id).join("\n");
+  liveCoveredToMs = Math.max(liveCoveredToMs, now);
   tl.setData({
     lanes,
     intervals: keep.map(runToInterval),

@@ -12,13 +12,18 @@ package hooks
 //	                    dependency-free code at <root>/src/sdk/ (imported
 //	                    relatively — ../../sdk/... resolves identically
 //	                    in-repo and in-image), concurrency config at
-//	                    <root>/src/config/concurrency.json, and docker
+//	                    <root>/cfg/concurrency.json (at the repo root —
+//	                    repo-wide config, not source), and docker
 //	                    build context = <root>/src with the hook's own
 //	                    Dockerfile (-f). Hook IDs, routes, api_keys, and
 //	                    KV namespaces are unchanged — a pure relocation.
 //
-// The layouts are never mixed: under the src layout, root-level hook dirs
-// are IGNORED, loudly (see IgnoredLegacyDirError in the loader).
+// The layouts are never mixed: under the src layout, a root-level hook
+// dir is a HARD ERROR (IgnoredLegacyDirError in the loader) — not loaded,
+// and loud enough to fail `validate` and every `serve` reload, so a stray
+// top-level hook left by an incomplete move can never silently vanish.
+// The guard fires only when src/hooks/ exists, so pure-legacy trees are
+// unaffected.
 import (
 	"os"
 	"path/filepath"
@@ -82,7 +87,7 @@ func (l Layout) SDKDir() string {
 // this layout.
 func (l Layout) ConcurrencyPath() string {
 	if l.SDK {
-		return filepath.Join(l.Root, "src", "config", "concurrency.json")
+		return filepath.Join(l.Root, "cfg", "concurrency.json")
 	}
 	return filepath.Join(l.Root, "concurrency.json")
 }

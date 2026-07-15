@@ -1516,7 +1516,7 @@ async function loadConfig() {
       ["Payload URL", reloadURL],
       ["Content type", "application/json"],
       ["Secret", cfg.reload_secret || "(not configured)"],
-      ["Events", "Just the push event"],
+      ["Events", "push + status (status is what green-lights a gated reload)"],
     ];
     for (const [k, v] of fields) {
       dl.appendChild(el("dt", null, k));

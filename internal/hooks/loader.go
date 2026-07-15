@@ -34,9 +34,12 @@ func LoadDir(root string) (map[string]*Hook, []error) {
 //     validate exits non-zero on it and serve records an error-grade
 //     event.
 //   - IgnoredLegacyDirError for each root-level hook directory found
-//     while the src layout is active. Layouts are never mixed: the dir is
-//     NOT loaded, and the error names it so the misplacement is visible
-//     instead of a hook quietly vanishing from the registry.
+//     while the src layout is active — a MIXED layout. Layouts are never
+//     mixed: the dir is NOT loaded, and the error is a HARD failure, never
+//     a silent skip — it rides this error list, so validate exits
+//     non-zero and every serve reload logs + records it (hook.load_error).
+//     It fires ONLY when src/hooks/ exists, so a pure-legacy tree is never
+//     scanned for it and is completely unaffected.
 func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	hooks := make(map[string]*Hook)
 	var errs []error
@@ -115,20 +118,38 @@ func (e ZeroHooksError) Error() string {
 		e.Dir, e.Layout, "<root>/<id>/hook.json")
 }
 
-// IgnoredLegacyDirError: the src layout is active but a root-level
-// directory still carries a hook.json. Layouts are never mixed, so it was
-// skipped — loudly, because a silently vanishing hook is exactly the
-// failure mode layout detection exists to prevent.
+// IgnoredLegacyDirError: the src layout is active (<root>/src/hooks/
+// exists) but a root-level directory still carries a hook.json — a MIXED
+// layout. This is a HARD ERROR, never a silent skip: the dir is NOT
+// loaded into the registry AND the error rides the load-error list, so
+// `validate` exits non-zero and every `serve` reload logs + records it
+// (hook.load_error). Naming each offending dir is the failsafe the
+// operator asked for — a stray top-level hook left behind by an
+// incomplete move to the src layout turns CI RED instead of quietly
+// vanishing from the fleet. (The type name predates this framing; the
+// dir is "ignored" only in the sense of not-loaded — it is emphatically
+// not overlooked.)
+//
+// SCOPE: this fires ONLY on a mixed layout. It is emitted exclusively
+// from findIgnoredLegacyDirs, which LoadLayout calls only when l.SDK is
+// true (src/hooks/ present). A pure-legacy tree with no src/hooks/
+// sibling — e.g. this repo's own examples/hooks/ and e2e/hooks/ fixtures
+// — is never scanned for it and stays 100% valid.
 type IgnoredLegacyDirError struct {
-	Dir string // the skipped directory (absolute or as-given path)
+	Dir string // the offending top-level hook dir (absolute or as-given path)
 }
 
 func (e IgnoredLegacyDirError) Error() string {
-	return fmt.Sprintf("ignored legacy-shaped hook dir %s: this tree uses the src layout (src/hooks exists), so root-level hook dirs are skipped — move it under src/hooks/ or delete it", e.Dir)
+	return fmt.Sprintf("mixed hook layout: top-level hook directory %s is not allowed when src/hooks/ exists (src layout active) — it is NOT loaded and this is a hard error, not a silent skip; move it under src/hooks/<id>/ or delete it", e.Dir)
 }
 
 // findIgnoredLegacyDirs names every root-level dir that looks like a
-// legacy hook (contains hook.json) while the src layout is active.
+// legacy hook (contains hook.json) while the src layout is active — the
+// MIXED-layout guard. It is called ONLY from LoadLayout under l.SDK, so a
+// pure-legacy tree (no src/hooks/) never reaches it and can never trip
+// the error. Each hit becomes an IgnoredLegacyDirError, a hard load error
+// (fails validate, logged + recorded on every serve reload) — a stray
+// top-level hook must be loud, not silently dropped.
 func findIgnoredLegacyDirs(l Layout) []error {
 	entries, err := os.ReadDir(l.Root)
 	if err != nil {

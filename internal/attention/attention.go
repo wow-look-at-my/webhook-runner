@@ -59,6 +59,11 @@ const (
 	// via registered rules. Clear rules are per-rule — see
 	// RegisterStandardEventRules.
 	SourceEvent = "event"
+	// SourceReload: the hooks-repo reload CI gate (internal/reloadgate) —
+	// a newer commit held awaiting its gating status, or the serving tree
+	// not verified green. Reported and resolved by the gate itself as
+	// commits verify, switch, or the operator forces (admin /reload).
+	SourceReload = "reload"
 )
 
 // Entry is one active problem. Identity is (Source, Hook, Key); Message is

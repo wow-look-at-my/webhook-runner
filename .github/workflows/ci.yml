@@ -39,12 +39,13 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      # Dashboard client harness: drives the real assets/dashboard.js in a
-      # vm sandbox and proves the push-first section feed (zero requests
-      # while idle with the stream live, coalesced signal refetches, the
-      # fixed-cadence fallback flip). Plain `node --test`, no dependencies.
+      # Dashboard client harnesses: drive the real committed assets
+      # (dashboard.js — the push-first section feed; timeline.js — the
+      # stream-vouched trailing-coverage claims) in vm sandboxes. The shell
+      # glob picks up every testjs/*.test.mjs (node's bare-directory form
+      # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
-        run: node --test internal/server/dashboard/testjs/harness.test.mjs
+        run: node --test internal/server/dashboard/testjs/*.test.mjs
       - uses: wow-look-at-my/actions@download-exe#latest
         with:
           name: go-build
