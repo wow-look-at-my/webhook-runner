@@ -109,8 +109,19 @@ The server listens on two TCP ports plus a Unix socket:
   same-kind+key restamp (queue position/holder churn) instead of
   fragmenting it (pre-fix, a single 7-deep queue wait shipped 14
   micro-segments on every SSE delta). Failures
-  emphasized, cancelled hollow, instant runs as pips; wheel/drag
-  pan + zoom, and panning into the past pages `/runs?before=` history
+  emphasized; cancelled runs map to the component's first-class
+  'cancelled' state (hollow + dashed category-hue border — "stopped, not
+  failed"), with the kill tail (cancel_requested_at→finished) still a
+  separate 'outline' segment the component draws as a terminal cut that
+  never vanishes; instant runs (e.g. skips) as pips, fed INDIVIDUALLY at
+  their true timestamps — the component clusters visually-overlapping
+  instants into scale-aware ×N markers that split on zoom (the old
+  adapter-side skip pre-merge is gone; each skip keeps its own tooltip
+  and modal click-through); wheel/drag
+  pan + zoom (plus `html { overscroll-behavior-x: none }` in
+  dashboard.css so a trackpad back-swipe around the canvas never
+  triggers history navigation), and panning into the past pages
+  `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).
   A bar click opens the run modal, a lane-label click opens `#hook={id}`,
   and the old runs table stays behind a persisted "Show table" toggle.

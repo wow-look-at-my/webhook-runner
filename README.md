@@ -145,7 +145,9 @@ graph LR
   queue advances), a run that others wait on carries "⏳N", and the run
   modal links holders and waiters for click-through. Failures are
   unmissable, cancelled runs render
-  hollow, and instant runs become diamond pips. It follows "now" live;
+  hollow with a dashed border and a marked kill tail, and instant runs
+  become diamond pips — overlapping pips cluster into ×N markers that
+  split apart as you zoom in. It follows "now" live;
   wheel/drag pans, ctrl/cmd+wheel (or pinch) zooms, and dragging into the
   past auto-loads history via `/runs?before=` until retention runs out;
   live run updates arrive over `/runs/stream` (SSE), and the same single
