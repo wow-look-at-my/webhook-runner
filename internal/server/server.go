@@ -29,6 +29,15 @@ type VersionInfo struct {
 	Time     string `json:"time,omitempty"`
 }
 
+// ReloadGate is the consumer-side seam for the hooks-repo CI green-gate
+// (implemented by *reloadgate.Gate). HandleEvent processes one
+// HMAC-verified /_reload delivery — the X-GitHub-Event header plus body —
+// and returns a short status for the HTTP response; a non-nil error is
+// answered 500 so GitHub records a red, redeliverable delivery.
+type ReloadGate interface {
+	HandleEvent(event string, body []byte) (status string, err error)
+}
+
 // Server holds the shared state for both the hook and admin HTTP handlers.
 type Server struct {
 	registry     *hooks.Registry
@@ -42,6 +51,7 @@ type Server struct {
 	log          *slog.Logger
 	reloadSecret string
 	onReload     func() error
+	gate         ReloadGate
 	hooksRepo    string
 	hookBaseURL  string
 	kv           *kv.Store
@@ -89,8 +99,16 @@ type Options struct {
 	// OnReload is called when a reload is requested (admin POST /reload
 	// or authenticated POST /_reload on the hook port). When a hooks
 	// repo is configured, this pulls and reloads; otherwise it just
-	// reloads from disk.
+	// reloads from disk. With a Gate configured, serve wires this to the
+	// gate's Force — admin /reload is the operator's deliberate bypass.
 	OnReload func() error
+
+	// Gate, when set, makes POST /_reload event-aware (the hooks-repo CI
+	// green-gate, internal/reloadgate): after HMAC verification the
+	// delivery's X-GitHub-Event and body are handed to it, and only a
+	// green gating status moves the hooks tree. nil keeps the legacy
+	// behavior (any signed POST pulls + reloads).
+	Gate ReloadGate
 
 	// HooksRepo is the Git remote URL of the hooks repository (SSH or
 	// HTTPS). Exposed via the admin /config endpoint for the dashboard.
@@ -143,6 +161,7 @@ func New(opts Options) *Server {
 		log:          opts.Logger,
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,
+		gate:         opts.Gate,
 		hooksRepo:    opts.HooksRepo,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
