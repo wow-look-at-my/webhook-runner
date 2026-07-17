@@ -11,8 +11,8 @@ name: Deploy schema to Cloudflare Pages
 #
 # The legacy GitHub Pages site keeps serving its last-published content
 # until the URL cutover repoints every $schema consumer — operator runbook
-# and cutover checklist live in the webhooks repo at
-# .github/CLOUDFLARE_PAGES.md. Nothing is deleted by this workflow.
+# and cutover checklist live in the wow-look-at-my/webhooks-schemas repo
+# (the org's schema-publishing home). Nothing is deleted by this workflow.
 #
 # Staging: only schema/*.schema.json is deployed. The old workflow
 # uploaded the whole schema/ directory, which also published
@@ -58,40 +58,11 @@ jobs:
               fs.writeFileSync(path.join(out, f), bytes);
             }
             core.info(`staged: ${files.join(', ')}`);
-      # Fetch Cloudflare credentials from secret-server (OIDC — no GitHub
-      # Actions secrets anywhere). Entitlement is configured server-side;
-      # an unentitled identity gets 200 + {} and simply exports nothing,
-      # which the deploy step below treats as a loud green no-op.
-      - uses: wow-look-at-my/actions@secret-server#latest
-      # Direct upload to Cloudflare Pages. While secret-server provides no
-      # CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID (this workflow identity
-      # is not yet entitled to them) this is a loud green no-op (warning
-      # annotation + step summary) so a missing entitlement never turns
-      # master red; once entitled, real failures are red.
-      - uses: wow-look-at-my/actions@typescript#latest
+      # Direct upload to Cloudflare Pages via the reusable org action
+      # (secret-server OIDC credentials inside; green no-op until the
+      # workflow identity is entitled to the Cloudflare pair).
+      - uses: wow-look-at-my/actions@cloudflare-pages#latest
         with:
-          script: |
-            const token = process.env.CLOUDFLARE_API_TOKEN ?? '';
-            const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
-            if (!token || !account) {
-              const msg =
-                'Cloudflare Pages deploy SKIPPED: CLOUDFLARE_API_TOKEN / ' +
-                'CLOUDFLARE_ACCOUNT_ID were not provided by secret-server — this ' +
-                'workflow identity is not entitled to them yet (or the secrets are ' +
-                'not stored). Schemas are NOT being published (the legacy GitHub ' +
-                'Pages site serves stale content). See the webhooks repo, ' +
-                '.github/CLOUDFLARE_PAGES.md, for setup; then re-run this workflow.';
-              core.warning(msg);
-              await core.summary.addRaw('## WARNING: schemas not deployed\n\n' + msg + '\n').write();
-              return;
-            }
-            const project = 'wow-webhook-runner-schemas';
-            await $`npm install --no-save wrangler@4`;
-            try {
-              await $`npx wrangler pages project create ${project} --production-branch master`;
-              core.info(`created Cloudflare Pages project ${project}`);
-            } catch {
-              core.info(`Pages project ${project} already exists; deploying to it`);
-            }
-            await $`npx wrangler pages deploy _site --project-name ${project} --branch master --commit-hash ${context.sha}`;
-            await core.summary.addRaw(`Deployed schema/*.schema.json to Cloudflare Pages project ${project} (production).\n`).write();
+          directory: _site
+          project-name: wow-webhook-runner-schemas
+          branch: master

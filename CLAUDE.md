@@ -52,8 +52,9 @@ examples/hooks/            sample hook configs
   `$schema`/`$id` URLs are UNCHANGED until the URL cutover: the legacy
   GitHub Pages site keeps serving its last-published (stale) content until
   every consumer is repointed — runbook and cutover checklist in the
-  webhooks repo's `.github/CLOUDFLARE_PAGES.md`. Keep
-  the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  wow-look-at-my/webhooks-schemas repo (the org's schema-publishing
+  home). Keep the Go model, the JSON schema, and the example/e2e
+  fixtures in sync.
 
 ## Architecture: two ports + a state socket
 
