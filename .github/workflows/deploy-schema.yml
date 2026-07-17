@@ -3,8 +3,9 @@ name: Deploy schema to buildhost
 # Publishes the JSON schemas (schema/*.schema.json) to the buildhost static-site
 # project "webhook-runner", one independent deployment per git branch, served at
 # https://sites.pazer.build/webhook-runner/branch/<branch>/<file>. This replaces
-# the retired GitHub Pages deploy (actions/upload-pages-artifact + deploy-pages),
-# which the org can no longer rely on after the Actions artifact-storage outage.
+# the retired GitHub Pages deploy workflow (pages.yml, which used the Pages
+# upload/deploy actions), no longer usable after the GitHub Actions
+# artifact-storage outage.
 #
 # Auth is GitHub Actions OIDC (audience = the buildhost server URL) via the org's
 # own wow-look-at-my/buildhost publish-site action -- no static token, and the
