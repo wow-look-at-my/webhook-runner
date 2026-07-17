@@ -45,7 +45,6 @@ jobs:
         with:
           name: go-build
           path: build
-          fail-on-cache-miss: true
       - name: Rename the binary and set +x (what download-exe used to do)
         run: |
           mv build/webhook-runner_linux_amd64 build/webhook-runner
