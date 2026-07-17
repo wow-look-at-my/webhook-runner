@@ -19,7 +19,7 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 const minimalHookJSON = `{
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "test hook",
   "command": ["sh", "-c", "echo hi"],
   "api_key": "k"
@@ -201,7 +201,7 @@ func TestContentHashLegacyByteIdentical(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "golden")
 	writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine:3.20\nCMD [\"sh\", \"-c\", \"echo golden\"]\n")
-	writeFile(t, filepath.Join(dir, "hook.json"), "{\n  \"$schema\": \"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json\",\n  \"description\": \"golden legacy fixture\",\n  \"command\": [\"sh\", \"-c\", \"echo golden\"],\n  \"api_key\": \"golden-key\"\n}\n")
+	writeFile(t, filepath.Join(dir, "hook.json"), "{\n  \"$schema\": \"https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json\",\n  \"description\": \"golden legacy fixture\",\n  \"command\": [\"sh\", \"-c\", \"echo golden\"],\n  \"api_key\": \"golden-key\"\n}\n")
 	writeFile(t, filepath.Join(dir, "payload.txt"), "fixed bytes\n")
 
 	loaded, errs := LoadDir(root)

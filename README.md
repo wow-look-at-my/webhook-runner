@@ -450,7 +450,7 @@ service, drive a nested `docker` CLI — can opt into Docker-in-Docker with
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "dind": true
 }
 ```
@@ -493,7 +493,7 @@ wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
 ## hook.json reference
 
 The full schema is published at
-`https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
+`https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`.
 See `examples/hooks/` for working examples.
 
 Every `hook.json` **must** declare a `$schema` field pointing at that URL
@@ -502,7 +502,7 @@ image):
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "command": ["sh", "-c", "echo hi"]
 }
 ```
@@ -516,7 +516,7 @@ validate the file against the published schema.
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "script": { "file": "handle.ts", "interpreter": "tsx" }
 }
 ```
@@ -706,7 +706,7 @@ load/validation error — the hook won't load.
 ```jsonc
 // concurrency.json (at the hooks root)
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json",
   "groups": {
     // Serialize everything that hits the single local model server.
     "ollama-local": { "description": "shared local model server", "limit": 1 }
@@ -717,7 +717,7 @@ load/validation error — the hook won't load.
 ```jsonc
 // some-hook/hook.json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "concurrency_group": "ollama-local"
 }
 ```
@@ -736,7 +736,7 @@ the per-hook avg/max wait vs duration stats — so a run stuck behind a busy
 group never reads as a slow run.
 
 The schema is published at
-`https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
+`https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json`.
 
 ## Operational overrides (the kill switch)
 
@@ -781,7 +781,7 @@ A hook can fire itself on a timer, not just on an HTTP `POST`. Add a
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "fleet reconcile sweep",
   "schedule": "5m",
   "timeout": "10m"

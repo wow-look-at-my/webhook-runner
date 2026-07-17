@@ -1,0 +1,54 @@
+name: Deploy schema to buildhost
+
+# Publishes the JSON schemas (schema/*.schema.json) to the buildhost static-site
+# project "webhook-runner", one independent deployment per git branch, served at
+# https://sites.pazer.build/webhook-runner/branch/<branch>/<file>. This replaces
+# the retired GitHub Pages deploy (actions/upload-pages-artifact + deploy-pages),
+# which the org can no longer rely on after the Actions artifact-storage outage.
+#
+# Auth is GitHub Actions OIDC (audience = the buildhost server URL) via the org's
+# own wow-look-at-my/buildhost publish-site action -- no static token, and the
+# project auto-provisions on first push (org wow-look-at-my is allow-listed).
+#
+# Trigger note: buildhost sites are per-branch and fully isolated, so a feature
+# branch deploys to its OWN branch/<name> namespace and can never overwrite
+# branch/master. A push to master therefore remains the only thing that updates
+# the canonical branch/master schema URL (the URL every hook.json $schema points
+# at). We deploy on every branch push (not master-only) so each branch/PR gets a
+# verifiable preview of its schemas.
+
+on:
+  push:
+
+permissions:
+  contents: read
+  id-token: write # required so buildhost-publish-site can mint the OIDC token
+
+concurrency:
+  group: deploy-schema-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stage only the published JSON schemas -- the schema/ directory also holds
+      # schema_test.go, which must never be served on the public site.
+      - name: Stage schema JSON
+        run: |
+          mkdir -p _site
+          cp schema/*.schema.json _site/
+
+      - name: Publish schemas to buildhost
+        id: publish
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          project: webhook-runner
+          branch: ${{ github.ref_name }}
+          source_dir: _site
+          public: true # schemas must resolve anonymously (hook.json $schema refs)
+
+      - name: Report deployed URL
+        run: echo "Deployed schemas to ${{ steps.publish.outputs.site_url }}"

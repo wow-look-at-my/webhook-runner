@@ -28,7 +28,7 @@ internal/attention/        aggregated ACTIVE misconfigurations (the needs-attent
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to a buildhost static site, per-branch)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -46,8 +46,13 @@ examples/hooks/            sample hook configs
 - **`$schema` is required.** Every `hook.json` must declare a `$schema`
   field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
   one. The matching property lives in `schema/hook.schema.json`, which is
-  published to GitHub Pages and is what the `$schema` URL points at. Keep
-  the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  published to a buildhost static site
+  (`https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`,
+  via `.github/workflows/deploy-schema.yml`) and is what the `$schema` URL
+  points at. `Hook.validate` checks only that `$schema` is PRESENT, never its
+  value, so the published URL can move (e.g. Pages -> buildhost) without any
+  runner change. Keep the Go model, the JSON schema, and the example/e2e
+  fixtures in sync.
 
 ## Architecture: two ports + a state socket
 
