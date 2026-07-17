@@ -22,6 +22,12 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
+      # go-toolchain@v1 no longer uploads a go-build run artifact; hand the
+      # build output to the e2e and publish-ghcr jobs via the actions cache.
+      - uses: wow-look-at-my/actions@cache-upload#latest
+        with:
+          name: go-build
+          path: build/
 
   e2e:
     runs-on: ubuntu-latest
@@ -35,11 +41,15 @@ jobs:
       # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
         run: node --test internal/server/dashboard/testjs/*.test.mjs
-      - uses: wow-look-at-my/actions@download-exe#latest
+      - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
           path: build
-          files: webhook-runner_linux_amd64:webhook-runner
+          fail-on-cache-miss: true
+      - name: Rename the binary and set +x (what download-exe used to do)
+        run: |
+          mv build/webhook-runner_linux_amd64 build/webhook-runner
+          chmod +x build/webhook-runner
       # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
       # the committed test-only age key.
       - name: Install sops
@@ -51,7 +61,7 @@ jobs:
         with:
           file: e2e/e2e.test.ts
 
-  # Builds the Dockerfile from the prebuilt go-build artifact and pushes
+  # Builds the Dockerfile from the prebuilt go-build cache hand-off and pushes
   # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The deployed
   # compose pulls this image; the push notifies docker-updater (GitHub package webhook).
   publish-ghcr:
