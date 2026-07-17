@@ -40,7 +40,7 @@ func TestApplyServeEnvDefaults(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	o := &serveOptions{}
-	applyServeEnv(o)
+	require.NoError(t, applyServeEnv(o))
 	assert.Equal(t, ":9000", o.addr)
 	assert.Equal(t, ":9001", o.adminAddr)
 	assert.Equal(t, "text", o.logFormat)
@@ -48,6 +48,7 @@ func TestApplyServeEnvDefaults(t *testing.T) {
 	assert.Zero(t, o.runRetention)
 	assert.Zero(t, o.runRetentionMax)
 	assert.Empty(t, o.hooksDir)
+	assert.Equal(t, time.Hour, o.reloadPollInterval, "reconciliation poll defaults to hourly")
 }
 
 func TestApplyServeEnvReadsEnvironment(t *testing.T) {
@@ -68,7 +69,7 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	t.Setenv("WEBHOOK_RUNNER_HOOK_BASE_URL", "https://hooks.example.com")
 
 	o := &serveOptions{}
-	applyServeEnv(o)
+	require.NoError(t, applyServeEnv(o))
 	assert.Equal(t, ":1900", o.addr)
 	assert.Equal(t, ":1901", o.adminAddr)
 	assert.Equal(t, "/hooks", o.hooksDir)
@@ -90,10 +91,41 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION", "soon")
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX", "-1")
 	o2 := &serveOptions{}
-	applyServeEnv(o2)
+	require.NoError(t, applyServeEnv(o2))
 	assert.Zero(t, o2.kvMaxKeys)
 	assert.Zero(t, o2.runRetention)
 	assert.Zero(t, o2.runRetentionMax)
+}
+
+func TestApplyServeEnvReloadPollInterval(t *testing.T) {
+	parse := func(v string) (*serveOptions, error) {
+		t.Setenv("WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL", v)
+		o := &serveOptions{}
+		return o, applyServeEnv(o)
+	}
+
+	o, err := parse("30m")
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Minute, o.reloadPollInterval)
+
+	// An explicit 0 disables the reconciliation poll.
+	o, err = parse("0")
+	require.NoError(t, err)
+	assert.Zero(t, o.reloadPollInterval)
+
+	// Empty behaves like unset: the hourly default.
+	o, err = parse("")
+	require.NoError(t, err)
+	assert.Equal(t, time.Hour, o.reloadPollInterval)
+
+	// Unlike the fall-back-quietly options, an unparseable or negative
+	// value FAILS startup — a typo must not silently change deploy latency.
+	_, err = parse("soonish")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL")
+	_, err = parse("-5m")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be >= 0")
 }
 
 func TestValidateCommand(t *testing.T) {
