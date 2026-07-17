@@ -35,11 +35,16 @@ jobs:
       # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
         run: node --test internal/server/dashboard/testjs/*.test.mjs
-      - uses: wow-look-at-my/actions@download-exe#latest
-        with:
-          name: go-build
-          path: build
-          files: webhook-runner_linux_amd64:webhook-runner
+      # Build the webhook-runner binary in-job. go-toolchain writes
+      # build/webhook-runner, which is exactly where e2e.test.ts spawns it
+      # from (BINARY = build/webhook-runner). This replaces the download-exe
+      # step that pulled the `go-build` GitHub Actions artifact, so the e2e
+      # job no longer depends on GitHub Actions artifact storage at all
+      # (unusable during the org-wide artifact-storage outage). go-toolchain
+      # is all-or-nothing (it builds AND runs the unit suite together), so
+      # this re-runs the unit tests — the deliberate tradeoff that buys a
+      # fully artifact-free e2e path with no bare `go build`.
+      - uses: wow-look-at-my/go-toolchain@v1
       # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
       # the committed test-only age key.
       - name: Install sops
