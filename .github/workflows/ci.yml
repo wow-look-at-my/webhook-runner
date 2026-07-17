@@ -22,6 +22,17 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
+      # Hand the freshly-built linux/amd64 binary to the e2e and publish-ghcr
+      # jobs through the GitHub Actions cache (artifact-free; cache storage is
+      # free, artifact storage is billed). go-toolchain's matrix build writes
+      # build/webhook-runner_linux_amd64; this ONE hand-off feeds BOTH
+      # downstream jobs — no GitHub artifacts, no buildhost download round-trip.
+      # publish-ghcr's reusable workflow cache-downloads the same `go-build`
+      # name into build/ for its Dockerfile COPY.
+      - uses: wow-look-at-my/actions@cache-upload#latest
+        with:
+          name: go-build
+          path: build/webhook-runner_linux_amd64
 
   e2e:
     runs-on: ubuntu-latest
@@ -35,52 +46,17 @@ jobs:
       # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
         run: node --test internal/server/dashboard/testjs/*.test.mjs
-      # Fetch the binary the TEST job already published to buildhost.
-      # go-toolchain's autorelease (test job) publishes the built binary to
-      # buildhost project `webhook-runner`, scoped to this git branch, so we
-      # pull it back here instead of downloading the `go-build` GitHub Actions
-      # artifact — which the org-wide artifact-storage outage made unusable.
-      # One build (test job), no GitHub artifacts. Auth: GitHub OIDC (the repo
-      # owns the buildhost project), with BUILDHOST_READ_TOKEN as a fallback.
-      - name: Fetch webhook-runner binary from buildhost
-        uses: wow-look-at-my/actions@typescript#latest
-        env:
-          BUILDHOST_READ_TOKEN: ${{ secrets.BUILDHOST_READ_TOKEN }}
+      # Restore the binary the test job handed off through the actions cache
+      # (exec bit + basename preserved). Fails loudly if the hand-off is missing.
+      - uses: wow-look-at-my/actions@cache-download#latest
         with:
-          script: |
-            await (async () => {
-              const server = "https://pazer.build";
-              const branch: string = github.ref_name;
-              const url = `https://dl.pazer.build/webhook-runner?branch=${encodeURIComponent(branch)}&os=linux&arch=amd64`;
-
-              const creds: Array<{ kind: string; token: string }> = [];
-              const idUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
-              const idBearer = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
-              if (idUrl && idBearer) {
-                const r = await fetch(`${idUrl}&audience=${server}`, { headers: { Authorization: `Bearer ${idBearer}` } });
-                const oidc = ((await r.json()) as { value: string }).value || "";
-                if (oidc) creds.push({ kind: "oidc", token: oidc });
-              }
-              const readTok = process.env.BUILDHOST_READ_TOKEN || "";
-              if (readTok) creds.push({ kind: "read-token", token: readTok });
-              if (creds.length === 0) { core.setFailed("No buildhost credential (OIDC or BUILDHOST_READ_TOKEN)"); return; }
-
-              fs.mkdirSync("build", { recursive: true });
-              for (const c of creds) {
-                const resp = await fetch(url, { headers: { Authorization: `Bearer ${c.token}` }, redirect: "follow" });
-                if (resp.ok) {
-                  const buf = Buffer.from(await resp.arrayBuffer());
-                  if (buf.length < 1000000) { core.warning(`Small download (${buf.length}B) via ${c.kind}; trying next credential`); continue; }
-                  fs.writeFileSync("build/webhook-runner", buf);
-                  fs.chmodSync("build/webhook-runner", 0o755);
-                  core.info(`Fetched build/webhook-runner (${buf.length} bytes) from buildhost via ${c.kind} for branch ${branch}`);
-                  return;
-                }
-                const body = (await resp.text()).slice(0, 300);
-                core.warning(`buildhost download via ${c.kind} -> HTTP ${resp.status}: ${body}`);
-              }
-              core.setFailed(`Failed to fetch webhook-runner binary from buildhost: ${url}`);
-            })();
+          name: go-build
+          path: build
+      # The e2e harness runs ./build/webhook-runner; the hand-off carries the
+      # platform-suffixed build name, so give it the unsuffixed name the test
+      # expects (mirrors the old download-exe files: mapping).
+      - name: Stage e2e binary
+        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
       # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
       # the committed test-only age key.
       - name: Install sops
@@ -92,17 +68,15 @@ jobs:
         with:
           file: e2e/e2e.test.ts
 
-  # Builds the Dockerfile from the prebuilt go-build artifact and pushes
-  # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The deployed
-  # compose pulls this image; the push notifies docker-updater (GitHub package webhook).
+  # Builds the Dockerfile from the go-build hand-off (the reusable workflow
+  # cache-downloads `go-build` into build/) and pushes
+  # ghcr.io/wow-look-at-my/webhook-runner:latest. The push itself is gated to
+  # master by the reusable workflow's push-branch default, so on feature
+  # branches this job just BUILDS the image as a Dockerfile-validation gate and
+  # never pushes — no unintended GHCR pushes from PRs. The deployed compose
+  # pulls this image; the push notifies docker-updater (GitHub package webhook).
   publish-ghcr:
     needs: e2e
-    # Publishing the container image is master-only (the image + docker-updater
-    # notify only make sense for the deployed default branch). Guarding the job
-    # keeps it OFF pull-request / feature-branch runs, where it would otherwise
-    # run and fail (it consumes the go-build hand-off that only master produces),
-    # and a skipped job passes the all-builds gate.
-    if: github.ref == 'refs/heads/master'
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
     # The reusable workflow's optional `updater-webhook-secret` notify is intentionally unwired:
     # docker-updater is notified by the container push itself (GitHub package webhook on the GHCR
