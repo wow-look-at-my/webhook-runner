@@ -22,6 +22,7 @@ on:
     branches: [master]
 
 permissions:
+  id-token: write
   contents: read
 
 concurrency:
@@ -57,29 +58,33 @@ jobs:
               fs.writeFileSync(path.join(out, f), bytes);
             }
             core.info(`staged: ${files.join(', ')}`);
-      # Direct upload to Cloudflare Pages. While the CLOUDFLARE_API_TOKEN /
-      # CLOUDFLARE_ACCOUNT_ID org secrets are absent this is a loud green
-      # no-op (warning annotation + step summary) so a missing secret never
-      # turns master red; once the secrets exist, real failures are red.
+      # Fetch Cloudflare credentials from secret-server (OIDC — no GitHub
+      # Actions secrets anywhere). Entitlement is configured server-side;
+      # an unentitled identity gets 200 + {} and simply exports nothing,
+      # which the deploy step below treats as a loud green no-op.
+      - uses: wow-look-at-my/actions@secret-server#latest
+      # Direct upload to Cloudflare Pages. While secret-server provides no
+      # CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID (this workflow identity
+      # is not yet entitled to them) this is a loud green no-op (warning
+      # annotation + step summary) so a missing entitlement never turns
+      # master red; once entitled, real failures are red.
       - uses: wow-look-at-my/actions@typescript#latest
         with:
-          secrets: ${{ toJSON(secrets) }}
           script: |
-            const token = secrets.CLOUDFLARE_API_TOKEN ?? '';
-            const account = secrets.CLOUDFLARE_ACCOUNT_ID ?? '';
+            const token = process.env.CLOUDFLARE_API_TOKEN ?? '';
+            const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
             if (!token || !account) {
               const msg =
-                'Cloudflare Pages deploy SKIPPED: the CLOUDFLARE_API_TOKEN / ' +
-                'CLOUDFLARE_ACCOUNT_ID org Actions secrets are not configured. ' +
-                'Schemas are NOT being published (the legacy GitHub Pages site ' +
-                'serves stale content). See the webhooks repo, ' +
+                'Cloudflare Pages deploy SKIPPED: CLOUDFLARE_API_TOKEN / ' +
+                'CLOUDFLARE_ACCOUNT_ID were not provided by secret-server — this ' +
+                'workflow identity is not entitled to them yet (or the secrets are ' +
+                'not stored). Schemas are NOT being published (the legacy GitHub ' +
+                'Pages site serves stale content). See the webhooks repo, ' +
                 '.github/CLOUDFLARE_PAGES.md, for setup; then re-run this workflow.';
               core.warning(msg);
               await core.summary.addRaw('## WARNING: schemas not deployed\n\n' + msg + '\n').write();
               return;
             }
-            process.env.CLOUDFLARE_API_TOKEN = token;
-            process.env.CLOUDFLARE_ACCOUNT_ID = account;
             const project = 'wow-webhook-runner-schemas';
             await $`npm install --no-save wrangler@4`;
             try {
