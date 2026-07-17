@@ -19,20 +19,18 @@ jobs:
       # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
       # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
       # driven by a small Go bootstrap is landing next.
+      # go-toolchain@v1 itself cache-uploads its build/ outputs under the
+      # `go-build` name on EVERY run (its own composite "Hand off build outputs"
+      # step, artifact-free; cache storage is free, artifact storage is billed).
+      # That single central hand-off feeds BOTH downstream jobs — the e2e job
+      # below and publish-ghcr's reusable workflow — which only cache-download
+      # it. So this workflow adds NO explicit cache-upload of its own: a second
+      # same-run upload of `go-build` would collide on the shared,
+      # non-job-disambiguated key (cache-xfer-go-build-<run_id>-<run_attempt>)
+      # and fail the job. Do NOT re-add an explicit `cache-upload go-build`.
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
-      # Hand the freshly-built linux/amd64 binary to the e2e and publish-ghcr
-      # jobs through the GitHub Actions cache (artifact-free; cache storage is
-      # free, artifact storage is billed). go-toolchain's matrix build writes
-      # build/webhook-runner_linux_amd64; this ONE hand-off feeds BOTH
-      # downstream jobs — no GitHub artifacts, no buildhost download round-trip.
-      # publish-ghcr's reusable workflow cache-downloads the same `go-build`
-      # name into build/ for its Dockerfile COPY.
-      - uses: wow-look-at-my/actions@cache-upload#latest
-        with:
-          name: go-build
-          path: build/webhook-runner_linux_amd64
 
   e2e:
     runs-on: ubuntu-latest
@@ -46,8 +44,10 @@ jobs:
       # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
         run: node --test internal/server/dashboard/testjs/*.test.mjs
-      # Restore the binary the test job handed off through the actions cache
-      # (exec bit + basename preserved). Fails loudly if the hand-off is missing.
+      # Restore the binary go-toolchain@v1 handed off in the test job through
+      # the actions cache (its central `go-build` upload — go-toolchain uploads
+      # its build/ dir as `go-build`, so the contents restore into build/ here;
+      # exec bit + basename preserved). Fails loudly if the hand-off is missing.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
