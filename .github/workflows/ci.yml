@@ -19,6 +19,15 @@ jobs:
       # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
       # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
       # driven by a small Go bootstrap is landing next.
+      # go-toolchain@v1 itself cache-uploads its build/ outputs under the
+      # `go-build` name on EVERY run (its own composite "Hand off build outputs"
+      # step, artifact-free; cache storage is free, artifact storage is billed).
+      # That single central hand-off feeds BOTH downstream jobs — the e2e job
+      # below and publish-ghcr's reusable workflow — which only cache-download
+      # it. So this workflow adds NO explicit cache-upload of its own: a second
+      # same-run upload of `go-build` would collide on the shared,
+      # non-job-disambiguated key (cache-xfer-go-build-<run_id>-<run_attempt>)
+      # and fail the job. Do NOT re-add an explicit `cache-upload go-build`.
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
@@ -35,11 +44,19 @@ jobs:
       # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
         run: node --test internal/server/dashboard/testjs/*.test.mjs
-      - uses: wow-look-at-my/actions@download-exe#latest
+      # Restore the binary go-toolchain@v1 handed off in the test job through
+      # the actions cache (its central `go-build` upload — go-toolchain uploads
+      # its build/ dir as `go-build`, so the contents restore into build/ here;
+      # exec bit + basename preserved). Fails loudly if the hand-off is missing.
+      - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
           path: build
-          files: webhook-runner_linux_amd64:webhook-runner
+      # The e2e harness runs ./build/webhook-runner; the hand-off carries the
+      # platform-suffixed build name, so give it the unsuffixed name the test
+      # expects (mirrors the old download-exe files: mapping).
+      - name: Stage e2e binary
+        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
       # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
       # the committed test-only age key.
       - name: Install sops
@@ -51,9 +68,13 @@ jobs:
         with:
           file: e2e/e2e.test.ts
 
-  # Builds the Dockerfile from the prebuilt go-build artifact and pushes
-  # ghcr.io/wow-look-at-my/webhook-runner:latest (only on master). The deployed
-  # compose pulls this image; the push notifies docker-updater (GitHub package webhook).
+  # Builds the Dockerfile from the go-build hand-off (the reusable workflow
+  # cache-downloads `go-build` into build/) and pushes
+  # ghcr.io/wow-look-at-my/webhook-runner:latest. The push itself is gated to
+  # master by the reusable workflow's push-branch default, so on feature
+  # branches this job just BUILDS the image as a Dockerfile-validation gate and
+  # never pushes — no unintended GHCR pushes from PRs. The deployed compose
+  # pulls this image; the push notifies docker-updater (GitHub package webhook).
   publish-ghcr:
     needs: e2e
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
