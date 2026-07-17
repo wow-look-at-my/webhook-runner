@@ -197,11 +197,18 @@ func TestZeroHooksIsLoud(t *testing.T) {
 // existing deployments must not re-tag (and so re-build) every hook on
 // upgrade. Golden value computed from the historical algorithm (relative
 // path + \x00 + content + \x00 per file, lexical walk, sha256 hex[:16]).
+//
+// The fixture bytes below are a FROZEN hash INPUT, not a live schema
+// reference: its $schema string is part of what the golden hash is computed
+// over, so it deliberately keeps the historical github.io URL. Migrating it
+// to the buildhost URL (like every real hook.json in this repo) would change
+// the input bytes and thus the hash, falsely tripping this algorithm-change
+// guard. Leave it alone.
 func TestContentHashLegacyByteIdentical(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "golden")
 	writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine:3.20\nCMD [\"sh\", \"-c\", \"echo golden\"]\n")
-	writeFile(t, filepath.Join(dir, "hook.json"), "{\n  \"$schema\": \"https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json\",\n  \"description\": \"golden legacy fixture\",\n  \"command\": [\"sh\", \"-c\", \"echo golden\"],\n  \"api_key\": \"golden-key\"\n}\n")
+	writeFile(t, filepath.Join(dir, "hook.json"), "{\n  \"$schema\": \"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json\",\n  \"description\": \"golden legacy fixture\",\n  \"command\": [\"sh\", \"-c\", \"echo golden\"],\n  \"api_key\": \"golden-key\"\n}\n")
 	writeFile(t, filepath.Join(dir, "payload.txt"), "fixed bytes\n")
 
 	loaded, errs := LoadDir(root)
