@@ -35,16 +35,25 @@ jobs:
       # is not portable across 22.x). Plain `node --test`, no dependencies.
       - name: Dashboard client harness
         run: node --test internal/server/dashboard/testjs/*.test.mjs
-      # Build the webhook-runner binary in-job. go-toolchain writes
-      # build/webhook-runner, which is exactly where e2e.test.ts spawns it
-      # from (BINARY = build/webhook-runner). This replaces the download-exe
-      # step that pulled the `go-build` GitHub Actions artifact, so the e2e
-      # job no longer depends on GitHub Actions artifact storage at all
-      # (unusable during the org-wide artifact-storage outage). go-toolchain
-      # is all-or-nothing (it builds AND runs the unit suite together), so
-      # this re-runs the unit tests — the deliberate tradeoff that buys a
-      # fully artifact-free e2e path with no bare `go build`.
+      # Build the webhook-runner binary in-job with go-toolchain, replacing the
+      # download-exe step that pulled the `go-build` GitHub Actions artifact — so
+      # the e2e job needs no GitHub Actions artifact storage at all (unusable
+      # during the org-wide artifact-storage outage). go-toolchain is
+      # all-or-nothing (builds AND runs the unit suite), so this also re-runs the
+      # unit tests — the deliberate tradeoff for a fully artifact-free e2e path
+      # with no bare `go build`.
       - uses: wow-look-at-my/go-toolchain@v1
+      # go-toolchain's `matrix` build emits platform-named binaries
+      # (build/webhook-runner_<os>_<arch>); e2e.test.ts spawns build/webhook-runner
+      # (the old download-exe step did this rename on download). Materialize the
+      # linux/amd64 binary (the runner's platform) as a real file at that path.
+      - name: Stage the host binary at build/webhook-runner for e2e
+        run: |
+          set -euo pipefail
+          ls -la build/
+          rm -f build/webhook-runner
+          cp build/webhook-runner_linux_amd64 build/webhook-runner
+          chmod +x build/webhook-runner
       # The sops e2e tests decrypt e2e/hooks/sops-hook/secrets.sops.env with
       # the committed test-only age key.
       - name: Install sops
