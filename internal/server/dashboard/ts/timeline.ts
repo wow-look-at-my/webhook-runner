@@ -13,8 +13,10 @@
  * org's standard js-snippets consumption model), so component fixes reach
  * this dashboard on js-snippets merge with no runner change. Fix component
  * bugs upstream in js-snippets; only adapter logic lives here. The import's
- * types come from js-snippets-timeline.d.ts (an INTERIM hand-maintained
- * shim — see its header).
+ * types come from ts/js-snippets/ — the component's real .d.ts pair, fetched
+ * verbatim from Pages by go:generate and committed (CI regenerates and
+ * freshness-gates them, so an upstream API change turns CI red instead of
+ * drifting).
  *
  * Built by ts0 (see ../ts0.json) into assets/timeline.js — an ES module
  * (the component URL passes through unbundled) loaded via
@@ -123,12 +125,13 @@
  *     2026-07-15 full-window-crosshatch-over-live-bars incident.)
  */
 
-// Types only — erased at compile time. The component itself is loaded at
-// RUNTIME by loadComponentForever() below (a dynamic import of the same URL,
-// kept verbatim in the built bundle via esbuild `external`); the browser
-// fetches it (and its sibling chunk imports) from GitHub Pages. Deliberately
-// NOT a static side-effect import: a static import that fails would kill
-// this whole module, and the load must retry forever instead.
+// Types only — erased at compile time, resolved against the committed
+// declarations go:generate fetches from Pages into ts/js-snippets/. The
+// component itself is loaded at RUNTIME by loadComponentForever() below (a
+// dynamic import of COMPONENT_URL); the browser fetches it (and its sibling
+// chunk imports) from GitHub Pages. Deliberately NOT a static import of the
+// URL: a static import that fails would kill this whole module, and the
+// load must retry forever instead.
 import type {
 	TimelineData,
 	TimelineHit,
@@ -136,7 +139,7 @@ import type {
 	TimelineLane,
 	TimelineSegment,
 	TimelineViewElement,
-} from 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
+} from './js-snippets/timeline-view.js';
 
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 

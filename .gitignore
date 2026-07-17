@@ -31,3 +31,6 @@ go.work.sum
 # .idea/
 # .vscode/
 /build/
+
+# ts0 fetched by the dashboard go:generate script (see internal/server/dashboard/generate-timeline.sh)
+/internal/server/dashboard/.cache/

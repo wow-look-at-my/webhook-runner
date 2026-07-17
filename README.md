@@ -1141,25 +1141,34 @@ webhook-runner change. Fix component bugs upstream in js-snippets. The
 chart therefore needs the viewer's browser to reach
 `wow-look-at-my.github.io`; if that fetch fails, the Runs section shows a
 "chart loading…" note and retries on a fixed 5s cadence forever while the
-rest of the dashboard works normally. Types for the URL import come from
-`ts/js-snippets-timeline.d.ts` — an interim hand-maintained shim, slated to
-be replaced by declarations published to Pages by js-snippets and fetched
-mechanically at generate time.
+rest of the dashboard works normally. Types for the component come from
+`ts/js-snippets/` — the component's real `.d.ts` pair, published to Pages
+by js-snippets and fetched verbatim at generate time (committed, so a
+clone type-checks offline; CI regenerates and fails on any diff, so an
+upstream component API change turns CI red instead of drifting).
 [ts0](https://github.com/wow-look-at-my/ts0) type-checks (strict `tsc`, an
 unskippable gate) and bundles the adapter into
 `internal/server/dashboard/assets/timeline.js` per `ts0.json` (an ES
 module; the component URL passes through unbundled via esbuild
 `external`).
 
-To change the timeline: edit files under `ts/`, run ts0 yourself to
-rebuild the bundle, and commit the regenerated `assets/timeline.js`
-together with the source. Regeneration is **temporarily manual**: the
-`//go:generate` npx directive was removed so the build needs no
-node/npm/npx anywhere; a prebuilt ts0 binary served from
-[buildhost](https://pazer.build), fetched by a small Go bootstrap, is
-landing next to re-automate it. **Never edit `assets/timeline.js` by
-hand** — it carries a DO-NOT-EDIT banner; the committed bundle is what
-ships.
+To change the timeline: edit files under `ts/`, then run the
+`//go:generate` in `internal/server/dashboard/dashboard.go` (it invokes
+`generate-timeline.sh` from that directory) —
+`go-toolchain --generate <hash>` (a bare `go-toolchain` run prints the
+current hash), or `go generate ./internal/server/dashboard/` directly —
+and commit the regenerated `assets/timeline.js` (plus any changed
+`ts/js-snippets/` declarations) together with the source. The script
+just curls: a pinned ts0 build from [buildhost](https://pazer.build)
+(the `?v=N` in `generate-timeline.sh`) and the component `.d.ts` pair from
+js-snippets' Pages, then runs `node ts0.cjs build`. It needs curl and
+Node 22+ — no npm, no npx, no git auth. To bump the ts0 pin, change
+`?v=N` in `generate-timeline.sh` — the directive line is untouched by a
+pin bump, and the go-toolchain approval hash re-keys only when the
+directive line itself is edited or moved (the bare run prints the new
+one; `generate:` in `ci.yml` must carry the matching hash).
+**Never edit `assets/timeline.js` by hand** — it carries a
+DO-NOT-EDIT banner; the committed bundle is what ships.
 
 ## Notes
 
