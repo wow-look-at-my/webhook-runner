@@ -28,7 +28,7 @@ internal/attention/        aggregated ACTIVE misconfigurations (the needs-attent
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to Cloudflare Pages by pages.yml direct upload — *.schema.json only)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -45,8 +45,14 @@ examples/hooks/            sample hook configs
   Don't add chi/gorilla/echo.
 - **`$schema` is required.** Every `hook.json` must declare a `$schema`
   field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
-  one. The matching property lives in `schema/hook.schema.json`, which is
-  published to GitHub Pages and is what the `$schema` URL points at. Keep
+  one. The matching property lives in `schema/hook.schema.json`, which
+  `.github/workflows/pages.yml` publishes to Cloudflare Pages via direct
+  upload (wrangler; only `schema/*.schema.json` ships — `schema_test.go`
+  no longer does) and is what the `$schema` URL points at. The published
+  `$schema`/`$id` URLs are UNCHANGED until the URL cutover: the legacy
+  GitHub Pages site keeps serving its last-published (stale) content until
+  every consumer is repointed — runbook and cutover checklist in the
+  webhooks repo's `.github/CLOUDFLARE_PAGES.md`. Keep
   the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
 ## Architecture: two ports + a state socket

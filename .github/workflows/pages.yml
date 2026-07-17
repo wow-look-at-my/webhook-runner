@@ -1,13 +1,28 @@
-name: Deploy schema to GitHub Pages
+name: Deploy schema to Cloudflare Pages
 
+# Deploy workflow — the master-only branch filter STAYS (org rule: deploy/
+# publish workflows keep their triggers; only pure CI uses bare `on: push`).
+#
+# The hook.json + concurrency.json schemas used to deploy to GitHub Pages,
+# but GH Pages deploys ride Actions artifacts and the org's artifact
+# storage budget is $0 — uploads die on quota (hit org-wide 2026-07-17;
+# this repo's next master push would have failed the same way). `wrangler
+# pages deploy` uploads straight to Cloudflare — no Actions artifacts.
+#
+# The legacy GitHub Pages site keeps serving its last-published content
+# until the URL cutover repoints every $schema consumer — operator runbook
+# and cutover checklist live in the webhooks repo at
+# .github/CLOUDFLARE_PAGES.md. Nothing is deleted by this workflow.
+#
+# Staging: only schema/*.schema.json is deployed. The old workflow
+# uploaded the whole schema/ directory, which also published
+# schema_test.go to the public site — fixed here.
 on:
   push:
     branches: [master]
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -16,14 +31,62 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      # Stage exactly schema/*.schema.json, flat into a fresh _site/;
+      # every staged file must parse as JSON and carry $schema + $id.
+      - uses: wow-look-at-my/actions@typescript#latest
         with:
-          path: schema
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          script: |
+            const src = 'schema';
+            const out = '_site';
+            fs.rmSync(out, { recursive: true, force: true });
+            fs.mkdirSync(out);
+            const files = fs.readdirSync(src).filter((f) => f.endsWith('.schema.json'));
+            if (files.length === 0) {
+              core.setFailed('no schema/*.schema.json files found — refusing to deploy an empty site');
+              return;
+            }
+            for (const f of files) {
+              const bytes = fs.readFileSync(path.join(src, f));
+              const parsed = JSON.parse(bytes.toString('utf8'));
+              if (typeof parsed.$schema !== 'string' || typeof parsed.$id !== 'string') {
+                core.setFailed(`${f}: missing $schema/$id — not a publishable JSON Schema`);
+                return;
+              }
+              fs.writeFileSync(path.join(out, f), bytes);
+            }
+            core.info(`staged: ${files.join(', ')}`);
+      # Direct upload to Cloudflare Pages. While the CLOUDFLARE_API_TOKEN /
+      # CLOUDFLARE_ACCOUNT_ID org secrets are absent this is a loud green
+      # no-op (warning annotation + step summary) so a missing secret never
+      # turns master red; once the secrets exist, real failures are red.
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          secrets: ${{ toJSON(secrets) }}
+          script: |
+            const token = secrets.CLOUDFLARE_API_TOKEN ?? '';
+            const account = secrets.CLOUDFLARE_ACCOUNT_ID ?? '';
+            if (!token || !account) {
+              const msg =
+                'Cloudflare Pages deploy SKIPPED: the CLOUDFLARE_API_TOKEN / ' +
+                'CLOUDFLARE_ACCOUNT_ID org Actions secrets are not configured. ' +
+                'Schemas are NOT being published (the legacy GitHub Pages site ' +
+                'serves stale content). See the webhooks repo, ' +
+                '.github/CLOUDFLARE_PAGES.md, for setup; then re-run this workflow.';
+              core.warning(msg);
+              await core.summary.addRaw('## WARNING: schemas not deployed\n\n' + msg + '\n').write();
+              return;
+            }
+            process.env.CLOUDFLARE_API_TOKEN = token;
+            process.env.CLOUDFLARE_ACCOUNT_ID = account;
+            const project = 'wow-webhook-runner-schemas';
+            await $`npm install --no-save wrangler@4`;
+            try {
+              await $`npx wrangler pages project create ${project} --production-branch master`;
+              core.info(`created Cloudflare Pages project ${project}`);
+            } catch {
+              core.info(`Pages project ${project} already exists; deploying to it`);
+            }
+            await $`npx wrangler pages deploy _site --project-name ${project} --branch master --commit-hash ${context.sha}`;
+            await core.summary.addRaw(`Deployed schema/*.schema.json to Cloudflare Pages project ${project} (production).\n`).write();
