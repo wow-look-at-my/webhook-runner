@@ -631,3 +631,39 @@ func TestUnparseableStateFileIsHardError(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+// TreeState mirrors the gate's recorded state through the full
+// held→red→switched lifecycle — the pure read /version renders — and
+// never performs git work.
+func TestTreeStateSnapshot(t *testing.T) {
+	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
+	f := servingFixture(t, repo, "A")
+
+	ts := f.gate.TreeState()
+	assert.Equal(t, TreeState{ServingSHA: "A", Verified: true, Context: "all-builds"}, ts)
+
+	// A pushed newer tip is recorded pending.
+	_, err := f.gate.HandleEvent("push", pushBody(t, "refs/heads/master", "B"))
+	require.NoError(t, err)
+	ts = f.gate.TreeState()
+	assert.Equal(t, TreeState{ServingSHA: "A", Verified: true, PendingSHA: "B", PendingState: "pending", Context: "all-builds"}, ts)
+
+	// A red gating status updates the pending state.
+	_, err = f.gate.HandleEvent("status", statusBody(t, "B", "failure", "all-builds", "master"))
+	require.NoError(t, err)
+	ts = f.gate.TreeState()
+	assert.Equal(t, "B", ts.PendingSHA)
+	assert.Equal(t, "failure", ts.PendingState)
+
+	// The green switch settles: serving B, verified, nothing pending.
+	gitOps := repo.gitOps()
+	_, err = f.gate.HandleEvent("status", statusBody(t, "B", "success", "all-builds", "master"))
+	require.NoError(t, err)
+	ts = f.gate.TreeState()
+	assert.Equal(t, TreeState{ServingSHA: "B", Verified: true, Context: "all-builds"}, ts)
+	assert.Greater(t, repo.gitOps(), gitOps, "sanity: the switch did git work")
+
+	gitOps = repo.gitOps()
+	_ = f.gate.TreeState()
+	assert.Equal(t, gitOps, repo.gitOps(), "TreeState must never touch git")
+}

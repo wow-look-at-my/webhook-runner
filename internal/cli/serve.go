@@ -263,8 +263,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	if gate != nil {
 		// Assigned only when non-nil so the interface field stays truly
-		// nil (legacy flow) rather than wrapping a nil pointer.
+		// nil (legacy flow) rather than wrapping a nil pointer. TreeState
+		// rides the same nil check: /version reports the gate's hooks-tree
+		// state only when a gate actually tracks the tree.
 		srvOpts.Gate = gate
+		srvOpts.TreeState = gate.TreeState
 	}
 	srv := server.New(srvOpts)
 

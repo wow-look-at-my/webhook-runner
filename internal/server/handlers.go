@@ -33,11 +33,73 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleVersion identifies the running build (same string the `version`
-// command prints, plus the VCS revision/time when the build has them).
-// Registered on both ports so the deployed build is checkable from either
-// side of the tunnel.
+// command prints, plus the VCS revision/time when the build has them) AND
+// which hooks tree it is serving: the reload gate's state rides along as
+// hooks_tree, so "which hooks commit is deployed?" is answerable without
+// probing hook 404s. Registered on both ports so the deployed build is
+// checkable from either side of the tunnel — which deliberately exposes
+// the served hooks-tree commit sha on the public hook port (an explicit
+// operator request; the hooks repo itself stays private).
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.version)
+	writeJSON(w, http.StatusOK, struct {
+		VersionInfo
+		HooksTree hooksTreeState `json:"hooks_tree"`
+	}{VersionInfo: s.version, HooksTree: s.hooksTreeState()})
+}
+
+// hooksTreeState is /version's hooks_tree object: which hooks tree this
+// runner is serving, per the reload gate. state discriminates:
+//
+//   - "serving": the tree is at serving_sha; nothing newer is held.
+//   - "held": pending_sha is fetched but not switched to — pending_state
+//     carries the gating context's last known CI state for it, and reason
+//     spells the hold out ("awaiting all-builds" / "all-builds failure").
+//   - "unknown": a gate is tracking but has no serving commit recorded
+//     (the boot HEAD read failed and nothing has settled since).
+//   - "untracked": no gate tracks the tree — mode names why (no hooks
+//     repo, or the CI-gate-disabled legacy reload flow).
+//
+// serving_sha is omitted rather than sent as an ambiguous empty string
+// when it is unknown; verified is present exactly when a gate is
+// tracking (states other than "untracked").
+type hooksTreeState struct {
+	State        string `json:"state"`
+	ServingSHA   string `json:"serving_sha,omitempty"`
+	Verified     *bool  `json:"verified,omitempty"`
+	PendingSHA   string `json:"pending_sha,omitempty"`
+	PendingState string `json:"pending_state,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+}
+
+// hooksTreeState renders the reload gate's snapshot (a pure in-memory
+// read — no git, no GitHub) into the /version hooks_tree shape.
+func (s *Server) hooksTreeState() hooksTreeState {
+	if s.treeState == nil {
+		mode := "local hooks dir (no hooks repo)"
+		if s.hooksRepo != "" {
+			mode = "ci gate disabled (legacy reload)"
+		}
+		return hooksTreeState{State: "untracked", Mode: mode}
+	}
+	ts := s.treeState()
+	out := hooksTreeState{ServingSHA: ts.ServingSHA, Verified: &ts.Verified}
+	switch {
+	case ts.PendingSHA != "":
+		out.State = "held"
+		out.PendingSHA = ts.PendingSHA
+		out.PendingState = ts.PendingState
+		if ts.PendingState == "failure" || ts.PendingState == "error" {
+			out.Reason = ts.Context + " " + ts.PendingState
+		} else {
+			out.Reason = "awaiting " + ts.Context
+		}
+	case ts.ServingSHA == "":
+		out.State = "unknown"
+	default:
+		out.State = "serving"
+	}
+	return out
 }
 
 // hookListEntry is one row of GET /hooks: the registry summary plus the
