@@ -22,12 +22,6 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
-      # go-toolchain@v1 no longer uploads a go-build run artifact; hand the
-      # build output to the e2e and publish-ghcr jobs via the actions cache.
-      - uses: wow-look-at-my/actions@cache-upload#latest
-        with:
-          name: go-build
-          path: build/
 
   e2e:
     runs-on: ubuntu-latest
