@@ -22,7 +22,8 @@ import (
 // server restart (in-flight runs die with the server by design), so a
 // restart correctly starts lock-free. Locks therefore never appear in the
 // namespace files, the admin KV views, or GET/PUT/DELETE — they are a
-// separate facility that happens to share the namespace and its caps.
+// separate facility that happens to share the namespace and its
+// namespace-count bound.
 //
 // The TTL backstop: every lock gets an expiry — DefaultLockTTL when the
 // caller doesn't choose one — sized far beyond any legitimate hold, because
@@ -84,7 +85,7 @@ func (e lockEntry) info(ns string) LockInfo {
 // (only the live owner can do this, so it can never prolong a dead run's
 // lock). A lock held by another live run returns ErrLockHeld — mutating
 // nothing — together with the HOLDER's LockInfo, so contention is never
-// anonymous. The same namespace/key caps as the entry store apply.
+// anonymous. The same namespace cap as the entry store applies.
 func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo, error) {
 	if !validNamespace(ns) {
 		return LockInfo{}, ErrBadNamespace
@@ -156,12 +157,6 @@ func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal b
 	}
 
 	prev, keyExisted := m[key]
-	if !keyExisted && len(m) >= s.cfg.MaxKeysPerNS {
-		if !nsExisted {
-			delete(s.locks, ns)
-		}
-		return LockInfo{}, LockInfo{}, ErrTooManyKeys
-	}
 
 	e := lockEntry{runID: runID, acquiredAt: now, expiresAt: now.Add(ttl)}
 	if keyExisted && !prev.expired(now) && prev.runID == runID {

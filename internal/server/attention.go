@@ -23,6 +23,19 @@ type attentionView struct {
 }
 
 func (s *Server) handleAttention(w http.ResponseWriter, _ *http.Request) {
-	entries := s.attention.Snapshot() // nil-aggregator safe: empty, never nil
+	all := s.attention.Snapshot() // nil-aggregator safe: empty, never nil
+	// A hook that is effectively disabled (operator override, or its
+	// hook.json `enable: false` default) has its problems filtered out
+	// here, at READ time: if it's off, its failures are moot. The entries
+	// are never deleted from the aggregator, so re-enabling the hook
+	// immediately resurfaces everything still active. Non-hook-scoped
+	// entries (server/zero-hooks/reload) always show.
+	entries := make([]attention.Entry, 0, len(all))
+	for _, e := range all {
+		if e.Hook != "" && s.effectiveDisabled(e.Hook) {
+			continue
+		}
+		entries = append(entries, e)
+	}
 	writeJSON(w, http.StatusOK, attentionView{Count: len(entries), Entries: entries})
 }

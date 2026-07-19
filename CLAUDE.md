@@ -67,7 +67,15 @@ The server listens on two TCP ports plus a Unix socket:
   labels that window and `stats.skipped` is the skip bucket — see the
   skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
+  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, the
+  hooks-repo reload panel (`GET /reload/status` — mode gated/legacy/none,
+  branch, live commit with CI + src/hooks-tree verdicts, the gate's held
+  tip; `GET /reload/commits` — ~20 fetched-fresh origin commits with
+  per-commit CI/src/is_live; `POST /reload/check` — reload on demand:
+  one `Gate.Reconcile` pass in gated mode / the legacy pull+reload;
+  `POST /reload/switch` — the manual commit pick, body `{"ref","override"}`
+  — see the reload-gate bullet's manual-pick paragraph under "Things easy
+  to get wrong"), `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/attention` (the aggregated needs-attention problem
   set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
@@ -204,7 +212,13 @@ wrong"): a push only fetches + records the new tip as pending, and the
 tree switches when a `status` event reports the gating context
 (`all-builds`, override via `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT`; set it
 EMPTY to disable the gate and restore the legacy
-any-signed-POST-pulls-and-reloads flow). The admin port's `POST /reload`
+any-signed-POST-pulls-and-reloads flow). An hourly reconciliation poll
+(`WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL`, default `1h`, `0` disables)
+backstops missed status webhooks: it fetches the tip and, when it
+differs from what is serving, reads its gating status from the GitHub
+API (via `WEBHOOK_RUNNER_GITHUB_TOKEN`) — switching only on green, so a
+missed webhook costs at most ~one interval of latency instead of
+freezing deploys. The admin port's `POST /reload`
 is the operator's deliberate gate bypass: fetch + reset to the remote tip,
 recorded verified, no auth.
 
@@ -217,28 +231,70 @@ The companion repo is `wow-look-at-my/webhooks`.
 
 ## Things easy to get wrong
 
-- The hooks-repo reload CI gate (`internal/reloadgate`) is EVENT-DRIVEN
-  ONLY — no polling, no timers, no backoff anywhere (operator law: held
-  work retries on the next event, never on a clock). A `push` NEVER moves
-  the tree (it fetches + records the tip pending, loudly: `reload.held` +
-  the "reload"-source attention entries); the HMAC-verified `status` event
-  is the switch authority. The ordering rule for a green: the sha must be
-  in the freshly-fetched recent history (`fetchDepth` 100) AND not older
-  than the serving sha — stale/out-of-order greens are `ignored_stale`,
-  never applied. Admin `POST /reload` is the DELIBERATE bypass (Force:
-  reset to tip, recorded verified, `reload.forced`). The last-good sha
-  persists in `<data-dir>/reload-gate.json` (temp+rename; a persist
-  failure is loud but never blocks the reload) and is restored at boot
-  BEFORE the watcher's initial scan — gate mode never pulls-to-tip on
-  startup (`hooks.OpenRepo`, vs legacy `CloneRepo`'s pull-on-open), and
-  `Startup` never calls apply (the watcher's initial scan does the first
-  load). A missed green converges on the repo's next delivery, a GitHub
-  redelivery, or admin /reload — do NOT add a retry timer. Setting
+- The hooks-repo reload CI gate (`internal/reloadgate`) moves the tree
+  along THREE paths — the former "event-driven only, no polling, ever"
+  doctrine was superseded by explicit operator order (2026-07-17): a
+  missed status webhook must never freeze deploys indefinitely, so the
+  reconciliation poll below is deliberate, not a regression.
+  (1) The HMAC-verified `status` event — the PRIMARY, low-latency switch
+  authority. A `push` NEVER moves the tree (it fetches + records the tip
+  pending, loudly: `reload.held` + the "reload"-source attention
+  entries). The ordering rule for a green: the sha must be in the
+  freshly-fetched recent history (`fetchDepth` 100) AND not older than
+  the serving sha — stale/out-of-order greens are `ignored_stale`, never
+  applied.
+  (2) The hourly reconciliation POLL (`reloadgate.Poller` →
+  `Gate.Reconcile`; `WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL`, default `1h`,
+  `0` disables, unparseable/negative fails startup) — the fallback that
+  bounds a missed webhook's cost to one interval: one pass at startup
+  (catching a green missed while down), then one per interval. Each pass
+  fetches the remote tip; tip == serving is a quiet no-op with NO API
+  call; a newer tip has the gating context's state read from the combined
+  commit status (`githubstatus.ContextState` — reusing the
+  `WEBHOOK_RUNNER_GITHUB_TOKEN` credential; owner/repo derived from the
+  hooks-repo URL, both SSH and https forms) and switches ONLY on an
+  affirmative green, through the exact same trySwitch ordering path as
+  (1) — never a forked copy. Red/pending/no-status-yet hold via the same
+  `reload.held`/`held_red` bookkeeping; an UNREADABLE status (no token,
+  API error, underivable URL) holds BLIND — `reload.poll_blind` + the
+  `KeyReloadPoll` attention entry, one event per distinct problem, and it
+  is impossible for the poll to switch to a tip that is not affirmatively
+  green. Repeat ticks over an unchanged verdict are quiet. The poll makes
+  the repo webhook's Statuses-event checkbox a latency optimization, not
+  a correctness requirement. GATED MODE ONLY: with the gate disabled the
+  poller never starts (one log line; legacy stays timerless).
+  (3) Admin `POST /reload` — the DELIBERATE operator bypass (Force: reset
+  to tip, recorded verified, `reload.forced`).
+  MANUAL PICK (the dashboard's reload panel, `POST /reload/switch`):
+  `Gate.ManualSwitch(ref, override)` rides the SAME Force-style apply
+  path (`forceApplyLocked` — Force generalized to a target sha; ONE
+  switch mechanism, zero forks), deliberately WITHOUT trySwitch's
+  staleness ordering so rollback to an OLDER commit works and a wedged
+  gate (CI unreadable) stays overridable. Informed override is
+  SERVER-enforced: a pick whose gating CI state is not affirmatively
+  green ("unknown" counts as not green) or whose tree lacks `src/hooks`
+  answers 409 naming every reason + `requires_override:true` and moves
+  NOTHING (`reload.switch_refused`); only an explicit `override:true`
+  switches — loudly, `reload.forced` naming each overridden reason. A
+  green+src pick records `reload.switched` (verified). Pending
+  bookkeeping stays consistent: picking the pending commit or the tip
+  clears the hold; a rollback elsewhere KEEPS a hold for a different
+  commit visible. The automatic paths (1)/(2) are byte-for-byte
+  unchanged — and note a rollback away from a GREEN tip lasts only until
+  the next green delivery/poll re-switches to it (inherent: the gate
+  converges on the newest green; pin by reverting the commit instead).
+  The last-good sha persists in `<data-dir>/reload-gate.json`
+  (temp+rename; a persist failure is loud but never blocks the reload)
+  and is restored at boot BEFORE the watcher's initial scan — gate mode
+  never pulls-to-tip on startup (`hooks.OpenRepo`, vs legacy
+  `CloneRepo`'s pull-on-open), and `Startup` never calls apply (the
+  watcher's initial scan does the first load). Setting
   `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT` to an EMPTY string disables the
   gate (exact legacy behavior everywhere, including startup); unset means
-  `all-builds`. Operator setup: the hooks repo's webhook must send
-  `status` events in addition to `push` (same URL/secret), or every push
-  holds until an admin /reload.
+  `all-builds`. Operator setup: the hooks repo's webhook should send
+  `status` events in addition to `push` (same URL/secret) for low-latency
+  switches, and `WEBHOOK_RUNNER_GITHUB_TOKEN` needs read access to the
+  hooks repo's commit statuses or the poll fallback holds blind.
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`)
   and kills the container by name on timeout. This is because if Go SIGKILLs
   the docker CLI process, the underlying container can survive briefly.
@@ -531,7 +587,23 @@ The companion repo is `wow-look-at-my/webhooks`.
   (`<data-dir>/overrides.json`, atomic temp+rename writes; a persist
   failure rolls the in-memory flip back and surfaces as a 500 + an
   `override.write_failed` event — same loud-write rule as kv), NOT
-  hooks-repo config. The disable gate lives **at dispatch, not load**: a
+  hooks-repo config. The hook switch is TRI-STATE: hook.json's `enable`
+  field (absent = true) is only the DEFAULT position, and the store
+  persists an EXPLICIT per-hook enable/disable override (`hook_enable` in
+  overrides.json; the legacy `disabled_hooks` set is still read — as
+  explicit disables — AND written for binary downgrades) that outranks the
+  default in both directions, so enabling an `"enable": false` hook
+  sticks. Effective state = override-if-any, else the default; a hook that
+  failed to LOAD counts as default-enabled (`Server.effectiveDisabled` /
+  `Store.HookDisabled(id, defaultEnabled)` — every consumer goes through
+  these, never a raw read). GET /attention drops entries of effectively
+  disabled hooks at READ time (never deleted — re-enabling resurfaces
+  them), and hook.disabled/hook.enabled/hooks.reloaded also dirty the
+  "attention" stream section so the banner count tracks flips. The
+  dashboard renders the whole thing as ONE slider switch per hook (hooks
+  table Status column + the app page title row — `hookSwitch` in
+  dashboard.js; no separate state pill, no Enable/Disable button).
+  The disable gate lives **at dispatch, not load**: a
   disabled hook stays loaded/registered (image state, config, run history
   intact) and `handleTrigger` rejects deliveries with a distinct 503 +
   `hook.disabled_rejected` event, while `buildScheduleFire` skips its
@@ -724,10 +796,12 @@ The companion repo is `wow-look-at-my/webhooks`.
   and an expired-entry cleanup failing to flush is invisible to reads
   either way.) TTL is enforced lazily on read AND
   by a background sweeper (`StartSweeper`/`Close`); keep both. The store is
-  bounded (64 KiB/value, 5000 keys/namespace, 256 namespaces by default —
-  zero-valued `kv.Config` fields fall back to these in `kv.New`);
-  `WEBHOOK_RUNNER_KV_MAX_KEYS` overrides the key cap, parsed in cli/serve.go
-  like the other WEBHOOK_RUNNER_* env options.
+  bounded per item (64 KiB/value, 256 namespaces by default — zero-valued
+  `kv.Config` fields fall back to these in `kv.New`) but has NO key-count
+  cap: total growth is deliberately uncapped in-process (operator directive)
+  and bounded at the container level (a memory cap; swap-side only where the
+  host kernel does cgroup swap accounting) instead — don't
+  reintroduce a cap, usage detection, or eviction in its place.
 - A hook opts into the store with `state: true`. `state` is a new hook.json
   field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
   same deploy-first rule as `concurrency_group`. ONLY for state hooks, the

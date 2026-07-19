@@ -15,12 +15,31 @@ package server
 // Every flip lands on the activity feed; a persist failure is loud (500 +
 // an override.write_failed event, memory rolled back — the same rule as
 // kv writes), never a quiet degrade.
+//
+// Precedence: hook.json's `enable` field is only the DEFAULT position of
+// the switch (absent = enabled). The endpoints above write an EXPLICIT
+// per-hook override — tri-state in the store — which persists and wins
+// over the default in both directions, so enabling a hook that ships
+// `"enable": false` sticks across reloads and restarts.
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 )
+
+// effectiveDisabled is the one place a hook's effective kill-switch state
+// is computed: the operator's persisted explicit override when one exists,
+// else the hook.json `enable` default. A hook that is not loaded (e.g. it
+// failed load/validation — there is no parsed default to read) counts as
+// default-enabled, so only an explicit override disables it.
+func (s *Server) effectiveDisabled(id string) bool {
+	defaultEnabled := true
+	if h, ok := s.registry.Get(id); ok {
+		defaultEnabled = h.EnabledByDefault()
+	}
+	return s.overrides.HookDisabled(id, defaultEnabled)
+}
 
 func (s *Server) handleHookDisable(w http.ResponseWriter, r *http.Request) {
 	s.setHookDisabled(w, r, true)

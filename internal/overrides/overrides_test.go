@@ -12,7 +12,7 @@ import (
 func TestOpenMissingFileIsZeroState(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "overrides.json"))
 	require.NoError(t, err)
-	assert.False(t, s.HookDisabled("anything"))
+	assert.False(t, s.HookDisabled("anything", true))
 	assert.Empty(t, s.DisabledHooks())
 	assert.Empty(t, s.ConcurrencyLimits())
 }
@@ -42,7 +42,7 @@ func TestRoundTripSurvivesReopen(t *testing.T) {
 	// Simulated restart.
 	s2, err := Open(path)
 	require.NoError(t, err)
-	assert.True(t, s2.HookDisabled("runaway"))
+	assert.True(t, s2.HookDisabled("runaway", true))
 	assert.Equal(t, []string{"runaway"}, s2.DisabledHooks())
 	n, ok := s2.ConcurrencyLimit("model-gateway")
 	require.True(t, ok)
@@ -66,6 +66,80 @@ func TestSetHookDisabledIdempotent(t *testing.T) {
 	changed, err = s.SetHookDisabled("h", false)
 	require.NoError(t, err)
 	assert.False(t, changed, "enabling an already-enabled hook is not a flip")
+}
+
+// Upgrade compatibility: a pre-tri-state overrides.json carries only the
+// disabled_hooks set — each entry must read back as an EXPLICIT disable
+// override, so an operator's persisted kill switch survives the upgrade.
+func TestOpenLegacyDisabledSetReadsAsExplicitDisable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overrides.json")
+	require.NoError(t, os.WriteFile(path,
+		[]byte(`{"disabled_hooks":["old"],"concurrency_limits":{"g":2}}`), 0o644))
+
+	s, err := Open(path)
+	require.NoError(t, err)
+	enabled, ok := s.HookOverride("old")
+	require.True(t, ok, "a legacy disabled entry must be an explicit override")
+	assert.False(t, enabled)
+	assert.True(t, s.HookDisabled("old", true), "the override must win over a default-enabled hook")
+	assert.Equal(t, []string{"old"}, s.DisabledHooks())
+	n, ok := s.ConcurrencyLimit("g")
+	require.True(t, ok)
+	assert.Equal(t, 2, n)
+}
+
+// The tri-state contract: no override means the hook.json `enable` default
+// decides; an explicit override wins over the default in BOTH directions
+// and survives a reopen. Downgrade compatibility: the persisted file still
+// carries disabled_hooks (the explicit-disable subset) for old readers.
+func TestHookOverrideTriState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overrides.json")
+	s, err := Open(path)
+	require.NoError(t, err)
+
+	// No override: the caller-supplied default decides.
+	_, ok := s.HookOverride("h")
+	assert.False(t, ok)
+	assert.False(t, s.HookDisabled("h", true), "default-enabled + no override = enabled")
+	assert.True(t, s.HookDisabled("h", false), "default-disabled + no override = disabled")
+
+	// Explicit ENABLE beats a default-disabled hook (the enable:false case)
+	// — and creating it counts as a change even though nothing was stored
+	// before, because the stored state machine moved.
+	changed, err := s.SetHookDisabled("h", false)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	enabled, ok := s.HookOverride("h")
+	require.True(t, ok)
+	assert.True(t, enabled)
+	assert.False(t, s.HookDisabled("h", false), "explicit enable must beat the enable:false default")
+	assert.Empty(t, s.DisabledHooks(), "an explicit enable is not a disable")
+
+	// Explicit DISABLE beats a default-enabled hook.
+	changed, err = s.SetHookDisabled("h", true)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.True(t, s.HookDisabled("h", true))
+
+	// Both directions survive a reopen, and the legacy field is written for
+	// binary downgrades.
+	s2, err := Open(path)
+	require.NoError(t, err)
+	assert.True(t, s2.HookDisabled("h", true))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"hook_enable"`)
+	assert.Contains(t, string(data), `"disabled_hooks"`)
+
+	// An explicit-enable-only store reopens as explicit enable too.
+	_, err = s.SetHookDisabled("h", false)
+	require.NoError(t, err)
+	s3, err := Open(path)
+	require.NoError(t, err)
+	enabled, ok = s3.HookOverride("h")
+	require.True(t, ok)
+	assert.True(t, enabled)
+	assert.Equal(t, map[string]bool{"h": true}, s3.HookOverrides())
 }
 
 func TestSetConcurrencyLimitValidatesAndIsIdempotent(t *testing.T) {
@@ -113,12 +187,12 @@ func TestPersistFailureRollsBack(t *testing.T) {
 	changed, err := s.SetHookDisabled("h", true)
 	require.Error(t, err)
 	assert.False(t, changed)
-	assert.False(t, s.HookDisabled("h"), "failed disable must roll back")
+	assert.False(t, s.HookDisabled("h", true), "failed disable must roll back")
 
 	changed, err = s.SetHookDisabled("kept", false)
 	require.Error(t, err)
 	assert.False(t, changed)
-	assert.True(t, s.HookDisabled("kept"), "failed enable must roll back")
+	assert.True(t, s.HookDisabled("kept", true), "failed enable must roll back")
 
 	changed, err = s.SetConcurrencyLimit("g", 2)
 	require.Error(t, err)
@@ -137,12 +211,18 @@ func TestOpenCorruptFileFailsLoudly(t *testing.T) {
 }
 
 // Nil-store reads are safe no-ops (like events.Recorder); writes error.
+// With no store there are no overrides, so the effective state is exactly
+// the caller's default.
 func TestNilStore(t *testing.T) {
 	var s *Store
-	assert.False(t, s.HookDisabled("h"))
+	assert.False(t, s.HookDisabled("h", true))
+	assert.True(t, s.HookDisabled("h", false), "a nil store leaves the enable:false default in force")
+	_, ok := s.HookOverride("h")
+	assert.False(t, ok)
+	assert.Nil(t, s.HookOverrides())
 	assert.Nil(t, s.DisabledHooks())
 	assert.Nil(t, s.ConcurrencyLimits())
-	_, ok := s.ConcurrencyLimit("g")
+	_, ok = s.ConcurrencyLimit("g")
 	assert.False(t, ok)
 
 	_, err := s.SetHookDisabled("h", true)

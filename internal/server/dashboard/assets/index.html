@@ -57,11 +57,45 @@
     </details>
   </section>
 
+  <!-- The hooks-repo reload panel (GET /reload/status): which commit is
+       live (with CI + src-layout badges), what the gate is holding, a
+       "Check & reload" that runs one reconcile pass on demand
+       (POST /reload/check), and — inside the collapsed picker — the
+       recent origin history with a per-commit "Make live" plus a
+       paste-a-ref switch (POST /reload/switch). Switching a commit that
+       fails the gate's checks needs an explicit informed override: the
+       server answers 409 with every reason, and only a confirmed retry
+       with override:true moves the tree (recorded loudly). Hidden when no
+       hooks repo is configured. -->
+  <section id="reload-section" hidden>
+    <h2>Hooks repo commit</h2>
+    <div id="reload-live"></div>
+    <div class="reload-actions">
+      <button id="reload-check" class="toggle-btn"
+        title="Fetch the tip and re-evaluate now: switches only if its CI is green (gated mode) or pulls to tip (legacy mode)">Check &amp; reload now</button>
+      <span id="reload-check-result" class="window-note"></span>
+    </div>
+    <details id="reload-picker">
+      <summary>Recent commits — pick one to make live</summary>
+      <p class="window-note">Fetched fresh from origin. "Make live" switches the serving tree to that commit; a commit that is not CI-green (unknown counts as not green) or lacks src/hooks asks for an explicit override first.</p>
+      <table id="reload-commits-table">
+        <thead><tr><th>Commit</th><th>Subject</th><th>Date</th><th>CI</th><th>src/</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="reload-commits-note" class="empty" hidden></p>
+      <div class="reload-ref-row">
+        <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
+        <button id="reload-ref-switch" class="toggle-btn" title="Resolve the ref (fetching from origin if needed) and make it the live hooks commit">Switch to ref</button>
+      </div>
+    </details>
+  </section>
+
   <section id="hooks-section">
     <h2>Hooks</h2>
-    <!-- Status is the operator kill switch: a disabled hook stays loaded
-         but rejects deliveries (503) and skips scheduled runs. The toggle
-         flips it via POST /hooks/{id}/disable|enable. -->
+    <!-- Status is the operator kill switch, ONE control per row: a slider
+         switch (on/green = enabled; off/grey = disabled — deliveries
+         rejected 503, scheduled runs skipped) that flips the hook via
+         POST /hooks/{id}/disable|enable. -->
     <table id="hooks-table">
       <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Status</th><th>Endpoint</th></tr></thead>
       <tbody></tbody>
@@ -152,12 +186,12 @@
   <p class="crumbs"><a href="#">&larr; All hooks</a></p>
 
   <section id="app-head">
-    <!-- The badge + toggle mirror the overview's Status column: the
-         operator kill switch for this one hook. -->
+    <!-- The switch mirrors the overview's Status column: the operator
+         kill switch for this one hook (on = enabled, off = disabled).
+         dashboard.js renders the same hookSwitch control into the slot. -->
     <div class="app-title-row">
       <h2 id="app-title"></h2>
-      <span id="app-disabled-badge" class="badge bad" hidden>DISABLED by operator</span>
-      <button id="app-toggle" class="toggle-btn" hidden>Disable hook</button>
+      <span id="app-switch" hidden></span>
     </div>
     <p id="app-desc"></p>
     <p id="app-missing" class="empty" hidden>No such hook.</p>

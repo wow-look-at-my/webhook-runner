@@ -155,15 +155,10 @@ func TestLocksAreNotEntries(t *testing.T) {
 }
 
 func TestLockCaps(t *testing.T) {
-	s, err := New(Config{Dir: t.TempDir(), MaxKeysPerNS: 2, MaxNamespaces: 2}, []byte("x"), nil)
+	s, err := New(Config{Dir: t.TempDir(), MaxNamespaces: 2}, []byte("x"), nil)
 	require.NoError(t, err)
 	_, err = s.AcquireLock("ns", "a", "r", 0)
 	require.NoError(t, err)
-	_, err = s.AcquireLock("ns", "b", "r", 0)
-	require.NoError(t, err)
-	_, err = s.AcquireLock("ns", "c", "r", 0)
-	require.Equal(t, ErrTooManyKeys, err)
-
 	_, err = s.AcquireLock("ns2", "a", "r", 0)
 	require.NoError(t, err)
 	_, err = s.AcquireLock("ns3", "a", "r", 0)

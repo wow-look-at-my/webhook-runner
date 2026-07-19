@@ -430,17 +430,66 @@ a.kv-jump:hover { text-decoration: underline; }
 #events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
 #app-events-table tbody tr, #concurrency-table tbody tr { cursor: default; }
 
-/* Operator kill-switch controls: compact in-table buttons; "danger" marks
-   the destructive direction (disabling a hook). */
+/* Compact in-table action buttons (the concurrency Override…/Revert
+   controls). */
 .toggle-btn {
   padding: 0.15rem 0.6rem;
   font-size: 0.75rem;
   border-radius: 5px;
 }
-.toggle-btn.danger, #app-toggle.danger { background: var(--failure); }
 .row-actions { white-space: nowrap; }
 .row-actions .badge, .row-actions .toggle-btn { margin-right: 0.4rem; }
 .row-actions :last-child { margin-right: 0; }
+
+/* Operator kill switch: ONE control per hook — a slider switch that is
+   both the state display and the flip (replacing the old status pill +
+   Enable/Disable button pair). On/green = enabled; off/grey = disabled
+   (deliveries rejected 503, scheduled runs skipped). Flipping it calls
+   POST /hooks/{id}/disable|enable. The real checkbox is transparent on
+   top of the track — it keeps focus, role="switch", and click semantics
+   for keyboards and screen readers — while .switch-slider draws the
+   track + knob. */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--pending);
+  transition: background 0.15s ease;
+}
+.switch-slider::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--fg);
+  transition: transform 0.15s ease;
+}
+.switch input:checked + .switch-slider { background: var(--success); }
+.switch input:checked + .switch-slider::before { transform: translateX(16px); }
+.switch input:focus-visible + .switch-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .app-title-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .app-title-row h2 { margin: 0; }
 
@@ -585,3 +634,59 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
 #attention-table td.attention-age { white-space: nowrap; }
 #attention-table tbody tr:hover { cursor: default; }
 #attention-table tbody tr.attention-hook-row:hover { cursor: pointer; }
+
+/* --- Hooks repo reload panel ---------------------------------------------
+   The live-commit line, its held/pending sibling, and the collapsed
+   recent-commits picker. Badges reuse the shared .badge palette; the
+   picker table reuses the shared table styling. */
+#reload-live { display: grid; gap: 0.35rem; margin-bottom: 0.75rem; }
+.reload-live-row, .reload-pending {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.reload-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.reload-branch { color: var(--muted); font-size: 0.875rem; }
+.reload-subject { color: var(--muted); font-size: 0.875rem; }
+.reload-subject-inline { color: var(--muted); font-size: 0.875rem; }
+.reload-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+#reload-picker summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+#reload-picker[open] summary { margin-bottom: 0.5rem; }
+#reload-commits-table td.reload-commit-subject {
+  max-width: 34rem;
+  overflow-wrap: anywhere;
+}
+#reload-commits-table tbody tr:hover { cursor: default; }
+#reload-commits-table tr.reload-live-commit { background: rgba(63, 185, 80, 0.06); }
+.reload-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+#reload-ref-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  min-width: 22rem;
+  max-width: 100%;
+}

@@ -416,6 +416,9 @@ const sectionFetchers = {
   events: async () => renderEvents(await fetchJSON("/events?max=100")),
   kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
   concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
+  // The hooks-repo reload panel (declared at the bottom of this file;
+  // function declarations hoist, so the reference is fine here).
+  reload: () => refreshReloadPanel(),
 };
 
 function stampUpdated() {
@@ -446,6 +449,7 @@ async function refresh() {
         sectionFetchers.events(),
         sectionFetchers.kv(),
         sectionFetchers.concurrency(),
+        sectionFetchers.reload(),
       ]);
     }
     stampUpdated();
@@ -608,24 +612,32 @@ async function toggleHook(id, disable) {
   refresh();
 }
 
-function hookToggleButton(id, disabled) {
-  const btn = el("button", {
-    class: "toggle-btn" + (disabled ? "" : " danger"),
+// ONE control is both the state display and the flip: a slider switch —
+// on/green = enabled, off/grey = disabled (replacing the old status pill +
+// Enable/Disable button pair). The switch shows SERVER state only: the
+// change handler reverts the click's visual flip and lets toggleHook()'s
+// refresh move it, so a cancelled confirm or a failed POST leaves the
+// switch where the server is.
+function hookSwitch(id, disabled) {
+  const input = el("input", {
+    type: "checkbox",
+    role: "switch",
+    "aria-label": `Enable hook ${id}`,
+  });
+  input.checked = !disabled;
+  input.addEventListener("change", () => {
+    const disable = !input.checked; // the flip the click asked for
+    input.checked = disable;        // back to the pre-click (server) state
+    toggleHook(id, disable);
+  });
+  const sw = el("label", {
+    class: "switch",
     title: disabled
       ? `Re-enable ${id}: accept deliveries and scheduled runs again`
       : `Disable ${id}: reject deliveries (503) and skip scheduled runs`,
-  }, disabled ? "Enable" : "Disable");
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toggleHook(id, !disabled);
-  });
-  return btn;
-}
-
-function hookStatusBadge(disabled) {
-  return disabled
-    ? el("span", { class: "badge bad" }, "DISABLED")
-    : el("span", { class: "badge ok" }, "enabled");
+  }, input, el("span", { class: "switch-slider" }));
+  sw.addEventListener("click", (e) => e.stopPropagation());
+  return sw;
 }
 
 function renderHooks(hooks) {
@@ -641,7 +653,7 @@ function renderHooks(hooks) {
             el("code", null, h.id))),
         el("td", null, h.description || ""),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
-        el("td", { class: "row-actions" }, hookStatusBadge(h.disabled), hookToggleButton(h.id, h.disabled)),
+        el("td", { class: "row-actions" }, hookSwitch(h.id, h.disabled)),
         el("td", null, ...triggerPath(h.id)),
       )
     );
@@ -1007,8 +1019,7 @@ function renderAppMissing(id) {
   missing.textContent = "No such hook.";
   missing.hidden = false;
   document.getElementById("app-body").hidden = true;
-  document.getElementById("app-disabled-badge").hidden = true;
-  document.getElementById("app-toggle").hidden = true;
+  document.getElementById("app-switch").hidden = true;
 }
 
 // The app page for a namespace whose hook is gone (orphaned state): the
@@ -1049,13 +1060,11 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-title").textContent = info.id;
   document.getElementById("app-desc").textContent = info.description || "";
 
-  // Operator kill switch for this hook: badge + toggle next to the title.
-  document.getElementById("app-disabled-badge").hidden = !detail.disabled;
-  const toggle = document.getElementById("app-toggle");
-  toggle.hidden = false;
-  toggle.textContent = detail.disabled ? "Enable hook" : "Disable hook";
-  toggle.classList.toggle("danger", !detail.disabled);
-  toggle.onclick = () => toggleHook(info.id, !detail.disabled);
+  // Operator kill switch for this hook: the same single switch as the
+  // overview's Status column, next to the title.
+  const switchSlot = document.getElementById("app-switch");
+  switchSlot.hidden = false;
+  switchSlot.replaceChildren(hookSwitch(info.id, detail.disabled));
 
   fillDl(document.getElementById("app-info"), [
     ["Trigger path", triggerPath(info.id)],
@@ -1565,3 +1574,228 @@ setInterval(() => {
   if (window.whrStreamLive === true) return;
   refresh();
 }, FALLBACK_POLL_MS);
+
+// --- Hooks repo reload panel -------------------------------------------------
+//
+// Which commit of the hooks repo is LIVE, what the CI reload gate is
+// holding, and the operator's manual controls: "Check & reload now" (one
+// on-demand reconcile pass — POST /reload/check; in legacy mode the plain
+// pull+reload), a recent-commits picker with per-commit CI + src-layout
+// badges and a "Make live" action, and a paste-a-ref switch. Switching is
+// SERVER-gated: POST /reload/switch without override answers 409 naming
+// every reason when the commit is not CI-green (unknown counts as not
+// green) or its tree lacks src/hooks; only after the operator confirms the
+// quoted reasons does the retry carry override:true. The section refreshes
+// by push (the "reload" section signal — every reload.*/git.*/push event);
+// the commits list itself is fetched only while its <details> is open,
+// because listing fetches origin and probes CI.
+
+let reloadMode = null; // "gated" | "legacy" | null (panel hidden)
+let reloadSwitchInFlight = false;
+
+function reloadCIBadge(state) {
+  const s = state || "unknown";
+  let cls = "badge";
+  if (s === "success") cls += " ok";
+  else if (s === "failure" || s === "error") cls += " bad";
+  else if (s === "pending") cls += " warn";
+  const titles = {
+    success: "the gating CI context reports green for this commit",
+    failure: "the gating CI context reports FAILURE for this commit",
+    error: "the gating CI context reports ERROR for this commit",
+    pending: "the gating CI context is still running for this commit",
+    none: "CI has not reported the gating context for this commit yet",
+    unknown: "the CI state could not be read (no token / API unreachable) — treated as not green, never guessed",
+  };
+  return el("span", { class: cls, title: titles[s] || "" }, "CI: " + s);
+}
+
+function reloadSrcBadge(has) {
+  return has
+    ? el("span", { class: "badge ok", title: "the commit's tree contains src/hooks — the layout this fleet loads" }, "src ok")
+    : el("span", { class: "badge bad", title: "the commit's tree has NO src/hooks directory — reloading from it would load zero hooks" }, "no src/hooks");
+}
+
+function renderReloadStatus(data) {
+  const section = document.getElementById("reload-section");
+  const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
+  section.hidden = !usable;
+  reloadMode = usable ? data.mode : null;
+  if (!usable) return;
+  // Per-commit switching needs the gate; legacy mode keeps the live view
+  // and the Check & reload (pull to tip) but hides the picker.
+  document.getElementById("reload-picker").hidden = data.mode !== "gated";
+
+  const box = document.getElementById("reload-live");
+  box.innerHTML = "";
+  const live = data.live || {};
+  box.appendChild(el("div", { class: "reload-live-row" },
+    el("span", { class: "reload-label" }, "Live commit"),
+    el("code", { title: live.sha || "" }, live.short || "(unknown)"),
+    data.hooks_branch ? el("span", { class: "reload-branch" }, "on " + data.hooks_branch) : null,
+    reloadCIBadge(live.ci_state),
+    reloadSrcBadge(!!live.has_src),
+    data.mode === "legacy"
+      ? el("span", { class: "badge warn", title: "The CI reload gate is disabled (WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT is empty): any signed push reloads, and per-commit switching is unavailable." }, "gate disabled (legacy)")
+      : null,
+    data.verified === false
+      ? el("span", { class: "badge warn", title: "No recorded " + (data.gate_context || "CI") + " green vouches for the serving tree yet; it verifies on its next green (or an operator switch)." }, "unverified")
+      : null,
+  ));
+  if (live.subject) {
+    box.appendChild(el("div", { class: "reload-subject" },
+      live.subject + (live.date ? " · " + fmtTime(live.date) : "")));
+  }
+  if (data.pending) {
+    const p = data.pending;
+    box.appendChild(el("div", { class: "reload-pending" },
+      el("span", { class: "reload-label" }, "Held"),
+      el("code", { title: p.sha || "" }, p.short || ""),
+      p.subject ? el("span", { class: "reload-subject-inline" }, p.subject) : null,
+      el("span", { class: "wait-note" }, p.why || "awaiting CI"),
+      reloadCIBadge(p.ci_state),
+      reloadSrcBadge(!!p.has_src),
+    ));
+  }
+}
+
+async function refreshReloadCommits() {
+  const note = document.getElementById("reload-commits-note");
+  try {
+    renderReloadCommits(await fetchJSON("/reload/commits"));
+  } catch (err) {
+    note.textContent = "Failed to list commits: " + err.message;
+    note.hidden = false;
+  }
+}
+
+function renderReloadCommits(data) {
+  const commits = (data && data.commits) || [];
+  const tbody = document.querySelector("#reload-commits-table tbody");
+  tbody.innerHTML = "";
+  const note = document.getElementById("reload-commits-note");
+  note.textContent = "No commits found.";
+  note.hidden = commits.length > 0;
+  for (const c of commits) {
+    let action;
+    if (c.is_live) {
+      action = el("span", { class: "badge ok" }, "live");
+    } else {
+      action = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
+      action.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
+    }
+    tbody.appendChild(el("tr", { class: c.is_live ? "reload-live-commit" : "" },
+      el("td", null, el("code", { title: c.sha }, c.short)),
+      el("td", { class: "reload-commit-subject" }, c.subject || ""),
+      el("td", null, fmtTime(c.date)),
+      el("td", null, reloadCIBadge(c.ci_state)),
+      el("td", null, reloadSrcBadge(!!c.has_src)),
+      el("td", { class: "row-actions" }, action),
+    ));
+  }
+}
+
+// The section fetcher (registered in sectionFetchers as "reload"): the
+// cheap status view always; the origin-fetching commits list only while
+// the picker is open.
+async function refreshReloadPanel() {
+  renderReloadStatus(await fetchJSON("/reload/status"));
+  if (reloadMode === "gated" && document.getElementById("reload-picker").open) {
+    await refreshReloadCommits();
+  }
+}
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: body == null ? undefined : JSON.stringify(body),
+    // A switch fetches origin, probes CI, and reloads hooks — allow it
+    // time, but never hang the panel forever.
+    signal: AbortSignal.timeout(60000),
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* non-JSON error body: fall back to the status code */
+  }
+  return { res, data };
+}
+
+async function reloadCheckNow() {
+  const btn = document.getElementById("reload-check");
+  const resultEl = document.getElementById("reload-check-result");
+  btn.disabled = true;
+  resultEl.textContent = "checking…";
+  try {
+    const { res, data } = await postJSON("/reload/check", null);
+    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    // Gated mode reports the reconcile outcome; legacy reports status.
+    resultEl.textContent = "outcome: " + ((data && (data.outcome || data.status)) || "done");
+  } catch (err) {
+    resultEl.textContent = "check failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+    void refreshReloadPanel();
+  }
+}
+
+// The informed-override flow. The server stays authoritative: the first
+// attempt NEVER carries override, and only its 409 (with the server's own
+// reasons) leads to a confirmation that quotes them verbatim; the retry —
+// and only the retry — carries override:true.
+async function reloadSwitchTo(ref, label) {
+  if (reloadSwitchInFlight) return;
+  const name = label || ref;
+  if (!confirm(`Make ${name} the live hooks commit?\n\nThe serving tree switches to it and hooks reload.`)) return;
+  reloadSwitchInFlight = true;
+  const resultEl = document.getElementById("reload-check-result");
+  try {
+    let { res, data } = await postJSON("/reload/switch", { ref, override: false });
+    if (res.status === 409 && data && data.requires_override) {
+      const reasons = (data.reasons || []).map((r) => "  - " + r).join("\n");
+      const msg =
+        `Switching to ${name} is BLOCKED by the reload safety gate:\n\n${reasons}\n\n` +
+        "Proceed anyway? This OVERRIDES the CI / src-layout safety gate and reloads the hooks " +
+        "tree from that commit. The override is recorded on the activity feed.";
+      if (!confirm(msg)) {
+        resultEl.textContent = "switch cancelled";
+        return;
+      }
+      ({ res, data } = await postJSON("/reload/switch", { ref, override: true }));
+    }
+    if (!res.ok) {
+      const errMsg = (data && data.error) || `HTTP ${res.status}`;
+      alert(`Switch to ${name} failed: ${errMsg}`);
+      resultEl.textContent = "switch failed";
+      return;
+    }
+    resultEl.textContent = data && data.overridden
+      ? `switched to ${name} (gate overridden)`
+      : `switched to ${name}`;
+  } catch (err) {
+    alert(`Switch to ${name} failed: ${err.message}`);
+  } finally {
+    reloadSwitchInFlight = false;
+    void refreshReloadPanel();
+  }
+}
+
+document.getElementById("reload-check").addEventListener("click", () => void reloadCheckNow());
+document.getElementById("reload-ref-switch").addEventListener("click", () => {
+  const ref = (document.getElementById("reload-ref-input").value || "").trim();
+  if (!ref) {
+    alert("Enter a commit sha or branch/tag name first.");
+    return;
+  }
+  void reloadSwitchTo(ref, ref);
+});
+document.getElementById("reload-ref-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("reload-ref-switch").click();
+});
+// The commits list is fetched lazily: opening the picker is the operator
+// asking for it (it fetches origin and probes CI per commit).
+document.getElementById("reload-picker").addEventListener("toggle", () => {
+  if (document.getElementById("reload-picker").open) void refreshReloadCommits();
+});
