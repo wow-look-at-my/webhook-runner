@@ -11,9 +11,15 @@
 // CI" impossible: the last green commit keeps serving until GitHub itself
 // vouches for the next one.
 //
-// The gate is strictly EVENT-DRIVEN (operator law): no polling, no
-// timers, no backoff. A missed green status converges on the repo's next
-// delivery, a GitHub redelivery, or an admin force.
+// The tree moves along three paths: (1) the `status` event — the primary,
+// low-latency switch authority; (2) the hourly reconciliation poll
+// (Reconcile, driven by a Poller) — the fallback that keeps a missed
+// status webhook from freezing deploys indefinitely: it fetches the
+// remote tip and, when it differs from what is serving, reads the gating
+// context's commit status from the GitHub API, switching ONLY on an
+// affirmative green through the exact same ordering-checked path the
+// event uses (anything else — red, pending, unreadable — holds, loudly);
+// (3) admin /reload (Force) — the operator's deliberate bypass.
 package reloadgate
 
 import (
@@ -58,6 +64,14 @@ type GitRepo interface {
 	// FetchSHA fetches one commit by sha (GitHub serves reachable-sha
 	// fetches) — the startup last-good restore path.
 	FetchSHA(sha string, depth int) error
+	// TreeHasDir reports whether the commit's TREE contains the given path
+	// (git plumbing, never a checkout) — the manual switch's src-layout
+	// probe.
+	TreeHasDir(sha, path string) bool
+	// ResolveRef resolves a full/abbreviated sha or branch/tag name to a
+	// full commit sha, fetching from origin when needed — the manual
+	// switch's ref input.
+	ResolveRef(ref string) (string, error)
 }
 
 // Config wires a Gate.
@@ -73,7 +87,11 @@ type Config struct {
 	StatePath string
 	// Apply reloads hooks from the (already reset) working tree — the
 	// serve loop's loadAndApply closure.
-	Apply     func()
+	Apply func()
+	// Status reads the gating context's current commit-status state for a
+	// sha (the reconciliation poll's authority — see StatusFunc). Nil
+	// means the poll cannot determine status and fails closed, loudly.
+	Status    StatusFunc
 	Events    *events.Recorder
 	Attention *attention.Aggregator
 	Logger    *slog.Logger
@@ -86,6 +104,7 @@ type Gate struct {
 	context   string
 	statePath string
 	apply     func()
+	status    StatusFunc
 	events    *events.Recorder
 	attention *attention.Aggregator
 	log       *slog.Logger
@@ -95,6 +114,10 @@ type Gate struct {
 	verified     bool   // a green gating status (or operator force) vouched for servingSHA
 	pendingSHA   string // a newer commit fetched but not yet green ("" = none)
 	pendingState string // "pending", "failure", or "error"
+	// lastPollBlind dedupes the poll's cannot-determine reporting: the
+	// event fires once per distinct problem, not once per hourly tick
+	// (the attention entry is the persistent surface). In-memory only.
+	lastPollBlind string
 }
 
 // gateState is the persisted JSON shape at StatePath.
@@ -129,6 +152,7 @@ func New(cfg Config) (*Gate, error) {
 		context:   cfg.Context,
 		statePath: cfg.StatePath,
 		apply:     cfg.Apply,
+		status:    cfg.Status,
 		events:    cfg.Events,
 		attention: cfg.Attention,
 		log:       cfg.Logger,
@@ -306,21 +330,39 @@ func (g *Gate) handlePush(body []byte) (string, error) {
 		if g.pendingSHA != "" {
 			g.pendingSHA, g.pendingState = "", ""
 			g.persistLocked()
-			g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadHeld)
 		}
+		g.resolveHoldEntriesLocked()
 		return "up-to-date", nil
 	}
-	g.pendingSHA, g.pendingState = tip, "pending"
+	g.recordPendingLocked(tip)
+	return "held", nil
+}
+
+// recordPendingLocked records sha as the pending commit awaiting the
+// gating context — loudly (a reload.held event plus the held
+// needs-attention entry). Shared by the push handler and the
+// reconciliation poll; caller holds g.mu.
+func (g *Gate) recordPendingLocked(sha string) {
+	g.pendingSHA, g.pendingState = sha, "pending"
 	g.persistLocked()
-	msg := fmt.Sprintf("hooks repo %s awaiting %s; serving %s", short(tip), g.context, short(g.servingSHA))
-	g.log.Info("hooks repo reload held", "pending", tip, "serving", g.servingSHA, "context", g.context)
+	msg := fmt.Sprintf("hooks repo %s awaiting %s; serving %s", short(sha), g.context, short(g.servingSHA))
+	g.log.Info("hooks repo reload held", "pending", sha, "serving", g.servingSHA, "context", g.context)
 	g.events.Record("reload.held", msg, nil)
 	g.attention.Report(attention.Entry{
 		Source:  attention.SourceReload,
 		Key:     attention.KeyReloadHeld,
 		Message: msg,
 	})
-	return "held", nil
+}
+
+// resolveHoldEntriesLocked clears the held needs-attention entry AND the
+// poll's cannot-determine entry: once nothing is pending (switched past
+// it, forced, or the tip came back to serving) there is nothing left the
+// poll could be blind about. Caller holds g.mu.
+func (g *Gate) resolveHoldEntriesLocked() {
+	g.lastPollBlind = ""
+	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadHeld)
+	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadPoll)
 }
 
 // handleStatus is the switch authority: a success for the gating context,
@@ -473,7 +515,7 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 		})
 	} else {
 		g.pendingSHA, g.pendingState = "", ""
-		g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadHeld)
+		g.resolveHoldEntriesLocked()
 	}
 	g.persistLocked()
 	msg := fmt.Sprintf("hooks repo switched to %s (%s green)", short(sha), g.context)
@@ -497,18 +539,37 @@ func (g *Gate) Force() error {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return fmt.Errorf("fetch hooks repo: %w", err)
 	}
-	if err := g.repo.ResetTo(tip); err != nil {
-		g.events.Record("reload.failed", "hooks repo reset to "+short(tip)+" failed: "+err.Error(), nil)
-		return fmt.Errorf("reset hooks repo to %s: %w", tip, err)
+	if err := g.forceApplyLocked(tip, true, "reload.forced",
+		fmt.Sprintf("operator forced switch to %s, bypassing ci gate", short(tip))); err != nil {
+		return err
 	}
-	g.servingSHA, g.verified = tip, true
-	g.pendingSHA, g.pendingState = "", ""
-	g.persistLocked()
-	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadHeld)
-	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadUnverified)
-	msg := fmt.Sprintf("operator forced switch to %s, bypassing ci gate", short(tip))
 	g.log.Warn("hooks repo force-switched, ci gate bypassed", "sha", tip)
-	g.events.Record("reload.forced", msg, nil)
+	return nil
+}
+
+// forceApplyLocked is the ONE Force-style apply path — reset the tree to
+// sha, record it serving + verified (the operator, or a green the operator
+// picked, vouched), persist, record the event, and reload. Force and both
+// ManualSwitch outcomes go through it; unlike trySwitch it applies NO
+// staleness ordering, which is exactly what makes operator rollback to an
+// older commit possible. clearPending drops the pending record and its
+// hold entries (switching to the pending commit itself always clears it —
+// nothing is awaited anymore). Caller holds g.mu.
+func (g *Gate) forceApplyLocked(sha string, clearPending bool, eventKind, eventMsg string) error {
+	if err := g.repo.ResetTo(sha); err != nil {
+		g.events.Record("reload.failed", "hooks repo reset to "+short(sha)+" failed: "+err.Error(), nil)
+		return fmt.Errorf("reset hooks repo to %s: %w", sha, err)
+	}
+	g.servingSHA, g.verified = sha, true
+	if clearPending || g.pendingSHA == sha {
+		g.pendingSHA, g.pendingState = "", ""
+	}
+	g.persistLocked()
+	if g.pendingSHA == "" {
+		g.resolveHoldEntriesLocked()
+	}
+	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadUnverified)
+	g.events.Record(eventKind, eventMsg, nil)
 	if g.apply != nil {
 		g.apply()
 	}

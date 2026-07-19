@@ -6,8 +6,8 @@
 // survive across runs (and across server restarts).
 //
 // The store is namespaced: every hook gets its own namespace (keyed by hook
-// ID), persisted to <Dir>/<namespace>.json. It is bounded (value size, keys
-// per namespace, namespace count) and mutex-guarded — the same in-memory
+// ID), persisted to <Dir>/<namespace>.json. It is bounded per item (value
+// size, namespace count) and mutex-guarded — the same in-memory
 // discipline as internal/runs and internal/events — but, unlike those, it
 // writes through to disk so state is durable.
 package kv
@@ -32,7 +32,6 @@ import (
 type Config struct {
 	Dir           string        // directory holding one <namespace>.json per namespace
 	MaxValueBytes int           // per-value ceiling (default 64 KiB)
-	MaxKeysPerNS  int           // keys allowed in one namespace (default 5000)
 	MaxNamespaces int           // distinct namespaces allowed (default 256)
 	SweepInterval time.Duration // how often the TTL sweeper runs (default 1m)
 }
@@ -66,7 +65,6 @@ type Entry struct {
 // Typed errors let the HTTP layer map failures onto status codes.
 var (
 	ErrValueTooLarge = errors.New("kv: value exceeds max size")
-	ErrTooManyKeys   = errors.New("kv: namespace key limit reached")
 	ErrTooManyNS     = errors.New("kv: namespace limit reached")
 	ErrNotInteger    = errors.New("kv: value is not a base-10 int64")
 	ErrBadNamespace  = errors.New("kv: invalid namespace")
@@ -160,9 +158,6 @@ func New(cfg Config, secret []byte, log *slog.Logger) (*Store, error) {
 	}
 	if cfg.MaxValueBytes <= 0 {
 		cfg.MaxValueBytes = 64 * 1024
-	}
-	if cfg.MaxKeysPerNS <= 0 {
-		cfg.MaxKeysPerNS = 5000
 	}
 	if cfg.MaxNamespaces <= 0 {
 		cfg.MaxNamespaces = 256
@@ -259,12 +254,6 @@ func (s *Store) Set(ns, key string, value []byte, ttl time.Duration) error {
 		s.ns[ns] = m
 	}
 	prev, keyExisted := m[key]
-	if !keyExisted && len(m) >= s.cfg.MaxKeysPerNS {
-		if !nsExisted {
-			delete(s.ns, ns)
-		}
-		return ErrTooManyKeys
-	}
 
 	e := entry{Value: append([]byte(nil), value...)}
 	if ttl > 0 {
@@ -406,12 +395,6 @@ func (s *Store) Incr(ns, key string, delta int64, ttl time.Duration) (int64, err
 	} else {
 		// Missing or expired: start from zero, and any stale expiry is gone.
 		keepExpiry = nil
-		if !keyExisted && len(m) >= s.cfg.MaxKeysPerNS {
-			if !nsExisted {
-				delete(s.ns, ns)
-			}
-			return 0, ErrTooManyKeys
-		}
 	}
 
 	newVal := base + delta

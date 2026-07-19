@@ -44,12 +44,12 @@ Configuration via environment:
   WEBHOOK_RUNNER_HOOKS_BRANCH         branch to track (default: repo default)
   WEBHOOK_RUNNER_HOOKS_REPO_SECRET    HMAC-SHA256 secret for POST /_reload
   WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT   commit-status context gating reloads (unset: all-builds; empty: gate disabled)
+  WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL reload-gate reconciliation poll cadence, Go duration (default 1h; 0 disables)
   WEBHOOK_RUNNER_ADDR                 hook port (default :9000)
   WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
   WEBHOOK_RUNNER_STATE_SOCKET         KV API Unix socket path (default: $TMPDIR/whr-state.sock)
   WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
-  WEBHOOK_RUNNER_KV_MAX_KEYS          max keys per hook KV namespace (default 5000)
   WEBHOOK_RUNNER_RUN_RETENTION        persisted run-history retention, Go duration (default 48h)
   WEBHOOK_RUNNER_RUN_RETENTION_MAX    persisted runs kept per hook, disk safety net (default 200000)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
@@ -59,7 +59,9 @@ Configuration via environment:
 		// An explicitly passed --hooks-gate-context wins over the env var;
 		// the distinction matters because an EMPTY value disables the gate.
 		serveOptsRoot.gateContextSet = cmd.Flags().Changed("hooks-gate-context")
-		applyServeEnv(serveOptsRoot)
+		if err := applyServeEnv(serveOptsRoot); err != nil {
+			return err
+		}
 		if len(args) == 1 {
 			serveOptsRoot.hooksDir = args[0]
 		}

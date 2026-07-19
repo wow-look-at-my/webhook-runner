@@ -42,6 +42,14 @@ const (
 	// gating status (fresh install, or the last-good commit vanished).
 	// Reported/resolved by internal/reloadgate ("reload" source, no hook).
 	KeyReloadUnverified = "unverified"
+	// KeyReloadPoll: the reload gate's reconciliation poll found a newer
+	// hooks-repo tip but could NOT read its gating status (no GitHub token
+	// configured, API error, underivable owner/repo) — the tree stays put,
+	// blind. Reported by the poll pass; resolved when a later pass
+	// determines the status, when the pending hold clears (switch, force,
+	// or up-to-date), i.e. everywhere KeyReloadHeld resolves.
+	// ("reload" source, no hook.)
+	KeyReloadPoll = "poll"
 )
 
 // Recognized activity-event kinds the standard rules subscribe to.

@@ -438,7 +438,7 @@ func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 	switch {
 	case errors.Is(err, kv.ErrValueTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
-	case errors.Is(err, kv.ErrTooManyKeys), errors.Is(err, kv.ErrTooManyNS):
+	case errors.Is(err, kv.ErrTooManyNS):
 		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, kv.ErrNotInteger):
 		writeError(w, http.StatusConflict, err.Error())

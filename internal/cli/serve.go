@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -24,105 +23,13 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
+	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
 )
-
-type serveOptions struct {
-	addr            string
-	adminAddr       string
-	hooksDir        string
-	dataDir         string
-	logFormat       string
-	ghToken         string
-	hooksRepo       string
-	hooksBranch     string
-	hooksRepoSecret string
-	hookBaseURL     string
-	stateSocket     string
-	stateSecret     string
-	kvMaxKeys       int
-	runRetention    time.Duration
-	runRetentionMax int
-
-	// gateContext is the commit-status context that gates hooks-repo
-	// reloads ("" = gate disabled, legacy pull-on-any-signed-POST).
-	// gateContextSet marks an explicit flag value so applyServeEnv can
-	// tell "--hooks-gate-context=" (disable) from "not passed" (env,
-	// then the all-builds default).
-	gateContext    string
-	gateContextSet bool
-}
-
-func applyServeEnv(o *serveOptions) {
-	if o.addr == "" {
-		o.addr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADDR"), ":9000")
-	}
-	if o.adminAddr == "" {
-		o.adminAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADMIN_ADDR"), ":9001")
-	}
-	if o.hooksDir == "" {
-		o.hooksDir = os.Getenv("WEBHOOK_RUNNER_HOOKS_DIR")
-	}
-	if o.dataDir == "" {
-		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
-	}
-	if o.stateSocket == "" {
-		o.stateSocket = os.Getenv("WEBHOOK_RUNNER_STATE_SOCKET")
-	}
-	if o.stateSecret == "" {
-		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
-	}
-	if o.kvMaxKeys <= 0 {
-		// Positive integers only; unset or unparseable falls back to the
-		// store's built-in default.
-		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_KV_MAX_KEYS")); err == nil && n > 0 {
-			o.kvMaxKeys = n
-		}
-	}
-	if o.runRetention <= 0 {
-		// Go duration (e.g. "72h"); unset or unparseable falls back to the
-		// run store's built-in 48h default.
-		if d, err := time.ParseDuration(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION")); err == nil && d > 0 {
-			o.runRetention = d
-		}
-	}
-	if o.runRetentionMax <= 0 {
-		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX")); err == nil && n > 0 {
-			o.runRetentionMax = n
-		}
-	}
-	if o.logFormat == "" {
-		o.logFormat = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_LOG_FORMAT"), "text")
-	}
-	o.ghToken = os.Getenv("WEBHOOK_RUNNER_GITHUB_TOKEN")
-	if o.hooksRepo == "" {
-		o.hooksRepo = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO")
-	}
-	if o.hooksBranch == "" {
-		o.hooksBranch = os.Getenv("WEBHOOK_RUNNER_HOOKS_BRANCH")
-	}
-	if o.hooksRepoSecret == "" {
-		o.hooksRepoSecret = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO_SECRET")
-	}
-	if o.hookBaseURL == "" {
-		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
-	}
-	if !o.gateContextSet {
-		// LookupEnv, not Getenv: set-to-EMPTY deliberately disables the
-		// reload CI gate (legacy behavior), while unset means the default
-		// gating context. An explicit --hooks-gate-context flag wins.
-		if v, ok := os.LookupEnv("WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT"); ok {
-			o.gateContext = v
-		} else if o.gateContext == "" {
-			o.gateContext = "all-builds"
-		}
-		o.gateContextSet = true
-	}
-}
 
 func runServe(ctx context.Context, o *serveOptions) error {
 	logger := newLogger(o.logFormat)
@@ -194,8 +101,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// survives restarts; hooks opt in with "state": true. The secret signs
 	// per-hook namespace tokens — supply WEBHOOK_RUNNER_STATE_SECRET to share
 	// one across replicas, else it's generated and persisted.
-	// WEBHOOK_RUNNER_KV_MAX_KEYS overrides the per-namespace key cap (zero
-	// here means kv.New applies its built-in default).
 	dataDir := o.dataDir
 	if dataDir == "" {
 		dataDir = filepath.Dir(o.hooksDir)
@@ -208,7 +113,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 		stateSecret = s
 	}
-	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv"), MaxKeysPerNS: o.kvMaxKeys}, stateSecret, logger)
+	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv")}, stateSecret, logger)
 	if err != nil {
 		return fmt.Errorf("state store: %w", err)
 	}
@@ -325,7 +230,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// admin/webhook reload path go through this one function.
 	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, ovStore, agg, secrets, logger, rec)
 
-	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, rec, agg, logger)
+	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, gh, rec, agg, logger)
 	if err != nil {
 		return err
 	}
@@ -348,16 +253,26 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,
 		HooksRepo:    o.hooksRepo,
+		HooksBranch:  o.hooksBranch,
 		HookBaseURL:  o.hookBaseURL,
 		KV:           kvStore,
 		RunStore:     runStore,
 		Overrides:    ovStore,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	}
+	if repo != nil {
+		// The admin reload panel's read surface over the clone (status /
+		// recent-commits views). Assigned only when non-nil so the
+		// interface field stays truly nil for local-directory serving.
+		srvOpts.ReloadRepo = repo
+	}
 	if gate != nil {
-		// Assigned only when non-nil so the interface field stays truly
+		// Assigned only when non-nil so the interface fields stay truly
 		// nil (legacy flow) rather than wrapping a nil pointer.
 		srvOpts.Gate = gate
+		// The panel's manual-control surface: gate snapshot, on-demand
+		// reconcile, and the informed-override commit switch.
+		srvOpts.ReloadControl = gate
 	}
 	srv := server.New(srvOpts)
 
@@ -374,6 +289,30 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// until the watcher's initial scan populates its schedule set, then fires
 	// due hooks each tick.
 	go sched.Run(watchCtx)
+
+	// Reload-gate reconciliation poll — the fallback that keeps a missed
+	// status webhook from freezing deploys: one immediate pass at startup
+	// (catching a green missed while down), then one per interval. Each
+	// pass fetches the remote tip and, only when it differs from what is
+	// serving, reads the gating context's commit status — switching solely
+	// on an affirmative green through the gate's normal ordering-checked
+	// path, holding loudly on anything else. Gated mode only: the legacy
+	// (gate-disabled) flow keeps its exact reload-on-signed-POST semantics
+	// with no timer.
+	if o.hooksRepo != "" && o.reloadPollInterval > 0 {
+		if gate == nil {
+			logger.Info("reload poll not started: CI gate is disabled (legacy any-signed-POST reload mode)")
+		} else {
+			poller := reloadgate.NewPoller(reloadgate.PollerOptions{
+				Interval: o.reloadPollInterval,
+				Fire:     func() { gate.Reconcile(context.Background()) },
+			})
+			logger.Info("reload poll started", "interval", o.reloadPollInterval)
+			go poller.Run(watchCtx)
+		}
+	} else if gate != nil {
+		logger.Info("reload poll disabled (WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL=0); the gate is event-driven only")
+	}
 
 	hookSrv := &http.Server{
 		Addr:              o.addr,
@@ -590,10 +529,14 @@ func announceOrphanedOverrides(loaded map[string]*hooks.Hook, cfg *concurrency.C
 		fields map[string]string
 	}
 	current := map[string]orphan{}
-	for _, id := range ov.DisabledHooks() {
+	for id, enabled := range ov.HookOverrides() {
 		if _, ok := loaded[id]; !ok {
+			kind := "disable"
+			if enabled {
+				kind = "enable"
+			}
 			current["hook:"+id] = orphan{
-				msg:    fmt.Sprintf("disable override for hook %q is orphaned: the hook no longer exists (override kept; it re-applies if the hook returns)", id),
+				msg:    fmt.Sprintf("%s override for hook %q is orphaned: the hook no longer exists (override kept; it re-applies if the hook returns)", kind, id),
 				fields: map[string]string{"hook": id},
 			}
 		}
@@ -634,9 +577,11 @@ func buildScheduleFire(registry *hooks.Registry, tracker *runs.Tracker, ov *over
 		if !ok {
 			return // schedule removed between the tick and now
 		}
-		if ov.HookDisabled(hookID) {
+		if ov.HookDisabled(hookID, h.EnabledByDefault()) {
 			// The kill switch gates dispatch everywhere: HTTP deliveries
 			// 503 and scheduled runs are skipped — loudly, on the feed.
+			// Effective state: explicit operator override first, else the
+			// hook.json `enable` default (false = born disabled).
 			logger.Info("scheduled run skipped; hook disabled by operator", "hook", hookID)
 			rec.Record("schedule.skipped",
 				fmt.Sprintf("%s: hook is disabled by operator; skipping scheduled run", hookID),
@@ -693,15 +638,6 @@ func scheduleHeaders(hookID string) http.Header {
 		"Content-Type":              []string{"application/json"},
 		"X-Webhook-Runner-Schedule": []string{hookID},
 	}
-}
-
-func firstNonEmpty(parts ...string) string {
-	for _, p := range parts {
-		if p != "" {
-			return p
-		}
-	}
-	return ""
 }
 
 // copyExecutable copies the running binary to dst (0755) via temp+rename, so
