@@ -17,17 +17,22 @@ import (
 )
 
 // fakeRepo scripts the GitRepo surface: tip/commits describe what a fetch
-// would see, head is the working tree, known gates FetchSHA.
+// would see, head is the working tree, known gates FetchSHA. srcAt scripts
+// TreeHasDir (absent sha = no src marker); resolve scripts ResolveRef
+// (absent ref falls back to "any sha the fake knows about resolves to
+// itself").
 type fakeRepo struct {
 	head    string
 	tip     string
 	commits []string // newest first, as of the next fetch
 	known   map[string]bool
+	srcAt   map[string]bool
+	resolve map[string]string
 
 	headErr, fetchErr, recentErr, resetErr error
 
-	headCalls, fetchBranchCalls, recentCalls, resetCalls, fetchSHACalls int
-	resets                                                              []string
+	headCalls, fetchBranchCalls, recentCalls, resetCalls, fetchSHACalls, resolveCalls int
+	resets                                                                            []string
 }
 
 func (f *fakeRepo) Head() (string, error) {
@@ -67,6 +72,27 @@ func (f *fakeRepo) FetchSHA(sha string, depth int) error {
 		return fmt.Errorf("sha %s not on origin", sha)
 	}
 	return nil
+}
+
+func (f *fakeRepo) TreeHasDir(sha, path string) bool {
+	return f.srcAt[sha]
+}
+
+func (f *fakeRepo) ResolveRef(ref string) (string, error) {
+	f.resolveCalls++
+	if sha, ok := f.resolve[ref]; ok {
+		return sha, nil
+	}
+	// Any sha the fake knows about resolves to itself.
+	if f.known[ref] || ref == f.tip || ref == f.head {
+		return ref, nil
+	}
+	for _, c := range f.commits {
+		if c == ref {
+			return ref, nil
+		}
+	}
+	return "", fmt.Errorf("unknown ref %q", ref)
 }
 
 // gitOps is the total git-call count, for the "zero git ops" assertions.
