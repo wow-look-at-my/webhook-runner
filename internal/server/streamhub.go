@@ -200,10 +200,10 @@ func sectionsForEvent(kind string) []string {
 	switch {
 	case kind == "hooks.reloaded":
 		// A reload can change the hook roster, every content-hash image
-		// state, and the declared concurrency groups at once — and, via a
-		// changed hook.json `enable` default, the effective disabled states
-		// GET /attention filters on.
-		out = append(out, "hooks", "images", "concurrency", "attention")
+		// state, the declared concurrency groups, and the reload panel's
+		// live-commit view at once — and, via a changed hook.json `enable`
+		// default, the effective disabled states GET /attention filters on.
+		out = append(out, "hooks", "images", "concurrency", "reload", "attention")
 	case kind == "hook.disabled", kind == "hook.enabled":
 		// A kill-switch flip changes the roster's disabled flags AND which
 		// hook-scoped attention entries the read-time filter hides.
@@ -214,6 +214,10 @@ func sectionsForEvent(kind string) []string {
 		out = append(out, "images")
 	case strings.HasPrefix(kind, "concurrency."):
 		out = append(out, "concurrency")
+	case strings.HasPrefix(kind, "reload."), strings.HasPrefix(kind, "git."), kind == "github.push":
+		// Every reload-gate verdict, git pull, and hooks-repo push moves
+		// what the reload panel shows (live/pending commit, hold state).
+		out = append(out, "reload")
 	}
 	return out
 }
