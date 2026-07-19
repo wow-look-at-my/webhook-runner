@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>webhook-runner</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="darkreader-lock">
 <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
@@ -15,7 +16,36 @@
   </div>
 </header>
 
-<main>
+<!-- The misconfiguration cry-for-help: whenever GET /attention reports any
+     ACTIVE problem (a dropped hook, an unresolvable ${NAME} reference, a
+     sops decrypt failure, the zero-hooks guard, the containerized-TMPDIR
+     hazard, a recognized event-derived problem) this banner pins itself
+     above BOTH views (it sits outside <main>, position: sticky) until the
+     underlying state resolves — entries self-clear, no acknowledgement.
+     "View" jumps to the Needs attention panel on the overview. -->
+<div id="attention-banner" class="attention-banner" hidden>
+  <span class="attention-banner-icon" aria-hidden="true">&#9888;</span>
+  <span id="attention-banner-text"></span>
+  <a href="#" id="attention-banner-link">view</a>
+</div>
+
+<!-- Two views share the page: the global overview, and a per-app drill-down
+     (an "app" is one hook, for now) selected by the #hook=<id> fragment.
+     dashboard.js toggles between them on hashchange — no server routing. -->
+<main id="overview-view">
+  <!-- Hidden while healthy (the banner above is the alert); every row is
+       one active problem with what's wrong, which hook (linked), where the
+       entry derives from, and how long it has been active. Rows disappear
+       on their own when the underlying state resolves (a fixing reload, a
+       hook's all-clear signal); only the TMPDIR hazard needs a restart. -->
+  <section id="attention-section" hidden>
+    <h2>Needs attention</h2>
+    <table id="attention-table">
+      <thead><tr><th>Problem</th><th>Hook</th><th>Source</th><th>Active for</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section id="setup-section" hidden>
     <h2>Hooks repo</h2>
     <p id="setup-repo"></p>
@@ -27,10 +57,47 @@
     </details>
   </section>
 
+  <!-- The hooks-repo reload panel (GET /reload/status): which commit is
+       live (with CI + src-layout badges), what the gate is holding, a
+       "Check & reload" that runs one reconcile pass on demand
+       (POST /reload/check), and — inside the collapsed picker — the
+       recent origin history with a per-commit "Make live" plus a
+       paste-a-ref switch (POST /reload/switch). Switching a commit that
+       fails the gate's checks needs an explicit informed override: the
+       server answers 409 with every reason, and only a confirmed retry
+       with override:true moves the tree (recorded loudly). Hidden when no
+       hooks repo is configured. -->
+  <section id="reload-section" hidden>
+    <h2>Hooks repo commit</h2>
+    <div id="reload-live"></div>
+    <div class="reload-actions">
+      <button id="reload-check" class="toggle-btn"
+        title="Fetch the tip and re-evaluate now: switches only if its CI is green (gated mode) or pulls to tip (legacy mode)">Check &amp; reload now</button>
+      <span id="reload-check-result" class="window-note"></span>
+    </div>
+    <details id="reload-picker">
+      <summary>Recent commits — pick one to make live</summary>
+      <p class="window-note">Fetched fresh from origin. "Make live" switches the serving tree to that commit; a commit that is not CI-green (unknown counts as not green) or lacks src/hooks asks for an explicit override first.</p>
+      <table id="reload-commits-table">
+        <thead><tr><th>Commit</th><th>Subject</th><th>Date</th><th>CI</th><th>src/</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="reload-commits-note" class="empty" hidden></p>
+      <div class="reload-ref-row">
+        <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
+        <button id="reload-ref-switch" class="toggle-btn" title="Resolve the ref (fetching from origin if needed) and make it the live hooks commit">Switch to ref</button>
+      </div>
+    </details>
+  </section>
+
   <section id="hooks-section">
     <h2>Hooks</h2>
+    <!-- Status is the operator kill switch, ONE control per row: a slider
+         switch (on/green = enabled; off/grey = disabled — deliveries
+         rejected 503, scheduled runs skipped) that flips the hook via
+         POST /hooks/{id}/disable|enable. -->
     <table id="hooks-table">
-      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>URL</th></tr></thead>
+      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Status</th><th>Endpoint</th></tr></thead>
       <tbody></tbody>
     </table>
     <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
@@ -45,13 +112,64 @@
     <p id="images-empty" class="empty" hidden>No hooks loaded.</p>
   </section>
 
-  <section id="runs-section">
-    <h2>Recent runs</h2>
+  <section id="concurrency-section">
+    <h2>Concurrency groups</h2>
+    <p class="window-note">Click a group to see which runs hold its slots and which are queued.</p>
+    <!-- Declared = the limit in concurrency.json; Effective = what gates
+         runs right now (an operator override wins and survives reloads
+         and restarts). Override… PUTs /concurrency/{group}/limit; Revert
+         DELETEs it. A 0 limit is rejected server-side — disable the
+         group's hooks instead. -->
+    <table id="concurrency-table">
+      <thead><tr><th>Group</th><th>Declared</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
+  </section>
+
+  <section id="timeline-section">
+    <!-- The primary runs view: a realtime swimlane timeline, one lane per
+         hook (stable hue per hook). A bar runs queued→finished with the
+         queue wait as a dim lead-in; hatching = a declared wait or a
+         blocked lock, emphasis = failure, hollow + dashed border =
+         cancelled (the kill tail marked as a terminal cut), diamond pips =
+         instant runs (overlapping pips cluster into ×N markers that split
+         apart on zoom). Wheel/drag pans,
+         ctrl/cmd+wheel zooms, and dragging into the past pages history via
+         /runs?before= until retention runs out. Clicking a bar opens the
+         run modal; clicking a lane label opens that hook's page. Rendered
+         by timeline.js (generated from ts/ — see dashboard.go). The old
+         runs table below stays reachable via the toggle. -->
+    <div class="section-head">
+      <h2>Runs</h2>
+      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
+    </div>
+    <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
+  <section id="runs-section" hidden>
+    <h2>Recent runs (list)</h2>
+    <!-- The first column is when the run was ACCEPTED (queued) — a run may
+         wait for a concurrency-group slot before it actually starts. -->
     <table id="runs-table">
-      <thead><tr><th>Started</th><th>Hook</th><th>Status</th><th>Exit</th><th>Run ID</th></tr></thead>
+      <thead><tr><th>Queued</th><th>Hook</th><th>Status</th><th>Exit</th><th>Run ID</th></tr></thead>
       <tbody></tbody>
     </table>
     <p id="runs-empty" class="empty" hidden>No runs yet.</p>
+  </section>
+
+  <section id="kv-section">
+    <h2>State (KV)</h2>
+    <!-- Each namespace links to that hook's app page, landed on its
+         State (KV) key/value browser (namespace == hook ID). Orphaned
+         namespaces (hook removed/renamed) link there too: the app page
+         still renders the browser for leftover state. -->
+    <p class="window-note">Click a namespace to browse its stored keys and values.</p>
+    <table id="kv-table">
+      <thead><tr><th>Namespace (hook)</th><th>Keys</th><th>Size</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="kv-empty" class="empty" hidden>No state stored.</p>
   </section>
 
   <section id="events-section">
@@ -64,26 +182,115 @@
   </section>
 </main>
 
+<main id="app-view" hidden>
+  <p class="crumbs"><a href="#">&larr; All hooks</a></p>
+
+  <section id="app-head">
+    <!-- The switch mirrors the overview's Status column: the operator
+         kill switch for this one hook (on = enabled, off = disabled).
+         dashboard.js renders the same hookSwitch control into the slot. -->
+    <div class="app-title-row">
+      <h2 id="app-title"></h2>
+      <span id="app-switch" hidden></span>
+    </div>
+    <p id="app-desc"></p>
+    <p id="app-missing" class="empty" hidden>No such hook.</p>
+  </section>
+
+  <div id="app-body">
+    <div class="app-cards">
+      <section id="app-info-section">
+        <h2>Info</h2>
+        <dl id="app-info"></dl>
+      </section>
+      <section id="app-stats-section">
+        <h2>Run stats</h2>
+        <!-- Run history is memory-only and bounded, so these are
+             recent-window figures — the note names the window size. -->
+        <p id="app-stats-window" class="window-note"></p>
+        <dl id="app-stats"></dl>
+      </section>
+      <section id="app-image-section">
+        <h2>Image</h2>
+        <dl id="app-image"></dl>
+      </section>
+    </div>
+
+    <section id="app-runs-section">
+      <h2>Recent runs</h2>
+      <!-- Waited = queue time (accepted → container launch, live for pending
+           runs); Duration = processing time only. Kept separate so a run
+           stuck behind a concurrency group never reads as a slow run. -->
+      <table id="app-runs-table">
+        <thead><tr><th>Queued</th><th>Status</th><th>Waited</th><th>Duration</th><th>Exit</th><th>Run ID</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="app-runs-empty" class="empty" hidden>No runs yet.</p>
+    </section>
+
+    <!-- Only shown for state:true hooks. Lists the hook's KV keys (from
+         GET /kv/{namespace}); clicking a key fetches and shows its stored
+         value. The admin port deliberately exposes values — it is
+         operator-only; the public hook port never serves them. -->
+    <section id="app-kv-section" hidden>
+      <h2>State (KV)</h2>
+      <p class="window-note">Click a key to view its stored value.</p>
+      <table id="app-kv-table">
+        <thead><tr><th>Key</th><th>Size</th><th>TTL remaining</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="app-kv-empty" class="empty" hidden>No state stored yet.</p>
+    </section>
+
+    <section id="app-events-section">
+      <h2>Activity</h2>
+      <table id="app-events-table">
+        <thead><tr><th>Time</th><th>Kind</th><th>What happened</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="app-events-empty" class="empty" hidden>Nothing yet.</p>
+    </section>
+  </div>
+</main>
+
 <!-- Run detail opens as a modal so output is visible immediately, without
      scrolling past the hooks/images/runs/activity tables to the page bottom. -->
 <dialog id="run-detail" aria-labelledby="run-detail-title">
   <div class="modal-body">
     <div class="modal-header">
-      <h2 id="run-detail-title">Run <code id="run-detail-id"></code></h2>
+      <!-- run-detail-name shows the run's friendly title when the server
+           sent one ("wow-look-at-my/go-toolchain#47"), else the word "Run";
+           the full id stays beside it in the small muted code chip. -->
+      <h2 id="run-detail-title"><span id="run-detail-name">Run</span> <code id="run-detail-id"></code></h2>
       <button id="run-detail-close" class="modal-close" aria-label="Close" title="Close (Esc)">&times;</button>
     </div>
     <dl id="run-detail-meta"></dl>
     <div class="output-head">
       <h3>Output</h3>
-      <div id="run-detail-view-toggle" class="view-toggle" hidden>
-        <button type="button" data-view="conversation" class="active">Conversation</button>
-        <button type="button" data-view="raw">Raw log</button>
+      <div class="output-actions">
+        <div id="run-detail-view-toggle" class="view-toggle" hidden>
+          <button type="button" data-view="conversation" class="active">Conversation</button>
+          <button type="button" data-view="raw">Raw log</button>
+        </div>
+        <button type="button" id="run-detail-copy" class="copy-btn" title="Copy the full log (with timestamps) to the clipboard">Copy log</button>
       </div>
     </div>
     <div id="run-detail-output"></div>
   </div>
 </dialog>
 
+<!-- Which build is this host running? Filled from GET /version once at
+     load; the title carries the VCS revision/time when the build has them. -->
+<footer class="site-footer">webhook-runner <span id="server-version"></span></footer>
+
 <script src="dashboard.js"></script>
+<!-- timeline.js is an ES module: it imports the <timeline-view> component at
+     runtime from js-snippets' GitHub Pages (wow-look-at-my.github.io). It
+     must run AFTER dashboard.js (it reuses its globals: fetchJSON, el,
+     fmtTime, tsPresent, showRun, …) — module scripts defer, so the classic
+     dashboard.js above has always executed first. If the Pages fetch fails,
+     the chart section shows "chart loading…" and retries on a fixed cadence
+     forever; dashboard.js's tables are unaffected. -->
+<script type="module" src="timeline.js"></script>
 </body>
 </html>
