@@ -1,0 +1,12 @@
+{
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "description": "e2e Docker-in-Docker smoke test: starts a nested dockerd and verifies it with docker version && docker info",
+  // dind:true makes the runner add --privileged + an anonymous
+  // /var/lib/docker volume on BOTH the live-run and `webhook-runner test`
+  // paths, so this hook can host its own nested container daemon.
+  "dind": true,
+  // Same script as the container CMD — run under `webhook-runner test` in
+  // the built image, exercising the test-path capability injection.
+  "tests": [["/usr/local/bin/dind-smoke.sh"]],
+  "timeout": "120s"
+}
