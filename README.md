@@ -407,8 +407,9 @@ Properties:
 - **Bounded per item, not in total**: per-value size (64 KiB, oversize writes
   get `413`) and namespace-count (256) caps remain, but total KV growth is
   deliberately uncapped in-process — the backstop is a memory+swap ceiling on
-  the server's container, which also bounds disk because the store is a full
-  in-memory mirror of what it persists.
+  the server's container (swap-side only where the kernel's cgroup swap
+  accounting is enabled; see the compose example), which also bounds disk
+  because the store is a full in-memory mirror of what it persists.
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
 - **Locks**: `acquire`/`release` give same-hook runs a race-free mutual
@@ -1006,9 +1007,10 @@ it via `TMPDIR`:
 services:
   webhook-runner:
     image: ghcr.io/wow-look-at-my/webhook-runner:latest
-    # KV growth is uncapped in-process — this ceiling is the backstop.
-    # memswap_limit must equal mem_limit to make it real; otherwise the
-    # "limit" just spills into swap.
+    # KV growth is uncapped in-process — this ceiling is the backstop. It
+    # covers swap ONLY if the kernel does cgroup swap accounting; Docker
+    # ignores memswap_limit otherwise (docker info warns "No swap limit
+    # support"), so bound swap on the host (swapaccount=1, or bounded/no swap).
     mem_limit: 2g
     memswap_limit: 2g
     environment:
