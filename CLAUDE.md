@@ -773,8 +773,8 @@ The companion repo is `wow-look-at-my/webhooks`.
   bounded per item (64 KiB/value, 256 namespaces by default — zero-valued
   `kv.Config` fields fall back to these in `kv.New`) but has NO key-count
   cap: total growth is deliberately uncapped in-process (operator directive)
-  and bounded at the container level (a memory+swap ceiling — swap-side only
-  where the kernel's cgroup swap accounting is enabled) instead — don't
+  and bounded at the container level (a memory cap; swap-side only where the
+  host kernel does cgroup swap accounting) instead — don't
   reintroduce a cap, usage detection, or eviction in its place.
 - A hook opts into the store with `state: true`. `state` is a new hook.json
   field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
