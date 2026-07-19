@@ -50,7 +50,6 @@ Configuration via environment:
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
   WEBHOOK_RUNNER_STATE_SOCKET         KV API Unix socket path (default: $TMPDIR/whr-state.sock)
   WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
-  WEBHOOK_RUNNER_KV_MAX_KEYS          max keys per hook KV namespace (default 5000)
   WEBHOOK_RUNNER_RUN_RETENTION        persisted run-history retention, Go duration (default 48h)
   WEBHOOK_RUNNER_RUN_RETENTION_MAX    persisted runs kept per hook, disk safety net (default 200000)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates

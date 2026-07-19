@@ -796,10 +796,12 @@ The companion repo is `wow-look-at-my/webhooks`.
   and an expired-entry cleanup failing to flush is invisible to reads
   either way.) TTL is enforced lazily on read AND
   by a background sweeper (`StartSweeper`/`Close`); keep both. The store is
-  bounded (64 KiB/value, 5000 keys/namespace, 256 namespaces by default —
-  zero-valued `kv.Config` fields fall back to these in `kv.New`);
-  `WEBHOOK_RUNNER_KV_MAX_KEYS` overrides the key cap, parsed in cli/serve.go
-  like the other WEBHOOK_RUNNER_* env options.
+  bounded per item (64 KiB/value, 256 namespaces by default — zero-valued
+  `kv.Config` fields fall back to these in `kv.New`) but has NO key-count
+  cap: total growth is deliberately uncapped in-process (operator directive)
+  and bounded at the container level (a memory cap; swap-side only where the
+  host kernel does cgroup swap accounting) instead — don't
+  reintroduce a cap, usage detection, or eviction in its place.
 - A hook opts into the store with `state: true`. `state` is a new hook.json
   field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
   same deploy-first rule as `concurrency_group`. ONLY for state hooks, the
