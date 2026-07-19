@@ -23,7 +23,6 @@ type serveOptions struct {
 	hookBaseURL     string
 	stateSocket     string
 	stateSecret     string
-	kvMaxKeys       int
 	runRetention    time.Duration
 	runRetentionMax int
 
@@ -61,13 +60,6 @@ func applyServeEnv(o *serveOptions) error {
 	}
 	if o.stateSecret == "" {
 		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
-	}
-	if o.kvMaxKeys <= 0 {
-		// Positive integers only; unset or unparseable falls back to the
-		// store's built-in default.
-		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_KV_MAX_KEYS")); err == nil && n > 0 {
-			o.kvMaxKeys = n
-		}
 	}
 	if o.runRetention <= 0 {
 		// Go duration (e.g. "72h"); unset or unparseable falls back to the

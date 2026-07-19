@@ -101,8 +101,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// survives restarts; hooks opt in with "state": true. The secret signs
 	// per-hook namespace tokens — supply WEBHOOK_RUNNER_STATE_SECRET to share
 	// one across replicas, else it's generated and persisted.
-	// WEBHOOK_RUNNER_KV_MAX_KEYS overrides the per-namespace key cap (zero
-	// here means kv.New applies its built-in default).
 	dataDir := o.dataDir
 	if dataDir == "" {
 		dataDir = filepath.Dir(o.hooksDir)
@@ -115,7 +113,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 		stateSecret = s
 	}
-	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv"), MaxKeysPerNS: o.kvMaxKeys}, stateSecret, logger)
+	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv")}, stateSecret, logger)
 	if err != nil {
 		return fmt.Errorf("state store: %w", err)
 	}

@@ -33,7 +33,7 @@ func TestApplyServeEnvDefaults(t *testing.T) {
 	for _, k := range []string{
 		"WEBHOOK_RUNNER_ADDR", "WEBHOOK_RUNNER_ADMIN_ADDR", "WEBHOOK_RUNNER_HOOKS_DIR",
 		"WEBHOOK_RUNNER_DATA_DIR", "WEBHOOK_RUNNER_STATE_SOCKET", "WEBHOOK_RUNNER_STATE_SECRET",
-		"WEBHOOK_RUNNER_KV_MAX_KEYS", "WEBHOOK_RUNNER_RUN_RETENTION", "WEBHOOK_RUNNER_RUN_RETENTION_MAX",
+		"WEBHOOK_RUNNER_RUN_RETENTION", "WEBHOOK_RUNNER_RUN_RETENTION_MAX",
 		"WEBHOOK_RUNNER_LOG_FORMAT", "WEBHOOK_RUNNER_GITHUB_TOKEN", "WEBHOOK_RUNNER_HOOKS_REPO",
 		"WEBHOOK_RUNNER_HOOKS_BRANCH", "WEBHOOK_RUNNER_HOOKS_REPO_SECRET", "WEBHOOK_RUNNER_HOOK_BASE_URL",
 	} {
@@ -44,7 +44,6 @@ func TestApplyServeEnvDefaults(t *testing.T) {
 	assert.Equal(t, ":9000", o.addr)
 	assert.Equal(t, ":9001", o.adminAddr)
 	assert.Equal(t, "text", o.logFormat)
-	assert.Zero(t, o.kvMaxKeys)
 	assert.Zero(t, o.runRetention)
 	assert.Zero(t, o.runRetentionMax)
 	assert.Empty(t, o.hooksDir)
@@ -58,7 +57,6 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	t.Setenv("WEBHOOK_RUNNER_DATA_DIR", "/data")
 	t.Setenv("WEBHOOK_RUNNER_STATE_SOCKET", "/tmp/s.sock")
 	t.Setenv("WEBHOOK_RUNNER_STATE_SECRET", "sec")
-	t.Setenv("WEBHOOK_RUNNER_KV_MAX_KEYS", "42")
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION", "72h")
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX", "123")
 	t.Setenv("WEBHOOK_RUNNER_LOG_FORMAT", "json")
@@ -76,7 +74,6 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	assert.Equal(t, "/data", o.dataDir)
 	assert.Equal(t, "/tmp/s.sock", o.stateSocket)
 	assert.Equal(t, "sec", o.stateSecret)
-	assert.Equal(t, 42, o.kvMaxKeys)
 	assert.Equal(t, 72*time.Hour, o.runRetention)
 	assert.Equal(t, 123, o.runRetentionMax)
 	assert.Equal(t, "json", o.logFormat)
@@ -87,12 +84,10 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	assert.Equal(t, "https://hooks.example.com", o.hookBaseURL)
 
 	// Invalid numeric/duration values fall back to the built-in defaults.
-	t.Setenv("WEBHOOK_RUNNER_KV_MAX_KEYS", "zero")
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION", "soon")
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX", "-1")
 	o2 := &serveOptions{}
 	require.NoError(t, applyServeEnv(o2))
-	assert.Zero(t, o2.kvMaxKeys)
 	assert.Zero(t, o2.runRetention)
 	assert.Zero(t, o2.runRetentionMax)
 }
