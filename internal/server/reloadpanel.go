@@ -129,15 +129,25 @@ func (s *Server) describeReloadCommit(ctx context.Context, sha, liveSHA string) 
 		IsLive:  sha != "" && sha == liveSHA,
 	}
 	if s.reloadRepo != nil && sha != "" {
-		if subject, date, err := s.reloadRepo.CommitInfo(sha); err == nil {
-			c.Subject = subject
-			if !date.IsZero() {
-				c.Date = date.UTC().Format(time.RFC3339)
-			}
-		}
 		c.HasSrc = s.reloadRepo.TreeHasDir(sha, reloadgate.SrcMarkerDir)
 	}
+	s.enrichCommitInfo(&c)
 	return c
+}
+
+// enrichCommitInfo fills a commit view's subject/date from local git
+// objects, best-effort (an unknown commit just stays unenriched). Shared
+// by the listing/status views and the switch response.
+func (s *Server) enrichCommitInfo(c *reloadCommitJSON) {
+	if s.reloadRepo == nil || c.SHA == "" {
+		return
+	}
+	if subject, date, err := s.reloadRepo.CommitInfo(c.SHA); err == nil {
+		c.Subject = subject
+		if !date.IsZero() {
+			c.Date = date.UTC().Format(time.RFC3339)
+		}
+	}
 }
 
 func shortSHA(sha string) string {
@@ -337,13 +347,6 @@ func (s *Server) handleReloadSwitch(w http.ResponseWriter, r *http.Request) {
 // subject/date enrichment from the repo.
 func (s *Server) describeReloadSwitchCommit(out reloadgate.SwitchOutcome) reloadCommitJSON {
 	c := reloadCommitJSON{SHA: out.SHA, Short: shortSHA(out.SHA), CIState: out.CIState, HasSrc: out.HasSrc}
-	if s.reloadRepo != nil && out.SHA != "" {
-		if subject, date, err := s.reloadRepo.CommitInfo(out.SHA); err == nil {
-			c.Subject = subject
-			if !date.IsZero() {
-				c.Date = date.UTC().Format(time.RFC3339)
-			}
-		}
-	}
+	s.enrichCommitInfo(&c)
 	return c
 }

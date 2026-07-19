@@ -416,8 +416,9 @@ const sectionFetchers = {
   events: async () => renderEvents(await fetchJSON("/events?max=100")),
   kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
   concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
-  // The hooks-repo reload panel (functions at the bottom of this file).
-  reload: async () => refreshReloadPanel(),
+  // The hooks-repo reload panel (declared at the bottom of this file;
+  // function declarations hoist, so the reference is fine here).
+  reload: () => refreshReloadPanel(),
 };
 
 function stampUpdated() {
