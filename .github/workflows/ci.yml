@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       # The dashboard's committed assets/timeline.js is authoritative and
@@ -33,7 +33,7 @@ jobs:
           autorelease: true
 
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     needs: test
     steps:
       - uses: actions/checkout@v4
