@@ -99,7 +99,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	loadAndApply()
 	_, ok := reg.Get("h1")
 	require.True(t, ok, "a disabled hook stays loaded/registered")
-	assert.True(t, ov.HookDisabled("h1"))
+	assert.True(t, ov.HookDisabled("h1", true))
 	st := groupStatus(t, mgr, "g")
 	assert.Equal(t, 1, st.Limit, "the limit override must be effective after the first load")
 	assert.Equal(t, 3, st.Declared)
@@ -109,7 +109,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	// An ordinary reload changes nothing: overrides still applied, no
 	// orphan noise.
 	loadAndApply()
-	assert.True(t, ov.HookDisabled("h1"))
+	assert.True(t, ov.HookDisabled("h1", true))
 	st = groupStatus(t, mgr, "g")
 	assert.Equal(t, 1, st.Limit)
 	assert.True(t, st.Overridden)
@@ -121,7 +121,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(root, concurrency.FileName)))
 	loadAndApply()
 	assert.Equal(t, 2, countEvents(rec, "override.orphaned"))
-	assert.True(t, ov.HookDisabled("h1"), "an orphaned disable override is never dropped")
+	assert.True(t, ov.HookDisabled("h1", true), "an orphaned disable override is never dropped")
 	_, hasLimit := ov.ConcurrencyLimit("g")
 	assert.True(t, hasLimit, "an orphaned limit override is never dropped")
 
@@ -136,7 +136,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	assert.Equal(t, 2, countEvents(rec, "override.orphaned"))
 	_, ok = reg.Get("h1")
 	require.True(t, ok)
-	assert.True(t, ov.HookDisabled("h1"), "the kill switch re-applies when the hook returns")
+	assert.True(t, ov.HookDisabled("h1", true), "the kill switch re-applies when the hook returns")
 	st = groupStatus(t, mgr, "g")
 	assert.Equal(t, 1, st.Limit, "the limit override re-applies when the group returns")
 	assert.True(t, st.Overridden)
@@ -175,7 +175,7 @@ func TestOverridesSurviveRestart(t *testing.T) {
 	rec := events.NewRecorder(50)
 	buildLoadAndApply(root, reg, mgr, nil, ov2, nil, nil, testLogger(), rec)()
 
-	assert.True(t, ov2.HookDisabled("h1"), "the kill switch must survive a restart")
+	assert.True(t, ov2.HookDisabled("h1", true), "the kill switch must survive a restart")
 	st := groupStatus(t, mgr, "g")
 	assert.Equal(t, 2, st.Limit, "the limit override must be effective from the first post-boot load")
 	assert.Equal(t, 3, st.Declared)
@@ -216,4 +216,15 @@ func TestScheduleFireSkipsDisabledHook(t *testing.T) {
 	fire("h")
 	assert.Equal(t, 1, countEvents(rec, "schedule.fired"))
 	assert.Len(t, tracker.ListAll(0), 1)
+
+	// The hook.json enable:false DEFAULT gates the schedule path too, with
+	// no override stored; an explicit enable override outranks it.
+	off := false
+	reg.Set(&hooks.Hook{ID: "d", Command: []string{"x"}, Schedule: "5m", Enable: &off})
+	fire("d")
+	assert.Equal(t, 2, countEvents(rec, "schedule.skipped"), "a default-disabled hook's tick must skip")
+	_, err = ov.SetHookDisabled("d", false)
+	require.NoError(t, err)
+	fire("d")
+	assert.Equal(t, 2, countEvents(rec, "schedule.fired"), "the explicit enable must win over enable:false")
 }
