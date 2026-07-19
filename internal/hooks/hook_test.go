@@ -24,6 +24,7 @@ func parseInDir(t *testing.T, doc string) (*Hook, error) {
 func TestParseValid(t *testing.T) {
 	doc := `{
 		// description supports JSONC comments
+		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
 		"description": "deploy",
 		"command": ["sh", "-c", "echo hi"],
 		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
@@ -45,9 +46,74 @@ func TestParseValid(t *testing.T) {
 
 func TestParseMinimal(t *testing.T) {
 	// Command is optional: the image's CMD (from the Dockerfile) runs.
-	h, err := parseInDir(t, `{}`)
+	// $schema is the only required field.
+	h, err := parseInDir(t, `{"$schema":"s"}`)
 	require.Nil(t, err)
 	assert.Empty(t, h.Command)
+}
+
+// dind is a plain opt-in bool (like state): Parse round-trips it, and it
+// defaults to false when omitted. (An unknown field is still rejected — see
+// the "unknown field" case in TestParseRejects.)
+func TestParseDind(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","dind":true}`)
+	require.Nil(t, err)
+	assert.True(t, h.Dind)
+
+	h, err = parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.False(t, h.Dind, "dind defaults to false when omitted")
+}
+
+// enable is the hook's DEFAULT kill-switch position: absent (or true)
+// means enabled, so every existing hook is unchanged; an explicit false
+// loads the hook disabled until an operator override — which always wins
+// over this default — enables it.
+func TestParseEnableDefault(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.True(t, h.EnabledByDefault(), "absent enable must mean enabled by default")
+
+	h, err = parseInDir(t, `{"$schema":"s","enable":true}`)
+	require.Nil(t, err)
+	assert.True(t, h.EnabledByDefault())
+
+	h, err = parseInDir(t, `{"$schema":"s","enable":false}`)
+	require.Nil(t, err)
+	assert.False(t, h.EnabledByDefault(), "enable:false must load the hook disabled by default")
+}
+
+// Omitting timeout falls back to DefaultTimeout — every hook keeps hang
+// protection (5 minutes of silence) by default.
+func TestTimeoutDefaultsWhenOmitted(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, DefaultTimeout, h.Timeout())
+}
+
+func TestParseScheduleValid(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","schedule":"5m"}`)
+	require.Nil(t, err)
+	assert.Equal(t, "5m", h.Schedule)
+	assert.Equal(t, 5*time.Minute, h.ScheduleInterval())
+}
+
+func TestParseScheduleEmptyMeansUnscheduled(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.ScheduleInterval())
+}
+
+func TestParseScheduleInvalidDuration(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","schedule":"5 minutes"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "invalid schedule")
+}
+
+func TestParseScheduleMustBePositive(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","schedule":"0s"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "schedule must be positive")
 }
 
 func TestParseRequiresDockerfile(t *testing.T) {
@@ -70,17 +136,24 @@ func TestSigHeaderLegacyDefault(t *testing.T) {
 
 func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
-		"image is not a field":    `{"image":"alpine"}`,
-		"reserved env":            `{"env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"empty test command":      `{"tests":[["ok"],[]]}`,
-		"bad timeout":             `{"timeout":"banana"}`,
-		"negative timeout":        `{"timeout":"-1s"}`,
-		"github_status nocontext": `{"github_status":{"enabled":true}}`,
-		"unknown field":           `{"frobnicate":true}`,
-		"api_key+secret":          `{"api_key":"k","secret":"s"}`,
-		"public_key+secret":       `{"public_key":"k","secret":"s"}`,
-		"api_key+public_key":      `{"api_key":"k","public_key":"k"}`,
-		"bad public_key":          `{"public_key":"not-a-key"}`,
+		// Go validation only checks that $schema is present (non-empty);
+		// json-validator enforces it points at the published schema.
+		"missing schema":       `{"command":["x"]}`,
+		"image is not a field": `{"$schema":"s","image":"alpine"}`,
+		"reserved env":         `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
+		"empty test command":   `{"$schema":"s","tests":[["ok"],[]]}`,
+		"bad timeout":          `{"$schema":"s","timeout":"banana"}`,
+		"negative timeout":     `{"$schema":"s","timeout":"-1s"}`,
+		// idle_timeout was removed when timeout itself became activity-based;
+		// DisallowUnknownFields makes a hook.json that still sets it fail to
+		// load (acceptable: nothing merged ever set it).
+		"idle_timeout removed":    `{"$schema":"s","idle_timeout":"5m"}`,
+		"github_status nocontext": `{"$schema":"s","github_status":{"enabled":true}}`,
+		"unknown field":           `{"$schema":"s","frobnicate":true}`,
+		"api_key+secret":          `{"$schema":"s","api_key":"k","secret":"s"}`,
+		"public_key+secret":       `{"$schema":"s","public_key":"k","secret":"s"}`,
+		"api_key+public_key":      `{"$schema":"s","api_key":"k","public_key":"k"}`,
+		"bad public_key":          `{"$schema":"s","public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -136,6 +209,118 @@ func TestStripComments(t *testing.T) {
 	// And the stripped output must not contain the literal comment text.
 	assert.NotContains(t, got, "line comment")
 	assert.NotContains(t, got, "block")
+}
+
+func makeScriptHookDir(t *testing.T, scriptName, scriptContent string) (hookDir, hookJSON string) {
+	t.Helper()
+	root := t.TempDir()
+	hookDir = filepath.Join(root, "my-hook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, scriptName), []byte(scriptContent), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine:3.20\n"), 0o644))
+	hookJSON = filepath.Join(hookDir, "hook.json")
+	return hookDir, hookJSON
+}
+
+const testSchema = `"$schema":"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json"`
+
+func TestScriptResolveBash(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash\necho hi")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bash", "run.sh"}, h.Command)
+}
+
+func TestScriptResolvePwsh(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.ps1", "Write-Host hi")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.ps1","interpreter":"pwsh"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pwsh", "-File", "run.ps1"}, h.Command)
+}
+
+func TestScriptResolveNode(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "index.js", "console.log('hi')")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"index.js","interpreter":"node"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"node", "index.js"}, h.Command)
+}
+
+func TestScriptResolveTsx(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "handler.ts", "console.log('hi')")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"handler.ts","interpreter":"tsx"}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tsx", "handler.ts"}, h.Command)
+}
+
+func TestScriptWithArgs(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash","args":["--verbose","--dry-run"]}}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bash", "run.sh", "--verbose", "--dry-run"}, h.Command)
+}
+
+func TestScriptCommandOverride(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"},"command":["sh","run.sh"]}`)
+	h, err := Parse("my-hook", hookJSON, doc)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sh", "run.sh"}, h.Command)
+}
+
+func TestScriptRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	hookDir := filepath.Join(root, "my-hook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
+	outside := filepath.Join(root, "evil.sh")
+	require.NoError(t, os.WriteFile(outside, []byte("rm -rf /"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(hookDir, "run.sh")))
+
+	hookJSON := filepath.Join(hookDir, "hook.json")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.sh","interpreter":"bash"}}`)
+	_, err := Parse("my-hook", hookJSON, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside hook directory")
+}
+
+func TestScriptRejectsMissingFile(t *testing.T) {
+	root := t.TempDir()
+	hookDir := filepath.Join(root, "my-hook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
+	hookJSON := filepath.Join(hookDir, "hook.json")
+
+	doc := []byte(`{` + testSchema + `,"script":{"file":"nope.sh","interpreter":"bash"}}`)
+	_, err := Parse("my-hook", hookJSON, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nope.sh")
+}
+
+func TestScriptRejectsBadInterpreter(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.rb", "puts 'hi'")
+	doc := []byte(`{` + testSchema + `,"script":{"file":"run.rb","interpreter":"ruby"}}`)
+	_, err := Parse("my-hook", hookJSON, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported")
+}
+
+func TestScriptRejectsMissingFields(t *testing.T) {
+	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash")
+	cases := map[string]string{
+		"missing file":        `{` + testSchema + `,"script":{"interpreter":"bash"}}`,
+		"missing interpreter": `{` + testSchema + `,"script":{"file":"run.sh"}}`,
+	}
+	for name, doc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse("h", hookJSON, []byte(doc))
+			require.Error(t, err)
+		})
+	}
 }
 
 func readAll(r interface{ Read(p []byte) (int, error) }) (string, error) {
