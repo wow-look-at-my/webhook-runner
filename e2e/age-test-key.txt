@@ -1,0 +1,5 @@
+# TEST FIXTURE - not a real secret. This age key exists only to decrypt
+# e2e/hooks/sops-hook/secrets.sops.env in the e2e suite (SOPS_AGE_KEY_FILE).
+# created: 2026-06-11T03:56:25Z
+# public key: age1h7l78zp72ru985gdk69lq084pm3u5a443lu7p6nmyvp0lkmjjv5sc4j42p
+AGE-SECRET-KEY-1UE5FFW379D5AC88RXEZSK88TPRMKCPYZ3GCM88HTNNS6P7QDKYWQMRMDXY

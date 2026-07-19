@@ -20,13 +20,24 @@ import (
 type Status string
 
 const (
-	StatusPending Status = "pending" // created, container not yet started
-	StatusRunning Status = "running"
-	StatusSuccess Status = "success"
-	StatusFailure Status = "failure"
-	StatusTimeout Status = "timeout"
-	StatusError   Status = "error" // failed to start, never produced an exit code
+	StatusPending   Status = "pending" // created, container not yet started
+	StatusRunning   Status = "running"
+	StatusSuccess   Status = "success"
+	StatusFailure   Status = "failure"
+	StatusTimeout   Status = "timeout"
+	StatusError     Status = "error"     // failed to start, never produced an exit code
+	StatusCancelled Status = "cancelled" // killed by an explicit cancel request
 )
+
+// Terminal reports whether the status is a final state (the run's done
+// channel is closed and no further transitions happen).
+func (s Status) Terminal() bool {
+	switch s {
+	case StatusSuccess, StatusFailure, StatusTimeout, StatusError, StatusCancelled:
+		return true
+	}
+	return false
+}
 
 // MaxOutputLines is the most recent stdout/stderr lines retained per run.
 // Older lines are dropped as new ones arrive.
@@ -55,14 +66,20 @@ type RunState struct {
 	// itself ran and exited non-zero, Error stays empty and the failure
 	// is reflected by ExitCode and Status.
 	Error string `json:"error,omitempty"`
+
+	// CancelRequested is set the moment a cancel is requested; the run
+	// stays in its current status until the container actually dies and
+	// the runner records StatusCancelled.
+	CancelRequested bool `json:"cancel_requested,omitempty"`
 }
 
 // Run is the mutex-protected wrapper around a RunState. Always pass *Run
 // (never Run by value) — copying the struct would copy its mutex.
 type Run struct {
-	mu    sync.Mutex
-	state RunState
-	done  chan struct{}
+	mu     sync.Mutex
+	state  RunState
+	done   chan struct{}
+	cancel chan struct{}
 }
 
 // ID returns the run's stable ID.
@@ -98,6 +115,23 @@ func (r *Run) Error() string {
 // Done returns a channel closed when the run has reached a terminal
 // status.
 func (r *Run) Done() <-chan struct{} { return r.done }
+
+// RequestCancel asks the runner to kill this run's container. It only
+// signals; the run reaches StatusCancelled when the runner observes the
+// signal and the container is actually gone. Calling it on a finished
+// run is a harmless no-op (Finish wins).
+func (r *Run) RequestCancel() {
+	r.mu.Lock()
+	already := r.state.CancelRequested
+	r.state.CancelRequested = true
+	r.mu.Unlock()
+	if !already {
+		close(r.cancel)
+	}
+}
+
+// Cancelled returns a channel closed once a cancel has been requested.
+func (r *Run) Cancelled() <-chan struct{} { return r.cancel }
 
 // Snapshot returns a JSON-friendly copy of the run with its output
 // truncated to the requested tail length (use a negative value for the
@@ -199,7 +233,8 @@ func (t *Tracker) New(hookID string) *Run {
 			Started: time.Now().UTC(),
 			Status:  StatusPending,
 		},
-		done: make(chan struct{}),
+		done:   make(chan struct{}),
+		cancel: make(chan struct{}),
 	}
 	t.mu.Lock()
 	t.byID[r.state.ID] = r

@@ -26,8 +26,27 @@ hooks without restart.
 - **Sync and async invocation**: every hook returns a unique 128-bit
   run ID; clients can poll `GET /runs/{id}` or use `?wait=true` to block
   on the response.
+- **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
+  run's container (authenticated like the hook itself), so async callers
+  can supersede stale work.
+- **Immutable hook code**: every hook ships a `Dockerfile` next to its
+  `hook.json` and runs an image webhook-runner builds from the hook
+  directory, tagged by content hash — code is baked in, a hooks-repo pull
+  can't change an in-flight run, and runs are plain
+  `docker run --rm <image>`.
+- **Hooks ship their own tests**: a `tests` array in `hook.json` declares
+  test commands; `webhook-runner test <hooks-dir>` runs each one in the
+  hook's built image, so CI never hardcodes per-hook test invocations.
+- **Secrets without plaintext**: `env` values and `api_key` may reference
+  secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
+  committed to the hooks repo (`secrets.sops.env`) or from the runner
+  host's environment.
 - **Concurrency**: no global queue, each request fires its own container.
-- **Dashboard**: read-only HTML view at `/` on the admin port.
+- **Dashboard**: read-only HTML view at `/` on the admin port showing the
+  full internal state — loaded hooks, per-hook image status (built /
+  will-build-next-run, images on disk), recent runs, and a live activity
+  feed (GitHub push webhooks received, git pulls, reloads, load errors,
+  image builds, run lifecycle). One-time setup instructions stay collapsed.
 - **Static binary, alpine runtime image** with `docker-cli` and `git`
   for shelling out — no Docker SDK dependency.
 
@@ -81,6 +100,7 @@ Trust).
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200).                      |
 | POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. |
+| POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). |
 | POST   | `/_reload`          | Pull hooks repo and reload (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). |
 
 ### Admin port (`:9001`)
@@ -90,9 +110,13 @@ Trust).
 | GET    | `/health`           | Liveness probe (200).                      |
 | GET    | `/hooks`            | List loaded hooks (id + description).      |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here).      |
+| POST   | `/hook/{id}/cancel/{run}` | Cancel a run (also available here).  |
 | GET    | `/runs`             | Recent runs across all hooks.              |
 | GET    | `/runs/{id}`        | Status + retained output for one run.      |
+| POST   | `/runs/{id}/cancel` | Cancel any run (no auth — admin port is trusted). |
 | POST   | `/reload`           | Pull hooks repo and reload (no auth — admin port is trusted). |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, hook (re)loads and load errors, image builds, run lifecycle. Newest first; `?max=` caps it. |
+| GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/`                 | Dashboard.                                 |
 
 ### Sync vs async
@@ -106,11 +130,107 @@ timeout elapses first).
 A hook can opt into sync-by-default by setting `"synchronous": true`
 in `hook.json`. The query parameter still wins.
 
+### Cancelling a run
+
+`POST /hook/{id}/cancel/{run}` asks the runner to kill an in-flight run's
+container. It is authenticated exactly like triggering the hook (same
+api_key / signature), and a hook's credentials can only cancel that hook's
+own runs. Responses:
+
+- `202` `{"run_id": "...", "status": "cancelling"}` — cancel requested; the
+  run reaches status `cancelled` once the container is actually gone.
+- `409` — the run already finished (body carries its final status).
+- `404` — unknown hook or run (including runs belonging to another hook).
+
+This is what lets a fire-and-forget caller supersede stale work: kick off a
+run, remember the `run_id` from the 202, and cancel it if a newer event
+makes its result obsolete (e.g. pr-minder cancelling an in-flight
+PR-describe run when new commits arrive).
+
 ## hook.json reference
 
 The full schema is published at
 `https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
 See `examples/hooks/` for working examples.
+
+Two values support `${NAME}` secret references:
+
+- `env` values — expanded when the container starts. Unresolvable names
+  expand to `""` with a logged warning.
+- `api_key` — expanded on every request. If the reference is unresolvable,
+  the hook **fails closed** (every request is rejected with 401).
+
+`${NAME}` resolves against the hook's decrypted `secrets.sops.env` first
+(see below), then the runner host's environment — so a secret can start
+life as a host env var and move into the repo without touching hook.json.
+Only the braced `${NAME}` form is expanded; a bare `$NAME` passes through
+untouched. Expansion never happens at load/validate time, so CI validation
+needs neither the production environment nor any decryption keys.
+
+## Encrypted secrets in the hooks repo (sops)
+
+A hook directory may contain `secrets.sops.env` — a
+[sops](https://github.com/getsops/sops)-encrypted **dotenv** file. At
+container start webhook-runner decrypts it (by shelling out to the `sops`
+binary) and:
+
+- **injects every entry** into the container environment (an explicit
+  `env` entry in hook.json wins on conflict; reserved `HOOK_*` keys are
+  skipped with a warning), and
+- makes the entries resolvable by `${NAME}` references in `env` values
+  and `api_key`.
+
+Decryption failures are loud: a run fails with status `error` before the
+container starts, and an `api_key` backed by an undecryptable file rejects
+all requests. Results are cached per file (invalidated by mtime/size), so
+steady-state requests don't re-exec sops; a `git pull` of the hooks repo
+picks up rotated values automatically.
+
+Setup with [age](https://github.com/FiloSottile/age) (any sops keysource
+works — age, KMS, PGP, Vault):
+
+```sh
+# once, on the runner host
+age-keygen -o /etc/webhook-runner/age.key        # note the public key
+# export SOPS_AGE_KEY_FILE=/etc/webhook-runner/age.key in the service env
+
+# in the hooks repo, per hook
+cat > my-hook/secrets.sops.env <<EOF
+MY_HOOK_API_KEY=super-secret
+EOF
+sops --encrypt --age <public-key> --input-type dotenv --output-type dotenv \
+  --in-place my-hook/secrets.sops.env
+```
+
+`validate` ignores secrets files entirely, and the `sops` binary is only
+required on the runner host (override its path with
+`WEBHOOK_RUNNER_SOPS_BIN`).
+
+## Hook tests
+
+A hook can declare test commands for its scripts in `hook.json`:
+
+```jsonc
+{
+  // image/command come from this hook's Dockerfile
+  "tests": [["node", "--test", "handler.test.ts"]]
+}
+```
+
+`webhook-runner test <hooks-dir>` runs every declared test command in a
+fresh container of the hook's image. For Dockerfile hooks it builds the
+image first (the same content-hash tag a live run uses), so tests exercise
+exactly the baked code — copy test files into the image alongside the code
+and set `WORKDIR` so relative paths like `handler.test.ts` resolve. Hooks
+without a `tests` array are skipped; the command exits non-zero if any
+hook fails to load, any build fails, or any test command fails.
+
+Tests get no payload, no `hook.json` env, and no secrets: they must be
+self-contained (start their own mock servers, set their own env). That is
+what lets a hooks repo's CI run them with nothing but Docker — the test
+commands live next to the code they test instead of being hardcoded into a
+workflow. Each command is capped by `--timeout` (default 10m, independent
+of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 
 ## Server configuration
 
@@ -124,6 +244,7 @@ See `examples/hooks/` for working examples.
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | Required only if any hook uses `github_status`.               |
+| `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
 
 ## Inside the container
@@ -139,17 +260,50 @@ set automatically:
 | `HOOK_ID`            | The hook ID (folder name).                              |
 | `HOOK_RUN_ID`        | The 128-bit run ID, base32 encoded (26 chars).          |
 
-Payload and header files are bind-mounted read-only at
-`/var/run/webhook-runner/`. The hook's source directory is
-bind-mounted read-only at `/hook`. This allows hooks to contain source
-code alongside `hook.json` and run it directly (e.g. `go run .` with
-`"workdir": "/hook"`).
+Payload and header files are bind-mounted read-only under
+`/var/run/webhook-runner/` — per-run *data*, never code. The hook's
+source directory is also bind-mounted read-only at `/hook` (exposed as
+`HOOK_SOURCE_DIR`), so hooks can reference source files alongside
+`hook.json` at run time. Hook code is immutable per run: it is either
+part of a stock image or baked into the hook's built image (see below).
+
+## Hook images (Dockerfile)
+
+Every hook directory contains a `Dockerfile` next to its `hook.json` —
+there is no other way to supply code. The hook runs an image
+webhook-runner builds locally from the hook directory (the build
+context), tagged `whr-hook/<id>:<content-hash>`:
+
+```
+my-hook/
+  hook.json       # "command" optional (the image's CMD runs by default)
+  Dockerfile      # FROM node:24-alpine / WORKDIR /app / COPY handler.ts . / CMD ["node", "handler.ts"]
+  handler.ts
+```
+
+The content-hash tag is what makes runs immutable and rebuilds automatic:
+
+- The image is built lazily on the hook's next run (or `test`) whenever no
+  image exists for the directory's current content — after a hooks-repo
+  pull, the first run rebuilds; an unchanged hook reuses the cached image.
+- In-flight runs keep the image they started with; a concurrent
+  `POST /_reload` + `git pull` cannot change what they execute.
+- Superseded builds are deleted after a successful new build (best-effort;
+  images backing still-running containers are skipped).
+- A failed build fails the run with status `error` before any container
+  starts; build output is streamed to the server log.
+
+No registry is involved: the hooks repo stays the single source of truth,
+and the runner host turns it into immutable local images.
 
 ## Subcommands
 
 - `webhook-runner [hooks-dir]` — start the server.
 - `webhook-runner validate <hooks-dir>` — load and validate every hook
   without starting the server. Exits non-zero on validation errors.
+- `webhook-runner test <hooks-dir>` — run every hook's declared `tests`
+  commands in its image (see "Hook tests"). Requires Docker. Exits
+  non-zero on load errors or test failures.
 - `webhook-runner version` — print build version.
 
 ## Building

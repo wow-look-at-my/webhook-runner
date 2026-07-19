@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
+	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 )
 
 func init() {
@@ -18,7 +19,11 @@ func init() {
 			loaded, errs := hooks.LoadDir(args[0])
 			out := cmd.OutOrStdout()
 			for id, h := range loaded {
-				fmt.Fprintf(out, "ok  %s (%s)\n", id, h.Image)
+				tag, tagErr := runner.ImageTag(h)
+				if tagErr != nil {
+					tag = "?"
+				}
+				fmt.Fprintf(out, "ok  %s (%s)\n", id, tag)
 			}
 			if len(errs) > 0 {
 				for _, e := range errs {
