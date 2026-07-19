@@ -24,7 +24,7 @@ func parseInDir(t *testing.T, doc string) (*Hook, error) {
 func TestParseValid(t *testing.T) {
 	doc := `{
 		// description supports JSONC comments
-		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
 		"description": "deploy",
 		"command": ["sh", "-c", "echo hi"],
 		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
@@ -222,7 +222,7 @@ func makeScriptHookDir(t *testing.T, scriptName, scriptContent string) (hookDir,
 	return hookDir, hookJSON
 }
 
-const testSchema = `"$schema":"https://wow-look-at-my.github.io/webhook-runner/hook.schema.json"`
+const testSchema = `"$schema":"https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"`
 
 func TestScriptResolveBash(t *testing.T) {
 	_, hookJSON := makeScriptHookDir(t, "run.sh", "#!/bin/bash\necho hi")

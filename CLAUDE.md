@@ -28,7 +28,7 @@ internal/attention/        aggregated ACTIVE misconfigurations (the needs-attent
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -45,9 +45,17 @@ examples/hooks/            sample hook configs
   Don't add chi/gorilla/echo.
 - **`$schema` is required.** Every `hook.json` must declare a `$schema`
   field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
-  one. The matching property lives in `schema/hook.schema.json`, which is
-  published to GitHub Pages and is what the `$schema` URL points at. Keep
-  the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  one — presence only, never a specific URL. The matching property lives in
+  `schema/hook.schema.json`, published to buildhost sites on every master
+  push (`.github/workflows/schemas.yml` — replaced the GitHub Pages deploy,
+  which died on the org's Actions artifact-storage quota 2026-07-17;
+  operator directive 2026-07-19: use buildhost). Canonical URL:
+  `https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`
+  (a public site branch under the private repo's private buildhost project,
+  via the publish action's `public: true`). The legacy
+  `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
+  their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
+  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
 ## Architecture: two ports + a state socket
 

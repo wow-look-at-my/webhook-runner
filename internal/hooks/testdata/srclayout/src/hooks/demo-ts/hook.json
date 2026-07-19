@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "src-layout fixture: a TS hook importing shared code from ../../sdk",
   "command": ["node", "--experimental-strip-types", "main.ts"],
   "api_key": "fixture-key"

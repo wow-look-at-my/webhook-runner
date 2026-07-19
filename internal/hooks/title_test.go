@@ -148,13 +148,13 @@ func TestRunTitleValidation(t *testing.T) {
 // good one (titleTmpl set, so rendering never re-parses).
 func TestParseRunTitle(t *testing.T) {
 	_, err := parseInDir(t, `{
-		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
 		"run_title": "{{unterminated"
 	}`)
 	require.ErrorContains(t, err, "invalid run_title")
 
 	h, err := parseInDir(t, `{
-		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
 		"run_title": "{{repository.full_name}}#{{pull_request.number}}"
 	}`)
 	require.NoError(t, err)

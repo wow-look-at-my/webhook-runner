@@ -456,7 +456,7 @@ func ReservedEnvKey(k string) bool {
 
 func (h *Hook) validate() error {
 	if h.Schema == "" {
-		return errors.New("$schema is required (point it at https://wow-look-at-my.github.io/webhook-runner/hook.schema.json)")
+		return errors.New("$schema is required (point it at https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json)")
 	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
