@@ -98,7 +98,7 @@ func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 	detail := HookDetail{
 		Info:     hookInfo(h),
 		Image:    s.runner.ImageStatus([]*hooks.Hook{h})[0],
-		Disabled: s.overrides.HookDisabled(id),
+		Disabled: s.effectiveDisabled(id),
 		Stats:    s.mergedStats(id),
 	}
 	if s.kv != nil {

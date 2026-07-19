@@ -65,6 +65,24 @@ func TestParseDind(t *testing.T) {
 	assert.False(t, h.Dind, "dind defaults to false when omitted")
 }
 
+// enable is the hook's DEFAULT kill-switch position: absent (or true)
+// means enabled, so every existing hook is unchanged; an explicit false
+// loads the hook disabled until an operator override — which always wins
+// over this default — enables it.
+func TestParseEnableDefault(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.True(t, h.EnabledByDefault(), "absent enable must mean enabled by default")
+
+	h, err = parseInDir(t, `{"$schema":"s","enable":true}`)
+	require.Nil(t, err)
+	assert.True(t, h.EnabledByDefault())
+
+	h, err = parseInDir(t, `{"$schema":"s","enable":false}`)
+	require.Nil(t, err)
+	assert.False(t, h.EnabledByDefault(), "enable:false must load the hook disabled by default")
+}
+
 // Omitting timeout falls back to DefaultTimeout — every hook keeps hang
 // protection (5 minutes of silence) by default.
 func TestTimeoutDefaultsWhenOmitted(t *testing.T) {

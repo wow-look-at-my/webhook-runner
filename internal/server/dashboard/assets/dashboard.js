@@ -612,24 +612,32 @@ async function toggleHook(id, disable) {
   refresh();
 }
 
-function hookToggleButton(id, disabled) {
-  const btn = el("button", {
-    class: "toggle-btn" + (disabled ? "" : " danger"),
+// ONE control is both the state display and the flip: a slider switch —
+// on/green = enabled, off/grey = disabled (replacing the old status pill +
+// Enable/Disable button pair). The switch shows SERVER state only: the
+// change handler reverts the click's visual flip and lets toggleHook()'s
+// refresh move it, so a cancelled confirm or a failed POST leaves the
+// switch where the server is.
+function hookSwitch(id, disabled) {
+  const input = el("input", {
+    type: "checkbox",
+    role: "switch",
+    "aria-label": `Enable hook ${id}`,
+  });
+  input.checked = !disabled;
+  input.addEventListener("change", () => {
+    const disable = !input.checked; // the flip the click asked for
+    input.checked = disable;        // back to the pre-click (server) state
+    toggleHook(id, disable);
+  });
+  const sw = el("label", {
+    class: "switch",
     title: disabled
       ? `Re-enable ${id}: accept deliveries and scheduled runs again`
       : `Disable ${id}: reject deliveries (503) and skip scheduled runs`,
-  }, disabled ? "Enable" : "Disable");
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toggleHook(id, !disabled);
-  });
-  return btn;
-}
-
-function hookStatusBadge(disabled) {
-  return disabled
-    ? el("span", { class: "badge bad" }, "DISABLED")
-    : el("span", { class: "badge ok" }, "enabled");
+  }, input, el("span", { class: "switch-slider" }));
+  sw.addEventListener("click", (e) => e.stopPropagation());
+  return sw;
 }
 
 function renderHooks(hooks) {
@@ -645,7 +653,7 @@ function renderHooks(hooks) {
             el("code", null, h.id))),
         el("td", null, h.description || ""),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
-        el("td", { class: "row-actions" }, hookStatusBadge(h.disabled), hookToggleButton(h.id, h.disabled)),
+        el("td", { class: "row-actions" }, hookSwitch(h.id, h.disabled)),
         el("td", null, ...triggerPath(h.id)),
       )
     );
@@ -1011,8 +1019,7 @@ function renderAppMissing(id) {
   missing.textContent = "No such hook.";
   missing.hidden = false;
   document.getElementById("app-body").hidden = true;
-  document.getElementById("app-disabled-badge").hidden = true;
-  document.getElementById("app-toggle").hidden = true;
+  document.getElementById("app-switch").hidden = true;
 }
 
 // The app page for a namespace whose hook is gone (orphaned state): the
@@ -1053,13 +1060,11 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-title").textContent = info.id;
   document.getElementById("app-desc").textContent = info.description || "";
 
-  // Operator kill switch for this hook: badge + toggle next to the title.
-  document.getElementById("app-disabled-badge").hidden = !detail.disabled;
-  const toggle = document.getElementById("app-toggle");
-  toggle.hidden = false;
-  toggle.textContent = detail.disabled ? "Enable hook" : "Disable hook";
-  toggle.classList.toggle("danger", !detail.disabled);
-  toggle.onclick = () => toggleHook(info.id, !detail.disabled);
+  // Operator kill switch for this hook: the same single switch as the
+  // overview's Status column, next to the title.
+  const switchSlot = document.getElementById("app-switch");
+  switchSlot.hidden = false;
+  switchSlot.replaceChildren(hookSwitch(info.id, detail.disabled));
 
   fillDl(document.getElementById("app-info"), [
     ["Trigger path", triggerPath(info.id)],

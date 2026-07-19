@@ -116,7 +116,7 @@ func TestDisableEnableEndpointsFlipAndAreIdempotent(t *testing.T) {
 	w := post("/hooks/h/disable")
 	require.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), `"disabled": true`)
-	assert.True(t, ov.HookDisabled("h"))
+	assert.True(t, ov.HookDisabled("h", true))
 	assert.Equal(t, 1, countKind(rec, "hook.disabled"))
 
 	// Idempotent repeat: still 200, but NOT another flip event.
@@ -128,7 +128,7 @@ func TestDisableEnableEndpointsFlipAndAreIdempotent(t *testing.T) {
 	w = post("/hooks/h/enable")
 	require.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), `"disabled": false`)
-	assert.False(t, ov.HookDisabled("h"))
+	assert.False(t, ov.HookDisabled("h", true))
 	assert.Equal(t, 1, countKind(rec, "hook.enabled"))
 	w = post("/hooks/h/enable")
 	require.Equal(t, 200, w.Code)
@@ -139,6 +139,55 @@ func TestDisableEnableEndpointsFlipAndAreIdempotent(t *testing.T) {
 	wr := httptest.NewRecorder()
 	hook(s).ServeHTTP(wr, req)
 	require.Equal(t, http.StatusAccepted, wr.Code)
+}
+
+// hook.json `enable: false` loads a hook DISABLED by default, with nothing
+// stored; the operator endpoints write an explicit persisted override that
+// wins over the default in both directions. GET /hooks (and the dispatch
+// gate) expose the EFFECTIVE state.
+func TestEnableFalseDefaultAndOverridePrecedence(t *testing.T) {
+	s, reg, ov, _ := newOverrideTestServer(t)
+	off := false
+	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"}, Enable: &off})
+
+	listDisabled := func() bool {
+		w := httptest.NewRecorder()
+		admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/hooks", nil))
+		require.Equal(t, 200, w.Code)
+		var list []struct {
+			ID       string `json:"id"`
+			Disabled bool   `json:"disabled"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+		require.Len(t, list, 1)
+		return list[0].Disabled
+	}
+
+	// Born disabled: listed disabled and deliveries 503 — with NO override.
+	assert.True(t, listDisabled(), "enable:false must load the hook disabled")
+	_, hasOverride := ov.HookOverride("h")
+	assert.False(t, hasOverride, "the default needs no stored override")
+	w := httptest.NewRecorder()
+	hook(s).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/hook/h", strings.NewReader(`{}`)))
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	// POST enable writes an explicit override that beats the default.
+	w = httptest.NewRecorder()
+	admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/hooks/h/enable", nil))
+	require.Equal(t, 200, w.Code)
+	assert.False(t, listDisabled(), "the explicit enable override must win over enable:false")
+	enabled, ok := ov.HookOverride("h")
+	require.True(t, ok)
+	assert.True(t, enabled)
+	w = httptest.NewRecorder()
+	hook(s).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/hook/h", strings.NewReader(`{}`)))
+	require.Equal(t, http.StatusAccepted, w.Code, "an explicitly enabled hook dispatches")
+
+	// Disable pins it off again — explicit in the other direction.
+	w = httptest.NewRecorder()
+	admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/hooks/h/disable", nil))
+	require.Equal(t, 200, w.Code)
+	assert.True(t, listDisabled())
 }
 
 func TestDisableUnknownHook404(t *testing.T) {
@@ -197,7 +246,7 @@ func TestDisablePersistFailureIsLoud(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "persist override")
 	assert.Equal(t, 1, countKind(rec, "override.write_failed"))
-	assert.False(t, ov.HookDisabled("h"), "failed persist must roll the flip back")
+	assert.False(t, ov.HookDisabled("h", true), "failed persist must roll the flip back")
 	assert.Zero(t, countKind(rec, "hook.disabled"), "a rolled-back flip is not a flip")
 }
 

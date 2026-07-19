@@ -166,18 +166,22 @@ func TestSectionSignalsCoalesceAndNeverDrop(t *testing.T) {
 // (denied/unknown) must NOT dirty the hooks roster.
 func TestSectionsForEvent(t *testing.T) {
 	cases := map[string][]string{
-		"run.finished":                 {"events"},
-		"schedule.fired":               {"events"},
-		"server.started":               {"events"},
-		"lock.stolen":                  {"events"},
-		"kv.write_failed":              {"events"}, // rolled back — stats unchanged
-		"hook.denied":                  {"events"}, // rejections don't change the roster
-		"hook.unknown":                 {"events"},
-		"hook.disabled_rejected":       {"events"},
-		"hooks.reloaded":               {"events", "hooks", "images", "concurrency", "reload"},
+		"run.finished":           {"events"},
+		"schedule.fired":         {"events"},
+		"server.started":         {"events"},
+		"lock.stolen":            {"events"},
+		"kv.write_failed":        {"events"}, // rolled back — stats unchanged
+		"hook.denied":            {"events"}, // rejections don't change the roster
+		"hook.unknown":           {"events"},
+		"hook.disabled_rejected": {"events"},
+		// A reload can also change effective disabled states (a changed
+		// enable default), and a kill-switch flip changes which hook-scoped
+		// entries GET /attention's read-time filter hides — both dirty
+		// "attention" so the banner count tracks the toggle.
+		"hooks.reloaded":               {"events", "hooks", "images", "concurrency", "reload", "attention"},
 		"hook.load_error":              {"events", "hooks"},
-		"hook.disabled":                {"events", "hooks"},
-		"hook.enabled":                 {"events", "hooks"},
+		"hook.disabled":                {"events", "hooks", "attention"},
+		"hook.enabled":                 {"events", "hooks", "attention"},
 		"image.built":                  {"events", "images"},
 		"image.build_failed":           {"events", "images"},
 		"image.inspect_failed":         {"events", "images"},
