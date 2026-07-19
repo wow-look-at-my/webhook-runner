@@ -103,8 +103,9 @@ func (s *Server) hooksTreeState() hooksTreeState {
 }
 
 // hookListEntry is one row of GET /hooks: the registry summary plus the
-// operator kill-switch state (disabled hooks stay loaded and listed —
-// only their dispatch is gated).
+// EFFECTIVE kill-switch state — the operator's persisted override when one
+// exists, else the hook.json `enable` default (disabled hooks stay loaded
+// and listed — only their dispatch is gated).
 type hookListEntry struct {
 	hooks.Summary
 	Disabled bool `json:"disabled"`
@@ -114,7 +115,7 @@ func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {
 	list := s.registry.List()
 	out := make([]hookListEntry, 0, len(list))
 	for _, sum := range list {
-		out = append(out, hookListEntry{Summary: sum, Disabled: s.overrides.HookDisabled(sum.ID)})
+		out = append(out, hookListEntry{Summary: sum, Disabled: s.effectiveDisabled(sum.ID)})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -134,11 +135,13 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	// The operator kill switch gates DISPATCH only: the hook stays loaded
 	// (image state, config, runs all intact) but no new run starts — not
-	// even from the admin port (re-enable it to run it). Checked before the
+	// even from the admin port (re-enable it to run it). Effective state:
+	// explicit override first, else the hook.json `enable` default — so a
+	// hook shipping `"enable": false` is born gated. Checked before the
 	// body/auth so a runaway caller is cut off at minimal cost, and
 	// answered with a deliberately distinct, loud 503 (a 404/401 would read
 	// as a routing or key problem).
-	if s.overrides.HookDisabled(id) {
+	if s.effectiveDisabled(id) {
 		s.events.Record("hook.disabled_rejected",
 			hook.ID+": delivery rejected — hook is disabled by operator (from "+r.RemoteAddr+")",
 			map[string]string{"hook": hook.ID})

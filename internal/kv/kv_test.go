@@ -164,15 +164,11 @@ func TestIncrRace(t *testing.T) {
 
 func TestCaps(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "kv")
-	s, err := New(Config{Dir: dir, MaxValueBytes: 8, MaxKeysPerNS: 2, MaxNamespaces: 2}, []byte("secret"), nil)
+	s, err := New(Config{Dir: dir, MaxValueBytes: 8, MaxNamespaces: 2}, []byte("secret"), nil)
 	require.NoError(t, err)
 
 	require.Equal(t, ErrValueTooLarge, s.Set("ns", "k", []byte("123456789"), 0))
 	require.NoError(t, s.Set("ns", "a", []byte("x"), 0))
-	require.NoError(t, s.Set("ns", "b", []byte("x"), 0))
-	require.Equal(t, ErrTooManyKeys, s.Set("ns", "c", []byte("x"), 0))
-	// Overwriting an existing key is always allowed.
-	require.NoError(t, s.Set("ns", "a", []byte("y"), 0))
 	// ns is the first namespace; one more is allowed, a third is not.
 	require.NoError(t, s.Set("ns2", "k", []byte("x"), 0))
 	require.Equal(t, ErrTooManyNS, s.Set("ns3", "k", []byte("x"), 0))
@@ -182,7 +178,6 @@ func TestDefaultLimits(t *testing.T) {
 	// Zero-valued limits fall back to the built-in defaults.
 	s := newStore(t)
 	require.Equal(t, 64*1024, s.cfg.MaxValueBytes)
-	require.Equal(t, 5000, s.cfg.MaxKeysPerNS)
 	require.Equal(t, 256, s.cfg.MaxNamespaces)
 }
 

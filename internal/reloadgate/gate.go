@@ -64,6 +64,14 @@ type GitRepo interface {
 	// FetchSHA fetches one commit by sha (GitHub serves reachable-sha
 	// fetches) — the startup last-good restore path.
 	FetchSHA(sha string, depth int) error
+	// TreeHasDir reports whether the commit's TREE contains the given path
+	// (git plumbing, never a checkout) — the manual switch's src-layout
+	// probe.
+	TreeHasDir(sha, path string) bool
+	// ResolveRef resolves a full/abbreviated sha or branch/tag name to a
+	// full commit sha, fetching from origin when needed — the manual
+	// switch's ref input.
+	ResolveRef(ref string) (string, error)
 }
 
 // Config wires a Gate.
@@ -531,18 +539,37 @@ func (g *Gate) Force() error {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return fmt.Errorf("fetch hooks repo: %w", err)
 	}
-	if err := g.repo.ResetTo(tip); err != nil {
-		g.events.Record("reload.failed", "hooks repo reset to "+short(tip)+" failed: "+err.Error(), nil)
-		return fmt.Errorf("reset hooks repo to %s: %w", tip, err)
+	if err := g.forceApplyLocked(tip, true, "reload.forced",
+		fmt.Sprintf("operator forced switch to %s, bypassing ci gate", short(tip))); err != nil {
+		return err
 	}
-	g.servingSHA, g.verified = tip, true
-	g.pendingSHA, g.pendingState = "", ""
-	g.persistLocked()
-	g.resolveHoldEntriesLocked()
-	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadUnverified)
-	msg := fmt.Sprintf("operator forced switch to %s, bypassing ci gate", short(tip))
 	g.log.Warn("hooks repo force-switched, ci gate bypassed", "sha", tip)
-	g.events.Record("reload.forced", msg, nil)
+	return nil
+}
+
+// forceApplyLocked is the ONE Force-style apply path — reset the tree to
+// sha, record it serving + verified (the operator, or a green the operator
+// picked, vouched), persist, record the event, and reload. Force and both
+// ManualSwitch outcomes go through it; unlike trySwitch it applies NO
+// staleness ordering, which is exactly what makes operator rollback to an
+// older commit possible. clearPending drops the pending record and its
+// hold entries (switching to the pending commit itself always clears it —
+// nothing is awaited anymore). Caller holds g.mu.
+func (g *Gate) forceApplyLocked(sha string, clearPending bool, eventKind, eventMsg string) error {
+	if err := g.repo.ResetTo(sha); err != nil {
+		g.events.Record("reload.failed", "hooks repo reset to "+short(sha)+" failed: "+err.Error(), nil)
+		return fmt.Errorf("reset hooks repo to %s: %w", sha, err)
+	}
+	g.servingSHA, g.verified = sha, true
+	if clearPending || g.pendingSHA == sha {
+		g.pendingSHA, g.pendingState = "", ""
+	}
+	g.persistLocked()
+	if g.pendingSHA == "" {
+		g.resolveHoldEntriesLocked()
+	}
+	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadUnverified)
+	g.events.Record(eventKind, eventMsg, nil)
 	if g.apply != nil {
 		g.apply()
 	}

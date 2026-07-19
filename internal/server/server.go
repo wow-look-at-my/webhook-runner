@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
@@ -55,11 +56,20 @@ type Server struct {
 	gate         ReloadGate
 	treeState    func() reloadgate.TreeState
 	hooksRepo    string
+	hooksBranch  string
 	hookBaseURL  string
 	kv           *kv.Store
 	runstore     *runstore.Store
 	overrides    *overrides.Store
 	version      VersionInfo
+
+	// The admin reload panel's seams (reloadpanel.go): the hooks-repo
+	// clone's read surface, the gate's manual-control surface, and the
+	// small CI-verdict cache.
+	reloadRepo    ReloadRepo
+	reloadControl ReloadControl
+	ciMu          sync.Mutex
+	ciCache       map[string]ciCacheEntry
 
 	// stream fans run lifecycle updates out to GET /runs/stream clients;
 	// fed by the tracker's OnChange seam (wired in New). Never nil.
@@ -124,6 +134,21 @@ type Options struct {
 	// HTTPS). Exposed via the admin /config endpoint for the dashboard.
 	HooksRepo string
 
+	// HooksBranch is the tracked hooks-repo branch ("" = the repo
+	// default). Shown by the admin reload panel.
+	HooksBranch string
+
+	// ReloadRepo exposes read/inspect operations on the hooks-repo clone
+	// for the admin reload panel (nil = no repo configured; the panel
+	// reports mode "none" and hides). See reloadpanel.go.
+	ReloadRepo ReloadRepo
+
+	// ReloadControl is the reload gate's manual-control surface (status
+	// snapshot, on-demand reconcile, manual commit switch, CI probe) —
+	// *reloadgate.Gate in production. nil = the gate is disabled (legacy
+	// mode): the panel degrades and per-commit switching is refused.
+	ReloadControl ReloadControl
+
 	// HookBaseURL is the public base URL of the hook port (e.g.
 	// "https://hooks.example.com"). Used by the dashboard to show the
 	// full _reload webhook URL. Optional.
@@ -174,6 +199,7 @@ func New(opts Options) *Server {
 		gate:         opts.Gate,
 		treeState:    opts.TreeState,
 		hooksRepo:    opts.HooksRepo,
+		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
 		runstore:     opts.RunStore,
@@ -183,6 +209,9 @@ func New(opts Options) *Server {
 		hookMux:      http.NewServeMux(),
 		adminMux:     http.NewServeMux(),
 		stateMux:     http.NewServeMux(),
+
+		reloadRepo:    opts.ReloadRepo,
+		reloadControl: opts.ReloadControl,
 	}
 	// The live tail: every run lifecycle mutation is fanned out to the
 	// /runs/stream subscribers. publish never blocks (bounded per-client
@@ -274,6 +303,13 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	s.adminMux.HandleFunc("POST /runs/{id}/cancel", s.handleAdminCancelRun)
 	s.adminMux.HandleFunc("POST /reload", s.handleReload)
+	// The hooks-repo reload panel (reloadpanel.go): live/pending commit
+	// status, recent origin history, reload-on-demand, and the manual
+	// commit switch with its server-enforced informed override.
+	s.adminMux.HandleFunc("GET /reload/status", s.handleReloadStatus)
+	s.adminMux.HandleFunc("GET /reload/commits", s.handleReloadCommits)
+	s.adminMux.HandleFunc("POST /reload/check", s.handleReloadCheck)
+	s.adminMux.HandleFunc("POST /reload/switch", s.handleReloadSwitch)
 	s.adminMux.HandleFunc("GET /config", s.handleConfig)
 	s.adminMux.HandleFunc("GET /events", s.handleEvents)
 	// The persistent misconfiguration surface (see attention.go): the

@@ -30,7 +30,12 @@ type StatusFunc func(ctx context.Context, sha string) (state string, err error)
 // Repeat ticks over an unchanged verdict are quiet: the persistent
 // needs-attention entries are the surface, and the feed gets one event
 // per verdict change, not one per hour.
-func (g *Gate) Reconcile(ctx context.Context) {
+//
+// The returned outcome names what the pass did — "fetch-failed",
+// "already-current", "held-blind", "held-red", "held-pending",
+// "ignored-stale", "switched", or "switch-failed" — for on-demand callers
+// (the admin re-evaluate endpoint); the timer poller ignores it.
+func (g *Gate) Reconcile(ctx context.Context) string {
 	g.mu.Lock()
 	serving := g.servingSHA
 	g.mu.Unlock()
@@ -40,7 +45,7 @@ func (g *Gate) Reconcile(ctx context.Context) {
 		// Learned nothing; the next tick (or the next delivery) retries.
 		g.log.Warn("reload poll: hooks repo fetch failed", "err", err)
 		g.events.Record("git.pull_failed", "reload poll: hooks repo fetch failed: "+err.Error(), nil)
-		return
+		return "fetch-failed"
 	}
 	if tip == serving {
 		// Nothing newer — done, with NO status API call. Mirror the push
@@ -55,7 +60,7 @@ func (g *Gate) Reconcile(ctx context.Context) {
 			g.resolveHoldEntriesLocked()
 		}
 		g.mu.Unlock()
-		return
+		return "already-current"
 	}
 
 	// The tip moved past what is serving: the poll must determine the
@@ -63,12 +68,12 @@ func (g *Gate) Reconcile(ctx context.Context) {
 	// unreadable status HOLDS, loudly.
 	if g.status == nil {
 		g.holdBlind(tip, "no status reader configured")
-		return
+		return "held-blind"
 	}
 	state, err := g.status(ctx, tip)
 	if err != nil {
 		g.holdBlind(tip, err.Error())
-		return
+		return "held-blind"
 	}
 
 	// Determined: whatever blindness there was is over. What follows
@@ -83,12 +88,22 @@ func (g *Gate) Reconcile(ctx context.Context) {
 		// The exact switch path the status event uses — trySwitch's own
 		// fresh fetch + ordering rules re-validate everything under the
 		// gate's lock, so a racing event delivery can never be trampled.
-		if _, err := g.trySwitch(tip); err != nil {
+		status, err := g.trySwitch(tip)
+		if err != nil {
 			g.log.Error("reload poll: switch failed", "sha", tip, "err", err)
+			return "switch-failed"
+		}
+		switch status {
+		case "reloaded":
+			return "switched"
+		case "already-serving":
+			return "already-current"
+		default: // "ignored-stale"
+			return status
 		}
 	case "failure", "error":
 		if g.alreadyHeld(tip, state) {
-			return
+			return "held-red"
 		}
 		// The tip's push webhook may have been missed too, leaving an
 		// older (or no) commit recorded pending: quietly point the hold at
@@ -100,16 +115,18 @@ func (g *Gate) Reconcile(ctx context.Context) {
 		if _, err := g.holdRed(tip, state); err != nil {
 			g.log.Error("reload poll: hold failed", "sha", tip, "err", err)
 		}
+		return "held-red"
 	default:
 		// "pending", "" (no status reported for the context yet), or an
 		// unrecognized state: not affirmatively green — hold, exactly as a
 		// push delivery records a not-yet-green tip.
 		if g.alreadyHeld(tip, "pending") {
-			return
+			return "held-pending"
 		}
 		g.mu.Lock()
 		g.recordPendingLocked(tip)
 		g.mu.Unlock()
+		return "held-pending"
 	}
 }
 

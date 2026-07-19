@@ -101,8 +101,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// survives restarts; hooks opt in with "state": true. The secret signs
 	// per-hook namespace tokens — supply WEBHOOK_RUNNER_STATE_SECRET to share
 	// one across replicas, else it's generated and persisted.
-	// WEBHOOK_RUNNER_KV_MAX_KEYS overrides the per-namespace key cap (zero
-	// here means kv.New applies its built-in default).
 	dataDir := o.dataDir
 	if dataDir == "" {
 		dataDir = filepath.Dir(o.hooksDir)
@@ -115,7 +113,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 		stateSecret = s
 	}
-	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv"), MaxKeysPerNS: o.kvMaxKeys}, stateSecret, logger)
+	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv")}, stateSecret, logger)
 	if err != nil {
 		return fmt.Errorf("state store: %w", err)
 	}
@@ -255,19 +253,29 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,
 		HooksRepo:    o.hooksRepo,
+		HooksBranch:  o.hooksBranch,
 		HookBaseURL:  o.hookBaseURL,
 		KV:           kvStore,
 		RunStore:     runStore,
 		Overrides:    ovStore,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	}
+	if repo != nil {
+		// The admin reload panel's read surface over the clone (status /
+		// recent-commits views). Assigned only when non-nil so the
+		// interface field stays truly nil for local-directory serving.
+		srvOpts.ReloadRepo = repo
+	}
 	if gate != nil {
-		// Assigned only when non-nil so the interface field stays truly
+		// Assigned only when non-nil so the interface fields stay truly
 		// nil (legacy flow) rather than wrapping a nil pointer. TreeState
 		// rides the same nil check: /version reports the gate's hooks-tree
 		// state only when a gate actually tracks the tree.
 		srvOpts.Gate = gate
 		srvOpts.TreeState = gate.TreeState
+		// The panel's manual-control surface: gate snapshot, on-demand
+		// reconcile, and the informed-override commit switch.
+		srvOpts.ReloadControl = gate
 	}
 	srv := server.New(srvOpts)
 
@@ -524,10 +532,14 @@ func announceOrphanedOverrides(loaded map[string]*hooks.Hook, cfg *concurrency.C
 		fields map[string]string
 	}
 	current := map[string]orphan{}
-	for _, id := range ov.DisabledHooks() {
+	for id, enabled := range ov.HookOverrides() {
 		if _, ok := loaded[id]; !ok {
+			kind := "disable"
+			if enabled {
+				kind = "enable"
+			}
 			current["hook:"+id] = orphan{
-				msg:    fmt.Sprintf("disable override for hook %q is orphaned: the hook no longer exists (override kept; it re-applies if the hook returns)", id),
+				msg:    fmt.Sprintf("%s override for hook %q is orphaned: the hook no longer exists (override kept; it re-applies if the hook returns)", kind, id),
 				fields: map[string]string{"hook": id},
 			}
 		}
@@ -568,9 +580,11 @@ func buildScheduleFire(registry *hooks.Registry, tracker *runs.Tracker, ov *over
 		if !ok {
 			return // schedule removed between the tick and now
 		}
-		if ov.HookDisabled(hookID) {
+		if ov.HookDisabled(hookID, h.EnabledByDefault()) {
 			// The kill switch gates dispatch everywhere: HTTP deliveries
 			// 503 and scheduled runs are skipped — loudly, on the feed.
+			// Effective state: explicit operator override first, else the
+			// hook.json `enable` default (false = born disabled).
 			logger.Info("scheduled run skipped; hook disabled by operator", "hook", hookID)
 			rec.Record("schedule.skipped",
 				fmt.Sprintf("%s: hook is disabled by operator; skipping scheduled run", hookID),
