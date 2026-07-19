@@ -75,6 +75,11 @@
       "default": false,
       "description": "When true, the server holds the HTTP response open until the container exits. Default: false (returns 202 immediately)."
     },
+    "enable": {
+      "type": "boolean",
+      "default": true,
+      "description": "The hook's DEFAULT enabled state. When false, the hook loads disabled: deliveries are rejected (503) and scheduled runs are skipped exactly as if the operator kill switch were off, until an operator explicitly enables it. The dashboard/admin runtime override (POST /hooks/{id}/enable|disable, persisted server-side) always takes precedence over this default, in both directions. Absent = enabled, so existing hooks are unchanged."
+    },
     "state": {
       "type": "boolean",
       "default": false,

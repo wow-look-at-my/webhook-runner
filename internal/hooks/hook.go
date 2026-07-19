@@ -97,6 +97,17 @@ type Hook struct {
 	// ?wait=true on a request also forces synchronous behavior.
 	Synchronous bool `json:"synchronous,omitempty"`
 
+	// Enable, when explicitly false, loads the hook DISABLED by default:
+	// deliveries are rejected (503) and scheduled runs are skipped exactly
+	// as if the operator kill switch were flipped off — until an operator
+	// explicitly enables it (the dashboard switch / POST /hooks/{id}/enable,
+	// a persisted runtime override that always wins over this default, in
+	// both directions). Absent (nil) or true means enabled by default, so
+	// existing hooks are unchanged. Like the other newer hook.json fields,
+	// old binaries reject it via DisallowUnknownFields: deploy a
+	// webhook-runner that supports it before merging a hook that sets it.
+	Enable *bool `json:"enable,omitempty"`
+
 	// State, when true, opts the hook into the persistent KV store: the
 	// runner bind-mounts the KV API's Unix socket into the container and
 	// injects HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN (a per-hook
@@ -198,6 +209,14 @@ func (h *Hook) Timeout() time.Duration {
 		return DefaultTimeout
 	}
 	return d
+}
+
+// EnabledByDefault reports the hook.json `enable` default: true unless the
+// hook explicitly sets "enable": false. This is only the DEFAULT position
+// of the kill switch — a persisted operator override (internal/overrides)
+// takes precedence over it everywhere.
+func (h *Hook) EnabledByDefault() bool {
+	return h.Enable == nil || *h.Enable
 }
 
 // ScheduleInterval returns the parsed schedule duration, or 0 when the hook
