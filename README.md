@@ -408,9 +408,12 @@ Properties:
   a hook can only ever read and write its own data.
 - **Internal**: no network and no published port — the API is an internal Unix
   socket reached only through the injected localhost proxy.
-- **Bounded**: per-value size, keys-per-hook (default 5000,
-  `WEBHOOK_RUNNER_KV_MAX_KEYS` overrides), and namespace-count caps keep a
-  runaway hook from exhausting disk (oversize writes get `413`).
+- **Bounded per item, not in total**: per-value size (64 KiB, oversize writes
+  get `413`) and namespace-count (256) caps remain, but total KV growth is
+  deliberately uncapped in-process — the backstop is a memory cap on the
+  server's container (RAM always; swap only where the host kernel accounts
+  it — see the compose example), which also bounds disk because the store is
+  a full in-memory mirror of what it persists.
 - **TTL**: any `PUT`/`incr` may set a per-key expiry (`X-KV-TTL` seconds or
   `?ttl=`); expired keys disappear from reads and are swept from disk.
 - **Locks**: `acquire`/`release` give same-hook runs a race-free mutual
@@ -921,7 +924,6 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`), the token `state-secret`, and the run history (`runs.db`). Defaults alongside the hooks clone + deploy key. |
 | `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's internal Unix socket (the proxy shim bridges `localhost:9002` to it). Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
-| `WEBHOOK_RUNNER_KV_MAX_KEYS`      | `5000`                       | Max keys in one hook's KV namespace. Positive integer; unset or invalid falls back to the default. |
 | `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
 | `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | GitHub token for commit statuses: required if any hook uses `github_status`, and read by the reload gate's [reconciliation poll](#ci-gated-reloads) to check the hooks repo's gating status (needs read access to the hooks repo's commit statuses — a fine-grained PAT with "Commit statuses: Read" + "Metadata: Read" on that repo, or classic `repo:status`). Without it the poll holds loudly on tip changes. |
@@ -1041,6 +1043,11 @@ it via `TMPDIR`:
 services:
   webhook-runner:
     image: ghcr.io/wow-look-at-my/webhook-runner:latest
+    # KV growth is uncapped in-process — this mem_limit is the backstop, and it
+    # caps RAM only: swap stays uncapped unless the host kernel does cgroup swap
+    # accounting (docker info warns "No swap limit support" when it doesn't), so
+    # bounding swap is host territory.
+    mem_limit: 2g
     environment:
       - TMPDIR=/var/lib/webhook-runner/tmp
       # KV state lives here — keep it on a persistent volume.
