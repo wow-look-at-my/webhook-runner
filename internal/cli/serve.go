@@ -255,16 +255,26 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		ReloadSecret: o.hooksRepoSecret,
 		OnReload:     onReload,
 		HooksRepo:    o.hooksRepo,
+		HooksBranch:  o.hooksBranch,
 		HookBaseURL:  o.hookBaseURL,
 		KV:           kvStore,
 		RunStore:     runStore,
 		Overrides:    ovStore,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	}
+	if repo != nil {
+		// The admin reload panel's read surface over the clone (status /
+		// recent-commits views). Assigned only when non-nil so the
+		// interface field stays truly nil for local-directory serving.
+		srvOpts.ReloadRepo = repo
+	}
 	if gate != nil {
-		// Assigned only when non-nil so the interface field stays truly
+		// Assigned only when non-nil so the interface fields stay truly
 		// nil (legacy flow) rather than wrapping a nil pointer.
 		srvOpts.Gate = gate
+		// The panel's manual-control surface: gate snapshot, on-demand
+		// reconcile, and the informed-override commit switch.
+		srvOpts.ReloadControl = gate
 	}
 	srv := server.New(srvOpts)
 

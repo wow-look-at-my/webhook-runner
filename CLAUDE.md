@@ -74,7 +74,15 @@ The server listens on two TCP ports plus a Unix socket:
   labels that window and `stats.skipped` is the skip bucket — see the
   skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, `/events`
+  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, the
+  hooks-repo reload panel (`GET /reload/status` — mode gated/legacy/none,
+  branch, live commit with CI + src/hooks-tree verdicts, the gate's held
+  tip; `GET /reload/commits` — ~20 fetched-fresh origin commits with
+  per-commit CI/src/is_live; `POST /reload/check` — reload on demand:
+  one `Gate.Reconcile` pass in gated mode / the legacy pull+reload;
+  `POST /reload/switch` — the manual commit pick, body `{"ref","override"}`
+  — see the reload-gate bullet's manual-pick paragraph under "Things easy
+  to get wrong"), `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
   event carries), `/attention` (the aggregated needs-attention problem
   set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
@@ -264,6 +272,24 @@ The companion repo is `wow-look-at-my/webhooks`.
   poller never starts (one log line; legacy stays timerless).
   (3) Admin `POST /reload` — the DELIBERATE operator bypass (Force: reset
   to tip, recorded verified, `reload.forced`).
+  MANUAL PICK (the dashboard's reload panel, `POST /reload/switch`):
+  `Gate.ManualSwitch(ref, override)` rides the SAME Force-style apply
+  path (`forceApplyLocked` — Force generalized to a target sha; ONE
+  switch mechanism, zero forks), deliberately WITHOUT trySwitch's
+  staleness ordering so rollback to an OLDER commit works and a wedged
+  gate (CI unreadable) stays overridable. Informed override is
+  SERVER-enforced: a pick whose gating CI state is not affirmatively
+  green ("unknown" counts as not green) or whose tree lacks `src/hooks`
+  answers 409 naming every reason + `requires_override:true` and moves
+  NOTHING (`reload.switch_refused`); only an explicit `override:true`
+  switches — loudly, `reload.forced` naming each overridden reason. A
+  green+src pick records `reload.switched` (verified). Pending
+  bookkeeping stays consistent: picking the pending commit or the tip
+  clears the hold; a rollback elsewhere KEEPS a hold for a different
+  commit visible. The automatic paths (1)/(2) are byte-for-byte
+  unchanged — and note a rollback away from a GREEN tip lasts only until
+  the next green delivery/poll re-switches to it (inherent: the gate
+  converges on the newest green; pin by reverting the commit instead).
   The last-good sha persists in `<data-dir>/reload-gate.json`
   (temp+rename; a persist failure is loud but never blocks the reload)
   and is restored at boot BEFORE the watcher's initial scan — gate mode

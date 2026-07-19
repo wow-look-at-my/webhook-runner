@@ -166,8 +166,6 @@ func TestSectionSignalsCoalesceAndNeverDrop(t *testing.T) {
 // (denied/unknown) must NOT dirty the hooks roster.
 func TestSectionsForEvent(t *testing.T) {
 	cases := map[string][]string{
-		"git.pulled":             {"events"},
-		"github.push":            {"events"},
 		"run.finished":           {"events"},
 		"schedule.fired":         {"events"},
 		"server.started":         {"events"},
@@ -180,7 +178,7 @@ func TestSectionsForEvent(t *testing.T) {
 		// enable default), and a kill-switch flip changes which hook-scoped
 		// entries GET /attention's read-time filter hides — both dirty
 		// "attention" so the banner count tracks the toggle.
-		"hooks.reloaded":               {"events", "hooks", "images", "concurrency", "attention"},
+		"hooks.reloaded":               {"events", "hooks", "images", "concurrency", "reload", "attention"},
 		"hook.load_error":              {"events", "hooks"},
 		"hook.disabled":                {"events", "hooks", "attention"},
 		"hook.enabled":                 {"events", "hooks", "attention"},
@@ -189,6 +187,18 @@ func TestSectionsForEvent(t *testing.T) {
 		"image.inspect_failed":         {"events", "images"},
 		"concurrency.overridden":       {"events", "concurrency"},
 		"concurrency.override_cleared": {"events", "concurrency"},
+		// Everything that moves the reload panel's view: gate verdicts,
+		// git pulls, hooks-repo pushes.
+		"git.pulled":            {"events", "reload"},
+		"git.pull_failed":       {"events", "reload"},
+		"github.push":           {"events", "reload"},
+		"reload.held":           {"events", "reload"},
+		"reload.held_red":       {"events", "reload"},
+		"reload.switched":       {"events", "reload"},
+		"reload.forced":         {"events", "reload"},
+		"reload.switch_refused": {"events", "reload"},
+		"reload.check":          {"events", "reload"},
+		"reload.poll_blind":     {"events", "reload"},
 	}
 	for kind, want := range cases {
 		assert.ElementsMatch(t, want, sectionsForEvent(kind), kind)
