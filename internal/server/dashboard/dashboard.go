@@ -9,6 +9,18 @@
 // (Cloudflare caches .css/.js by extension when the origin sends no cache
 // headers) can pair a new index.html with stale assets after a deploy —
 // which is exactly the incident that motivated this.
+//
+// assets/timeline.js is GENERATED — never edit it. Its TypeScript source
+// lives in ts/ (the runs-timeline ADAPTER only — the <timeline-view>
+// component itself is imported by the browser at runtime from
+// wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
+// compiled by ts0 (type-check + bundle, config in ts0.json; the component
+// URL passes through unbundled). The committed bundle is authoritative and
+// embedded as-is: the npx //go:generate directive that rebuilt it was
+// removed (the build must not need node/npm/npx), so regeneration is
+// temporarily a manual step — run ts0 yourself after editing ts/ and commit
+// the regenerated bundle. A prebuilt ts0 binary served from buildhost,
+// fetched by a small Go bootstrap, is landing next to re-automate this.
 package dashboard
 
 import (
@@ -29,23 +41,28 @@ type Asset struct {
 	ContentType string
 }
 
-// CSS and JS are the dashboard's static assets; Index is index.html with
-// its asset references rewritten to the content-addressed names.
+// CSS and JS are the dashboard's static assets; TimelineJS is the generated
+// runs-timeline bundle (ts0 output, committed — see the package comment);
+// Index is index.html with its asset references rewritten to the
+// content-addressed names.
 var (
-	CSS   Asset
-	JS    Asset
-	Index []byte
+	CSS        Asset
+	JS         Asset
+	TimelineJS Asset
+	Index      []byte
 )
 
 func init() {
 	CSS = load("dashboard.css", "text/css; charset=utf-8")
 	JS = load("dashboard.js", "text/javascript; charset=utf-8")
+	TimelineJS = load("timeline.js", "text/javascript; charset=utf-8")
 	idx := mustRead("index.html")
 	// Dumb-but-sufficient rewrite: the quoted literals appear exactly once
 	// each (the <link href> and <script src>); quotes keep prose mentions
 	// of the file names in comments untouched.
 	idx = bytes.ReplaceAll(idx, []byte(`"dashboard.css"`), []byte(`"`+CSS.HashedName+`"`))
 	idx = bytes.ReplaceAll(idx, []byte(`"dashboard.js"`), []byte(`"`+JS.HashedName+`"`))
+	idx = bytes.ReplaceAll(idx, []byte(`"timeline.js"`), []byte(`"`+TimelineJS.HashedName+`"`))
 	Index = idx
 }
 

@@ -19,9 +19,15 @@ import (
 type HookDetail struct {
 	Info  HookInfo           `json:"info"`
 	Image runner.ImageStatus `json:"image"`
-	// KV is the hook's state-store namespace summary (key count + bytes,
-	// never values — same rule as /kv); absent when the store is off or
-	// holds nothing for this hook.
+	// Disabled is the operator kill switch (operational state, not
+	// hook.json config — which is why it sits beside Info, not in it):
+	// true means deliveries are rejected (503) and scheduled runs skipped
+	// until the operator re-enables the hook.
+	Disabled bool `json:"disabled"`
+	// KV is the hook's state-store namespace summary (key count + bytes —
+	// this endpoint stays value-free like the bare /kv stats; keys and
+	// values live behind /kv/{namespace}[/{key}], see kvadmin.go); absent
+	// when the store is off or holds nothing for this hook.
 	KV *kv.NamespaceStat `json:"kv,omitempty"`
 	// Stats cover the live tracker window merged with the persisted run
 	// history when a run store is configured (Stats.Retention names the
@@ -40,6 +46,11 @@ type HookInfo struct {
 	Schedule         string `json:"schedule,omitempty"`
 	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 	State            bool   `json:"state,omitempty"`
+	// Dind reports whether the hook opted into Docker-in-Docker (--privileged
+	// + an anonymous /var/lib/docker volume so it can run a nested container
+	// daemon). Surfaced so an operator can see this host-root-equivalent
+	// capability on the hook's drill-down page.
+	Dind bool `json:"dind,omitempty"`
 	// Timeout is the absolute run ceiling, when the hook sets one (empty =
 	// no absolute ceiling; the run is bounded by idle_timeout, if set, or
 	// runs until it exits).
@@ -49,6 +60,11 @@ type HookInfo struct {
 	IdleTimeout string   `json:"idle_timeout,omitempty"`
 	APIKey      bool     `json:"api_key"`
 	EnvKeys     []string `json:"env_keys,omitempty"`
+	// SkipConditions is how many skip_if conditions the hook declares
+	// (0 = every authenticated delivery runs). A count, not the conditions:
+	// this summary stays compact — the conditions live in hook.json, and
+	// each skipped run's output names the exact one that matched.
+	SkipConditions int `json:"skip_conditions,omitempty"`
 }
 
 func hookInfo(h *hooks.Hook) HookInfo {
@@ -59,7 +75,10 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		Schedule:         h.Schedule,
 		ConcurrencyGroup: h.ConcurrencyGroup,
 		State:            h.State,
+		Dind:             h.Dind,
 		APIKey:           h.APIKey != "",
+		APIKey:           h.APIKey != "",
+		SkipConditions:   len(h.SkipIf),
 	}
 	if d := h.Timeout(); d > 0 {
 		info.Timeout = d.String()
@@ -86,9 +105,10 @@ func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail := HookDetail{
-		Info:  hookInfo(h),
-		Image: s.runner.ImageStatus([]*hooks.Hook{h})[0],
-		Stats: s.mergedStats(id),
+		Info:     hookInfo(h),
+		Image:    s.runner.ImageStatus([]*hooks.Hook{h})[0],
+		Disabled: s.effectiveDisabled(id),
+		Stats:    s.mergedStats(id),
 	}
 	if s.kv != nil {
 		for _, ns := range s.kv.Stats() {

@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
@@ -39,9 +38,9 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// An unarmed watchdog never fires, no matter how much time passes: the idle
+// An unarmed watchdog never fires, no matter how much time passes: the
 // clock arms only at container launch, so a run queued behind a concurrency
-// group (or still building its image) cannot idle out.
+// group (or still building its image) cannot time out.
 func TestIdleWatchdogNeverFiresBeforeArm(t *testing.T) {
 	clock := newFakeClock()
 	w := newIdleWatchdog(100*time.Millisecond, clock.Now)
@@ -128,11 +127,16 @@ func TestIdleWatchdogWatchLoop(t *testing.T) {
 }
 
 // --- Runner-level integration (mock docker; helpers from runner_test.go) ---
+//
+// `timeout` is activity-based: these tests drive the watchdog through the
+// hook's one timeout field. The queued-run case (a pending run must never
+// tick) is covered by TestIdleWatchdogNeverFiresBeforeArm above (the pure
+// arming invariant) and TestRunnerConcurrencyGroupQueuesAndDefersTimeout in
+// runner_test.go (the same integration, timeout-driven).
 
-// A run that goes silent for longer than idle_timeout is killed with status
-// timeout — and an error message naming the idle semantics, distinguishable
-// from the total-timeout message.
-func TestRunnerIdleTimeout(t *testing.T) {
+// A run that goes silent for longer than timeout is killed with status
+// timeout and an error message naming the no-output semantics.
+func TestRunnerTimeoutKillsSilentRun(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
 
@@ -145,14 +149,11 @@ func TestRunnerIdleTimeout(t *testing.T) {
 	})
 
 	hook := diskHook(t, dir, &hooks.Hook{
-		ID:             "h",
-		Command:        []string{"one-line-then-silence", "SLEEP_30"},
-		IdleTimeoutRaw: "200ms",
-		// A generous total ceiling proves the idle watchdog, not the total
-		// timeout, is what fires.
-		TimeoutRaw: "1h",
+		ID:         "h",
+		Command:    []string{"one-line-then-silence", "SLEEP_30"},
+		TimeoutRaw: "200ms",
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
 	select {
@@ -163,15 +164,16 @@ func TestRunnerIdleTimeout(t *testing.T) {
 	r.Wait()
 
 	assert.Equal(t, runs.StatusTimeout, run.Status())
-	assert.Contains(t, run.Error(), "idle timeout after 200ms")
+	assert.Contains(t, run.Error(), "timed out after 200ms")
 	assert.Contains(t, run.Error(), "no output")
 }
 
-// Output resets the idle clock: a run whose gaps between lines stay under
-// idle_timeout completes normally even though its total runtime exceeds the
-// idle limit — the incident this feature fixes (a 47-part map-reduce that
-// logged every <=45s was killed at a 15m wall-clock ceiling).
-func TestRunnerIdleTimeoutOutputKeepsRunAlive(t *testing.T) {
+// Output resets the clock: a run whose gaps between lines stay under
+// timeout completes normally even though its TOTAL runtime exceeds the
+// timeout value — the incident this semantics fixes (a healthy 47-part
+// map-reduce that logged every <=45s was killed at a 15m wall-clock
+// ceiling mid-progress).
+func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
 
@@ -183,56 +185,25 @@ func TestRunnerIdleTimeoutOutputKeepsRunAlive(t *testing.T) {
 		Docker:  docker,
 	})
 
-	// tick, 1s of silence, tock, 1s of silence, done — ~2s total runtime
-	// with every silent gap well under the 5s idle limit.
+	// A line every ~1s for ~4s of runtime, against a 3s timeout: every
+	// silent gap stays well under the limit while the total runtime
+	// exceeds it — under the old wall-clock semantics this run died.
 	hook := diskHook(t, dir, &hooks.Hook{
-		ID:             "h",
-		Command:        []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
-		IdleTimeoutRaw: "5s",
+		ID:         "h",
+		Command:    []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
+		TimeoutRaw: "3s",
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
 	snap := run.Snapshot(-1)
 	assert.Equal(t, runs.StatusSuccess, snap.Status,
-		"steady output must keep an idle-limited run alive: %s", snap.Error)
+		"steady output must keep the run alive past its timeout value: %s", snap.Error)
 	assert.Contains(t, snap.Output, "done")
-}
-
-// The idle clock follows the same arming rule as the total timeout: a run
-// queued behind a concurrency group must not idle out while it waits.
-func TestRunnerIdleTimeoutQueuedRunDoesNotIdleOut(t *testing.T) {
-	dir := t.TempDir()
-	docker := writeMockDocker(t, dir)
-	tracker := runs.NewTracker()
-	mgr := concurrency.NewManager(&concurrency.Config{
-		Groups: map[string]concurrency.Group{"g": {Limit: 1}},
-	})
-	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
-		Groups:  mgr,
-	})
-
-	// A holds the single slot for ~1s.
-	hookA := diskHook(t, dir, &hooks.Hook{ID: "a", Command: []string{"SLEEP_1"}, ConcurrencyGroup: "g"})
-	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{})
-	require.NoError(t, err)
-	waitStatus(t, runA, runs.StatusRunning, 2*time.Second)
-
-	// B waits ~1s in the queue — far beyond its 300ms idle limit — but the
-	// watchdog only arms at container launch, so B still succeeds.
-	hookB := diskHook(t, dir, &hooks.Hook{ID: "b", Command: []string{"echo", "b"}, IdleTimeoutRaw: "300ms", ConcurrencyGroup: "g"})
-	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{})
-	require.NoError(t, err)
-	assert.Equal(t, runs.StatusPending, runB.Status())
-
-	r.Wait()
-	assert.Equal(t, runs.StatusSuccess, runB.Status(),
-		"a queued run must not idle out while waiting for its slot")
+	// The run provably outlived its timeout: >=4s of processing vs 3s.
+	assert.Greater(t, snap.Finished.Sub(snap.StartedAt), 3*time.Second,
+		"the run must have outlived its timeout value while producing output")
 }
 
 // touchReader stamps on every successful read — bytes, not lines — so even a

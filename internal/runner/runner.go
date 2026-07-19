@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
@@ -59,11 +60,14 @@ type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 // Implementations typically push the GitHub "pending" commit status.
 type HookStartedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
-// KVInjector mints the per-hook bearer token injected into containers that
-// opt into the state store. It is a one-method seam (satisfied by *kv.Store)
-// so the runner needn't import the kv package's whole surface.
+// KVInjector mints the per-run bearer token injected into containers that
+// opt into the state store — bound to both the hook's namespace and THIS
+// run's identity, which is what lets the state API attribute cooperative
+// locks to their holding run (and the finish seam free them). It is a
+// one-method seam (satisfied by *kv.Store) so the runner needn't import the
+// kv package's whole surface.
 type KVInjector interface {
-	Token(namespace string) string
+	Token(namespace, runID string) string
 }
 
 // Runner launches docker containers and tracks the resulting runs.
@@ -91,6 +95,12 @@ type Runner struct {
 	dockerBin string
 
 	wg sync.WaitGroup
+
+	// draining is set once shutdown begins: no NEW runs may start (a run
+	// launched by a dying process races the state-socket handover and the
+	// docker-kill teardown). In-flight runs are unaffected — Wait drains
+	// them. See BeginShutdown.
+	draining atomic.Bool
 }
 
 // Options configure a Runner.
@@ -177,8 +187,27 @@ func (r *Runner) Wait() { r.wg.Wait() }
 //
 // Caller-supplied payload and headers are written to disk before the
 // container starts; the temp files are removed when the run finishes.
-func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header) (*runs.Run, error) {
+//
+// title is the run's friendly display title, resolved by the caller from
+// the hook's run_title template ("" = untitled; the dashboard falls back
+// to the run id). The caller resolves it — not this package — because
+// resolution context is the caller's: the HTTP path renders it once before
+// skip evaluation, and the scheduler applies its own "schedule" fallback.
+func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title string) (*runs.Run, error) {
 	run := r.tracker.New(hook.ID)
+	run.SetTitle(title)
+
+	// Drain gate: a run launched by a dying process races the state-socket
+	// handover and the shutdown teardown — refuse loudly instead. The run
+	// record exists (status error, the reason in run history); the caller
+	// maps ErrDraining to a retryable 503.
+	if r.draining.Load() {
+		run.Finish(runs.StatusError, -1, ErrDraining.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return run, ErrDraining
+	}
 
 	payloadPath, headersPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers)
 	if err != nil {
@@ -208,6 +237,44 @@ func runContext(parent context.Context, timeout time.Duration) (context.Context,
 		return context.WithTimeout(parent, timeout)
 	}
 	return context.WithCancel(parent)
+}
+
+// Skip records a first-class "no work was done" run for a delivery matched
+// by one of the hook's skip_if conditions. It is the whole pipeline for a
+// skip: a real, tracked run that goes terminal immediately with status
+// "skipped" — its output names the matched condition, its Finish drives the
+// tracker's OnFinish seam exactly like any other run (so the skip persists
+// to run history), and a run.skipped event lands on the activity feed. What
+// it deliberately does NOT do is any work: no temp files, no secrets
+// decrypt, no image build, no concurrency-group slot, and above all NO
+// container. The onStart/onFinish callbacks (GitHub commit statuses) are
+// not invoked either — they report container work, and none happened.
+// Cancellation and timeout cannot apply: the run is terminal on return.
+//
+// title carries the run's friendly display title like Start's — set BEFORE
+// Finish, so the terminal snapshot the OnFinish seam persists is titled: a
+// skip should still say which PR it was about.
+func (r *Runner) Skip(hook *hooks.Hook, reason, title string) *runs.Run {
+	run := r.tracker.New(hook.ID)
+	run.SetTitle(title)
+	run.AppendOutput("skipped: " + reason)
+	run.Finish(runs.StatusSkipped, 0, "")
+	r.log.Info("hook skipped", "hook", hook.ID, "run", run.ID(), "reason", reason)
+	r.events.Record("run.skipped", fmt.Sprintf("%s run %s skipped: %s", hook.ID, runRef(run), reason),
+		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(runs.StatusSkipped)})
+	return run
+}
+
+// runRef names a run for the activity feed: the id, plus the friendly
+// title when one is set — `abc… (wow-look-at-my/go-toolchain#47)` — so the
+// feed's run-scoped lines are readable without a lookup. The id stays
+// first: it is the stable handle everything else (logs, /runs/{id},
+// container names) keys on.
+func runRef(run *runs.Run) string {
+	if t := run.Title(); t != "" {
+		return run.ID() + " (" + t + ")"
+	}
+	return run.ID()
 }
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
@@ -281,9 +348,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// any actual processing. When a hook (or several hooks sharing a group)
 	// is flooded, the excess runs wait here — staying "pending", not
 	// "running" — instead of all launching containers at once. The timeout
-	// is deliberately NOT started yet: a run must not burn its budget while
-	// sitting in the queue.
-	release, acquired, qErr := r.acquireSlot(hook, run)
+	// watchdog is deliberately NOT armed yet: a run must not burn its
+	// budget while sitting in the queue. While queued, the run's waiting_on
+	// mirrors its place in the line (kind "group": holders + position) so
+	// the dashboard can answer "what is it stuck behind".
+	release, acquired, clearQueued, qErr := r.acquireSlot(hook, run)
 	if qErr != nil {
 		// An undeclared group is a misconfiguration; fail closed rather
 		// than silently running unbounded.
@@ -296,13 +365,15 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	if !acquired {
-		// Cancelled while waiting in the queue.
+		// Cancelled while waiting in the queue. (Finish clears waiting_on
+		// itself, so no explicit clearQueued is needed on this path.)
 		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
 		if r.onFinish != nil {
 			r.onFinish(hook, run, payload)
 		}
 		return
 	}
+	clearQueued()
 	defer release()
 
 	// The timeout clock starts now — we hold a slot and are about to launch
@@ -341,7 +412,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			"-v", r.kvSocket+":"+mountedStateSocket,
 			"-e", "HOOK_KV_SOCKET="+mountedStateSocket,
 			"-e", "HOOK_KV_URL=http://localhost:9002",
-			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID),
+			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
 		)
 	}
 	for _, n := range hook.Networks {
@@ -382,6 +453,17 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	if hook.Workdir != "" {
 		args = append(args, "--workdir", hook.Workdir)
 	}
+	// Docker-in-Docker: --privileged (host-root-equivalent) grants the
+	// container the capabilities to run its own nested dockerd, and the
+	// anonymous /var/lib/docker volume gives that inner daemon container-local
+	// storage on a real filesystem — its overlay driver can't stack on the
+	// outer container's overlay rootfs. --rm above auto-removes the anonymous
+	// volume, so inner storage never leaks between runs. The host's daemon is
+	// never exposed (no socket mount). Injected before extra_docker_args and
+	// the image so a hook's raw args and command still trail.
+	if hook.Dind {
+		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+	}
 	args = append(args, hook.ExtraDockerArgs...)
 	args = append(args, image)
 	if stateForwarding {
@@ -406,8 +488,8 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 
 	r.log.Info("hook starting",
-		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout, "idle_timeout", idleTimeout)
-	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, run.ID(), image),
+		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
+	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, runRef(run), image),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
 	if r.onStart != nil {
@@ -463,42 +545,44 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.SetRunning()
 
 	timedOut := make(chan struct{})
-	idled := make(chan struct{})
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
 
-	// The idle watchdog (if the hook sets idle_timeout) arms NOW — after the
-	// concurrency slot was acquired and the container actually launched, the
-	// same rule as the total-timeout clock above — and any output byte on
-	// either stream resets it via the touchReader wrappers.
-	var stdout, stderr io.Reader = stdoutR, stderrR
-	var idleFired <-chan struct{} // nil (never selected) when no idle_timeout is set
-	if idleTimeout > 0 {
-		wd := newIdleWatchdog(idleTimeout, time.Now)
-		wd.Arm()
-		idleFired = wd.Watch(stopWatcher)
-		stdout = &touchReader{r: stdout, touch: wd.Touch}
-		stderr = &touchReader{r: stderr, touch: wd.Touch}
-	}
+	// The timeout watchdog arms NOW — only after the concurrency slot was
+	// acquired and the container actually launched, so a queued run never
+	// ticks — and any output byte on either stream resets it via the
+	// touchReader wrappers. The timeout is activity-based: it fires only
+	// after `timeout` of NO output, so a run that keeps logging progress
+	// runs as long as it needs (there is no absolute wall-clock ceiling),
+	// while one that has gone silent is killed.
+	wd := newIdleWatchdog(timeout, time.Now)
+	wd.Arm()
+	// Declared waits (the state API's POST /wait) count as activity: hand
+	// the run a handle to this watchdog so an in-flight wait keeps touching
+	// it — an announced sleep is forward progress, not silence. Touches on
+	// a finished run are harmless, so this is never deregistered.
+	run.SetActivityTouch(wd.Touch)
+	silent := wd.Watch(stopWatcher)
+	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
+	stderr := &touchReader{r: stderrR, touch: wd.Touch}
 
 	var streamWG sync.WaitGroup
 	streamWG.Add(2)
 	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
 	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
 
-	// Watch for the total timeout (ctx), the idle watchdog, and explicit
-	// cancel requests in parallel with cmd.Wait. Any one kills the container
-	// by name. A cancel requested before this goroutine started selects
-	// immediately (the channel is already closed), so the pre-start race is
-	// covered.
+	// Watch for the no-output timeout, parent-context cancellation, and
+	// explicit cancel requests in parallel with cmd.Wait. Any one kills the
+	// container by name. A cancel requested before this goroutine started
+	// selects immediately (the channel is already closed), so the pre-start
+	// race is covered.
 	go func() {
 		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				close(timedOut)
-			}
-		case <-idleFired:
-			close(idled)
+		case <-silent:
+			close(timedOut)
+		case <-parent.Done():
+			// Parent cancelled (e.g. the caller tearing down): kill the
+			// container and let cmd.Wait's error shape the terminal status.
 		case <-run.Cancelled():
 			close(cancelled)
 		case <-stopWatcher:
@@ -519,11 +603,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	// In the normal case the process has exited and its pipe ends
 	// are closed, so streamWG.Wait returns immediately. On a kill
-	// (total timeout, idle timeout, or cancel), orphaned child processes
-	// (e.g. the real docker container's descendants) can keep the write end
-	// open; force-close the read ends so the scanner goroutines unblock.
+	// (timeout or cancel), orphaned child processes (e.g. the real docker
+	// container's descendants) can keep the write end open; force-close
+	// the read ends so the scanner goroutines unblock.
 	killedByWatcher := false
-	for _, ch := range []chan struct{}{timedOut, idled, cancelled} {
+	for _, ch := range []chan struct{}{timedOut, cancelled} {
 		select {
 		case <-ch:
 			killedByWatcher = true
@@ -557,23 +641,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		if exitCode == 0 {
 			exitCode = -1
 		}
-		errMsg = fmt.Sprintf("timed out after %s", timeout)
+		// The message names the activity semantics: the run died for going
+		// silent, not for running long.
+		errMsg = fmt.Sprintf("timed out after %s (no output)", timeout)
 	default:
 	}
-	// The idle kill is a timeout too, but its message names the idle
-	// semantics so an operator can tell "went silent" from "hit the
-	// absolute ceiling". (The watcher closes at most one of these channels,
-	// so the two timeout cases never race each other.)
-	select {
-	case <-idled:
-		status = runs.StatusTimeout
-		if exitCode == 0 {
-			exitCode = -1
-		}
-		errMsg = fmt.Sprintf("idle timeout after %s (no output)", idleTimeout)
-	default:
-	}
-	// Checked after the timeouts so an explicit cancel takes precedence when
+	// Checked after the timeout so an explicit cancel takes precedence when
 	// both raced to kill the container.
 	select {
 	case <-cancelled:
@@ -582,15 +655,23 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			exitCode = -1
 		}
 		errMsg = "cancelled"
+		// A cancel can carry an explanation — e.g. a lock steal naming its
+		// displacer — which belongs in run history, not just the moment.
+		if reason := run.CancelReason(); reason != "" {
+			errMsg = reason
+		}
 	default:
 	}
 	run.Finish(status, exitCode, errMsg)
 	r.log.Info("hook finished",
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, run.ID(), status, exitCode)
-	if status == runs.StatusTimeout && errMsg != "" {
-		// Name the reason: "idle timeout ... (no output)" vs "timed out
-		// after ...", so the activity feed distinguishes the two kills.
+	// runRef, not run.ID(): a title set mid-run via the state API's /title
+	// lands here too, so the feed's terminal line names the subject.
+	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, runRef(run), status, exitCode)
+	if errMsg != "" && (status == runs.StatusTimeout ||
+		(status == runs.StatusCancelled && errMsg != "cancelled")) {
+		// Carry the reason (a timeout's "no output" verdict, a cancel's
+		// steal explanation) so the activity feed shows what killed the run.
 		finishedMsg += ": " + errMsg
 	}
 	r.events.Record("run.finished", finishedMsg,
@@ -614,21 +695,6 @@ func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run
 		r.log.Warn("output scanner error",
 			"hook", hookID, "run", run.ID(), "stream", stream, "err", err)
 	}
-}
-
-// acquireSlot reserves a concurrency-group slot for the run, recording a
-// one-time "queued" activity event the moment the run actually has to wait
-// (not when it gets a slot immediately). A hook with no concurrency_group
-// returns instantly with a no-op release. The returned release must be
-// called exactly once when the run finishes.
-func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, err error) {
-	return r.groups.Acquire(hook.ConcurrencyGroup, run.Cancelled(), func() {
-		r.log.Info("hook run queued",
-			"hook", hook.ID, "run", run.ID(), "group", hook.ConcurrencyGroup)
-		r.events.Record("run.queued",
-			fmt.Sprintf("%s run %s queued on concurrency group %q", hook.ID, run.ID(), hook.ConcurrencyGroup),
-			map[string]string{"hook": hook.ID, "run": run.ID(), "group": hook.ConcurrencyGroup})
-	})
 }
 
 func (r *Runner) killContainer(name string) {

@@ -4,10 +4,17 @@
 # downloaded into build/ by the publish-ghcr workflow. This Dockerfile only
 # packages that prebuilt artifact, mirroring the buildhost pattern. The
 # runtime needs docker-cli, git, and ssh because the server shells out to
-# `docker run` for each hook and clones/pulls the hooks repo over SSH.
+# `docker run` for each hook and clones/pulls the hooks repo over SSH. It also
+# needs sops to decrypt per-hook `secrets.sops.env` files: the server execs the
+# `sops` binary host-side (hooks.SecretsLoader), then injects the decrypted
+# values into the hook container as plain env vars — the hook container itself
+# never sees sops. sops decrypts age natively, so `age` isn't strictly required
+# for that path; it's included for key generation/inspection during ops. The age
+# *identity* (the private key) is supplied at runtime via SOPS_AGE_KEY_FILE and
+# is never baked into the image.
 
 FROM alpine:3.20
-RUN apk add --no-cache docker-cli git openssh-client ca-certificates tzdata && \
+RUN apk add --no-cache docker-cli git openssh-client ca-certificates tzdata sops age && \
     addgroup -S webhook && adduser -S -G webhook webhook
 
 ARG VERSION=dev
