@@ -585,3 +585,59 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
 #attention-table td.attention-age { white-space: nowrap; }
 #attention-table tbody tr:hover { cursor: default; }
 #attention-table tbody tr.attention-hook-row:hover { cursor: pointer; }
+
+/* --- Hooks repo reload panel ---------------------------------------------
+   The live-commit line, its held/pending sibling, and the collapsed
+   recent-commits picker. Badges reuse the shared .badge palette; the
+   picker table reuses the shared table styling. */
+#reload-live { display: grid; gap: 0.35rem; margin-bottom: 0.75rem; }
+.reload-live-row, .reload-pending {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.reload-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.reload-branch { color: var(--muted); font-size: 0.875rem; }
+.reload-subject { color: var(--muted); font-size: 0.875rem; }
+.reload-subject-inline { color: var(--muted); font-size: 0.875rem; }
+.reload-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+#reload-picker summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+#reload-picker[open] summary { margin-bottom: 0.5rem; }
+#reload-commits-table td.reload-commit-subject {
+  max-width: 34rem;
+  overflow-wrap: anywhere;
+}
+#reload-commits-table tbody tr:hover { cursor: default; }
+#reload-commits-table tr.reload-live-commit { background: rgba(63, 185, 80, 0.06); }
+.reload-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+#reload-ref-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  min-width: 22rem;
+  max-width: 100%;
+}
