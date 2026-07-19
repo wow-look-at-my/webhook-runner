@@ -561,7 +561,23 @@ The companion repo is `wow-look-at-my/webhooks`.
   (`<data-dir>/overrides.json`, atomic temp+rename writes; a persist
   failure rolls the in-memory flip back and surfaces as a 500 + an
   `override.write_failed` event — same loud-write rule as kv), NOT
-  hooks-repo config. The disable gate lives **at dispatch, not load**: a
+  hooks-repo config. The hook switch is TRI-STATE: hook.json's `enable`
+  field (absent = true) is only the DEFAULT position, and the store
+  persists an EXPLICIT per-hook enable/disable override (`hook_enable` in
+  overrides.json; the legacy `disabled_hooks` set is still read — as
+  explicit disables — AND written for binary downgrades) that outranks the
+  default in both directions, so enabling an `"enable": false` hook
+  sticks. Effective state = override-if-any, else the default; a hook that
+  failed to LOAD counts as default-enabled (`Server.effectiveDisabled` /
+  `Store.HookDisabled(id, defaultEnabled)` — every consumer goes through
+  these, never a raw read). GET /attention drops entries of effectively
+  disabled hooks at READ time (never deleted — re-enabling resurfaces
+  them), and hook.disabled/hook.enabled/hooks.reloaded also dirty the
+  "attention" stream section so the banner count tracks flips. The
+  dashboard renders the whole thing as ONE slider switch per hook (hooks
+  table Status column + the app page title row — `hookSwitch` in
+  dashboard.js; no separate state pill, no Enable/Disable button).
+  The disable gate lives **at dispatch, not load**: a
   disabled hook stays loaded/registered (image state, config, run history
   intact) and `handleTrigger` rejects deliveries with a distinct 503 +
   `hook.disabled_rejected` event, while `buildScheduleFire` skips its
