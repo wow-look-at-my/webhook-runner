@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -39,8 +40,19 @@ func (s *Server) checkAPIKey(hook *hooks.Hook, r *http.Request) error {
 			return errors.New("server misconfigured: hook secrets unavailable")
 		}
 	}
-	want, _ := hooks.ExpandEnvRefs(hook.APIKey, hooks.SecretsFirstLookup(secrets))
+	want, missing := hooks.ExpandEnvRefs(hook.APIKey, hooks.SecretsFirstLookup(secrets))
 	if want == "" {
+		// Every caller is about to get a 401 because of *server-side* config,
+		// not bad credentials. Name the broken reference where the operator
+		// looks (log + dashboard event) — but keep the 401 body generic; an
+		// anonymous caller gets no config detail.
+		if len(missing) > 0 {
+			s.log.Error("hook api_key reference unresolvable; denying all callers",
+				"hook", hook.ID, "missing", missing)
+			s.events.Record("hook.misconfigured",
+				hook.ID+": api_key reference ${"+strings.Join(missing, "}, ${")+"} did not resolve (secrets.sops.env / host env); all callers are denied",
+				map[string]string{"hook": hook.ID})
+		}
 		return errors.New("api key not configured on the server")
 	}
 	got := r.Header.Get(hook.APIKeyHdr())

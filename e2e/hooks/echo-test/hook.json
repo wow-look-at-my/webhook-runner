@@ -1,5 +1,9 @@
 {
+  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
   "description": "e2e echo test",
+  // Friendly title template: {"sender":"e2e-test"} deliveries render
+  // "echo e2e-test"; bodies without a sender get no title (id fallback).
+  "run_title": "echo {{sender}}",
   "command": ["sh", "-c", "echo hello-e2e && cat $HOOK_PAYLOAD_FILE"],
   "timeout": "60s"
 }
