@@ -16,6 +16,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
+	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
@@ -53,6 +54,7 @@ type Server struct {
 	reloadSecret string
 	onReload     func() error
 	gate         ReloadGate
+	treeState    func() reloadgate.TreeState
 	hooksRepo    string
 	hooksBranch  string
 	hookBaseURL  string
@@ -119,6 +121,14 @@ type Options struct {
 	// green gating status moves the hooks tree. nil keeps the legacy
 	// behavior (any signed POST pulls + reloads).
 	Gate ReloadGate
+
+	// TreeState, when set, reports the reload gate's hooks-tree state —
+	// which commit the served hooks tree is at, and the pending commit +
+	// hold reason while the gate is holding — included as hooks_tree in
+	// /version on both ports (serve wires it to reloadgate.Gate.TreeState).
+	// nil means no gate tracks the tree (no hooks repo, or the legacy
+	// gate-disabled mode) and /version names that mode instead.
+	TreeState func() reloadgate.TreeState
 
 	// HooksRepo is the Git remote URL of the hooks repository (SSH or
 	// HTTPS). Exposed via the admin /config endpoint for the dashboard.
@@ -187,6 +197,7 @@ func New(opts Options) *Server {
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,
 		gate:         opts.Gate,
+		treeState:    opts.TreeState,
 		hooksRepo:    opts.HooksRepo,
 		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
