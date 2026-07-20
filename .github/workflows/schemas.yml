@@ -34,10 +34,6 @@ on:
 permissions:
   id-token: write # buildhost OIDC auth
   contents: read
-  # actions/checks read: the org no-all-builds-job guard (the first step
-  # inside buildhost-publish-site) scans the run's jobs and the head
-  # commit's check runs since no-all-builds-job#3 (2026-07-20), and FAILS
-  # CLOSED when it cannot scan ("Resource not accessible by integration").
   actions: read
   checks: read
 
