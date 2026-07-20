@@ -8,6 +8,9 @@ permissions:
   contents: write
   packages: write
   actions: read
+  # go-toolchain@v1's embedded no-all-builds-job guard scans the head
+  # commit's check runs and fails closed without this grant.
+  checks: read
 
 jobs:
   test:
