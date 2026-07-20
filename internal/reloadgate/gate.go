@@ -576,6 +576,44 @@ func (g *Gate) forceApplyLocked(sha string, clearPending bool, eventKind, eventM
 	return nil
 }
 
+// TreeState is a value snapshot of the gate's hooks-tree state, read
+// under the gate mutex — the read-side surface behind /version's
+// hooks_tree report. It exposes only what the gate has already recorded;
+// taking one performs no git or GitHub work.
+type TreeState struct {
+	// ServingSHA is the commit the working tree serves. Empty means
+	// unknown: the boot HEAD read failed and nothing has settled since.
+	ServingSHA string
+	// Verified reports whether a green gating status (or an operator
+	// force) vouched for ServingSHA.
+	Verified bool
+	// PendingSHA is a newer fetched commit awaiting the gating context;
+	// empty means nothing is held.
+	PendingSHA string
+	// PendingState is the gating context's last known CI state for
+	// PendingSHA ("pending", "failure", or "error"); empty when nothing
+	// is pending.
+	PendingState string
+	// Context is the gating commit-status context (e.g. "all-builds").
+	Context string
+}
+
+// TreeState returns the current hooks-tree snapshot.
+func (g *Gate) TreeState() TreeState {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ts := TreeState{
+		ServingSHA: g.servingSHA,
+		Verified:   g.verified,
+		PendingSHA: g.pendingSHA,
+		Context:    g.context,
+	}
+	if g.pendingSHA != "" {
+		ts.PendingState = g.pendingStateLocked()
+	}
+	return ts
+}
+
 // trackedBranch resolves the branch the gate tracks: the configured one
 // when set, else the delivery payload's repository.default_branch.
 func (g *Gate) trackedBranch(payloadDefault string) string {

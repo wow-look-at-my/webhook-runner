@@ -63,10 +63,20 @@ The server listens on two TCP ports plus a Unix socket:
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
   `GET /health` (body carries the build version), `GET /version` (build
   identity: version + VCS revision/time — the same string the `version`
-  command prints, plumbed from cli via `server.Options.Version`),
+  command prints, plumbed from cli via `server.Options.Version` — plus
+  `hooks_tree`, the reload gate's served-tree state: `state` is
+  `serving` (`serving_sha` + `verified`), `held` (adds `pending_sha`,
+  `pending_state`, rendered `reason`), `unknown` (gate tracking, no
+  serving commit recorded — `serving_sha` omitted, never an ambiguous
+  empty string), or `untracked` (`mode` names the gate-off/no-repo
+  mode). Wired via the nil-safe `Options.TreeState` (serve sets it to
+  `reloadgate.Gate.TreeState`, a pure under-mutex snapshot — no git, no
+  GitHub calls); exposing the private hooks repo's deployed commit sha
+  on this PUBLIC port is a deliberate, operator-requested trade),
   `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/version` (build identity, same as
-  the hook port's; the dashboard footer shows it), `/hooks`, `/hooks/{id}` (one hook's
+- **Admin port** (`:9001`): dashboard, `/version` (build identity +
+  `hooks_tree` state, same as the hook port's; the dashboard footer shows
+  the build string), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
   names only, never any api_key/env/secret value, `skip_conditions` as a
   count — plus image state, KV namespace stats, and run stats over the live
