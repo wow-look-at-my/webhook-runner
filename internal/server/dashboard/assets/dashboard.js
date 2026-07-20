@@ -271,10 +271,89 @@ function hashWantsKV() {
 // scrolled elsewhere.
 let pendingKVScroll = hashWantsKV();
 
+// --- Section paging: the sidebar's #page=<name> routes -------------------
+//
+// The old single long scroll became PAGES: the bare # hash is the
+// chart-first overview (the timeline front and center; the runs table
+// stays behind its toggle), and every other section is its own page,
+// reachable from the persistent sidebar. Routing is a CLASS (.page-off),
+// never the `hidden` attribute, so it composes with each section's own
+// data-driven visibility (attention hides when healthy, setup only with a
+// repo configured, the runs table behind timeline.js's toggle). Every
+// section stays in the DOM and keeps refreshing over the same SSE section
+// feed — nothing is lost, only organized.
+const PAGE_SECTIONS = {
+  overview: ["timeline-section", "runs-section"],
+  hooks: ["hooks-section"],
+  managers: ["managers-section"],
+  runs: ["runs-section"],
+  events: ["events-section"],
+  kv: ["kv-section"],
+  concurrency: ["concurrency-section"],
+  images: ["images-section"],
+  attention: ["attention-section"],
+  reload: ["setup-section", "reload-section"],
+};
+
+function currentPage() {
+  if (currentManagerId()) return "managers";
+  const m = location.hash.match(/^#page=([a-z]+)$/);
+  return m && PAGE_SECTIONS[m[1]] ? m[1] : "overview";
+}
+
+// The fragment #manager=<id> lands the Managers page with that manager's
+// detail (state + instance output) open — the manager analog of #hook=.
+function currentManagerId() {
+  const m = location.hash.match(/^#manager=([^&]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function managerHref(id) {
+  return "#manager=" + encodeURIComponent(id);
+}
+
+function applyPage(page) {
+  const show = new Set(PAGE_SECTIONS[page] || PAGE_SECTIONS.overview);
+  const all = new Set();
+  for (const ids of Object.values(PAGE_SECTIONS)) for (const id of ids) all.add(id);
+  for (const id of all) {
+    const sec = document.getElementById(id);
+    if (sec) sec.classList.toggle("page-off", !show.has(id));
+  }
+  // The dedicated Runs page always shows the table (the overview keeps it
+  // behind timeline.js's toggle — that toggle's `hidden` flips are its
+  // own; the router only ever touches .page-off).
+  if (page === "runs") {
+    document.getElementById("runs-section").hidden = false;
+  }
+  updateNav(page);
+}
+
+function updateNav(page) {
+  const hookId = currentHookId();
+  const managerId = currentManagerId();
+  document.querySelectorAll("#sidebar .nav-link").forEach((a) => {
+    a.classList.toggle("active", !hookId && a.dataset.page === page);
+  });
+  document.querySelectorAll("#nav-hooks a").forEach((a) => {
+    a.classList.toggle("active", !!hookId && a.dataset.hook === hookId);
+  });
+  document.querySelectorAll("#nav-managers a").forEach((a) => {
+    a.classList.toggle("active", !!managerId && a.dataset.manager === managerId);
+  });
+}
+
 function setView(hookId) {
   document.getElementById("overview-view").hidden = !!hookId;
   document.getElementById("app-view").hidden = !hookId;
-  document.title = hookId ? `webhook-runner — ${hookId}` : "webhook-runner";
+  if (!hookId) applyPage(currentPage());
+  const managerId = currentManagerId();
+  document.title = hookId
+    ? `webhook-runner — ${hookId}`
+    : managerId
+      ? `webhook-runner — ${managerId}`
+      : "webhook-runner";
+  if (hookId) updateNav("");
 }
 
 // --- Run output: render the model's log as a conversation -----------------
@@ -395,6 +474,19 @@ function publishHooks(hooks) {
   lastHookIds = new Set(hooks.map((h) => h.id));
   window.whrHooks = hooks;
   window.dispatchEvent(new CustomEvent("whr:hooks-data", { detail: { hooks } }));
+  renderNavHooks(hooks);
+}
+
+// The sidebar's dynamic per-hook links — the #hook=<id> app pages, one
+// click from anywhere.
+function renderNavHooks(hooks) {
+  const nav = document.getElementById("nav-hooks");
+  if (!nav) return;
+  nav.innerHTML = "";
+  for (const h of hooks) {
+    nav.appendChild(el("a", { href: hookHref(h.id), "data-hook": h.id, title: h.description || h.id }, h.id));
+  }
+  updateNav(currentPage());
 }
 
 const sectionFetchers = {
@@ -416,6 +508,13 @@ const sectionFetchers = {
   events: async () => renderEvents(await fetchJSON("/events?max=100")),
   kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
   concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
+  // First-class managers: the roster (+ the open detail, when a
+  // #manager=<id> drill-down is active).
+  managers: async () => {
+    renderManagers(await fetchJSON("/managers"));
+    const id = currentManagerId();
+    if (id) renderManagerDetail(await fetchJSON("/managers/" + encodeURIComponent(id)));
+  },
   // The hooks-repo reload panel (declared at the bottom of this file;
   // function declarations hoist, so the reference is fine here).
   reload: () => refreshReloadPanel(),
@@ -445,6 +544,7 @@ async function refresh() {
       await Promise.all([
         sectionFetchers.attention(),
         sectionFetchers.runs(),
+        sectionFetchers.managers(),
         sectionFetchers.images(),
         sectionFetchers.events(),
         sectionFetchers.kv(),
@@ -660,6 +760,167 @@ function renderHooks(hooks) {
   }
 }
 
+// --- Managers: the first-class persistent-watcher roster --------------------
+//
+// GET /managers is the supervisor's live view: one row per declared
+// manager (state chip, instance, restarts, inbox depth), the same
+// slider-switch kill UX as hooks (default ENABLED — the switch is an
+// emergency stop, never a go-live gate), and a bounce button. Instances
+// are NOT runs: their logs live on the #manager=<id> drill-down
+// (GET /managers/{id}'s output tail), never in /runs or the timeline.
+
+async function toggleManager(id, disable) {
+  if (disable && !confirm(`Disable manager ${id}? Its instance will be stopped and deliveries rejected.`)) return;
+  try {
+    const res = await fetch(
+      `/managers/${encodeURIComponent(id)}/${disable ? "disable" : "enable"}`,
+      { method: "POST" });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to ${disable ? "disable" : "enable"} manager ${id}: ${err.message}`);
+  }
+  refresh();
+}
+
+// The hookSwitch pattern verbatim: server state only, the click's visual
+// flip reverts and the refresh moves it.
+function managerSwitch(id, disabled) {
+  const input = el("input", {
+    type: "checkbox",
+    role: "switch",
+    "aria-label": `Enable manager ${id}`,
+  });
+  input.checked = !disabled;
+  input.addEventListener("change", () => {
+    const disable = !input.checked;
+    input.checked = disable;
+    toggleManager(id, disable);
+  });
+  const sw = el("label", {
+    class: "switch",
+    title: disabled
+      ? `Re-enable ${id}: start its instance and accept deliveries again`
+      : `Disable ${id}: stop the instance and reject deliveries (503)`,
+  }, input, el("span", { class: "switch-slider" }));
+  sw.addEventListener("click", (e) => e.stopPropagation());
+  return sw;
+}
+
+async function restartManager(id) {
+  if (!confirm(`Restart manager ${id}? The live instance stops gracefully and a fresh one starts.`)) return;
+  try {
+    const res = await fetch(`/managers/${encodeURIComponent(id)}/restart`, { method: "POST" });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to restart manager ${id}: ${err.message}`);
+  }
+  refresh();
+}
+
+function managerStateChip(st) {
+  const chip = el("span", { class: `state-chip ${st.state}` }, st.state);
+  if (st.last_error) chip.title = st.last_error;
+  return chip;
+}
+
+// "Last event" = the freshest of delivery/tick, as an age.
+function managerLastEvent(st) {
+  const stamps = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s));
+  if (!stamps.length) return "—";
+  const latest = new Date(Math.max(...stamps));
+  return fmtDuration(Date.now() - latest) + " ago";
+}
+
+// The sidebar's dynamic per-manager links — renderNavHooks's twin.
+function renderNavManagers(list) {
+  const nav = document.getElementById("nav-managers");
+  if (!nav) return;
+  nav.innerHTML = "";
+  for (const m of list) {
+    nav.appendChild(el("a", { href: managerHref(m.id), "data-manager": m.id, title: m.description || m.id }, m.id));
+  }
+  updateNav(currentPage());
+}
+
+function renderManagers(list) {
+  list = list || [];
+  renderNavManagers(list);
+  const tbody = document.querySelector("#managers-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("managers-empty").hidden = list.length > 0;
+  document.getElementById("managers-table").hidden = list.length === 0;
+  for (const m of list) {
+    const tr = el("tr", null,
+      el("td", null,
+        el("a", { href: managerHref(m.id), class: "hook-link" },
+          el("code", null, m.title || m.id))),
+      el("td", { class: "row-actions" }, managerSwitch(m.id, m.disabled)),
+      el("td", null, managerStateChip(m)),
+      el("td", null, m.instance_id
+        ? el("code", { title: m.instance_id }, m.instance_id.slice(0, 8))
+        : "—"),
+      el("td", null, String(m.restarts)),
+      el("td", null, String(m.inbox_depth)),
+      el("td", null, managerLastEvent(m)),
+      el("td", { class: "row-actions" },
+        el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart")),
+    );
+    tr.querySelector("button").addEventListener("click", (e) => {
+      e.stopPropagation();
+      restartManager(m.id);
+    });
+    tr.addEventListener("click", (ev) => {
+      if (ev.target.closest("a, label, button")) return;
+      location.hash = managerHref(m.id);
+    });
+    tbody.appendChild(tr);
+  }
+  // The drill-down only renders while its fragment is open.
+  if (!currentManagerId()) document.getElementById("manager-detail").hidden = true;
+}
+
+function renderManagerDetail(d) {
+  const open = currentManagerId();
+  const box = document.getElementById("manager-detail");
+  if (!open || !d || d.id !== open) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  document.getElementById("manager-detail-title").replaceChildren(
+    el("code", null, d.id),
+    " ",
+    managerStateChip(d),
+  );
+  const meta = document.getElementById("manager-detail-meta");
+  meta.innerHTML = "";
+  const row = (k, v) => {
+    if (v == null || v === "") return;
+    meta.appendChild(el("dt", null, k));
+    meta.appendChild(el("dd", null, v));
+  };
+  row("Description", d.description);
+  row("Title", d.title);
+  row("Instance", d.instance_id ? el("code", null, d.instance_id) : "none");
+  if (tsPresent(d.instance_started)) {
+    row("Instance up", fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`);
+  }
+  row("Restarts since boot", String(d.restarts));
+  if (d.consecutive_failures) row("Consecutive failures", String(d.consecutive_failures));
+  row("Last error", d.last_error);
+  row("Last stop reason", d.last_stop_reason);
+  row("Inbox depth", String(d.inbox_depth));
+  if (tsPresent(d.last_delivered)) row("Last delivery", fmtTime(d.last_delivered));
+  if (tsPresent(d.last_tick)) row("Last tick", fmtTime(d.last_tick));
+  row("Reconcile", d.reconcile_interval ? `every ${d.reconcile_interval}` : "event-only");
+  if (d.synchronous) row("Synchronous", "yes — deliveries hold until processed");
+  if (d.concurrency_group) row("Concurrency group", d.concurrency_group);
+  row("Enable default", d.enabled_by_default ? "enabled (ships working; the switch is the emergency stop)" : "disabled in manager.json (explicit enable:false)");
+  const out = document.getElementById("manager-detail-output");
+  out.textContent = (d.output || []).join("\n");
+  out.scrollTop = out.scrollHeight;
+}
+
 // --- Needs attention: the misconfiguration cry-for-help ---------------------
 //
 // GET /attention is the aggregated set of ACTIVE problems (dropped hooks,
@@ -682,11 +943,6 @@ function attentionSourceLabel(source) {
     default: return source;
   }
 }
-
-// One-shot smooth-scroll to the panel, armed by the banner's "view" link
-// when it has to route back to the overview first (the pendingKVScroll
-// pattern: consumed by the render, never re-fired by a later refetch).
-let pendingAttentionScroll = false;
 
 function renderAttention(data) {
   const entries = (data && data.entries) || [];
@@ -721,24 +977,14 @@ function renderAttention(data) {
     }
     tbody.appendChild(tr);
   }
-  if (pendingAttentionScroll && !currentHookId()) {
-    pendingAttentionScroll = false;
-    if (entries.length) section.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
 }
 
-// The banner's "view" jump: on the overview, scroll straight to the panel;
-// on an app page, route back to the overview first and let its render
-// consume the one-shot scroll.
+// The banner's "view" jump routes to the dedicated Attention page — the
+// panel is its whole content, so no scroll choreography is needed (the
+// old overview-scroll dance predates the sidebar's paged sections).
 document.getElementById("attention-banner-link").addEventListener("click", (e) => {
   e.preventDefault();
-  if (currentHookId()) {
-    pendingAttentionScroll = true;
-    location.hash = "";
-  } else {
-    const section = document.getElementById("attention-section");
-    if (!section.hidden) section.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+  location.hash = "#page=attention";
 });
 
 // --- Concurrency groups: declared vs effective + live override -------------

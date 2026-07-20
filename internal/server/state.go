@@ -264,6 +264,14 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 	}
 	run := s.tracker.Get(runID)
 	if run == nil || run.HookID() != ns || run.Status().Terminal() {
+		// Manager instances are not runs (first-class identity): they get
+		// the same blocking retry loop, feeding the INSTANCE watchdog and
+		// ending when the instance stops being current — minus the
+		// run-row waiting_on badge (there is no run row).
+		if s.managerCaller(ns, runID) {
+			s.managerBlockOnLock(w, r, ns, key, runID, ttl, req, holder)
+			return
+		}
 		// Same rule as /wait: nothing to attribute the hold to — refuse
 		// rather than blocking a connection nobody owns.
 		writeError(w, http.StatusConflict, "run is not active")
@@ -328,6 +336,57 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 			return
 		case <-r.Context().Done():
 			// Client hung up; the deferred ClearWaitingOn tidies the state.
+			return
+		}
+	}
+}
+
+// managerBlockOnLock is blockOnLock for a manager instance: the same flat
+// retry loop against the same acquire (pin request included), feeding the
+// instance's idle watchdog, aborting when the instance stops being current.
+func (s *Server) managerBlockOnLock(w http.ResponseWriter, r *http.Request, ns, key, instanceID string, ttl time.Duration, req lockRequest, holder kv.LockInfo) {
+	blockTimeout := time.Duration(maxWaitSeconds) * time.Second
+	if req.BlockTimeoutSeconds != nil {
+		blockTimeout = time.Duration(*req.BlockTimeoutSeconds) * time.Second
+	}
+	s.events.Record("lock.waiting",
+		fmt.Sprintf("%s instance %s waiting on lock %q held by run %s", ns, instanceID, key, holder.RunID),
+		map[string]string{"hook": ns})
+
+	interval := s.waitTouchInterval(ns)
+	if interval > lockRetryInterval {
+		interval = lockRetryInterval
+	}
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	giveUp := time.NewTimer(blockTimeout)
+	defer giveUp.Stop()
+
+	for {
+		select {
+		case <-tick.C:
+			if !s.managers.TouchInstance(ns, instanceID) {
+				writeError(w, http.StatusConflict, "not the current manager instance")
+				return
+			}
+			info, err := s.acquireLock(ns, key, instanceID, ttl, req.Pinned)
+			if err == nil {
+				s.managers.TouchInstance(ns, instanceID)
+				writeJSON(w, http.StatusOK, info)
+				return
+			}
+			if !errors.Is(err, kv.ErrLockHeld) {
+				s.writeKVError(w, ns, err)
+				return
+			}
+			holder = info
+		case <-giveUp.C:
+			writeJSON(w, http.StatusConflict, lockConflict{
+				Error:  fmt.Sprintf("lock still held after %s", blockTimeout),
+				HeldBy: &holder,
+			})
+			return
+		case <-r.Context().Done():
 			return
 		}
 	}

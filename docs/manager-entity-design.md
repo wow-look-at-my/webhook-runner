@@ -1,9 +1,20 @@
 # Managers: persistent, single-instance watchers as a first-class webhook-runner entity
 
-Design document (pre-implementation gate). Operator instruction, verbatim:
+Design document, updated to AS-BUILT for the webhook-runner PR (the
+"manager entity" PR A) and carrying the operator's rulings on every open
+question (section 17 records them). Operator instruction, verbatim:
 "why is the coordinator implemented as a hook? I directly told you it needed
 support from webhook-runner. Make persistent, single-instance
 watchers/managers a first-class entity as you were instructed."
+
+Operator ruling on shipping posture, verbatim: "When i ask you to build a
+feature, that doesn't mean built it and find a new way to disable it. It
+doesn't mean gate it behind defaulted-off configs. I asked you to add it
+because i want to use it." Consequence, applied throughout: managers (and
+the PR-C coordinator) ship ENABLED and working -- `enable` defaults true,
+exactly like hooks; correctness comes from verifying BEFORE ship (draft ->
+review -> merge), never from shipping disabled. Kill switches are
+emergency controls defaulting ON.
 
 Operator addendum 1, verbatim: "inject something into docker or whatever so
 that api.github.com is blocked for the webhooks, forcing them to go through
@@ -67,11 +78,12 @@ directory). The runner supervises ONE long-lived container per manager:
 - **Single-instance**: exactly one instance fleet-wide, enforced by a
   kernel-arbitrated flock lease in the shared data dir plus deterministic
   container naming with orphan cleanup (section 5; constraint 2).
-- **Session-as-run**: each container instance is modeled as ONE long-lived
-  run of the manager entity in the existing `runs.Tracker` -- which makes
-  the KV token, cooperative locks, `/wait`, `/title`, `/spawn`, the activity
-  watchdog, the SSE stream, the timeline, and the runstore all work for
-  managers VERBATIM (section 4). This is the design's core reuse move.
+- **First-class instance identity**: each container instance carries an
+  instance id (run-id alphabet, NOT a run -- operator ruling: instances
+  never appear in the runs list, the timeline, or the runstore), against
+  which the KV token, cooperative locks, `/wait`, `/title`, `/spawn`, and
+  the activity watchdog all reuse their existing mechanisms (section 4).
+  Spawned WORKER runs stay normal timeline runs.
 - **Event-fed**: `POST /hook/<id>` deliveries for a manager are
   authenticated and skip_if-filtered exactly like hook deliveries, then
   pushed into a bounded in-memory inbox instead of booting a container; the
@@ -131,51 +143,68 @@ manager A's edit never re-tags manager B. Build context is `src/` with the
 manager's Dockerfile via `-f` (tree-mirror COPY convention:
 `COPY sdk/ /app/sdk/` + `COPY managers/<id>/ /app/managers/<id>/`).
 
-## 4. Session-as-run: a manager instance is a long-lived run
+## 4. First-class instance identity: a manager instance is NOT a run
 
-Each supervised container instance registers as a run in the existing
-tracker (`tracker.New(managerID)` with a kind tag), status `running` while
-the container lives, terminal on exit. Everything downstream reuses:
+**Operator ruling** (reversing this design's original session-as-run
+proposal): a manager instance must NOT be modeled as a run. It never
+appears in the runs list, the timeline, or the runstore -- a
+forever-running manager would permanently pollute the timeline (one
+eternal bar per manager drowning the actual work), and run history is for
+WORK ITEMS, not supervised daemons. The rejected alternative (register
+each instance in the run tracker and inherit every run surface) is kept
+here as the record of why: it bought token/lock/spawn reuse cheaply, but
+at the cost of making the primary observability surface lie about what a
+run is.
 
-- **KV token**: `kv.Token(managerID, sessionRunID)` -- the EXISTING
-  three-part per-run HMAC (internal/kv/token.go:25). No new token format:
-  the manager-identity question dissolves because a session IS a run.
-  Namespace == manager id, so migrated entities keep their KV data.
-- **/spawn parent check**: internal/server/spawn.go:183-187 requires the
-  parent run to be live in the tracker -- the session run is live for the
-  whole container lifetime, so the check works verbatim. A stale token from
-  a previous (dead) session names a terminal run and 409s: a second,
-  API-level single-instance enforcement for free.
-- **Cooperative locks**: bound to the session run id; the finish seam
-  (`server.RunFinishCallback` -> `kv.ReleaseRunLocks`) frees them when the
-  session ends, on every terminal path -- existing code.
-- **/wait, /title**: work verbatim. `/title` becomes the manager's live
-  status line (gha-coordinator already retitles runs with its reconcile
-  summary; that carries over unchanged).
-- **Activity watchdog**: repurposed as manager liveness (section 7c).
-- **Output**: the session's stdout/stderr stream through the existing
-  `streamPipe` ring buffer; the run modal shows the manager's recent log.
-- **Timeline/stream/runstore**: a manager session is a long bar in its own
-  lane; restarts are visibly new bars; a finished session (crash, replace,
-  disable) persists to the runstore through the normal OnFinish seam with
-  its output tail -- restart history for free, no new record type
-  (constraint 8's runstore question: what is recorded is SESSIONS;
-  reconcile passes are the manager's own log lines within a session;
-  spawned children were already runs).
+As built, a manager instance carries its own identity -- an **instance
+id**, minted per session by the supervisor -- that deliberately shares the
+run-id ALPHABET (26-char lowercase base32, `internal/managers.NewInstanceID`)
+so every run-id-parameterized mechanism reuses verbatim WITHOUT the
+instance being a run:
 
-Session terminal statuses: container exit != 0 -> `failure`; docker error
--> `error`; watchdog kill -> `timeout`; operator disable, tree-switch
-replace, runner shutdown, manager removed -> `cancelled` with a reason
-("superseded by reload", "disabled by operator", "runner shutting down") --
-matching the timeline's stopped-not-failed rendering. Exit 0 -> `success`
-(and the supervisor restarts it anyway; a manager is not supposed to exit).
+- **KV token**: `kv.Token(managerID, instanceID)` -- the existing
+  three-part per-run HMAC, unchanged code; namespace == manager id, so
+  migrated entities keep their KV data. Tokens die with their instance
+  (the hook rule).
+- **Cooperative locks (incl. pinning, 10b)**: held under the instance id.
+  The finish-seam analog is the supervisor's `OnInstanceEnd` callback
+  (wired in cli/serve.go to `kv.ReleaseRunLocks(instanceID)` + the
+  `lock.released_on_finish` event), so an instance that ends for ANY
+  reason drops its locks -- the same guarantee runs have, at the same
+  seam shape.
+- **/spawn parent check**: the server's `managerCaller` check accepts a
+  token whose namespace is a declared manager AND whose instance id is
+  the CURRENT one (supervisor-verified). A stale token from a dead
+  instance 409s -- API-level single-instance enforcement, same property
+  the session-as-run tracker check would have given.
+- **/wait, /title**: manager branches in the state handlers -- /wait
+  holds + touches the instance's watchdog (`TouchInstance`), /title names
+  the instance panel (`SetInstanceTitle`). Same request shapes, no run
+  bookkeeping.
+- **Activity watchdog**: the runner's `idleWatchdog` reused against the
+  instance (section 7c) -- armed/disarmed by inbox checkout state, not by
+  run lifecycle.
+- **Output**: the supervisor keeps a bounded per-manager output ring
+  (`OutputTail`), surfaced on `GET /managers/{id}` and the dashboard's
+  manager page -- NOT the run modal.
+- **Spawned WORKER runs stay normal runs**: everything a manager
+  dispatches via /spawn is a real tracked run with timeline bars, runstore
+  history, group gating -- the manager/worker split is exactly the point.
 
-Deltas from hook runs, all subtractive: no concurrency-group slot (a
-manager is singular; `concurrency_group` is not a manager field), no
-per-delivery payload mount (the session gets one synthetic
-`{"trigger":"manager"}` payload file for path-compat; real input is the
-inbox), no GitHub commit statuses, no skip runs, and session runs are
-excluded from hook-style stats (they surface on `/managers/{id}` instead).
+Instance terminal outcomes (supervisor bookkeeping + events, never run
+statuses): container exit -> restart after the flat delay (`failure` in
+the manager's status + attention until an instance holds); watchdog kill
+-> `timeout` outcome, same restart; operator disable, tree-switch replace,
+runner shutdown, manager removal -> requested stops (graceful `docker
+stop`), no restart (park/exit). Exit 0 restarts too -- a manager is not
+supposed to exit.
+
+Deltas from hook runs: no per-delivery payload mount (the session gets one
+synthetic `{"trigger":"manager"}` payload file for path-compat; real input
+is the inbox) and no per-delivery container boots. Everything else from
+the hook feature set IS carried, manager-shaped (section 12) -- the
+operator rejected v1 field cuts: "you can't lose existing functionality,
+implement this properly."
 
 ## 5. Single-instance: the lease (constraint 2)
 
@@ -204,7 +233,7 @@ orphan cleanup.**
    heartbeat-renewed, expiring)": flock is the same property implemented by
    the kernel -- persisted (a file), renewed (implicitly by process
    liveness), expiring (on process death, immediately). Proposed as the
-   stronger form; flagged for review (open question 2).
+   stronger form; CONFIRMED by operator ruling 2 (section 17).
 3. **One lock for all managers**, not per-manager: managers never split
    across processes (nothing gained; handover much harder). The holder
    process supervises the whole set.
@@ -327,6 +356,14 @@ replacement is irrelevant to the running process.
 - The manager MAY additionally self-time in-process (required-builds'
   settle windows become plain in-process timers); the runtime tick is the
   floor, not the ceiling.
+- **Operator ruling (Q3/Q4)**: BOTH pr-minder AND required-builds migrate
+  EVENT-ONLY -- no `reconcile_interval` for either; "the less polling you
+  do the better." Settle windows and drain deadlines become in-process
+  timers armed by the events that create them (a timer serving a specific
+  pending obligation is not polling; a cadence that re-scans the world
+  is). `reconcile_interval` remains available for managers whose ground
+  truth genuinely cannot be event-covered (gha-coordinator's queued-job
+  backlog, where a lost workflow_job delivery has no healing event).
 
 ### 7c. Liveness: the watchdog, repurposed (crash-restart supervision)
 
@@ -507,6 +544,12 @@ the REAL remaining defect list.
 
 ### 9a. Already fixed at gsm HEAD (do not re-fix; consumer docs are stale)
 
+NOTE for the PR-B implementer: this section's verdicts were read at gsm
+HEAD 37badc2. RE-VERIFY them against the gsm source at PR-B time before
+building on them -- in particular re-confirm the "#66 fixed at HEAD"
+premise below; gsm moves, and a fix list keyed to a stale reading would
+re-fix or miss.
+
 - **Same-repo push -> PR-row staleness (the literal #66 class): FIXED.**
   The push apply calls `NullPRMergeableByBranch`
   (internal/sync/webhook.go:205; store: internal/ghdata/store.go:361; SQL:
@@ -576,13 +619,18 @@ the REAL remaining defect list.
   respcache.go:262-303 already has the invalidation primitive), so the
   next mint is fresh; the consumer-side new-JWT dance becomes a harmless
   belt.
-- **G3 -- CheckAndApply is operator-triggered only.** Its call sites are
-  the dashboard (internal/api/browse.go:236, checkstream.go:68); nothing
-  runs it on a cadence. The truth store's drift correction therefore
-  depends on a human clicking. **Fix**: a FLAT periodic CheckAndApply
-  cadence (config, e.g. hourly; per doctrine no backoff/give-up), sized
-  against the checker's own per-installation rate-limit reporting -- the
-  bounded-staleness floor for everything webhooks can miss.
+- **G3 -- CheckAndApply is operator-triggered only** (dashboard call
+  sites: internal/api/browse.go:236, checkstream.go:68; nothing runs it
+  on a cadence). The originally proposed fix -- a flat periodic
+  CheckAndApply cadence -- is **REJECTED by operator ruling**: a
+  recurring re-scan is a bandaid sync that papers over whichever
+  invalidation is actually broken. PR B fixes staleness at the ROOT
+  (G1's synchronize un-resolve, G2's mint invalidation, G4's list
+  gating), each a missed-invalidation bug fixed where the event arrives;
+  CheckAndApply stays what it is -- an operator-triggered audit tool.
+  Accepted consequence: a webhook gsm never received (delivery lost AND
+  outside every invalidation path) heals only via TTL or an operator
+  check -- the same posture as today, with the actual bug classes closed.
 - **G4 -- list-tier merge fields ungated** (low severity, tighten while
   in there): the open-PR LIST rebuild serves rows without the single-PR
   route's mergeable-known/stale gating (respcache_pulls.go:249-271). No
@@ -626,13 +674,15 @@ today's routing. Hard dependency, called out in the plan (section 15).
   operative pair `gha-coordinator=gha-runner,gha-runner-dind` carries over
   byte-for-byte across the migration. Deny-by-default preserved; malformed
   values still fail startup.
-- `/spawn`'s parent-liveness check works verbatim (the session run is a
-  live tracked run; spawn.go:183-187 needs zero changes). Targets remain
-  HOOKS; managers are not spawnable -- they are supervised, not started
-  per-request. A spawn body naming a manager as target 404s.
-- Attribution: `spawned_by {hook_id: <manager id>, run_id: <session id>}`
-  flows through unchanged; the dashboard's parent link lands on the session
-  run -- the manager's live log. Correct and useful.
+- `/spawn`'s parent check gains a manager branch (`managerCaller`): a
+  token whose namespace is a declared manager AND whose instance id is
+  the supervisor's CURRENT one authorizes the spawn; a stale (dead)
+  instance's token 409s. Targets remain HOOKS; managers are not spawnable
+  -- they are supervised, not started per-request. A spawn body naming a
+  manager as target 404s.
+- Attribution: `spawned_by {hook_id: <manager id>, run_id: <instance id>}`
+  flows through unchanged; the manager's live log lives on its dashboard
+  page. Correct and useful.
 
 ## 10b. Lock pinning: stealable <-> not-stealable (operator addendum 3)
 
@@ -719,12 +769,12 @@ Per manager, in the flock-holding process:
     (no flock)  WAITING-LEASE --flock acquired--> orphan rm -f
     LEASED:
       disabled?          -> DISABLED (no container; overrides-driven)
-      else               -> STARTING: EnsureImage -> docker run (session run
-                            registered; token minted; inbox attached; start
+      else               -> STARTING: EnsureImage -> docker run (instance
+                            id minted; token minted; inbox bound; start
                             or tick event enqueued)
-      STARTING build/start failure -> session `error` -> RESTART-WAIT
+      STARTING build/start failure -> outcome `error` -> RESTART-WAIT
                             (flat 10s) -> STARTING
-      RUNNING            -> container exits         -> session terminal
+      RUNNING            -> container exits         -> instance outcome
                             (failure/error/success) -> RESTART-WAIT -> STARTING
                          -> watchdog fires          -> kill -> `timeout` ->
                             RESTART-WAIT -> STARTING
@@ -758,7 +808,7 @@ graceful in-place replace, not a handover.
 
 ## 12. Declaration, loading, observability
 
-### manager.json (v1 field set -- deliberately minimal)
+### manager.json (the FULL hook field set, manager-shaped)
 
     {
       "$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json",
@@ -766,9 +816,6 @@ graceful in-place replace, not a handover.
 
       // auth for POST /hook/<id> -- the hook trio, identical semantics
       "secret": "…",                  // or api_key / public_key
-
-      // born-disabled default; the operator's dashboard switch overrides
-      "enable": false,
 
       // ground-truth floor; OMIT for event-only managers
       "reconcile_interval": "3m",
@@ -783,16 +830,39 @@ graceful in-place replace, not a handover.
       "tests": [ ["npx","tsc","--noEmit"], ["node","--test","x.test.ts"] ]
     }
 
-Also carried from hooks with identical semantics: `script`/`command`,
+`enable` defaults TRUE, exactly like hooks -- a declared manager works the
+moment it deploys (operator ruling, header). Explicit `enable: false` and
+the dashboard switch are the only off switches.
+
+**Operator ruling (Q8, rejecting the original "deliberately minimal v1"
+cut list)**: "you can't lose existing functionality, implement this
+properly." Every hook field is supported with properly designed
+manager-shaped semantics -- carried identically: `script`/`command`,
 `user`, `workdir`, `networks`, `volumes`, `extra_docker_args`,
-`api_key_header`, `signature_header`. NOT in v1, each with a reason:
-`state` (always on -- a manager cannot function without the state socket;
-implied), `schedule` (superseded by reconcile_interval),
-`concurrency_group` (managers are singular), `synchronous` (no
-per-delivery run), `run_title` (no per-delivery runs; the session title is
-/title-driven), `github_status` (no per-delivery runs), `dind` (no
-consumer needs it; add when one does). `Dockerfile` required, `$schema`
-required (presence-only) -- the hook rules.
+`api_key_header`, `signature_header`, `env`, `tests`, `skip_if`, the auth
+trio; manager-shaped:
+
+- `concurrency_group`: the INSTANCE holds one slot for its lifetime
+  (acquired before the container starts, released at instance end),
+  counted against the same declared limit as hook runs in the group.
+- `run_title`: the instance's panel title -- rendered once per instance
+  (static templates in practice; there is no per-delivery payload), with
+  `POST /title` as the live override.
+- `synchronous`: the delivery's HTTP response holds until the manager
+  finishes THAT inbox event (its next /inbox/next call -> 200 processed;
+  drop/abandon -> 500), bounded by `timeout` as wall clock with the
+  hook-style 202 degrade.
+- `github_status`: PER-DELIVERY statuses -- pending as an event with a
+  repo+sha enters the inbox, success/error as the manager
+  finishes/abandons it. Ticks/start events post nothing.
+- `dind`: the same two docker flags on session + test paths; the nested
+  daemon's storage lives as long as the instance.
+
+The only two hook fields that do not exist on managers, each REJECTED at
+parse (loudly, not ignored): `state` (implied true -- a manager cannot
+function without the state socket) and `schedule` (superseded by
+`reconcile_interval`). `Dockerfile` required, `$schema` required
+(presence-only) -- the hook rules.
 
 ### Loading
 
@@ -833,43 +903,46 @@ required (presence-only) -- the hook rules.
 ### Observability (constraint 8)
 
 - **Admin API**: `GET /managers` (roster: id, state
-  [waiting-lease|disabled|starting|running|restart-wait|replacing],
-  session run id, uptime, restarts-since-boot, inbox depth, last event at,
-  last tick at, image tag + built, title/status line); `GET /managers/{id}`
-  (detail + recent session history from the runstore + KV namespace stats
-  -- the /hooks/{id} shape, manager-flavored). Session output rides the
-  existing `/runs/{id}`.
-- **Dashboard**: a Managers panel (roster + the hooks table's slider-switch
-  UX); the timeline shows manager lanes automatically (sessions are runs);
-  a new `managers` stream section token dirtied by manager lifecycle events
+  [waiting-lease|disabled|starting|running|restart-wait|stopped],
+  instance id, started-at, restarts-since-boot, inbox depth, last event
+  at, enable default + effective disabled, title); `GET /managers/{id}`
+  (detail + the bounded output tail). Instances are NOT runs (section 4):
+  nothing manager-shaped appears on /runs, the timeline, or the runstore.
+- **Dashboard**: a first-class Managers page (roster + the hooks table's
+  slider-switch UX + per-manager detail with live output tail); a new
+  `managers` stream section token dirtied by `manager.*` lifecycle events
   (the existing section-invalidation machinery, one more token).
 - **Activity feed**: `manager.started`, `manager.exited`,
-  `manager.replaced`, `manager.removed`, `manager.inbox_dropped`,
-  `manager.lease_waiting`/`manager.leased` (id in the hook field so
-  `?hook=` filters work); delivery rejections reuse the existing
-  `hook.unknown`/`hook.denied`/`hook.disabled_rejected` kinds.
+  `manager.skipped`, `manager.wait`, `manager.inbox_dropped`,
+  `manager.lease_waiting`/`manager.leased`,
+  `manager.disabled`/`manager.enabled`/`manager.restart_requested` (id in
+  the hook field so `?hook=` filters work); delivery rejections reuse the
+  existing `hook.unknown`/`hook.denied`/`hook.disabled_rejected` kinds.
 - **Attention** (new `manager` source with a real clear rule): an entry is
-  ACTIVE whenever desired-state is running but no session is (start
-  failing, crash-looping, image unbuildable) -- message carries consecutive
-  failure count + last error; CLEARS the moment a session runs. Disabled
-  managers' entries drop at read time (the existing rule).
-- **Runstore**: sessions persist as runs (section 4) -- restart forensics
-  and output tails from the existing history surface.
+  ACTIVE whenever desired-state is running but no instance holds (start
+  failing, crash-looping, image unbuildable) -- message carries the last
+  outcome; CLEARS the moment an instance runs. Disabled managers' entries
+  drop at read time (the existing rule).
+- **Restart forensics**: the supervisor's per-manager restart counter +
+  output ring + the activity feed's `manager.exited` trail -- deliberately
+  NOT the runstore (the Q1 ruling).
 
 ### Kill switch (constraint 9)
 
 Same `overrides.Store`, same tri-state (`enable` default vs persisted
 operator override), same dashboard slider, same orphaned-override
-announcements. Disable stops the session (graceful) and holds; enable
-starts it; reloads re-apply. The lease is retained while disabled (disable
-is fleet intent; re-enable must be instant and no other process may start
-the manager meanwhile).
+announcements -- and the same DEFAULT as hooks: absent `enable` means
+enabled, so the switch is an emergency control, never a go-live gate
+(operator ruling, header). Disable stops the instance (graceful) and
+parks; enable starts it; reloads re-apply. The lease is retained while
+disabled (disable is fleet intent; re-enable must be instant and no other
+process may start the manager meanwhile).
 
 ## 13. Migration mapping (required section)
 
 Order: **gha-coordinator first** (this wave), required-builds second,
 pr-minder last (highest traffic, live production) -- each migration its own
-PR + runbook, gated on the previous one's soak. Confirmed open question:
+PR + runbook, gated on the previous one's soak. Per operator ruling 7:
 pr-minder/required-builds are MAPPED here, not migrated in this wave.
 
 Unifying mechanics: hook id == manager id == KV namespace, so a migration
@@ -883,15 +956,17 @@ today), explicitly gated on the gsm fixes (section 9d).
 
 ### gha-coordinator -> manager (FIRST implementation)
 
-- **manager.json**: `secret` (same value), `enable: false` (born disabled
-  -- REPLACES the `COORDINATOR_ENABLED` env gate: the schema is fresh, so
-  the first-class field works from day one; the runbook's enable step
-  becomes the dashboard switch), `reconcile_interval: "3m"` (the backstop
-  the dormant hook could not even declare), `timeout: "10m"`, the same one
+- **manager.json**: `secret` (same value), NO `enable` field -- the
+  manager ships ENABLED and does its job on deploy: reconcile queued
+  wow-linux/wow-dind jobs, spawn workers via /spawn (operator ruling,
+  header; the hook's `COORDINATOR_ENABLED` env gate is RETIRED, not
+  replaced -- the #158-era ship-dormant pattern is rejected outright),
+  `reconcile_interval: "3m"` (the backstop the hook could not declare
+  without clockwork container spam), `timeout: "10m"`, the same one
   skip_if condition, same env minus COORDINATOR_ENABLED, same tests.
 - **Sheds**: the `reconcile` run-owned lock and its contended-exit-0 burst
   collapse (a single instance serializes in-process; bursts coalesce in
-  the inbox); the lockless-degrade path; the dormancy env-gate machinery;
+  the inbox); the lockless-degrade path; the retired env-gate machinery;
   per-delivery container boots (one delivery = one inbox append, not one
   cold Node start + secret-server fetch).
 - **Keeps**: `active:` set and `dispatched:` markers EXACTLY as-is -- they
@@ -899,7 +974,7 @@ today), explicitly gated on the gsm fixes (section 9d).
   semaphore), not against coordinator concurrency, so single-instance does
   not obsolete them; the semaphore stays the accountant; OWNER_ALLOWLIST
   stays the in-code wall; webhook-provision stays; `/spawn` dispatch is
-  verbatim (parent = the session run); MAX_DISPATCH_PER_TICK stays.
+  verbatim (parent = the manager instance); MAX_DISPATCH_PER_TICK stays.
 - **KV continuity**: namespace `gha-coordinator` untouched; markers and the
   active set survive the move.
 - **Code shape**: `run()`'s classify/lock scaffolding collapses into the
@@ -910,9 +985,18 @@ today), explicitly gated on the gsm fixes (section 9d).
 - **Routing delta**: queued-jobs listings move direct -> gsm passthrough
   under enforcement (same caller token, same quota; a future gsm modeled
   route for them is optional relief).
-- **Runbook delta**: step 1 (deploy /spawn runner + allowlist) is done or
-  unchanged; "enable" becomes the dashboard switch; webhook flip/retire and
-  DRAIN=0 steps unchanged.
+- **Runbook ORDERING (load-bearing, because the manager ships enabled)**:
+  an enabled coordinator starts working -- or failing loudly -- the moment
+  its tree deploys, so the preconditions land FIRST: (1) the
+  manager-capable runner (this PR) deployed; (2) the
+  `WEBHOOK_RUNNER_SPAWN_ALLOW` allowlist entries
+  (`gha-coordinator=gha-runner,gha-runner-dind`) on the service env; (3)
+  the App's repository **Actions: Read** grant. Only THEN does PR C merge
+  (which the reload gate deploys on green). Correct-before-ship replaces
+  gated-off-for-safety: the PR stays draft until verified + operator-
+  reviewed, then ships ON. Webhook flip/retire and DRAIN=0 steps follow
+  unchanged; the operator kill switch exists for emergencies, not as a
+  deploy step.
 
 ### required-builds -> manager (mapped; migrates later)
 
@@ -930,12 +1014,12 @@ today), explicitly gated on the gsm fixes (section 9d).
   event; comment-unstick (still an event); skip_if verbatim; gsm routing
   (already enforced-compatible -- it lives on the modeled statuses/
   check-runs routes, which the D1/D2 fixes make sound); the secret.
-- **Open policy question** (operator call, flagged): the hook's NO-schedule
-  mandate was motivated by clockwork CONTAINER spam. A manager tick is an
-  in-process pass with no boot. Does the mandate soften to allow a modest
-  `reconcile_interval` (bounding quiet-org convergence), or does
-  required-builds migrate event-only with in-process timers (strictly
-  today's semantics minus machinery)? Either fits the entity.
+- **Operator ruling (Q4)**: required-builds migrates EVENT-ONLY -- no
+  `reconcile_interval` ("the less polling you do the better"). Settle
+  windows and drain deadlines are in-process timers armed by the events
+  that create them (obligations, not polling); a totally quiet org
+  converges on its next delivery or comment-touch, exactly today's
+  accepted trade.
 
 ### pr-minder -> manager (mapped; migrates later)
 
@@ -952,9 +1036,9 @@ today), explicitly gated on the gsm fixes (section 9d).
   the entity honors it -- section 7); the describe/resolve hand-offs
   unchanged (pr-describe and pr-resolve STAY ephemeral hooks -- per-work-
   item workers; the manager/worker split working as intended);
-  delivery-gap replay (recommend KEEP: it reads the App's own deliveries
-  log -- ground truth the inbox cannot cover across downtime; open
-  question 5). Its immutable-shape reads (the #66 workaround) become
+  delivery-gap replay (operator ruling Q5: KEPT -- it reads the App's own
+  deliveries log, ground truth the inbox cannot cover across downtime).
+  Its immutable-shape reads (the #66 workaround) become
   redundant once gsm's D1/D2 fixes land but are harmless belts; simplify
   later, never as part of the migration commit.
 - **Risk posture**: highest-traffic, live-production entity; migrates LAST,
@@ -969,62 +1053,79 @@ no hook.json). `/spawn`: unchanged. Secrets: sops + secret-server patterns
 identical. No committed GitHub credentials anywhere new. The webhooks repo
 stays SITELESS (manager.schema.json lives in and publishes from
 webhook-runner). The reload gate's three switch paths, the concurrency
-manager, the KV store contract, the runstore formats (sessions are ordinary
-records; the per-hook index value format untouched), and the runner's
-shutdown drain for hook runs: all unchanged. Webhook deliveries stay
+manager, the KV store contract, the runstore (managers never touch it --
+instances are not runs, so no new record type and the per-hook index value
+format is untouched), and the runner's shutdown drain for hook runs: all
+unchanged. Webhook deliveries stay
 tunnel-direct; gsm never sits in the delivery path.
 
 ## 15. Implementation plan -- three PRs, explicit dependency order
 
 **PR A -- webhook-runner: manager entity + gsm gateway enforcement**
-(deploys first; both halves ship INERT -- no manager declared, no
-WEBHOOK_RUNNER_GSM_URL set -- so deploying it changes nothing):
+(deploys first; purely ADDITIVE: with zero managers declared in the hooks
+tree and the gsm knob unset, a runner running PR A is behaviorally
+identical to master -- the non-breaking proof. That is the additive-PR
+property, not a feature gate: the first `src/managers/` commit that lands
+after this deploys starts WORKING immediately, enabled by default):
 
-- `internal/managers`: manager.json model + validate (reusing hooks'
-  skip_if/auth/env plumbing as shared code, not forks), loader + layout
-  extension (`ManagersDir`), the supervisor (lease flock, orphan rm -f,
-  session start/replace/stop, flat restart, shutdown ordering), inbox
-  (bounded ring + coalesced ticks).
-- `internal/runner`: session-start path (no group acquisition, synthetic
-  payload, graceful-stop support, checked-out watchdog arming),
-  `docker stop -t` plumbing, gateway injection (`--add-host` blackhole +
-  `GITHUB_API_URL` default, exemption list) on run + test paths.
-- `internal/server`: manager-aware `POST /hook/{id}` dispatch,
-  `POST /inbox/next` on the state mux, `GET /managers` +
-  `GET /managers/{id}`, dashboard Managers panel + `managers` stream
-  section, events + attention (`manager` source), overrides parity.
+- `internal/managers`: the inbox (bounded ring + coalesced ticks +
+  checkout/settle handles) and the supervisor (lease flock, orphan rm -f,
+  instance start/replace/stop, flat restart, output ring, attention seam,
+  shutdown ordering) -- instances are first-class identities, never runs
+  (section 4).
+- `internal/hooks`: manager.json model (`ParseManager` -- the full hook
+  field set minus state/schedule, both rejected loudly) + `LoadManagers`
+  + layout extension (`ManagersDir`) + registry/watcher coverage.
+- `internal/runner`: `RunManagerSession` (group slot held per instance,
+  synthetic payload, graceful-stop support, checked-out watchdog arming
+  via the inbox bind seam), `docker stop -t` plumbing, gateway injection
+  (`--add-host` blackhole + `GITHUB_API_URL` default, exemption list) on
+  run + test paths.
+- `internal/server`: manager-aware `POST /hook/{id}` dispatch (kill
+  switch -> auth -> skip_if -> inbox; synchronous holds; per-delivery
+  github_status), `POST /inbox/next` on the state mux, manager branches
+  in /wait, /title, /spawn and blocking lock acquires, `GET /managers` +
+  `GET /managers/{id}` + disable/enable/restart, dashboard Managers page
+  + `managers` stream section, events + attention (`manager` source),
+  overrides parity (enable default TRUE, the hook rule).
 - `internal/kv` + `internal/server`: the lock pin primitive (10b) --
   `pinned` on lockEntry/LockInfo, ErrLockPinned in takeLockLocked,
   `POST /kv/{key}/pin` / `/unpin` routes, steal-refused event.
-- `internal/githubstatus`: configurable base (8d).
-- `schema/manager.schema.json` + schemas.yml addition; validate/test
-  coverage; state-socket parent-dir relocation (env override kept).
-- Docs (CLAUDE.md/README); e2e: a fixture manager exercising
-  lease/restart/inbox/tick/spawn + a blackhole assertion.
+- `internal/githubstatus`: configurable base (8d) + the per-delivery
+  manager status posts.
+- `schema/manager.schema.json` (published by the existing schemas.yml
+  glob); validate/test coverage for managers.
+- Docs (CLAUDE.md/README + this document as-built).
 
-**PR B -- github-state-mirror: caching fixes** (repo read @ 37badc2; the
-verified fix list, section 9b): G1 -- synchronize/head-move un-resolve of
-PR merge fields stamping the existing verifiable marker (the fork-head
-freeze; the push path's machinery reused wholesale); G2 -- invalidate a
-caller's cached mint on a permission-shaped (401/403) proxied upstream
-failure; G3 -- a FLAT periodic CheckAndApply cadence (config; the
-bounded-staleness floor); G4 -- gate or omit merge fields in the list
-rebuild. Explicitly NOT re-building what HEAD already has (9a: the push
-un-resolve, the per-ref invalidation graph, the TTL backstops, the
-checker itself). Independent of PR A; MUST deploy before the operator
-flips enforcement on.
+**PR B -- github-state-mirror: caching fixes** (repo read @ 37badc2 --
+RE-VERIFY at PR-B time, 9a note; the fix list, section 9b): G1 --
+synchronize/head-move un-resolve of PR merge fields stamping the existing
+verifiable marker (the fork-head freeze; the push path's machinery reused
+wholesale); G2 -- invalidate a caller's cached mint on a
+permission-shaped (401/403) proxied upstream failure; G4 -- gate or omit
+merge fields in the list rebuild. ROOT-CAUSE invalidation fixes ONLY: the
+originally floated G3 cadence (periodic CheckAndApply) is REJECTED by
+operator ruling as a recurring bandaid sync -- CheckAndApply stays an
+operator-triggered audit tool. Explicitly NOT re-building what HEAD
+already has (9a: the push un-resolve, the per-ref invalidation graph, the
+TTL backstops, the checker itself). Independent of PR A; MUST deploy
+before the operator flips enforcement on.
 
-**PR C -- webhooks: gha-coordinator as the first manager** (merges only
-after PR A is deployed): `git mv` + manager.json + coordinator.ts inbox
-loop (per section 13); tests updated; runbook rewrite (enable = dashboard
-switch).
+**PR C -- webhooks: gha-coordinator as the first manager**: `git mv` +
+manager.json + coordinator.ts inbox loop (per section 13); tests updated;
+runbook rewrite. The manager ships ENABLED and starts reconciling on
+deploy (operator ruling, header), so PR C merges only after its
+preconditions hold: PR A's runner deployed, the /spawn allowlist entries
+on the service env, the App's Actions:Read grant in place -- the runbook
+ORDERING in section 13. Verification happens on the draft PR before
+merge, never via a disabled deploy.
 
 **Operator flip sequence** (after A and B are deployed): set
 `WEBHOOK_RUNNER_GSM_URL` + `WEBHOOK_RUNNER_GITHUB_DIRECT=gha-runner,
-gha-runner-dind`, restart runner (enforcement on, fleet through fixed gsm);
-then enable the gha-coordinator manager via the dashboard and run the #158
-cutover steps (webhook flip/retire, DRAIN=0). Later waves: required-builds
-PR, pr-minder PR, each soak-gated.
+gha-runner-dind`, restart runner (enforcement on, fleet through fixed
+gsm); merge PR C once its preconditions hold (it goes live on deploy) and
+run the remaining #158 cutover steps (webhook flip/retire, DRAIN=0).
+Later waves: required-builds PR, pr-minder PR, each soak-gated.
 
 ## 16. Risks
 
@@ -1055,9 +1156,7 @@ PR, pr-minder PR, each soak-gated.
 9. **gsm fix regressions**: G1's un-resolve must not re-open the
    wrong-mark race the push path already solved -- it reuses the SAME
    marker + push-tip-proof machinery (the synchronize payload's head.sha
-   IS the proof tip), and the existing absorb tests pin the exemptions;
-   G3's periodic CheckAndApply must be sized against the checker's own
-   per-installation rate-limit surface.
+   IS the proof tip), and the existing absorb tests pin the exemptions.
 10. **pr-minder migration risk** (traffic, production): last in order,
     smallest-diff main-loop port, reverse-move rollback.
 11. **Pin misuse** (a hook pinning across its whole run, re-blocking
@@ -1066,41 +1165,43 @@ PR, pr-minder PR, each soak-gated.
     acquires that win on release, and `lock.steal_refused` events make a
     long-pinned critical section visible on the feed.
 
-## 17. Open questions for the operator
+## 17. Operator rulings (the former open questions, all answered)
 
-1. **Session-as-run modeling**: manager instances appear as long runs
-   (timeline bars, runstore history, /runs surfaces). Sign off vs a fully
-   separate surface with no run records?
-2. **Lease form**: kernel flock + deterministic names + orphan rm -f
-   (host-scoped, matching the single-host dockerd deployment) instead of a
-   literal heartbeat-TTL record. Confirm the kernel form satisfies the
-   intent.
-3. **Event-only managers**: pr-minder migrates with NO reconcile_interval
-   (honoring the no-sweep directive), healing staying reconcile-on-contact
-   + replay. Confirm.
-4. **required-builds tick policy**: does the no-polling mandate soften for
-   a manager (in-process tick, no container boot), or does it migrate
-   event-only with in-process timers? Either fits.
-5. **Delivery-gap replay**: keep in pr-minder/required-builds
-   post-migration (recommend yes -- the App's deliveries log is ground
-   truth the inbox cannot cover across downtime), or retire?
-6. **gha-coordinator dormancy**: manager ships `enable: false` +
-   dashboard-switch enablement, retiring COORDINATOR_ENABLED (recommend),
-   or keep the env gate one more cycle?
-7. **Migration order + wave scope**: gha-coordinator -> required-builds ->
-   pr-minder, soak-gated; this wave = PR A + PR B + PR C only. Confirm.
-8. **v1 field cuts**: no dind/concurrency_group/run_title/github_status/
-   synchronous on managers (reasons in section 12). Any needed day one?
-9. **Exemption list**: confirm `gha-runner,gha-runner-dind` as the only
-   direct-GitHub containers (CI payloads + Actions service endpoints
-   cannot ride gsm), and that test containers get the blackhole too
-   (hermetic-tests enforcement).
-10. **gsm PR-B scope**: confirm the verified fix list G1-G4 (section 9b)
-    -- in particular G3's flat periodic CheckAndApply cadence (proposed
-    hourly) as the bounded-staleness floor, and that the already-fixed 9a
-    items need no rework.
-11. **Lock pinning**: confirm the pin/unpin route shape (owner-only
-    toggle, steal refused 409 + pinned held_by, blocking-acquire
-    fallback preserving latest-event-wins) and that the leader lease
-    stays a separate flock mechanism rather than an always-pinned lock
-    (10b's composition argument).
+1. **Session-as-run modeling: REJECTED.** Manager instances are
+   first-class identities, never runs -- they must not appear in the runs
+   list, the timeline, or the runstore (a forever-running manager would
+   permanently pollute the timeline). Reuse the token/lock/spawn/watchdog
+   mechanisms against the instance identity; spawned WORKER runs stay
+   normal timeline runs. Section 4 is the as-built record.
+2. **Lease form: kernel flock CONFIRMED** (single-host deployment; the
+   flock + deterministic names + orphan rm -f composition satisfies the
+   lease intent).
+3. **pr-minder: EVENT-ONLY confirmed** -- no reconcile_interval; healing
+   stays reconcile-on-contact + replay.
+4. **required-builds: EVENT-ONLY** -- "the less polling you do the
+   better"; settle windows are in-process timers armed by their events,
+   not poll ticks.
+5. **Delivery-gap replay: KEPT** post-migration (the App's deliveries log
+   is ground truth the inbox cannot cover across downtime).
+6. **Shipping posture: managers ship ENABLED** (ruling quoted in the
+   header, superseding the earlier default-off recommendation outright).
+   `enable` defaults true exactly like hooks; COORDINATOR_ENABLED is
+   retired, not replaced; the dashboard switch is an emergency control.
+   Nothing about the entity -- or PR C -- ships dormant or gated off.
+7. **Migration order + wave scope: CONFIRMED** -- gha-coordinator ->
+   required-builds -> pr-minder, soak-gated; this wave = PR A + PR B +
+   PR C.
+8. **v1 field cuts: REJECTED** -- "you can't lose existing functionality,
+   implement this properly." The full hook field set is supported with
+   manager-shaped semantics (section 12).
+9. **Exemption list: CONFIRMED** -- `gha-runner,gha-runner-dind` today,
+   operator-configurable via WEBHOOK_RUNNER_GITHUB_DIRECT; the blackhole
+   default covers test containers too (hermetic-tests enforcement).
+10. **gsm PR-B scope: root-cause fixes only** (G1/G2/G4). The G3 cadence
+    is REJECTED as a recurring bandaid sync; CheckAndApply stays
+    operator-triggered. Re-verify the 9a "already fixed at HEAD" premise
+    against gsm source before building PR B.
+11. **Lock pinning: CONFIRMED as specced** (owner-only pin/unpin toggle,
+    steal refused 409 + pinned held_by, blocking-acquire fallback
+    preserving latest-event-wins), and the leader lease STAYS a separate
+    flock layer rather than an always-pinned lock.

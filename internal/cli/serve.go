@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/managers"
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
 	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -74,6 +74,14 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
 	gh := githubstatus.New(o.ghToken, logger)
+	// The runner's OWN GitHub client (commit statuses; the reload-gate
+	// poll's status reads) follows the enforced-gateway knob unless
+	// explicitly overridden — one config surface for the whole fleet's
+	// GitHub routing.
+	if base := firstNonEmpty(o.githubAPIURL, o.gsmURL); base != "" {
+		gh.SetAPIURL(base)
+		logger.Info("github api base overridden", "base", base)
+	}
 	// Activity feed for the admin dashboard (in-memory, bounded — same
 	// persistence model as run history).
 	rec := events.NewRecorder(500)
@@ -216,11 +224,46 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		KV:       kvStore,
 		KVSocket: socketPath,
 		KVShim:   shimPath,
+		// Enforced GitHub gateway: inert while WEBHOOK_RUNNER_GSM_URL is
+		// unset (the shipped default — zero behavior change).
+		GSM: runner.GSMConfig{URL: o.gsmURL, Direct: parseGithubDirect(o.githubDirect)},
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
 		OnFinish: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostFinish(context.Background(), h, r, payload)
+		},
+	})
+
+	// The manager supervisor: one long-lived instance per declared manager,
+	// exactly-one-fleet-wide behind the kernel-flock lease in the data dir.
+	// Managers are FIRST-CLASS (never runs): instance lock release rides
+	// OnInstanceEnd — the finish-seam analog — and their problems surface
+	// through the aggregator's manager source.
+	sup := managers.New(managers.Options{
+		Runner:    rn,
+		LeasePath: filepath.Join(dataDir, "managers.lock"),
+		Disabled:  ovStore.HookDisabled,
+		Events:    rec,
+		Logger:    logger,
+		OnAttention: func(entries []managers.AttentionEntry) {
+			ents := make([]attention.Entry, 0, len(entries))
+			for _, e := range entries {
+				ents = append(ents, attention.Entry{
+					Source:  attention.SourceManager,
+					Hook:    e.ID,
+					Key:     "instance",
+					Message: e.Message,
+				})
+			}
+			agg.ReplaceSource(attention.SourceManager, ents)
+		},
+		OnInstanceEnd: func(instanceID string) {
+			if n := kvStore.ReleaseRunLocks(instanceID); n > 0 {
+				rec.Record("lock.released_on_finish",
+					fmt.Sprintf("released %d lock(s) still held by manager instance %s at instance end", n, instanceID),
+					nil)
+			}
 		},
 	})
 
@@ -232,12 +275,14 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		Fire: buildScheduleFire(registry, tracker, ovStore, rn, logger, rec),
 	})
 
-	// loadAndApply reloads hooks, concurrency groups, and schedules together
-	// so the registry, the manager, and the scheduler never drift: a hook
-	// referencing an undeclared group is rejected (not registered) rather
-	// than allowed to run unbounded. Both the filesystem watcher and the
-	// admin/webhook reload path go through this one function.
-	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, ovStore, agg, secrets, logger, rec)
+	// loadAndApply reloads hooks, MANAGERS, concurrency groups, and
+	// schedules together so the registry, the concurrency manager, the
+	// scheduler, and the supervisor never drift: a hook referencing an
+	// undeclared group is rejected (not registered) rather than allowed to
+	// run unbounded, and a manager id colliding with a hook is dropped
+	// loudly. Both the filesystem watcher and the admin/webhook reload path
+	// go through this one function.
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, sup, ovStore, agg, secrets, logger, rec)
 
 	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, gh, rec, agg, logger)
 	if err != nil {
@@ -268,6 +313,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		RunStore:     runStore,
 		Overrides:    ovStore,
 		SpawnAllow:   spawnAllow,
+		Managers:     sup,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	}
 	if repo != nil {
@@ -302,6 +348,12 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// until the watcher's initial scan populates its schedule set, then fires
 	// due hooks each tick.
 	go sched.Run(watchCtx)
+
+	// The manager supervisor: acquires the single-instance lease (flat
+	// poll — during a rolling deploy the old process holds it until its
+	// instances are down), then runs one loop per declared manager. Its
+	// desired set arrives via loadAndApply above.
+	go sup.Run(watchCtx)
 
 	// Reload-gate reconciliation poll — the fallback that keeps a missed
 	// status webhook from freezing deploys: one immediate pass at startup
@@ -414,6 +466,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// next server replaces) — deliveries get a retryable 503 instead, and
 	// GitHub redelivers webhooks. In-flight runs drain via rn.Wait below.
 	rn.BeginShutdown()
+	// Stop manager instances gracefully (docker stop; SIGTERM + grace)
+	// BEFORE anything else winds down: the lease releases only when this
+	// process exits, so the successor process's supervisor cannot start
+	// replacement instances until ours are provably gone.
+	sup.Shutdown()
 	// Disconnect /runs/stream clients FIRST: adminSrv.Shutdown waits for
 	// in-flight handlers, and a stream handler holds its response open
 	// until its subscription closes (or its client goes away).
@@ -432,151 +489,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	cancelWatch()
 	rn.Wait()
 	return nil
-}
-
-// buildLoadAndApply returns the single reload routine shared by the
-// filesystem watcher and the admin/webhook reload path. It loads the hooks
-// and the concurrency-group config from disk, rejects hooks that reference
-// an undeclared group, then atomically updates the concurrency manager, the
-// scheduler, and the registry. Folding the scheduler in here (rather than a
-// second reload path) keeps the registry and the set of scheduled hooks from
-// ever drifting apart.
-//
-// Operator overrides (ov) survive every reload by construction — the
-// disable gate reads the override store at dispatch time, and the manager
-// re-applies limit overrides inside Update — so a reload can never silently
-// wipe a kill switch. What a reload CAN do is orphan an override (its hook
-// or group no longer exists in the fresh config): the override is KEPT
-// (inert; it re-applies if the target comes back) and announced with one
-// override.orphaned event per orphaning, never silently dropped.
-//
-// The attention aggregator (agg) is re-derived here too: the collected
-// load errors become the current "load"/"zero-hooks" problem sets, and
-// ApplyServeProbe statically re-checks each LOADED hook's ${NAME}
-// api_key/env references and sops decrypt (via the shared secrets loader)
-// — serve-path only, exactly like the reload itself; `validate` stays
-// environment-independent. That per-reload re-derivation IS the clear
-// rule for those sources: fix the config, reload, entry gone.
-func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, logger *slog.Logger, rec *events.Recorder) func() {
-	// Orphan announcements are deduped per target across reloads: one event
-	// when a reload first finds an override pointing at nothing, not one
-	// per reload tick. A target that comes back is forgotten here, so a
-	// later re-orphaning is announced again.
-	var orphanMu sync.Mutex
-	announced := map[string]struct{}{}
-	return func() {
-		// Layout detection runs on EVERY reload: a hooks-repo pull can
-		// restructure the tree (legacy <-> src), and the load must follow
-		// it without a restart.
-		layout := hooks.DetectLayout(hooksDir)
-		loaded, errs := hooks.LoadLayout(layout)
-
-		cfg, cerr := concurrency.LoadFile(layout.ConcurrencyPath())
-		if cerr != nil {
-			// An unparseable concurrency.json means we can't trust any
-			// group reference; treat the set as empty so referencing hooks
-			// fail closed below rather than running unbounded.
-			errs = append(errs, cerr)
-			cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
-		}
-
-		// A hook naming an undeclared group is a misconfiguration: drop it
-		// so it can't be triggered (and can't run without its intended
-		// backpressure).
-		refs := make(map[string]string, len(loaded))
-		for id, h := range loaded {
-			refs[id] = h.ConcurrencyGroup
-		}
-		for _, re := range concurrency.CheckRefs(cfg, refs) {
-			errs = append(errs, re)
-			delete(loaded, re.HookID)
-		}
-
-		for _, e := range errs {
-			logger.Error("hook reload error", "err", e)
-			rec.Record("hook.load_error", e.Error(), nil)
-		}
-
-		// Extract the per-hook schedules from the (post-rejection) set so a
-		// dropped hook is never scheduled.
-		schedules := make(map[string]time.Duration, len(loaded))
-		for id, h := range loaded {
-			if iv := h.ScheduleInterval(); iv > 0 {
-				schedules[id] = iv
-			}
-		}
-
-		mgr.Update(cfg)
-		if sched != nil {
-			sched.Update(schedules)
-		}
-		registry.Replace(loaded)
-
-		// Re-derive the state-sourced attention entries from THIS load:
-		// the retained per-hook errors above, the zero-hooks guard, and
-		// the static resolvability probe of every loaded hook. Entries
-		// whose problem persisted keep their Since; fixed ones clear.
-		loadEnts, zeroEnts := attention.FromLoadErrors(errs)
-		agg.ReplaceSource(attention.SourceLoad, loadEnts)
-		agg.ReplaceSource(attention.SourceZeroHooks, zeroEnts)
-		attention.ApplyServeProbe(agg, loaded, secrets)
-
-		announceOrphanedOverrides(loaded, cfg, ov, &orphanMu, announced, logger, rec)
-
-		logger.Info("hooks reloaded", "count", len(loaded), "layout", layout.String(), "concurrency_groups", len(cfg.Groups), "scheduled", len(schedules))
-		rec.Record("hooks.reloaded",
-			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d scheduled, %d error(s)", len(loaded), len(cfg.Groups), len(schedules), len(errs)),
-			nil)
-	}
-}
-
-// announceOrphanedOverrides compares the operator overrides against the
-// freshly loaded hooks/groups and records one override.orphaned event per
-// override whose target vanished — once per orphaning, deduped in
-// `announced` across reloads (targets that return are forgotten so a later
-// re-orphaning is announced again). Orphaned overrides are never removed:
-// they stay stored and re-apply if the hook/group comes back.
-func announceOrphanedOverrides(loaded map[string]*hooks.Hook, cfg *concurrency.Config, ov *overrides.Store, mu *sync.Mutex, announced map[string]struct{}, logger *slog.Logger, rec *events.Recorder) {
-	type orphan struct {
-		msg    string
-		fields map[string]string
-	}
-	current := map[string]orphan{}
-	for id, enabled := range ov.HookOverrides() {
-		if _, ok := loaded[id]; !ok {
-			kind := "disable"
-			if enabled {
-				kind = "enable"
-			}
-			current["hook:"+id] = orphan{
-				msg:    fmt.Sprintf("%s override for hook %q is orphaned: the hook no longer exists (override kept; it re-applies if the hook returns)", kind, id),
-				fields: map[string]string{"hook": id},
-			}
-		}
-	}
-	for group := range ov.ConcurrencyLimits() {
-		if !cfg.Has(group) {
-			current["group:"+group] = orphan{
-				msg:    fmt.Sprintf("concurrency limit override for group %q is orphaned: the group is no longer declared (override kept; it re-applies if the group returns)", group),
-				fields: map[string]string{"group": group},
-			}
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	for key, o := range current {
-		if _, seen := announced[key]; seen {
-			continue
-		}
-		announced[key] = struct{}{}
-		logger.Warn("operator override is orphaned", "target", key)
-		rec.Record("override.orphaned", o.msg, o.fields)
-	}
-	for key := range announced {
-		if _, still := current[key]; !still {
-			delete(announced, key)
-		}
-	}
 }
 
 // buildScheduleFire returns the scheduler's Fire callback: look the hook up

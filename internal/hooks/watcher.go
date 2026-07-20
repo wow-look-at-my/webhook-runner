@@ -96,7 +96,7 @@ func WatchFunc(ctx context.Context, root string, onChange func(), log *slog.Logg
 // are baked into the image at build time, on the next run.
 func isRelevantEvent(name string) bool {
 	base := filepath.Base(name)
-	if base == "hook.json" || base == "concurrency.json" {
+	if base == "hook.json" || base == "concurrency.json" || base == "manager.json" {
 		return true
 	}
 	return filepath.Ext(base) == ""
@@ -135,6 +135,11 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 		_ = w.Add(l.SrcDir())
 		_ = w.Add(l.HooksDir())
 		addChildren(l.HooksDir())
+		// Managers live beside hooks under src/; their manager.json edits
+		// drive reloads exactly like hook.json (a managers dir created
+		// later arrives via the Create handler, same as cfg/).
+		_ = w.Add(l.ManagersDir())
+		addChildren(l.ManagersDir())
 		_ = w.Add(filepath.Join(root, "cfg"))
 	}
 	return nil

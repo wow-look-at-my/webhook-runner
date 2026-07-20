@@ -18,7 +18,51 @@
     },
     "enable": {
       "type": "boolean",
-      "description": "The kill switch's DEFAULT position. false loads the manager DISABLED: no session container runs and deliveries are rejected (503) until an operator explicitly enables it (the dashboard switch — a persisted runtime override that outranks this default in both directions). Absent or true means enabled by default."
+      "description": "The kill switch's DEFAULT position, exactly the hook contract: absent or true means ENABLED — a declared manager starts working the moment it deploys. Explicit false loads it disabled (no session container, deliveries 503) until an operator enables it. The dashboard switch is a persisted runtime override that outranks this default in both directions; it is the emergency control, never a go-live gate."
+    },
+    "synchronous": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, each delivery's HTTP response is held until the manager finishes processing THAT inbox event — i.e. until its next /inbox/next call (200 processed), or the event is dropped/abandoned (500). The hold is bounded by the manager's timeout as wall clock (the hook sync-hold rule); past it the response degrades to the async 202 while processing continues. Default: false (202 queued immediately)."
+    },
+    "concurrency_group": {
+      "type": "string",
+      "description": "Name of a concurrency group declared in concurrency.json at the hooks root. The manager's INSTANCE holds one slot for its entire lifetime (acquired before the container starts, released when the instance ends), counted against the same limit as hook runs sharing the group. Referencing an undeclared group is a load/validation error. Omit for no group."
+    },
+    "run_title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Friendly display title for the manager's panel, rendered ONCE per instance (there is no per-delivery payload to template against, so placeholders resolve empty — in practice use a static, placeholder-free title). The instance can rename itself mid-flight via POST /title on the state API. A malformed template ({{ unterminated, empty {{}}) is a load/validation error, the hook rule."
+    },
+    "github_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "GitHub commit status updates with manager-shaped, PER-DELIVERY semantics: when a delivery's payload carries a repo + head SHA, the runner posts 'pending' as the event is accepted into the inbox and 'success'/'error' when the manager finishes/abandons that event. No status is posted for ticks or start events (they have no commit).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable GitHub commit status updates for this manager's deliveries."
+        },
+        "context": {
+          "type": "string",
+          "description": "The status context string. Required when enabled is true."
+        },
+        "target_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional URL linked from the GitHub status check."
+        }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": { "required": ["context"] }
+    },
+    "dind": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, run the manager's session container with the privileges to host its OWN nested container daemon: the runner adds --privileged and an anonymous volume at /var/lib/docker, exactly the hook dind contract (applied on the session and `webhook-runner test` paths alike). Note the volume lives as long as the INSTANCE — a persistent manager's nested storage persists across the events it processes and is discarded on restart. The host's docker daemon is NEVER exposed. AUDITED, host-root-equivalent capability: enable only for trusted, operator-curated managers."
     },
     "reconcile_interval": {
       "type": "string",

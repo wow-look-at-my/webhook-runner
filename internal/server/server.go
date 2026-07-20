@@ -62,6 +62,7 @@ type Server struct {
 	runstore     *runstore.Store
 	overrides    *overrides.Store
 	spawnAllow   SpawnAllowlist
+	managers     ManagerControl
 	version      VersionInfo
 
 	// The admin reload panel's seams (reloadpanel.go): the hooks-repo
@@ -175,8 +176,15 @@ type Options struct {
 	// hooks may spawn runs of which target hooks (see SpawnAllowlist).
 	// DENY-BY-DEFAULT — nil or empty refuses every spawn. Operator config
 	// (the WEBHOOK_RUNNER_SPAWN_ALLOW env var), deliberately never a
-	// hook.json field.
+	// hook.json field. Manager ids are valid parents (ids share one
+	// namespace with hooks).
 	SpawnAllow SpawnAllowlist
+
+	// Managers is the manager supervisor's server surface (deliveries into
+	// inboxes, /inbox/next, the admin roster/kill switch). nil disables
+	// manager support (a delivery for a declared manager then 503s, which
+	// cannot happen in serve — the supervisor is always wired there).
+	Managers ManagerControl
 
 	// Version identifies the running build; it is reported by /health and
 	// /version on both ports. An empty Version falls back to "dev" (the
@@ -197,6 +205,7 @@ func New(opts Options) *Server {
 		runner:       opts.Runner,
 		tracker:      opts.Tracker,
 		gh:           opts.GitHub,
+		managers:     opts.Managers,
 		secrets:      opts.Secrets,
 		concurrency:  opts.Concurrency,
 		events:       opts.Events,
@@ -301,6 +310,14 @@ func (s *Server) registerRoutes() {
 	// a concurrency group's limit live. Admin-port-only by design.
 	s.adminMux.HandleFunc("POST /hooks/{id}/disable", s.handleHookDisable)
 	s.adminMux.HandleFunc("POST /hooks/{id}/enable", s.handleHookEnable)
+	// Managers: the first-class roster (state, instance, restarts, inbox,
+	// output tail), its kill switch (default enabled — the switch is the
+	// emergency control, not a go-live gate), and the instance bounce.
+	s.adminMux.HandleFunc("GET /managers", s.handleListManagers)
+	s.adminMux.HandleFunc("GET /managers/{id}", s.handleManagerDetail)
+	s.adminMux.HandleFunc("POST /managers/{id}/disable", s.handleManagerDisable)
+	s.adminMux.HandleFunc("POST /managers/{id}/enable", s.handleManagerEnable)
+	s.adminMux.HandleFunc("POST /managers/{id}/restart", s.handleManagerRestart)
 	s.adminMux.HandleFunc("PUT /concurrency/{group}/limit", s.handleConcurrencyOverrideSet)
 	s.adminMux.HandleFunc("DELETE /concurrency/{group}/limit", s.handleConcurrencyOverrideClear)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
@@ -358,6 +375,9 @@ func (s *Server) registerRoutes() {
 	// First-class declared sleep: blocks ~N seconds, shows on the dashboard,
 	// and counts as activity for the idle timeout (see wait.go).
 	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))
+	// The manager inbox pop: the long-poll a live manager instance loops on
+	// (deliveries + reconcile ticks; see managers.go).
+	s.stateMux.HandleFunc("POST /inbox/next", s.withNamespace(s.handleInboxNext))
 	// Friendly-title override: a run whose subject is only known mid-run
 	// (a fleet sweep reaching some repo) names itself (see title.go).
 	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))

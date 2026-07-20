@@ -37,6 +37,11 @@ func (s *Server) effectiveDisabled(id string) bool {
 	defaultEnabled := true
 	if h, ok := s.registry.Get(id); ok {
 		defaultEnabled = h.EnabledByDefault()
+	} else if m, ok := s.registry.GetManager(id); ok {
+		// Managers share the hook default: absent `enable` means enabled,
+		// so a declared manager works the moment it deploys. The persisted
+		// operator override stays the emergency control.
+		defaultEnabled = m.EnabledByDefault()
 	}
 	return s.overrides.HookDisabled(id, defaultEnabled)
 }
