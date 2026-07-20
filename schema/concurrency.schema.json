@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json",
+  "title": "webhook-runner concurrency groups",
+  "description": "Central declaration of the concurrency groups hooks may reference. Place this file as concurrency.json at the hooks root (the directory the hook folders live under). A hook opts into a group via hook.json's concurrency_group; at most that group's limit of runs execute at once and the rest queue. Referencing a group not declared here is a load/validation error.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "URI of the JSON Schema this file is validated against. Set it to https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json (the legacy https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json is still accepted, but serves frozen 2026-07-15 content)."
+    },
+    "groups": {
+      "type": "object",
+      "description": "Map of group name to its settings. The group name is what a hook.json references via concurrency_group.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "description": "Maximum number of runs in this group that may execute at once; the rest queue. Default: 1 (full serialization)."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of what the group protects (e.g. a shared local model server)."
+          }
+        }
+      }
+    }
+  }
+}

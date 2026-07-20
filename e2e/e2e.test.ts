@@ -101,9 +101,12 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 10);
+    assert.equal(hooks.length, 12);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "dind-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    // The scheduled hook advertises its interval in the summary.
+    const scheduled = hooks.find((h: any) => h.id === "scheduled-hook");
+    assert.equal(scheduled.schedule, "3s", "scheduled-hook should report its schedule");
   });
 
   await test("GET /hooks not on hook port", async () => {
@@ -122,6 +125,9 @@ try {
     assert.equal(run.status, "success");
     assert.equal(run.exit_code, 0);
     assert.equal(run.hook_id, "echo-test");
+    // The hook's run_title template ("echo {{sender}}") resolved against
+    // this delivery's payload — the friendly-title path, end to end.
+    assert.equal(run.title, "echo e2e-test");
     const output = run.output.join("\n");
     assert.ok(output.includes("hello-e2e"), "missing hello-e2e");
     assert.ok(output.includes("e2e-test"), "missing payload content");
@@ -236,6 +242,19 @@ try {
     assert.ok(run.output.join("\n").includes("hello-from-baked-image"), "missing baked file content");
   });
 
+  await test("dind hook runs a nested docker daemon (--privileged + /var/lib/docker volume)", async () => {
+    // dind:true → the runner adds --privileged and an anonymous
+    // /var/lib/docker volume, so the container hosts its own dockerd. Async
+    // + a generous poll: starting the nested daemon takes a few seconds.
+    const trigger = await fetch(`${base}/hook/dind-hook`, { method: "POST", body: "{}" });
+    assert.equal(trigger.status, 202);
+    const { run_id } = (await trigger.json()) as any;
+    const result = await pollRun(adminBase, run_id, 120_000);
+    assert.equal(result.status, "success", `dind run failed: ${(result.output ?? []).join("\n")}`);
+    assert.equal(result.exit_code, 0);
+    assert.ok(result.output.join("\n").includes("dind-smoke-ok"), "nested dockerd smoke check did not confirm");
+  });
+
   await test("env ${VAR} expands from the runner host", async () => {
     const r = await fetch(`${base}/hook/hostenv-hook?wait=true`, { method: "POST", body: "{}" });
     assert.equal(r.status, 200);
@@ -319,6 +338,27 @@ try {
     assert.ok(runs.length >= 2, `echo-test should have >= 2 runs, got ${runs.length}`);
   });
 
+  await test("scheduled hook fires on a timer with no HTTP trigger", async () => {
+    // scheduled-hook declares schedule:"3s" and is never POSTed here — the
+    // scheduler fires it (immediately on startup, then every interval). Poll
+    // the admin run list until a successful scheduled run shows up.
+    const deadline = Date.now() + 20_000;
+    let run: any;
+    for (;;) {
+      const runs: any = await (await fetch(`${adminBase}/runs?hook=scheduled-hook`)).json();
+      run = (runs as any[]).find((x) => x.status === "success");
+      if (run) break;
+      if (Date.now() > deadline) throw new Error(`no successful scheduled-hook run appeared (got ${JSON.stringify(runs)})`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    // Full output (the list view truncates it) confirms the container ran and
+    // received the synthetic schedule-trigger payload.
+    const full: any = await (await fetch(`${adminBase}/runs/${run.id}`)).json();
+    const output = full.output.join("\n");
+    assert.ok(output.includes("scheduled-fired"), "scheduled run missing its container output");
+    assert.ok(output.includes('"trigger":"schedule"'), "scheduled run payload missing the schedule-trigger marker");
+  });
+
   await test("dashboard collapses setup instructions by default", async () => {
     const r = await fetch(`${adminBase}/`);
     assert.equal(r.status, 200);
@@ -366,6 +406,9 @@ await test("webhook-runner test runs declared hook tests", async () => {
   const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
   assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
   assert.ok(r.stdout.includes("built-tests-ok"), "missing built-image test output");
+  // The dind hook's declared test starts a nested daemon under the same
+  // --privileged + volume injection — the test-path capability parity.
+  assert.ok(r.stdout.includes("dind-smoke-ok"), "missing dind nested-daemon test output");
   assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
 });
 

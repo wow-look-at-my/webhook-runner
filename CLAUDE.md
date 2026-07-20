@@ -13,13 +13,22 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded read-only HTML dashboard
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
 internal/hooks/            hook.json model, loader, registry, watcher, git repo
+internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
+internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
+internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
+internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
+internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
 internal/runner/           docker run dispatch + output streaming + image build/status
-internal/runs/             in-memory run tracker (bounded)
+internal/runs/             in-memory run tracker (bounded) + the OnFinish persistence seam
+internal/runstore/         bbolt-backed persistent completed-run history (48h retention, GC sweeper)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
+internal/attention/        aggregated ACTIVE misconfigurations (the needs-attention surface: GET /attention + the dashboard's red banner; nil-aggregator safe)
+internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
+internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schema for hook.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -36,19 +45,164 @@ examples/hooks/            sample hook configs
   Don't add chi/gorilla/echo.
 - **`$schema` is required.** Every `hook.json` must declare a `$schema`
   field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
-  one. The matching property lives in `schema/hook.schema.json`, which is
-  published to GitHub Pages and is what the `$schema` URL points at. Keep
-  the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  one — presence only, never a specific URL. The matching property lives in
+  `schema/hook.schema.json`, published to buildhost sites on every master
+  push (`.github/workflows/schemas.yml` — replaced the GitHub Pages deploy,
+  which died on the org's Actions artifact-storage quota 2026-07-17;
+  operator directive 2026-07-19: use buildhost). Canonical URL:
+  `https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`
+  (a public site branch under the private repo's private buildhost project,
+  via the publish action's `public: true`). The legacy
+  `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
+  their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
+  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
-## Architecture: dual ports
+## Architecture: two ports + a state socket
 
-The server listens on two ports:
+The server listens on two TCP ports plus a Unix socket:
 
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
-  `GET /health`, `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/hooks`, `/runs`,
-  `/runs/{id}/cancel`, `/reload`, `/events` (activity feed), `/images`
-  (per-hook image state). Internal, behind Cloudflare Zero Trust.
+  `GET /health` (body carries the build version), `GET /version` (build
+  identity: version + VCS revision/time — the same string the `version`
+  command prints, plumbed from cli via `server.Options.Version` — plus
+  `hooks_tree`, the reload gate's served-tree state: `state` is
+  `serving` (`serving_sha` + `verified`), `held` (adds `pending_sha`,
+  `pending_state`, rendered `reason`), `unknown` (gate tracking, no
+  serving commit recorded — `serving_sha` omitted, never an ambiguous
+  empty string), or `untracked` (`mode` names the gate-off/no-repo
+  mode). Wired via the nil-safe `Options.TreeState` (serve sets it to
+  `reloadgate.Gate.TreeState`, a pure under-mutex snapshot — no git, no
+  GitHub calls); exposing the private hooks repo's deployed commit sha
+  on this PUBLIC port is a deliberate, operator-requested trade),
+  `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
+- **Admin port** (`:9001`): dashboard, `/version` (build identity +
+  `hooks_tree` state, same as the hook port's; the dashboard footer shows
+  the build string), `/hooks`, `/hooks/{id}` (one hook's
+  drill-down: value-free config summary — api_key as a boolean, env var
+  names only, never any api_key/env/secret value, `skip_conditions` as a
+  count — plus image state, KV namespace stats, and run stats over the live
+  tracker window merged with the persisted run history; `stats.retention`
+  labels that window and `stats.skipped` is the skip bucket — see the
+  skip_if bullet under "Things easy to get wrong"),
+  `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
+  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, the
+  hooks-repo reload panel (`GET /reload/status` — mode gated/legacy/none,
+  branch, live commit with CI + src/hooks-tree verdicts, the gate's held
+  tip; `GET /reload/commits` — ~20 fetched-fresh origin commits with
+  per-commit CI/src/is_live; `POST /reload/check` — reload on demand:
+  one `Gate.Reconcile` pass in gated mode / the legacy pull+reload;
+  `POST /reload/switch` — the manual commit pick, body `{"ref","override"}`
+  — see the reload-gate bullet's manual-pick paragraph under "Things easy
+  to get wrong"), `/events`
+  (activity feed; `?hook=` filters on the `hook` field every hook-scoped
+  event carries), `/attention` (the aggregated needs-attention problem
+  set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
+  first — the dashboard's red banner + panel; see the attention bullet
+  under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill
+  switch (`POST /hooks/{id}/disable|enable`,
+  `PUT|DELETE /concurrency/{group}/limit` — see the overrides bullet under
+  "Things easy to get wrong"), `/concurrency` (live per-group
+  effective limit/declared/overridden/active/waiting), `/kv` (read-only state-store stats:
+  per-namespace key count and bytes — shape unchanged, still value-free),
+  `/kv/{namespace}` (one namespace's keys, sorted, `?prefix=` filters:
+  name, size, and `expires_at` + remaining `ttl_seconds` when a TTL is
+  set — the entry model tracks nothing else, so no created/updated
+  stamps), and `/kv/{namespace}/{key}` (one entry **including its
+  value**: `value_base64` always, `value_utf8` when the bytes are valid
+  UTF-8; 404 on absent-or-expired via the same lazy-expiry rule as the
+  state API). Exposing values on `/kv/{namespace}/{key}` is a
+  **deliberate reversal** of the original "never values" stance, made at
+  the operator's explicit request — the admin port is operator-only
+  behind Zero Trust; the hook port and `/hooks/{id}` stay value-free
+  (`/hooks/{id}`'s KV field remains the count/bytes summary). Internal,
+  behind Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment
+  opens a per-hook "app" page built on those endpoints — an app is
+  exactly one hook for now; grouping several hooks into one app is
+  future work, which is why `/hooks/{id}` keeps a hook-scoped shape a
+  grouping layer could aggregate. For `state: true` hooks that app page
+  renders a "State (KV)" section: the key table (name, size, TTL
+  remaining) with click-through to the stored value (pretty-printed when
+  it parses as JSON, base64 for binary; text-node rendering, so stored
+  bytes can't inject markup). The overview's PRIMARY runs view is a
+  realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
+  hook, hue per hook): queue wait as a dim lead-in segment, declared
+  waits/blocked locks/queued group acquires hatched. Wait indication is
+  ON-SPAN ONLY — the adapter deliberately feeds the component ZERO
+  connectors (operator ruling: no cross-canvas lines; the generic
+  connector capability stays upstream in js-snippets): a queued run's
+  label badge carries the group and its live place in line ("⧗
+  model-gateway · 3rd", re-stamped as the queue advances), a holder's
+  badge carries how many runs it is holding up ("⏳N" — derived
+  CLIENT-side by inverting waiting_on, because stream deltas never ship
+  the server's waiters field), and holder/waiter click-through lives in
+  the run modal's links. The adapter registers both badge glyphs as
+  consumer rows in the component's "?" legend (`legendEntries`,
+  feature-detected — an older Pages component just shows its built-in
+  rows), and run tooltips spell them out in plain language from the same
+  data ("waiting for <group> · Nth in line" / "holds the <group> slot ·
+  N waiting"). One logical wait is ONE wait_history entry:
+  internal/runs.SetWaitingOn CONTINUES the trailing open segment on a
+  same-kind+key restamp (queue position/holder churn) instead of
+  fragmenting it (pre-fix, a single 7-deep queue wait shipped 14
+  micro-segments on every SSE delta). Failures
+  emphasized; cancelled runs map to the component's first-class
+  'cancelled' state (hollow + dashed category-hue border — "stopped, not
+  failed"), with the kill tail (cancel_requested_at→finished) still a
+  separate 'outline' segment the component draws as a terminal cut that
+  never vanishes; instant runs (e.g. skips) as pips, fed INDIVIDUALLY at
+  their true timestamps — the component clusters visually-overlapping
+  instants into scale-aware ×N markers that split on zoom (the old
+  adapter-side skip pre-merge is gone; each skip keeps its own tooltip
+  and modal click-through); wheel/drag
+  pan + zoom (plus `html { overscroll-behavior-x: none }` in
+  dashboard.css so a trackpad back-swipe around the canvas never
+  triggers history navigation), and panning into the past pages
+  `/runs?before=` history
+  down to retention (`/config`'s `run_retention` labels the boundary).
+  COVERAGE'S TRAILING EDGE IS THE ADAPTER'S JOB: the component hatches
+  every uncovered range up to now as unknown history, so on a live
+  stream the adapter must keep vouching [last claim, now] — run deltas
+  fold a `coverage` claim into their merge, hb/changed keepalives make a
+  throttled coverage-only claim (`claimLiveCoverage`) — bounding the
+  trailing hatch to ~one heartbeat; a dead feed stops claiming (growing
+  hatch + stale note = the truth) and the reconnect snapshot back-fills
+  the gap. Pre-#73 this held only by accident (the skip-driven
+  rebuildAll re-registered coverage to now; deleting it hatched the
+  whole live window over live bars — the 2026-07-15 incident); the
+  testjs timeline-coverage harness pins the contract.
+  A bar click opens the run modal, a lane-label click opens `#hook={id}`,
+  and the old runs table stays behind a persisted "Show table" toggle.
+  waiting_on/waiters and unknown statuses are feature-detected, so the
+  timeline works against servers with or without first-class waits.
+  Dashboard assets are content-addressed (`internal/server/
+  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js` +
+  `/timeline.<hash>.js`, served
+  immutable; `/` and the bare asset paths are no-cache, stale hashes 404)
+  so an edge cache can never pair new HTML with stale assets.
+- **State KV API** — served on a **Unix socket** (NOT a TCP port), default
+  `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
+  `POST /kv/{key}/incr`, the run-owned cooperative locks
+  `POST /kv/{key}/acquire` (holder-identified 409 on contention; opt-in
+  `{"block": true}` holds the request until acquired) /
+  `POST /kv/{key}/release` / `POST /kv/{key}/steal` (transfer + cancel the
+  holder — see the lock bullet under "Things easy to get wrong"), and the
+  first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
+  "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
+  on the run's dashboard row, counts as activity for the idle `timeout`;
+  see the wait bullet under "Things easy to get wrong"), and the friendly
+  run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
+  chars — names the calling run mid-flight, replacing any run_title
+  template title; see the run-title bullet under "Things easy to get
+  wrong"). Hooks don't touch the socket directly: the runner
+  injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
+  as the container entrypoint, so the hook reaches the API at a plain
+  `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
+  networking, no `--unix-socket`. Each request is authenticated by the per-hook
+  bearer token the runner injects, and the namespace is derived from that
+  token, never from the URL — so a hook can only ever reach its own data.
+  Backed by `internal/kv` (disk-backed under the data dir; see below). The
+  `Server` struct exposes `StateHandler()` (served on the socket listener)
+  alongside `HookHandler()`/`AdminHandler()`.
   The dashboard's one-time webhook-setup instructions live in a
   collapsed `<details>`; the page is about live state (hooks, images,
   runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
@@ -57,7 +211,8 @@ The server listens on two ports:
   last one names an unresolvable `${NAME}` api_key reference, logged to
   the feed but never to the 401 body) and the runner (image builds, run
   lifecycle, `env.unresolved` when an env reference expands to nothing)
-  — memory only, like run history. Rejections are events on purpose:
+  — memory only (run history, by contrast, persists completed runs via
+  `internal/runstore`; see below). Rejections are events on purpose:
   the dashboard must be able to answer "did you receive anything?".
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
@@ -68,9 +223,22 @@ separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
 When `WEBHOOK_RUNNER_HOOKS_REPO` is set, the server clones the repo on
 startup (shallow, single-branch) into `WEBHOOK_RUNNER_HOOKS_DIR` (default
 `/var/lib/webhook-runner/hooks`). `POST /_reload` on the hook port
-accepts a GitHub push webhook (HMAC-SHA256 via `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`)
-and triggers `git fetch --depth=1` + `git reset --hard FETCH_HEAD` + reload.
-The admin port's `POST /reload` does the same without auth.
+accepts the repo's GitHub webhook — push AND status events (HMAC-SHA256
+via `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). Reloads are CI-GATED by default
+(`internal/reloadgate`; see the gate bullet under "Things easy to get
+wrong"): a push only fetches + records the new tip as pending, and the
+tree switches when a `status` event reports the gating context
+(`all-builds`, override via `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT`; set it
+EMPTY to disable the gate and restore the legacy
+any-signed-POST-pulls-and-reloads flow). An hourly reconciliation poll
+(`WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL`, default `1h`, `0` disables)
+backstops missed status webhooks: it fetches the tip and, when it
+differs from what is serving, reads its gating status from the GitHub
+API (via `WEBHOOK_RUNNER_GITHUB_TOKEN`) — switching only on green, so a
+missed webhook costs at most ~one interval of latency instead of
+freezing deploys. The admin port's `POST /reload`
+is the operator's deliberate gate bypass: fetch + reset to the remote tip,
+recorded verified, no auth.
 
 For private repos, use an SSH URL (`git@github.com:...`). On first
 startup, the server auto-generates an Ed25519 deploy key and logs the
@@ -81,6 +249,70 @@ The companion repo is `wow-look-at-my/webhooks`.
 
 ## Things easy to get wrong
 
+- The hooks-repo reload CI gate (`internal/reloadgate`) moves the tree
+  along THREE paths — the former "event-driven only, no polling, ever"
+  doctrine was superseded by explicit operator order (2026-07-17): a
+  missed status webhook must never freeze deploys indefinitely, so the
+  reconciliation poll below is deliberate, not a regression.
+  (1) The HMAC-verified `status` event — the PRIMARY, low-latency switch
+  authority. A `push` NEVER moves the tree (it fetches + records the tip
+  pending, loudly: `reload.held` + the "reload"-source attention
+  entries). The ordering rule for a green: the sha must be in the
+  freshly-fetched recent history (`fetchDepth` 100) AND not older than
+  the serving sha — stale/out-of-order greens are `ignored_stale`, never
+  applied.
+  (2) The hourly reconciliation POLL (`reloadgate.Poller` →
+  `Gate.Reconcile`; `WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL`, default `1h`,
+  `0` disables, unparseable/negative fails startup) — the fallback that
+  bounds a missed webhook's cost to one interval: one pass at startup
+  (catching a green missed while down), then one per interval. Each pass
+  fetches the remote tip; tip == serving is a quiet no-op with NO API
+  call; a newer tip has the gating context's state read from the combined
+  commit status (`githubstatus.ContextState` — reusing the
+  `WEBHOOK_RUNNER_GITHUB_TOKEN` credential; owner/repo derived from the
+  hooks-repo URL, both SSH and https forms) and switches ONLY on an
+  affirmative green, through the exact same trySwitch ordering path as
+  (1) — never a forked copy. Red/pending/no-status-yet hold via the same
+  `reload.held`/`held_red` bookkeeping; an UNREADABLE status (no token,
+  API error, underivable URL) holds BLIND — `reload.poll_blind` + the
+  `KeyReloadPoll` attention entry, one event per distinct problem, and it
+  is impossible for the poll to switch to a tip that is not affirmatively
+  green. Repeat ticks over an unchanged verdict are quiet. The poll makes
+  the repo webhook's Statuses-event checkbox a latency optimization, not
+  a correctness requirement. GATED MODE ONLY: with the gate disabled the
+  poller never starts (one log line; legacy stays timerless).
+  (3) Admin `POST /reload` — the DELIBERATE operator bypass (Force: reset
+  to tip, recorded verified, `reload.forced`).
+  MANUAL PICK (the dashboard's reload panel, `POST /reload/switch`):
+  `Gate.ManualSwitch(ref, override)` rides the SAME Force-style apply
+  path (`forceApplyLocked` — Force generalized to a target sha; ONE
+  switch mechanism, zero forks), deliberately WITHOUT trySwitch's
+  staleness ordering so rollback to an OLDER commit works and a wedged
+  gate (CI unreadable) stays overridable. Informed override is
+  SERVER-enforced: a pick whose gating CI state is not affirmatively
+  green ("unknown" counts as not green) or whose tree lacks `src/hooks`
+  answers 409 naming every reason + `requires_override:true` and moves
+  NOTHING (`reload.switch_refused`); only an explicit `override:true`
+  switches — loudly, `reload.forced` naming each overridden reason. A
+  green+src pick records `reload.switched` (verified). Pending
+  bookkeeping stays consistent: picking the pending commit or the tip
+  clears the hold; a rollback elsewhere KEEPS a hold for a different
+  commit visible. The automatic paths (1)/(2) are byte-for-byte
+  unchanged — and note a rollback away from a GREEN tip lasts only until
+  the next green delivery/poll re-switches to it (inherent: the gate
+  converges on the newest green; pin by reverting the commit instead).
+  The last-good sha persists in `<data-dir>/reload-gate.json`
+  (temp+rename; a persist failure is loud but never blocks the reload)
+  and is restored at boot BEFORE the watcher's initial scan — gate mode
+  never pulls-to-tip on startup (`hooks.OpenRepo`, vs legacy
+  `CloneRepo`'s pull-on-open), and `Startup` never calls apply (the
+  watcher's initial scan does the first load). Setting
+  `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT` to an EMPTY string disables the
+  gate (exact legacy behavior everywhere, including startup); unset means
+  `all-builds`. Operator setup: the hooks repo's webhook should send
+  `status` events in addition to `push` (same URL/secret) for low-latency
+  switches, and `WEBHOOK_RUNNER_GITHUB_TOKEN` needs read access to the
+  hooks repo's commit statuses or the poll fallback holds blind.
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`)
   and kills the container by name on timeout. This is because if Go SIGKILLs
   the docker CLI process, the underlying container can survive briefly.
@@ -107,12 +339,61 @@ The companion repo is `wow-look-at-my/webhooks`.
 - Per-hook sops secrets (`hooks.SecretsLoader`, `secrets.sops.env`)
   decrypt by exec'ing the `sops` binary (`WEBHOOK_RUNNER_SOPS_BIN`
   overrides; key material like `SOPS_AGE_KEY_FILE` is plain sops config
-  on the service env), cached per file by mtime+size. Decrypted entries
+  on the service env), cached per file by mtime+size. The runtime image
+  (`Dockerfile`, alpine) bundles `sops` (and `age`) so the server can run
+  this exec in-container; the age *identity* is mounted at runtime via
+  `SOPS_AGE_KEY_FILE`, never baked in. The decrypt runs host-side in the
+  server process — the hook container only ever receives the plaintext
+  values as env vars, so hook images need nothing sops-related. Decrypted entries
   are also injected into the container env, with hook.json `env` winning
   on conflict (it's appended after, and docker keeps the last `-e`).
   Decrypt failures fail the run (status `error`) before the container
   starts — never run a secrets-bearing hook without its secrets. The e2e
   fixture key at `e2e/age-test-key.txt` is intentionally committed.
+- Hooks trees have TWO layouts (internal/hooks/layout.go), detected by ONE
+  rule — `<root>/src/hooks/` exists ⇒ src layout, else legacy — applied
+  identically in serve/validate/test because they all load through
+  hooks.LoadDir/LoadLayout. Under the src layout: hooks at
+  src/hooks/<id>/, shared dependency-free code at src/sdk/ (imported
+  relatively — ../../sdk/...), concurrency.json at
+  cfg/concurrency.json — repo-root cfg/, deliberately OUTSIDE src/
+  (concurrency config is repo-wide config, not source) — read by
+  concurrency.LoadFile at the layout-resolved path (Load(root) is the
+  legacy-only shorthand), and the
+  docker build runs with CONTEXT src/ + the hook's own Dockerfile via -f
+  (tree-mirror COPY convention: `COPY sdk/ /app/sdk/` +
+  `COPY hooks/<id>/ /app/hooks/<id>/` + `WORKDIR /app/hooks/<id>` so the
+  same relative import resolves in-repo and in-image). Layouts are NEVER
+  mixed — a root-level hook dir under the src layout is a HARD ERROR
+  (IgnoredLegacyDirError, one per offending dir, naming it): NOT loaded,
+  and loud enough to fail `validate` (non-zero exit, message "mixed hook
+  layout: top-level hook directory <dir> is not allowed when src/hooks/
+  exists ...") and every `serve` reload (logged + recorded as
+  hook.load_error) — NEVER a silent skip, so a stray top-level hook left
+  by an incomplete move to the src layout turns CI RED instead of quietly
+  vanishing from the fleet. SCOPED to MIXED layouts ONLY: the guard
+  (`findIgnoredLegacyDirs`) fires solely when `src/hooks/` exists, so a
+  pure-legacy tree with no `src/hooks/` sibling — e.g. this repo's own
+  `examples/hooks/` and `e2e/hooks/` fixtures — is never scanned for it
+  and stays 100% valid. Content hashing:
+  legacy stays BYTE-IDENTICAL to the historical algorithm (golden-hash
+  test — never change it, or every deployed hook re-tags on upgrade); the
+  src layout hashes src/hooks/<id>/ AND src/sdk/ (src-relative path +
+  mode + bytes, never sibling hooks), so an sdk edit re-tags every
+  src-layout hook while hook A's edit never re-tags hook B; the COPY
+  surface is therefore sdk/ + own hook dir ONLY (anything else in the
+  context builds fine but never re-tags — undefined staleness, document
+  don't debug). ZERO hooks loaded is a LOUD, typed failure
+  (ZeroHooksError) in BOTH layouts: validate exits non-zero, serve logs +
+  records it via the normal load-error event path every reload — the
+  guard that stops a premature repo restructure from taking the fleet
+  offline behind green CI. Layout detection re-runs on EVERY reload (a
+  hooks-repo pull can restructure the tree); the watcher additionally
+  watches src/, src/hooks/*, and root cfg/ under the src layout (not
+  src/sdk — sdk edits matter at image-build time, not reload time).
+  SEQUENCING: the runner with this support deploys BEFORE the webhooks
+  repo's src/ restructure lands — an old binary scanning a new tree loads
+  zero hooks (now loud, still offline).
 - Hook code is never mounted — it is immutable per run. Every hook ships
   a `Dockerfile` next to hook.json (the loader rejects hooks without one)
   and runs an image built lazily from the hook directory
@@ -150,3 +431,555 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
+- `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
+  EXACTLY two docker-run flags — `--privileged` and
+  `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
+  live-run path (`runner.execute`, before extra_docker_args + the image)
+  AND the `webhook-runner test` path (`runner.runOneTest`, before the
+  image); that run/test parity is load-bearing so a dind hook's declared
+  `tests` can start a nested daemon under `webhook-runner test`. The
+  anonymous /var/lib/docker volume is REQUIRED, not decorative: an inner
+  daemon's overlay2 storage can't stack on the outer container's overlay
+  rootfs, so it needs a real volume — and `--rm` (always passed)
+  auto-removes it, so inner storage never leaks between runs. The host's
+  docker daemon is NEVER exposed (no host socket mount); the nested daemon
+  is a throwaway. `--privileged` is host-root-equivalent, so this is an
+  AUDITED capability — enable it only for trusted, operator-curated hooks.
+  It is deliberately first-class rather than `extra_docker_args`: those raw
+  args are appended only on the live-run path (they can't cover the test
+  path) and would still leave the volume hand-written, whereas `dind`
+  covers both paths with one greppable boolean. New hook.json field ⇒ same
+  deploy-first rule as `state`/`schedule` (old binaries reject it via
+  DisallowUnknownFields).
+- `script` (hook.json) is parse-time sugar for `command`:
+  `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
+  pwsh, node, or tsx), resolving the file with `EvalSymlinks` and
+  rejecting anything outside the hook directory. It sets nothing else —
+  no image, no mounts: the script is baked into the hook's image like
+  all code, so the interpreter must be installed in that image (the
+  webhooks repo's `Dockerfile.common` base ships bash/node/tsx). An
+  explicit `command` wins over `script`. New hook.json field ⇒ same
+  deploy-first rule as `state`/`schedule`/`concurrency_group`.
+- The run `timeout` is **activity-based, not wall-clock**: it kills a run
+  only when the container has produced **no output** (stdout or stderr) for
+  that long — "time out after N minutes of no activity". There is **no
+  absolute processing ceiling anymore**: a run that keeps logging runs as
+  long as it needs (the semantics exists because a healthy 47-part
+  map-reduce run logging every ≤45s was killed by its 15m wall-clock
+  `timeout`, while silence — not runtime — is the actual failure signal).
+  Any output **byte** resets the clock: the runner wraps the pipe read side
+  in a `touchReader` (internal/runner/watchdog.go), so even a long line
+  without a newline counts. `DefaultTimeout` (5m) still applies when a hook
+  omits `timeout` — now meaning 5 minutes of *silence*, so every hook keeps
+  hang protection by default. The implementing `idleWatchdog` keeps the old
+  arming rule: `Arm()` is called only after secrets decrypt, image build,
+  and (crucially) the concurrency-group slot acquisition, once `cmd.Start`
+  succeeded — a queued run stays `pending` with no clock ticking, and an
+  unarmed watchdog never fires (that invariant is unit-tested; keep it).
+  A timeout kill reuses the docker-kill-by-name path and ends the run as
+  status `timeout` with error `timed out after <d> (no output)`; the
+  `run.finished` event message carries that reason. `run.SetRunning()`
+  (pending→running) still fires only once the container launches, so the
+  dashboard shows queued runs as `pending` — and it stamps
+  `RunState.StartedAt`, the queue-wait/processing split point (`started` in
+  JSON stays the QUEUED/accepted instant for compatibility; waited =
+  StartedAt−Started, duration = Finished−StartedAt, and a zero StartedAt
+  means the run never started). The **sync hold** is the one place
+  `hook.Timeout()` is still read as wall clock (`parseWaitParams` /
+  `handleTrigger` in internal/server/handlers.go): a held HTTP response
+  can't wait on activity, so the hold is a *response* bound, never a run
+  bound — a chatty run legitimately outlives it and the response degrades
+  to the async 202 while the run continues. (The short-lived `idle_timeout`
+  field from #30 is REMOVED — `timeout` itself is the idle limit now, and
+  `DisallowUnknownFields` means a hook.json still setting `idle_timeout`
+  fails to load; nothing merged ever set it.) **Declared waits count as
+  activity too**: while a state hook's `POST /wait` is in flight, the wait
+  handler keeps touching the run's watchdog (see the wait bullet below), so
+  an announced in-process sleep is never reaped as silence — only
+  *undeclared* silence times out.
+- Declarative skips (`skip_if` in hook.json, `internal/hooks/skip.go`):
+  conditions over the request HEADERS (`"header:x-github-event"` keys,
+  name case-insensitive) and the parsed JSON payload (dotted paths,
+  `"workflow_run.conclusion"`, array elements by numeric index) — list
+  entries ORed, keys within one condition ANDed (pr-minder's triggers
+  convention), matchers a bare string (equality) or
+  `{eq,ne,in,exists,prefix,regex}` (several ops on one key AND). It is
+  deliberately NOT a language: total, bounded matching over stringified
+  scalar leaves (numbers as their JSON literal via json.Number,
+  true/false/null as those words; objects/arrays are not leaves), and
+  `regex` is Go's RE2 (linear, no backtracking) **compiled at load time** —
+  a malformed skip_if (unknown op, non-compiling regex, empty condition)
+  is a load/validation error and the hook is dropped, same fail-closed
+  rule as an undeclared concurrency group. **Dispatch order is
+  load-bearing** (`handleTrigger` in internal/server/handlers.go): kill
+  switch → body read → **authentication** → **skip_if** → wait params →
+  `runner.Start`. Auth strictly first — an unauthenticated delivery that
+  would match gets the plain 401 and must never probe the conditions or
+  leave a record; and the skip strictly before any work — a match calls
+  `runner.Skip`, which boots NO container (no temp files, no secrets
+  decrypt, no image build, no concurrency slot, no onStart/onFinish GitHub
+  statuses) yet creates a REAL terminal run: status `skipped`, ExitCode 0
+  (placeholder — nothing exited), zero StartedAt, output
+  `skipped: skip_if[N]: <rendered condition>`, flowing through the normal
+  Finish → OnFinish seam into the runstore, a `run.skipped` activity
+  event, and a purple `skipped` chip on the dashboard. The HTTP answer is
+  immediate — `200 {"run_id","status":"skipped","reason"}` — for sync
+  hooks too (never the sync snapshot path, whose non-success rule would
+  500 a skip). Stats keep skips honest: `HookRunStats.Skipped` is its own
+  bucket, EXCLUDED from Completed/SuccessRate/duration/wait so non-work
+  can't dilute them (they still show in ByStatus and can be LastRun).
+  Scheduled fires bypass skip_if by design (they don't pass through
+  `handleTrigger`; a timer fire is the operator's own doing, not an
+  unwanted delivery). Same deploy-first rule as
+  state/concurrency_group/schedule: old binaries reject the unknown
+  `skip_if` field, so deploy webhook-runner before merging a hook that
+  sets it.
+- Friendly run titles (`run_title` in hook.json, `internal/hooks/title.go`;
+  the mid-run override `POST /title` in internal/server/title.go): a
+  template whose `{{path.to.field}}` / `{{header:<name>}}` placeholders
+  resolve with skip_if's EXACT shared traversal
+  (parsePayloadTree/resolvePath/leafString — reuse, never fork) into
+  `RunState.Title` (json `title`, omitempty, purely additive — the
+  dashboard feature-detects it and falls back to the run id). Semantics
+  are graceful-total, never blocking: scalars stringify like skip_if
+  leaves EXCEPT JSON null → empty (titles must never render junk);
+  missing/non-leaf → empty; ALL placeholders empty (with ≥1 declared) →
+  NO title; pure-separator literals touching an empty placeholder drop;
+  placeholder-free templates are static titles. A malformed template
+  (unterminated `{{`, empty `{{}}`) is a load/validation error — the
+  skip_if regex rule — while RUN-TIME resolution never errors. Ordering
+  is load-bearing: `handleTrigger` renders the title ONCE, after auth,
+  BEFORE EvaluateSkip, and hands it to runner.Skip/Start — so skipped
+  runs are titled (SetTitle precedes Finish, putting the title in the
+  persisted OnFinish snapshot), and `Run.SetTitle` refuses terminal runs
+  so live state never diverges from history. Scheduled fires title via
+  `Hook.ScheduleRunTitle` (template against the synthetic tick payload,
+  else the `"schedule"` fallback — a tick chip is never gibberish).
+  Titles persist in the runstore META BLOB ONLY — the per-hook index
+  value format (`"<status> <finished-nanos> <startedat-nanos>"`) is
+  untouched (byte-asserted in runstore tests; don't let a title near
+  it). The activity feed carries titles inside the existing
+  run.started/run.finished/run.skipped message strings (`runRef` in
+  internal/runner — `id (title)`), never as event-schema changes.
+  Bounds: `hooks.MaxRunTitleLen` (200) — the renderer clamps rune-safe,
+  the /title route 400s instead (mirroring /wait's reason validation;
+  409 for a terminal/foreign run). Same deploy-first rule as the other
+  newer hook.json fields; older runners also 404 `/title` (hooks should
+  shrug, not wedge — it's decoration).
+- Concurrency groups (`internal/concurrency`) are declared centrally in
+  `concurrency.json` at the hooks root, NOT per-hook: a hook only references
+  a group by name via `concurrency_group`, and referencing an undeclared
+  group is a load/validation error (the hook is dropped, not run unbounded —
+  fail closed). The `concurrency.Manager` holds one buffered-channel
+  semaphore per group; `Acquire` captures the channel in its release closure
+  so a reload that swaps a group's semaphore can't lose or double-count a
+  token — HOLDERS release into the exact channel they acquired from, for the
+  life of their run. Blocked WAITERS do NOT stay bound: every swap closes the
+  retired sem's `retired` channel and Acquire re-binds them to the group's
+  current semaphore, so a limit change (reload or dashboard override) takes
+  effect for already-queued runs immediately — a raise admits them at once
+  (pre-fix they drained at the OLD limit, the "2→10 gha-runner override did
+  nothing" production bug) and a group removed mid-queue fails those acquires
+  loudly rather than stranding them. Pre-existing transients unchanged:
+  in-flight holders above a lowered limit finish normally, and a raise
+  briefly runs the old holders on top of the fresh channel's admissions.
+  Alongside the semaphores the Manager keeps ADVISORY queue
+  bookkeeping keyed by group NAME (who holds slots, who waits, in order —
+  `QueueDetail`, surfaced as `/concurrency`'s `holders`/`waiting_runs` and
+  the dashboard's expandable group rows): display data only, never part of
+  gating, and name-keyed on purpose so it survives semaphore swaps (holders
+  of a retired channel stay listed until they release). `Acquire` takes the
+  run ID plus an `onQueue` callback invoked (serialized under the manager
+  mutex — keep it fast, never call back into the Manager) when the run
+  first has to wait and again on every holder/position change; the runner's
+  `groupQueueObserver` mirrors those into the run's `waiting_on` {kind
+  "group", key, holder_run_ids, position} via the SetWaitingOn seq-token
+  machinery (deduped on identical states), cleared on acquire — and
+  `attachWaiters` inverts group waits onto the HOLDERS as waiters with key
+  `group:<name>`, exactly like lock waits. `concurrency_group` is a new hook.json field (so `Parse`'s
+  `DisallowUnknownFields` means old binaries reject it — same deploy-first
+  rule as above), and `concurrency.json` has its own published schema.
+- Hooks AND concurrency groups AND schedules reload together through one
+  closure (`buildLoadAndApply` in cli/serve.go), used by both the
+  admin/webhook reload and the filesystem watcher. The watcher is now
+  `hooks.WatchFunc` (takes an `onChange` callback; `hooks.Watch` is a thin
+  back-compat wrapper) and also fires on `concurrency.json` edits. Don't
+  reintroduce a second, separate reload path — the registry, the
+  `concurrency.Manager`, and the `scheduler.Scheduler` must update
+  atomically together or a hook can be registered before its group exists
+  (or scheduled after it's been dropped).
+- Operator overrides (`internal/overrides`) are the kill switch — exactly
+  the "big red switch" for a runaway hook (a describe retry storm, a sweep
+  flooding PRs): flip it on the dashboard instead of merging a config PR or
+  deleting a repo. They are **operational state in the data dir**
+  (`<data-dir>/overrides.json`, atomic temp+rename writes; a persist
+  failure rolls the in-memory flip back and surfaces as a 500 + an
+  `override.write_failed` event — same loud-write rule as kv), NOT
+  hooks-repo config. The hook switch is TRI-STATE: hook.json's `enable`
+  field (absent = true) is only the DEFAULT position, and the store
+  persists an EXPLICIT per-hook enable/disable override (`hook_enable` in
+  overrides.json; the legacy `disabled_hooks` set is still read — as
+  explicit disables — AND written for binary downgrades) that outranks the
+  default in both directions, so enabling an `"enable": false` hook
+  sticks. Effective state = override-if-any, else the default; a hook that
+  failed to LOAD counts as default-enabled (`Server.effectiveDisabled` /
+  `Store.HookDisabled(id, defaultEnabled)` — every consumer goes through
+  these, never a raw read). GET /attention drops entries of effectively
+  disabled hooks at READ time (never deleted — re-enabling resurfaces
+  them), and hook.disabled/hook.enabled/hooks.reloaded also dirty the
+  "attention" stream section so the banner count tracks flips. The
+  dashboard renders the whole thing as ONE slider switch per hook (hooks
+  table Status column + the app page title row — `hookSwitch` in
+  dashboard.js; no separate state pill, no Enable/Disable button).
+  The disable gate lives **at dispatch, not load**: a
+  disabled hook stays loaded/registered (image state, config, run history
+  intact) and `handleTrigger` rejects deliveries with a distinct 503 +
+  `hook.disabled_rejected` event, while `buildScheduleFire` skips its
+  scheduled runs (`schedule.skipped`, reason "disabled by operator");
+  run *cancellation* is deliberately not gated. Reloads **re-apply**
+  overrides, never silently wipe them: the trigger/schedule gates read the
+  store at dispatch time, and `concurrency.Manager` keeps limit overrides
+  in an internal map that `Update` re-applies atomically (the semaphore
+  swap is token-safe because releases capture their channel — the same
+  invariant as reload). The store is opened in `runServe` BEFORE the first
+  load and seeds the manager, so boot state reflects persisted overrides.
+  An override whose hook/group vanishes on a reload is kept inert and
+  announced ONCE per orphaning via `override.orphaned`
+  (`announceOrphanedOverrides` dedups across reloads); it re-applies if the
+  target returns. Concurrency overrides must be >= 1 — a 0 limit is
+  rejected everywhere (store, manager, HTTP) because it would deadlock
+  queued runs; disabling the hooks is the way to stop them entirely.
+- The scheduler (`internal/scheduler`) fires hooks declaring a `schedule`
+  (a Go duration on `Hook`, validated in `hook.validate`) on a timer. Like
+  `concurrency.Manager` it is a **pure** component: it owns only timing and
+  takes a `Fire func(hookID)` callback, so it imports neither the runner nor
+  the registry/tracker and is tested with an injected clock. `cli/serve.go`
+  wires `Fire` to look the hook up in the registry, apply
+  **skip-if-already-running** via `tracker.HasActive` (overlap protection —
+  a long sweep must not stack on itself; this, not a concurrency group, is
+  the built-in guard), and call `rn.Start(context.Background(), …)` with a
+  synthetic schedule payload — so a scheduled run is a normal run (tracked,
+  group-gated, KV-enabled, on the dashboard) and emits
+  `schedule.fired`/`schedule.skipped` events. **Missed-tick policy:**
+  fire-immediately on first registration (startup, a newly added hook, or a
+  changed interval), preserve an unchanged schedule's next-fire across an
+  unrelated reload, and after a long pause fire once (no backlog burst) —
+  see `scheduler.Update`/`fireDue`. `schedule` is a new hook.json field, so
+  `Parse`'s `DisallowUnknownFields` means old binaries reject it: same
+  deploy-first rule as `concurrency_group`/`state`.
+- Run history persists (`internal/runstore`): a single bbolt file at
+  `<data-dir>/runs.db` (pure Go, no CGO). A run is written **exactly once, at
+  terminal status**, through the tracker's OnFinish seam
+  (`runs.Tracker.SetOnFinish`, wired in cli/serve.go — Finish's once-guard is
+  what makes the write exactly-once, and Finish fires on *every* runner path,
+  so the runner needed no changes). Nothing is ever rehydrated into the
+  tracker: the store is read-side only, merged behind the live tracker by
+  `/runs`, `/runs/{id}` (fallback for evicted runs), and `/hooks/{id}` stats
+  (deduped by run ID, live wins). A run in flight during a restart never
+  completed and exists nowhere afterwards — that's by design, don't "fix" it.
+  Retention is time-based (`WEBHOOK_RUNNER_RUN_RETENTION`, default 48h, the
+  primary knob) with a per-hook count cap
+  (`WEBHOOK_RUNNER_RUN_RETENTION_MAX`, default 200000) as a coarse disk
+  safety net; like kv, expiry is lazy on reads AND swept in the background —
+  keep both. Keys are time-ordered (`<zero-padded-start-nanos>-<run-id>`,
+  where the nanos are the QUEUED/accepted time — leave the key format
+  alone), so GC and newest-first reads are single cursor walks — including
+  the `ListAllBefore`/`ListByHookBefore` variants behind `/runs?before=`
+  paging (Seek to the cursor instant's bare nanos prefix, walk Prev:
+  strictly-older, same retention break); the per-hook
+  index *value* carries `"<status> <finished-nanos> <startedat-nanos>"`
+  (third field = processing start, `0` = never started) so `SummariesByHook`
+  (the stats path) never deserializes metadata blobs — don't change one side
+  of that format without the other, and keep `splitSummary` accepting the
+  legacy two-field `"<status> <finished-nanos>"` form: pre-upgrade rows read
+  back with a zero StartedAt, their duration falls back to Finished−Started
+  (queued-inclusive), and they are excluded from the wait stats. The
+  deferred `runStore.Close()` runs after
+  `rn.Wait()`, so every in-flight run records its terminal state before the
+  DB closes — keep that ordering.
+- The run live tail (`internal/server/streamhub.go`, GET `/runs/stream` on
+  the admin port) hangs off `runs.Tracker.SetOnChange` — a nil-safe
+  notification seam like `events.Recorder`, invoked synchronously on the
+  MUTATING goroutine (runner dispatch, state API, cancel handlers) after
+  every observable run mutation, with an output-stripped snapshot. Two
+  invariants: (1) the hub's publish NEVER blocks — bounded per-client
+  buffered channels, non-blocking sends, and a client whose buffer is full
+  is dropped on the spot (channel closed → its handler returns → its
+  EventSource reconnects and resyncs from the connect snapshot; that
+  drop-and-resync IS the slow-client semantics, so never "fix" it with a
+  blocking send or an unbounded buffer — it would let one wedged browser
+  tab apply backpressure to run execution). (2) the handler subscribes
+  BEFORE reading the snapshot, so no mutation can fall between snapshot
+  and stream — anything landing in that window is buffered and delivered
+  after (clients merge by run id, so the duplicate is harmless). The
+  terminal notification fires AFTER the OnFinish seam (run store write
+  first). At shutdown `srv.CloseStreams()` runs before the admin server's
+  `Shutdown` — Shutdown drains in-flight handlers, and stream handlers
+  only return when their subscription closes or their client hangs up.
+  `streamHeartbeat` is a package var so tests can shrink it.
+  The SAME connection multiplexes the dashboard's section-invalidation
+  push (`event: changed`, `{"sections":[...]}` — "changed → refetch
+  once", never payloads): per-subscriber it is a bounded dirty SET + a
+  1-slot wake channel, NOT the delta queue, so signal storms coalesce
+  into one drain and signals can never overflow/drop/block anyone — only
+  run deltas drop a slow client, and a reconnecting client refetches
+  every section on open so no signal is load-bearing. Four seams feed
+  `streamHub.signal`, wired in `server.New`: (1) the tracker OnChange
+  wrapper also dirties "concurrency" (group active/waiting/holders move
+  exactly with run lifecycle/waiting_on — a deliberate superset); (2)
+  `events.Recorder.SetOnRecord` → `sectionsForEvent(kind)` (every event
+  dirties "events"; hooks.reloaded → hooks+images+concurrency,
+  hook.load_error/disabled/enabled → hooks, image.* → images,
+  concurrency.* → concurrency; rejection noise like hook.denied
+  deliberately does NOT dirty the roster) — the same callback also feeds
+  each event to `attention.Aggregator.ObserveEvent` (the event-derived
+  entry seam; unrecognized kinds no-op); (3) `kv.Store.SetOnMutate`
+  (successful entry mutations + reclaiming sweeps; locks are not entries
+  and never signal; a lazily-expired entry only signals at its sweep, so
+  /kv views can lag expiry by ≤1 sweep interval); (4)
+  `attention.Aggregator.SetOnChange` → "attention" (fired only on REAL
+  set changes — an identical re-derivation on a quiet reload signals
+  nothing). All four callbacks run
+  synchronously on mutating goroutines under their owners' mutexes —
+  keep them trivial (the hub only flips bounded dirty bits), never let
+  them call back into their owner. Client side: timeline.ts re-publishes
+  `changed` as `whr:sections-changed` (and dashboard.js's /hooks fetch
+  flows back as `whr:hooks-data` — timeline never fetches /hooks itself);
+  dashboard.js's section feed refetches named sections with leading-edge
+  + 1s trailing coalescing, single-flight, bounded fetches
+  (AbortSignal.timeout), full-refresh on every stream (re)open, and a
+  fixed 5s full-refresh fallback ONLY while the stream is down — zero
+  polling while it is live (proven by the node harness in
+  internal/server/dashboard/testjs/, run by CI). The "attention" section
+  is the one granular section the app view keeps (everything else folds
+  into one "app" token): the red banner renders on BOTH views, so its
+  signal refetches /attention wherever the operator is.
+- The needs-attention surface (`internal/attention`, `GET /attention`,
+  the dashboard's red banner + "Needs attention" panel) is the
+  PERSISTENT view of ACTIVE misconfigurations — the activity feed
+  announces them and scrolls on; the aggregator holds the current set
+  until each problem RESOLVES (no acknowledgement anywhere). Entry
+  identity is (source, hook, key); `since` is when the problem first
+  became active — preserved across re-derivations while it persists
+  (message may be reworded in place), reset on clear+recur. Sources and
+  their CLEAR rules (every rule can actually fire — don't add a source
+  without one):
+  - `load` (hook dropped at load/validation: parse error, missing
+    Dockerfile/$schema, malformed skip_if/run_title, undeclared
+    concurrency_group, IgnoredLegacyDirError, unreadable tree,
+    unparseable concurrency.json) and `zero-hooks`
+    (hooks.ZeroHooksError): STATE-derived — `buildLoadAndApply` re-derives
+    them from the retained load errors on EVERY reload (the loader's
+    per-hook failures are typed `hooks.HookLoadError` for attribution),
+    so they clear on the first reload where the hook loads / any hook
+    loads / the dir is removed.
+  - `secrets` (unresolvable `${NAME}` api_key/env references — including
+    an api_key that expands to empty — and sops decrypt failures):
+    STATE-derived by `attention.ApplyServeProbe`, a static probe run per
+    reload over the LOADED hooks with the request/run paths' exact
+    resolution order (secrets.sops.env first, then host env). Clears when
+    the reference resolves / the file decrypts / the hook goes away.
+    STRICTLY serve-path-only (called from buildLoadAndApply): `validate`
+    must stay environment-independent — never call the probe from a CLI
+    path. A hook whose sops decrypt fails gets ONE `sops` entry and no
+    per-reference entries (auth/runs fail on the decrypt first).
+  - `server` (the containerized-without-TMPDIR hazard,
+    runner.WarnIfContainerized's verdict): BOOT-scoped — computed once at
+    startup, and a running process's env can't change, so it CANNOT clear
+    without a restart (documented in the entry; a restart with TMPDIR set
+    boots without it).
+  - `event` (event-derived, via `RegisterStandardEventRules` — THE SEAM
+    for hook-emitted signals): recognized activity-event kinds feed
+    entries through per-kind RuleFuncs registered on the aggregator;
+    server.New's OnRecord wiring hands every recorded event to
+    `ObserveEvent`. Today: `hook.misconfigured` (request-time api_key
+    denial, recorded by auth.go) → entry keyed `api_key`, cleared by the
+    next reload whose probe finds the hook's api_key resolvable, or the
+    hook leaving the loaded set. RESERVED for the fleet's silent-fail
+    audit: `hook.reported_misconfigured` (one entry per distinct message,
+    keyed `reported:<message>`) paired with `hook.reported_healthy`
+    (clears ALL of that hook's reported entries); reported entries also
+    clear when the hook leaves the loaded set — but deliberately NOT on a
+    later successful run (a run can succeed while the feature it should
+    exercise stays inert). New hook-emitted classes plug in by recording
+    a recognized kind + registering a rule — no redesign.
+  Everything is IN-MEMORY (the events/requestLog stance): a restart
+  re-derives the state sources at the boot load (their `since` resets to
+  boot) and loses event-derived entries until their events recur. Entries
+  are VALUE-FREE — name the hook, the `${NAME}` reference, the file;
+  never a resolved secret value. The aggregator is nil-receiver-safe
+  everywhere (the events.Recorder convention).
+- The per-hook KV store (`internal/kv`, the state socket) also persists to
+  disk, under `WEBHOOK_RUNNER_DATA_DIR` (default: the hooks-dir parent, same
+  place as the deploy key and `runs.db`) as one `kv/<namespace>.json` per
+  hook plus a `state-secret` file. Writes are atomic (temp+rename) and a persist failure
+  rolls the in-memory mutation back, so memory never diverges from disk —
+  don't "optimize" by keeping an in-memory-only value on write failure or you
+  break the survives-a-restart guarantee. A rolled-back write is loud
+  end-to-end: the store returns the error, the state API surfaces it as a
+  500 (body carries the reason), and the server logs it and records a
+  `kv.write_failed` event on the activity feed (`Server.writeKVError` in
+  internal/server/state.go) — never a quiet degrade. (The sweeper's persist
+  failures are log-only inside `internal/kv` — it has no events.Recorder,
+  and an expired-entry cleanup failing to flush is invisible to reads
+  either way.) TTL is enforced lazily on read AND
+  by a background sweeper (`StartSweeper`/`Close`); keep both. The store is
+  bounded per item (64 KiB/value, 256 namespaces by default — zero-valued
+  `kv.Config` fields fall back to these in `kv.New`) but has NO key-count
+  cap: total growth is deliberately uncapped in-process (operator directive)
+  and bounded at the container level (a memory cap; swap-side only where the
+  host kernel does cgroup swap accounting) instead — don't
+  reintroduce a cap, usage detection, or eviction in its place.
+- A hook opts into the store with `state: true`. `state` is a new hook.json
+  field, so `Parse`'s `DisallowUnknownFields` means old binaries reject it —
+  same deploy-first rule as `concurrency_group`. ONLY for state hooks, the
+  runner bind-mounts the KV socket + the proxy shim, sets the shim as the
+  container `--entrypoint`, and injects `HOOK_KV_SOCKET`, `HOOK_KV_URL`
+  (`http://localhost:9002`), and `HOOK_KV_TOKEN` (all `ReservedEnvKey`). The
+  token is a stateless HMAC over the hook ID AND the run ID
+  (`kv.Token(ns, runID)`/`VerifyToken` returning both) — namespace == hook
+  ID, minted per run, nothing to store or expire. The run identity in the
+  token is what binds cooperative locks to their holding run; the retired
+  two-part (namespace-only) format no longer verifies, which is fine
+  because tokens never outlive their run.
+- Cooperative locks (`internal/kv/lock.go`, `POST /kv/{key}/acquire` /
+  `/release`) are **owned by run instances, not by client-managed tokens**:
+  the state token carries the run ID, acquire/release are atomic under the
+  lock table's own mutex (the compare-and-set/compare-and-delete a hook
+  could never build from GET+PUT), and the **primary** release mechanism is
+  the run tracker's OnFinish seam — `server.RunFinishCallback` (wired in
+  cli/serve.go; it lives in internal/server, beside the lock handlers, so
+  the cli package stays test-free) calls `kv.ReleaseRunLocks(runID)`
+  BEFORE the runstore write, so a run
+  that ends for ANY reason (success, error, timeout kill, cancel — Finish
+  fires exactly once on every terminal path) drops all its locks even if
+  the history write fails; leftovers surface as a `lock.released_on_finish`
+  event. The TTL is a SECONDARY backstop only (default `kv.DefaultLockTTL`
+  15m, explicit `ttl_seconds` 1..3600) against a release-path bug — never
+  the liveness story — and a CONTENDED acquire mutates nothing (in
+  particular it never restamps the holder's expiry, so contenders can't
+  keep a dead lock alive). The table is **in-memory on purpose**: no run
+  survives a server restart, so a restart correctly starts lock-free —
+  don't "fix" that by persisting locks. Locks are NOT entries: they never
+  appear in GET/PUT/DELETE/list, the namespace files, or the admin KV
+  views; the same key string can hold a value and a lock independently.
+  Same-run re-acquire is idempotent (refreshes the backstop, keeps
+  acquiredAt); cross-run release is refused server-side (409). Deploy-first
+  rule as usual: hooks that call acquire/release need this runner deployed
+  first — older runners 404 the routes (hooks should treat 404/405 as
+  "primitive unavailable" and degrade, not wedge).
+- Lock contention is first-class, never anonymous (the try/block/steal
+  layer over the bullet above; `takeLockLocked` in internal/kv/lock.go is
+  the ONE compare-and-set acquire and steal share):
+  (1) **Try**: a contended acquire 409s with `held_by`
+  ({run_id, hook_id, acquired_at, expires_at} — hook_id == the lock's
+  namespace) so a contender can display, keep waiting on, or steal from a
+  NAMED holder; the contended path still mutates nothing.
+  (2) **Block**: acquire with `{"block": true}` (+ optional
+  `block_timeout_seconds` 1..600, default 600 — the /wait cap) HOLDS the
+  request, retrying every `lockRetryInterval` (250ms, tightened to the
+  /wait touch cadence for tiny timeouts) until taken / timed out (409 +
+  held_by) / the run ends. Fairness is deliberately best-effort — NO FIFO
+  queue, waiters just poll — which keeps the lock table free of waiter
+  state and lets a steal trivially beat every blocked waiter (they keep
+  polling against the new holder). While blocked, the run's watchdog is
+  fed (a blocked acquire is a declared wait) and its `waiting_on` names
+  the holder, re-stamped when the lock changes hands mid-block.
+  (3) **Steal** (`POST /kv/{key}/steal` — a separate route, NOT an acquire
+  flag, so the destructive intent is unmistakable): atomically TRANSFERS
+  the lock to the caller under the table mutex, then the server cancels
+  the displaced run via the tracker (`RequestCancelWithReason`, riding the
+  existing docker-kill cancel path; the reason — `cancelled: lock "k"
+  stolen by run X` — becomes the victim's terminal error, visible in run
+  history). Transfer-not-release is the race-safety invariant: after a
+  steal the entry is owned by the thief, so the victim's finish-seam
+  `ReleaseRunLocks` frees its OTHER locks but skips the stolen one; a
+  holder that finished FIRST just makes steal a plain acquire (no error,
+  no cancel, no `stolen_from` in the response). Namespace scoping means a
+  run can only ever steal from — and thus cancel — runs of its OWN hook.
+  Events: `lock.waiting` once per blocking acquire that actually waits,
+  `lock.stolen` on displacement. Dashboard: the blocked run's row shows
+  "waiting on lock K held by RUN (HOOK)" (from `waiting_on`), and holders
+  carry a derived `waiters` list ("N waiting on this run's locks") —
+  computed by `server.attachWaiters` from live runs' `waiting_on` at READ
+  time, never stored; don't add waiter state to the lock table.
+- First-class waits (`internal/server/wait.go`, `POST /wait` on the state
+  socket): a hook that wants to pause SLEEPS IN-PROCESS by declaring it —
+  `{"seconds": 1..600, "reason": "..."}`, both required (waits must be
+  explained; one call caps at 10 min, loop for longer) — instead of
+  deferring work to a timer/tick pattern. The server blocks ~N seconds and
+  returns `{"waited": N}`, or early with `{"interrupted": true, "cause":
+  "run finished"|"run cancelled"}` when the run ends/cancels (client
+  disconnect just releases the handler). Requires `state: true` — only
+  those hooks have the socket + token. Three coupled mechanisms, don't
+  break any of them: (1) the runner registers the idle watchdog's Touch on
+  the run (`run.SetActivityTouch`, at watchdog arm) and the wait handler
+  keeps calling `TouchActivity` on a cadence derived from the hook's OWN
+  timeout — `min(5s, timeout/3)`, 50ms floor — so a wait always outpaces
+  the watchdog it is holding off (touches before arm / after finish are
+  harmless no-ops; nothing deregisters). (2) Dashboard state is the ONE
+  unified `RunState.WaitingOn` struct (`{kind: "wait"|"lock", reason,
+  until, key, holder_run_id, holder_hook_id}` — declared sleeps AND
+  blocked lock acquires share it) set by
+  `Run.SetWaitingOn`/`ClearWaitingOn` (sequence-tokened so an overlapping
+  newer pause — or a blocked acquire re-stamping its holder — can't be
+  cleared by a stale older token); run rows and the run modal render
+  "waiting Ns: reason" / "waiting on lock K held by RUN (HOOK)" with the
+  remaining time computed client-side from `until`. (3) The field is
+  TRANSIENT: `Finish` clears it before the OnFinish snapshot, so the
+  persisted run history never shows a terminal run as waiting — don't
+  "fix" that. One `run.wait` event is
+  recorded per wait start (hook-scoped, so `?hook=` filters); there is
+  deliberately NO wait-end event — the start message carries the duration,
+  and a retry loop of short waits would double the feed volume. Deploy-first
+  rule as usual: older runners 404 `/wait` (hooks should fall back to a
+  plain sleep — they lose the badge and the activity credit, nothing else).
+- State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
+  networking — Docker has no native TCP→unix-socket forward, so webhook-runner
+  runs the proxy itself. The KV server listens on a Unix socket at
+  `$TMPDIR/whr-state.sock` (chmod 0666 so non-root hook users can connect; the
+  bearer token, not file perms, is the real gate). For a state hook the runner
+  sets the container entrypoint to webhook-runner's own binary (copied to
+  `$TMPDIR/whr-shim` at startup by `copyExecutable`, bind-mounted in) invoked as
+  the hidden `kv-forward` subcommand; that shim (`internal/kvproxy`) proxies
+  `localhost:9002` → the bind-mounted socket, then execs the hook's real command
+  (reconstructed from the image's entrypoint+cmd via `imageCommand`, or
+  `hook.Command`). Both the socket and the shim MUST sit in the host-shared
+  `TMPDIR` (same requirement as payload mounts) — so it works identically
+  whether the server runs on the host or in a container. This was chosen after
+  host-gateway and a shared Docker network proved more fragile; the shim keeps
+  the hook's own networking intact (no netns sharing) and publishes no port.
+  `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
+- The dashboard timeline splits in two: the **`<timeline-view>` component
+  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
+  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
+  (live at master head; the org's standard js-snippets consumption model,
+  NEVER vendored copies) — while this repo ships only the runner-specific
+  adapter. Component fixes deploy to this dashboard on js-snippets merge
+  with no runner change; fix component bugs upstream in js-snippets, full
+  stop. Consequences to keep straight: `assets/timeline.js` is a small
+  ES-module adapter bundle whose component import passes through UNBUNDLED
+  (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
+  loaded via `<script type="module">` (after dashboard.js — modules defer,
+  so its globals are always ready); the admin dashboard's chart therefore
+  needs reach to wow-look-at-my.github.io at page load. A failed component
+  fetch degrades softly and NEVER parks: the adapter module still runs,
+  shows a "chart loading…" note in the Runs section, and retries the
+  dynamic import on a FIXED 5s cadence forever (cache-busted `?retry=N`,
+  because browsers can memoize a failed module fetch; no backoff, no
+  attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
+  are untouched and the runs-table toggle keeps working. TypeScript types
+  for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
+  hand-maintained ambient shim (types only) — temporary until js-snippets
+  publishes .d.ts to Pages and the generate step fetches them mechanically
+  (already queued; do not grow the shim beyond what the adapter consumes).
+  The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
+  (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
+  banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
+  **temporarily manual**: the npx `//go:generate` directive (and with it
+  ci.yml's `generate:` approval hash, setup-node, ts0 git-auth, and the
+  assets freshness gate) was removed so the build uses the committed
+  bundle as-is with NO node/npm/npx anywhere; run ts0 yourself after
+  editing ts/ and commit the regenerated bundle. A prebuilt ts0 binary
+  served from buildhost, fetched by a small Go bootstrap, is landing next
+  to re-automate regeneration.
