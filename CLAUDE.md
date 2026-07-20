@@ -28,7 +28,7 @@ internal/attention/        aggregated ACTIVE misconfigurations (the needs-attent
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -45,9 +45,17 @@ examples/hooks/            sample hook configs
   Don't add chi/gorilla/echo.
 - **`$schema` is required.** Every `hook.json` must declare a `$schema`
   field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
-  one. The matching property lives in `schema/hook.schema.json`, which is
-  published to GitHub Pages and is what the `$schema` URL points at. Keep
-  the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  one — presence only, never a specific URL. The matching property lives in
+  `schema/hook.schema.json`, published to buildhost sites on every master
+  push (`.github/workflows/schemas.yml` — replaced the GitHub Pages deploy,
+  which died on the org's Actions artifact-storage quota 2026-07-17;
+  operator directive 2026-07-19: use buildhost). Canonical URL:
+  `https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`
+  (a public site branch under the private repo's private buildhost project,
+  via the publish action's `public: true`). The legacy
+  `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
+  their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
+  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
 ## Architecture: two ports + a state socket
 
@@ -56,10 +64,20 @@ The server listens on two TCP ports plus a Unix socket:
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
   `GET /health` (body carries the build version), `GET /version` (build
   identity: version + VCS revision/time — the same string the `version`
-  command prints, plumbed from cli via `server.Options.Version`),
+  command prints, plumbed from cli via `server.Options.Version` — plus
+  `hooks_tree`, the reload gate's served-tree state: `state` is
+  `serving` (`serving_sha` + `verified`), `held` (adds `pending_sha`,
+  `pending_state`, rendered `reason`), `unknown` (gate tracking, no
+  serving commit recorded — `serving_sha` omitted, never an ambiguous
+  empty string), or `untracked` (`mode` names the gate-off/no-repo
+  mode). Wired via the nil-safe `Options.TreeState` (serve sets it to
+  `reloadgate.Gate.TreeState`, a pure under-mutex snapshot — no git, no
+  GitHub calls); exposing the private hooks repo's deployed commit sha
+  on this PUBLIC port is a deliberate, operator-requested trade),
   `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/version` (build identity, same as
-  the hook port's; the dashboard footer shows it), `/hooks`, `/hooks/{id}` (one hook's
+- **Admin port** (`:9001`): dashboard, `/version` (build identity +
+  `hooks_tree` state, same as the hook port's; the dashboard footer shows
+  the build string), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
   names only, never any api_key/env/secret value, `skip_conditions` as a
   count — plus image state, KV namespace stats, and run stats over the live
@@ -171,10 +189,15 @@ The server listens on two TCP ports plus a Unix socket:
   first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
   "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
   on the run's dashboard row, counts as activity for the idle `timeout`;
-  see the wait bullet under "Things easy to get wrong"), and the friendly
+  see the wait bullet under "Things easy to get wrong"), the friendly
   run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
   chars — names the calling run mid-flight, replacing any run_title
   template title; see the run-title bullet under "Things easy to get
+  wrong"), and the spawn primitive `POST /spawn`
+  (`{"hook","count":1..100,"payload":<JSON object ≤256KiB>}` + optional
+  `"event"` — a permitted hook starts runs of ANOTHER hook through the
+  runner itself, gated by the deny-by-default WEBHOOK_RUNNER_SPAWN_ALLOW
+  allowlist; see the spawn bullet under "Things easy to get
   wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
@@ -555,7 +578,17 @@ The companion repo is `wow-look-at-my/webhooks`.
   fail closed). The `concurrency.Manager` holds one buffered-channel
   semaphore per group; `Acquire` captures the channel in its release closure
   so a reload that swaps a group's semaphore can't lose or double-count a
-  token. Alongside the semaphores the Manager keeps ADVISORY queue
+  token — HOLDERS release into the exact channel they acquired from, for the
+  life of their run. Blocked WAITERS do NOT stay bound: every swap closes the
+  retired sem's `retired` channel and Acquire re-binds them to the group's
+  current semaphore, so a limit change (reload or dashboard override) takes
+  effect for already-queued runs immediately — a raise admits them at once
+  (pre-fix they drained at the OLD limit, the "2→10 gha-runner override did
+  nothing" production bug) and a group removed mid-queue fails those acquires
+  loudly rather than stranding them. Pre-existing transients unchanged:
+  in-flight holders above a lowered limit finish normally, and a raise
+  briefly runs the old holders on top of the fresh channel's admissions.
+  Alongside the semaphores the Manager keeps ADVISORY queue
   bookkeeping keyed by group NAME (who holds slots, who waits, in order —
   `QueueDetail`, surfaced as `/concurrency`'s `holders`/`waiting_runs` and
   the dashboard's expandable group rows): display data only, never part of
@@ -906,6 +939,42 @@ The companion repo is `wow-look-at-my/webhooks`.
   and a retry loop of short waits would double the feed volume. Deploy-first
   rule as usual: older runners 404 `/wait` (hooks should fall back to a
   plain sleep — they lose the badge and the activity credit, nothing else).
+- Spawn (`POST /spawn` on the state API, `internal/server/spawn.go`): a
+  permitted state hook starts `count` runs of ANOTHER hook through the
+  runner itself — the runner-native replacement for a coordinator hook
+  POSTing HMAC-signed synthetic webhooks at the public endpoints. The
+  CALLER (parent hook + run) comes from the verified bearer token, never
+  the body. Authorization is DENY-BY-DEFAULT and RUNNER-side:
+  `WEBHOOK_RUNNER_SPAWN_ALLOW` maps parent→targets
+  (`parent=target,target;...`; unset/empty = nothing may spawn, a
+  malformed value FAILS STARTUP — the reload-poll rule), deliberately
+  NEVER a hook.json field, so the published hook schema stays untouched
+  and consumer hooks need zero new fields. Pre-validation is
+  all-or-nothing BEFORE anything starts — 400/413 bounds (count 1..100,
+  payload a JSON object ≤256KiB, optional `event` ≤100 chars), 409
+  parent run not active (the /wait rule), 404 unknown target, 403 not
+  allowlisted, 409 target effectively disabled (the SAME
+  effective-disabled state handleTrigger and buildScheduleFire read) —
+  each denial a loud `spawn.denied` event. A spawned run is a NORMAL run
+  dispatched the scheduler-Fire way (`runner.StartSpawned` with
+  context.Background() + a synthetic payload/headers pair — the target's
+  concurrency_group applies, excess spawns queue as pending; `run_title`
+  renders from the target's template; `event` becomes the
+  `X-GitHub-Event` header, plus `X-Webhook-Runner-Spawned-By(-Run)`).
+  skip_if is BYPASSED exactly like scheduled fires — a spawn is operator
+  machinery's own doing, not an unwanted delivery; the target's in-code
+  guards still run. The response (`200 {"run_ids":[...]}`, start order)
+  is immediate — Start is async dispatch, the caller never waits on
+  slots — and a mid-loop start failure answers 500 listing the runs that
+  DID start plus the error (honest partial report). Attribution:
+  `RunState.SpawnedBy` {run_id, hook_id} is additive/omitempty (the
+  Title precedent — meta blob ONLY, never the runstore per-hook index
+  value format, byte-asserted in runstore tests), and the
+  run.started/run.finished event MESSAGES carry ", spawned by <hook> run
+  <id>" (runRef style — no event-schema change). Deploy-first rule:
+  this primitive deploys BEFORE any hook calling it — older runners 404
+  `/spawn`, and callers must fail LOUD on 404/405 ("primitive
+  unavailable"), never silently skip their fan-out.
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at
@@ -923,18 +992,20 @@ The companion repo is `wow-look-at-my/webhooks`.
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
 - The dashboard timeline splits in two: the **`<timeline-view>` component
-  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
-  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
-  (live at master head; the org's standard js-snippets consumption model,
-  NEVER vendored copies) — while this repo ships only the runner-specific
-  adapter. Component fixes deploy to this dashboard on js-snippets merge
+  is consumed at RUNTIME from js-snippets' buildhost library site** — the
+  browser imports
+  `https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`
+  (live at master head — republished on every js-snippets master push;
+  replaced the quota-dead GitHub Pages deploy 2026-07-20; the org's
+  standard js-snippets consumption model, NEVER vendored copies) — while
+  this repo ships only the runner-specific adapter. Component fixes deploy to this dashboard on js-snippets merge
   with no runner change; fix component bugs upstream in js-snippets, full
   stop. Consequences to keep straight: `assets/timeline.js` is a small
   ES-module adapter bundle whose component import passes through UNBUNDLED
   (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
   loaded via `<script type="module">` (after dashboard.js — modules defer,
   so its globals are always ready); the admin dashboard's chart therefore
-  needs reach to wow-look-at-my.github.io at page load. A failed component
+  needs reach to sites.pazer.build at page load. A failed component
   fetch degrades softly and NEVER parks: the adapter module still runs,
   shows a "chart loading…" note in the Runs section, and retries the
   dynamic import on a FIXED 5s cadence forever (cache-busted `?retry=N`,
@@ -942,9 +1013,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
   are untouched and the runs-table toggle keeps working. TypeScript types
   for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
-  hand-maintained ambient shim (types only) — temporary until js-snippets
-  publishes .d.ts to Pages and the generate step fetches them mechanically
-  (already queued; do not grow the shim beyond what the adapter consumes).
+  hand-maintained ambient shim (types only) — temporary until the generate
+  step fetches js-snippets' published declarations mechanically (the
+  library site already serves a .d.ts next to every .js; do not grow the
+  shim beyond what the adapter consumes).
   The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
   (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
   banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
