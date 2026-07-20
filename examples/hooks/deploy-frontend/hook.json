@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "Deploy the frontend on push to main",
   "command": ["sh", "-c", "echo 'deploying with payload at $HOOK_PAYLOAD_FILE'; cat $HOOK_PAYLOAD_FILE | head -c 200"],
   "env": {

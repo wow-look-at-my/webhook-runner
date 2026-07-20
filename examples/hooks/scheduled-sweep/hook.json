@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "Example of a scheduled hook: fires on a timer, not (only) on HTTP POST",
 
   // "schedule" is a Go duration. The hook fires immediately on startup (and
