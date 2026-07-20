@@ -14,11 +14,10 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// Flat supervision cadences — package vars so tests can shrink them. Per
-// the org's standing doctrine there is NO backoff, NO restart budget, and
-// NO give-up anywhere in this package: a build-broken manager restarts (and
-// fails) every RestartDelay until the tree is fixed, loudly, which is the
-// correct pressure.
+// Flat supervision cadences — package vars so tests can shrink them.
+// No backoff, no restart budget, no give-up anywhere in this package: a
+// build-broken manager restarts (and fails) every RestartDelay until the
+// tree is fixed.
 var (
 	// RestartDelay is the fixed pause between an instance ending (for any
 	// reason other than an operator/reload-requested stop) and the next
@@ -70,10 +69,8 @@ type Options struct {
 	// Empty disables the lease (tests): the supervisor runs as if it held it.
 	LeasePath string
 	// Disabled reports the operator kill switch's effective verdict for an
-	// id, given the manager's enable default — wired to
-	// overrides.Store.HookDisabled. nil = never disabled. Managers share
-	// the hook default (absent `enable` = enabled): a declared manager
-	// runs on deploy; the dashboard switch is the emergency control.
+	// id, given the manager's enable default (absent = enabled, the hook
+	// rule) — wired to overrides.Store.HookDisabled. nil = never disabled.
 	Disabled func(id string, defaultEnabled bool) bool
 	Events   *events.Recorder
 	Logger   *slog.Logger

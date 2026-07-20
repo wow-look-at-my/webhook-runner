@@ -983,10 +983,9 @@ The companion repo is `wow-look-at-my/webhooks`.
   `webhook-runner-mgr-<id>` + orphan `docker rm -f` before every start;
   restart is FLAT 10s forever (no backoff, no give-up), with failures on
   the attention seam (`manager` source) until an instance holds.
-  (5) `enable` defaults TRUE exactly like hooks (operator ruling:
-  features ship enabled and working, never dormant-gated — see
-  docs/manager-entity-design.md header; the dashboard switch is an
-  emergency control). (6) Full hook field parity, manager-shaped:
+  (5) `enable` defaults TRUE exactly like hooks (features ship enabled
+  and working, never dormant-gated — the org-wide shipping rule; the
+  dashboard switch is an emergency control). (6) Full hook field parity, manager-shaped:
   `concurrency_group` = the instance holds one slot for its LIFETIME;
   `run_title` = instance panel title; `dind` = same two flags; only
   `state` (implied) and `schedule` (superseded by `reconcile_interval` —

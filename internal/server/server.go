@@ -311,8 +311,7 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("POST /hooks/{id}/disable", s.handleHookDisable)
 	s.adminMux.HandleFunc("POST /hooks/{id}/enable", s.handleHookEnable)
 	// Managers: the first-class roster (state, instance, restarts, inbox,
-	// output tail), its kill switch (default enabled — the switch is the
-	// emergency control, not a go-live gate), and the instance bounce.
+	// output tail), the kill switch, and the instance bounce.
 	s.adminMux.HandleFunc("GET /managers", s.handleListManagers)
 	s.adminMux.HandleFunc("GET /managers/{id}", s.handleManagerDetail)
 	s.adminMux.HandleFunc("POST /managers/{id}/disable", s.handleManagerDisable)

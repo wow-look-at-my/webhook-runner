@@ -15,8 +15,7 @@ import (
 // fleet-wide via the supervisor's lease), as opposed to a hook's
 // per-delivery containers.
 //
-// The model wraps a *Hook carrying the FULL hook feature set (operator
-// directive: a hook→manager migration loses ZERO capability) — auth trio,
+// The model wraps a *Hook carrying the FULL hook feature set — auth trio,
 // env, container knobs, skip_if, tests, timeout, script/command, dind,
 // concurrency_group, run_title, github_status, synchronous — so every
 // existing mechanism works on a manager, with manager-shaped semantics
@@ -60,17 +59,13 @@ type Manager struct {
 	// inbox events (flat cadence, coalesced, plus one at session start).
 	// Empty means EVENT-ONLY: no ticks ever — the manager receives a
 	// {"kind":"start"} event at session start and otherwise only
-	// deliveries (the pr-minder no-sweep doctrine, first-class).
+	// deliveries.
 	ReconcileIntervalRaw string
 }
 
 // EnabledByDefault is inherited from the embedded Hook: absent `enable`
-// means ENABLED, exactly like hooks. A declared manager starts working the
-// moment it deploys (operator ruling: features ship enabled and working —
-// never defaulted-off or dormant-gated; correctness comes from verifying
-// BEFORE the deploy, not from shipping disabled). The dashboard kill
-// switch (a persisted override outranking the default in both directions)
-// remains the emergency control.
+// means enabled, exactly like hooks; the persisted dashboard override
+// outranks the default in both directions.
 
 // ReconcileInterval returns the parsed reconcile cadence, or 0 for an
 // event-only manager. Validation happened at load time, so a parse failure

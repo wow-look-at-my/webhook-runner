@@ -2,13 +2,11 @@
 // single-instance watchers declared at src/managers/<id>/ in the hooks
 // tree, each run as ONE long-lived container (an "instance") that the
 // supervisor restarts flat on any exit and hands events through a bounded
-// in-memory inbox. A manager instance is a FIRST-CLASS identity — it is
-// deliberately NOT a run: it never appears in the runs list, the run
-// store, or the timeline (operator directive — a forever-running bar would
-// permanently pollute the chart). The run-shaped mechanisms it needs (the
-// state token, cooperative locks incl. pinning, /wait, /title, /spawn
-// parentage, the activity watchdog) are wired against the instance
-// identity instead.
+// in-memory inbox. A manager instance is a first-class identity, not a
+// run: it never appears in the runs list, the run store, or the timeline.
+// The run-shaped mechanisms it needs (the state token, cooperative locks
+// incl. pinning, /wait, /title, /spawn parentage, the activity watchdog)
+// are wired against the instance identity instead.
 package managers
 
 import (
@@ -97,8 +95,8 @@ func (d *Delivered) settle(ok bool) {
 }
 
 // DefaultInboxSize bounds each manager's event buffer. Overflow drops the
-// OLDEST entry (newest-wins, the fleet's latest-event-wins doctrine),
-// loudly via the onDrop callback. 256 is far beyond any healthy backlog —
+// OLDEST entry (newest wins), loudly via the onDrop callback. 256 is far
+// beyond any healthy backlog —
 // a manager consumes events in milliseconds-to-seconds; a full inbox means
 // it is down or wedged, and the reconcile pass on its next instance start
 // re-derives whatever the drops lost.
@@ -106,7 +104,7 @@ const DefaultInboxSize = 256
 
 // nextWakeInterval bounds how late Next notices its deadline or a
 // cancelled context (pushes broadcast immediately, so event latency is
-// unaffected). Flat, per doctrine.
+// unaffected).
 const nextWakeInterval = 100 * time.Millisecond
 
 // entry pairs a queued event with its completion handle (nil for

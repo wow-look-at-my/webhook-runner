@@ -764,9 +764,8 @@ function renderHooks(hooks) {
 //
 // GET /managers is the supervisor's live view: one row per declared
 // manager (state chip, instance, restarts, inbox depth), the same
-// slider-switch kill UX as hooks (default ENABLED — the switch is an
-// emergency stop, never a go-live gate), and a bounce button. Instances
-// are NOT runs: their logs live on the #manager=<id> drill-down
+// slider-switch kill UX as hooks, and a bounce button. Instances are NOT
+// runs: their logs live on the #manager=<id> drill-down
 // (GET /managers/{id}'s output tail), never in /runs or the timeline.
 
 async function toggleManager(id, disable) {

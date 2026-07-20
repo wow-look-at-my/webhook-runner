@@ -496,7 +496,7 @@ func (s *Server) handleKVRelease(w http.ResponseWriter, r *http.Request, ns, run
 // POST /kv/{key}/pin, no body. Owner-only, the release auth rule: 204
 // pinned (idempotent), 404 not held (absent/expired), 409 held by another
 // run. A separate route rather than an acquire flag so the mode change is
-// unmistakable in request lines and logs (the steal-route precedent); the
+// unmistakable in request lines and logs; the
 // atomic take-and-pin lives on acquire as {"pinned": true} for callers that
 // need zero window between take and protection.
 func (s *Server) handleKVPin(w http.ResponseWriter, r *http.Request, ns, runID string) {

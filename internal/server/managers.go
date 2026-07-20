@@ -257,8 +257,7 @@ func (s *Server) handleManagerDetail(w http.ResponseWriter, r *http.Request) {
 // handleManagerDisable / handleManagerEnable are the manager kill switch —
 // the same persisted overrides store as hooks (ids share one namespace),
 // with manager semantics: disable gracefully stops the live instance and
-// parks the loop; enable starts it. Managers default ENABLED like hooks,
-// so this switch is the emergency control, never a go-live gate.
+// parks the loop; enable starts it.
 func (s *Server) handleManagerDisable(w http.ResponseWriter, r *http.Request) {
 	s.setManagerDisabled(w, r, true)
 }

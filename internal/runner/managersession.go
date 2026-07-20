@@ -1,10 +1,9 @@
 package runner
 
 // Manager INSTANCES: the long-lived supervised container behind a manager
-// entity. An instance is a FIRST-CLASS identity, deliberately NOT a run
-// (operator directive): it never registers with the tracker, never
-// persists to the run store, and never appears in the runs list or the
-// timeline — a forever-running bar would permanently pollute the chart.
+// entity. An instance is a first-class identity, not a run: it never
+// registers with the tracker, never persists to the run store, and never
+// appears in the runs list or the timeline.
 // The run-shaped mechanisms it needs are wired against the instance
 // identity instead: the state token is kv.Token(managerID, instanceID)
 // (the existing format — instance ids share the run-id alphabet), the
@@ -18,7 +17,7 @@ package runner
 // files, the shim/imageCommand contract, the idle watchdog,
 // docker-kill-by-name, the concurrency manager).
 //
-// Full hook feature parity (operator directive), manager-shaped:
+// Full hook feature parity, manager-shaped:
 // dind injects the same two flags; concurrency_group holds ONE slot for
 // the instance's whole life (acquired before launch, queued while full,
 // released at end); run_title/synchronous/github_status are handled by the

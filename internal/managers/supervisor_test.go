@@ -131,10 +131,9 @@ func TestSupervisorRestartsFlat(t *testing.T) {
 	_ = attn // the seam fired; content asserted in TestSupervisorAttention
 }
 
-// DEFAULT ON + the kill switch: a manager without an `enable` field starts
-// working the moment it deploys (operator ruling: features ship enabled,
-// never dormant-gated); the operator's disable gracefully stops it and
-// parks the loop, and re-enabling starts a fresh instance.
+// Default-on + the kill switch: a manager without an `enable` field starts
+// on deploy; the operator's disable gracefully stops it and parks the
+// loop, and re-enabling starts a fresh instance.
 func TestSupervisorDefaultOnAndKillSwitch(t *testing.T) {
 	shrinkCadences(t)
 	fr := newFakeRunner()

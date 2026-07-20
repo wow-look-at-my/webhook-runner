@@ -69,20 +69,19 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 	assert.NotEmpty(t, m.SrcRoot, "SDK build-context semantics apply")
 }
 
-// Managers share the hook enable default: absent `enable` means ENABLED —
-// a declared manager works the moment it deploys (operator ruling:
-// features ship enabled, never dormant-gated). Only an explicit
-// enable:false (or the operator's dashboard switch) makes one dormant.
+// Managers share the hook enable default: absent `enable` means enabled;
+// only an explicit enable:false (or the operator's dashboard switch)
+// disables one.
 func TestManagerDefaultsEnabled(t *testing.T) {
 	root := writeManagerTree(t, "m1", minimalManager)
 	ms, errs := LoadManagers(DetectLayout(root))
 	require.Empty(t, errs)
-	assert.True(t, ms["m1"].EnabledByDefault(), "absent enable must mean enabled — managers ship working")
+	assert.True(t, ms["m1"].EnabledByDefault(), "absent enable must mean enabled")
 
 	root2 := writeManagerTree(t, "m2", `{"$schema":"x","enable":false,"command":["run"]}`)
 	ms2, errs := LoadManagers(DetectLayout(root2))
 	require.Empty(t, errs)
-	assert.False(t, ms2["m2"].EnabledByDefault(), "explicit enable:false is the only config-side off switch")
+	assert.False(t, ms2["m2"].EnabledByDefault(), "explicit enable:false loads disabled")
 }
 
 // The two deliberate non-fields fail loudly: `state` is implied and

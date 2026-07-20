@@ -219,10 +219,9 @@ func TestManagerTriggerFlow(t *testing.T) {
 	require.Equal(t, 409, stateReq(t, s, "POST", "/inbox/next", store.Token("coord", "stale"), nil).Code)
 }
 
-// Enable semantics match hooks: absent `enable` means ENABLED (a declared
-// manager accepts deliveries the moment it deploys — features ship
-// working), explicit enable:false makes it dormant, and the operator's
-// dashboard switch outranks the default in both directions.
+// Enable semantics match hooks: absent `enable` means enabled, explicit
+// enable:false loads disabled, and the operator's dashboard switch
+// outranks the default in both directions.
 func TestManagerEnableDefaultsAndKillSwitch(t *testing.T) {
 	// Absent enable → deliveries accepted with no operator action.
 	docDefault := strings.Replace(managerDoc, `"enable": true,`, ``, 1)
@@ -230,7 +229,7 @@ func TestManagerEnableDefaultsAndKillSwitch(t *testing.T) {
 	rr := signedManagerReq(t, s, `{"action":"queued"}`, "workflow_job")
 	require.Equal(t, 202, rr.Code, "default-enabled managers must accept deliveries on deploy")
 
-	// The operator's dashboard disable is the emergency stop.
+	// The operator's dashboard disable overrides the default.
 	_, err := ov.SetHookDisabled("coord", true)
 	require.NoError(t, err)
 	require.Equal(t, 503, signedManagerReq(t, s, `{"action":"queued"}`, "workflow_job").Code)
