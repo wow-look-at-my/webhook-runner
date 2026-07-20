@@ -194,8 +194,18 @@ func (r *Runner) Wait() { r.wg.Wait() }
 // resolution context is the caller's: the HTTP path renders it once before
 // skip evaluation, and the scheduler applies its own "schedule" fallback.
 func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title string) (*runs.Run, error) {
+	return r.start(parent, hook, payload, headers, title, "", "")
+}
+
+// start is the shared dispatch behind Start and StartSpawned (spawn.go);
+// empty parent IDs mean an ordinary, unattributed run.
+func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title, parentHookID, parentRunID string) (*runs.Run, error) {
 	run := r.tracker.New(hook.ID)
 	run.SetTitle(title)
+	// Parent attribution stamps BEFORE any path that can Finish the run
+	// (drain refusal below included), so every terminal snapshot — and the
+	// persisted history — carries it. No-op for the empty IDs Start passes.
+	run.SetSpawnedBy(parentHookID, parentRunID)
 
 	// Drain gate: a run launched by a dying process races the state-socket
 	// handover and the shutdown teardown — refuse loudly instead. The run
@@ -468,7 +478,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	r.log.Info("hook starting",
 		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
-	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, runRef(run), image),
+	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)%s", hook.ID, runRef(run), image, spawnNote(run)),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
 	if r.onStart != nil {
@@ -646,7 +656,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
 	// runRef, not run.ID(): a title set mid-run via the state API's /title
 	// lands here too, so the feed's terminal line names the subject.
-	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, runRef(run), status, exitCode)
+	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)%s", hook.ID, runRef(run), status, exitCode, spawnNote(run))
 	if errMsg != "" && (status == runs.StatusTimeout ||
 		(status == runs.StatusCancelled && errMsg != "cancelled")) {
 		// Carry the reason (a timeout's "no output" verdict, a cancel's

@@ -62,6 +62,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		return errors.New("hooks directory required (positional arg, WEBHOOK_RUNNER_HOOKS_DIR, or WEBHOOK_RUNNER_HOOKS_REPO)")
 	}
 
+	// POST /spawn authorization: the deny-by-default parent→targets
+	// allowlist (WEBHOOK_RUNNER_SPAWN_ALLOW). Unset/empty = nothing may
+	// spawn; a MALFORMED value fails startup — a typo would otherwise
+	// silently turn spawning off (the reload-poll-interval rule).
+	spawnAllow, err := server.ParseSpawnAllow(o.spawnAllow)
+	if err != nil {
+		return fmt.Errorf("WEBHOOK_RUNNER_SPAWN_ALLOW: %w", err)
+	}
+
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
 	gh := githubstatus.New(o.ghToken, logger)
@@ -258,6 +267,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		KV:           kvStore,
 		RunStore:     runStore,
 		Overrides:    ovStore,
+		SpawnAllow:   spawnAllow,
 		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
 	}
 	if repo != nil {
