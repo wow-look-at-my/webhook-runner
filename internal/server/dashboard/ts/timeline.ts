@@ -126,7 +126,8 @@
 // Types only — erased at compile time. The component itself is loaded at
 // RUNTIME by loadComponentForever() below (a dynamic import of the same URL,
 // kept verbatim in the built bundle via esbuild `external`); the browser
-// fetches it (and its sibling chunk imports) from GitHub Pages. Deliberately
+// fetches it (and its sibling chunk imports) from js-snippets' buildhost
+// library site (which replaced its quota-dead GitHub Pages deploy). Deliberately
 // NOT a static side-effect import: a static import that fails would kill
 // this whole module, and the load must retry forever instead.
 import type {
@@ -136,7 +137,7 @@ import type {
 	TimelineLane,
 	TimelineSegment,
 	TimelineViewElement,
-} from 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
+} from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
 
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 
@@ -185,7 +186,7 @@ interface HookSummary {
 	disabled?: boolean;
 }
 
-const COMPONENT_URL = 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js';
+const COMPONENT_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const STREAM_PATH = '/runs/stream';
 // One supervisor/fallback tick: FIXED cadence, forever. Handles both the
