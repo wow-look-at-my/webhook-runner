@@ -1,12 +1,12 @@
-// INTERIM type shim for the Pages-served <timeline-view> module — temporary
-// until js-snippets publishes .d.ts to Pages next to the .js (already
-// queued: ts0 grows a declarations option, and the //go:generate step will
-// then FETCH upstream's declarations into committed, freshness-gated files
-// so an upstream API change turns CI red instead of drifting). This file is
-// the stopgap, not the convention.
+// INTERIM type shim for the buildhost-served <timeline-view> module —
+// temporary until the generate step FETCHES upstream's declarations (the
+// library site already serves a .d.ts next to every .js) into committed,
+// freshness-gated files so an upstream API change turns CI red instead of
+// drifting. This file is the stopgap, not the convention.
 //
 // The component is NOT vendored: the browser imports it at runtime from
-// js-snippets' GitHub Pages (live at master head), and the built bundle
+// js-snippets' buildhost library site (live at master head; replaced the
+// quota-dead GitHub Pages deploy), and the built bundle
 // keeps the URL verbatim (esbuild `external`). TypeScript can't fetch types
 // from a URL, so this ambient declaration provides them — TYPES ONLY, no
 // implementation. It declares exactly the public surface the adapter
@@ -14,7 +14,7 @@
 // wow-look-at-my/js-snippets src/ui/timeline-view.ts + timeline-view-math.ts.
 // Until the mechanical replacement lands: keep it minimal — never mirror
 // upstream internals or helpers the adapter doesn't touch.
-declare module 'https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js' {
+declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js' {
 	// -- Data shapes ---------------------------------------------------------
 
 	/** A swimlane: one labeled horizontal band of the timeline. */
