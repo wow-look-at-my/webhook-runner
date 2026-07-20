@@ -26,6 +26,13 @@ type serveOptions struct {
 	runRetention    time.Duration
 	runRetentionMax int
 
+	// spawnAllow is the raw WEBHOOK_RUNNER_SPAWN_ALLOW value — the
+	// deny-by-default parent→targets allowlist behind the state API's
+	// POST /spawn ("parent=target,target;..."). Parsed (and failed loudly
+	// on malformation) in runServe via server.ParseSpawnAllow; empty means
+	// nothing may spawn.
+	spawnAllow string
+
 	// gateContext is the commit-status context that gates hooks-repo
 	// reloads ("" = gate disabled, legacy pull-on-any-signed-POST).
 	// gateContextSet marks an explicit flag value so applyServeEnv can
@@ -60,6 +67,9 @@ func applyServeEnv(o *serveOptions) error {
 	}
 	if o.stateSecret == "" {
 		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
+	}
+	if o.spawnAllow == "" {
+		o.spawnAllow = os.Getenv("WEBHOOK_RUNNER_SPAWN_ALLOW")
 	}
 	if o.runRetention <= 0 {
 		// Go duration (e.g. "72h"); unset or unparseable falls back to the
