@@ -555,7 +555,17 @@ The companion repo is `wow-look-at-my/webhooks`.
   fail closed). The `concurrency.Manager` holds one buffered-channel
   semaphore per group; `Acquire` captures the channel in its release closure
   so a reload that swaps a group's semaphore can't lose or double-count a
-  token. Alongside the semaphores the Manager keeps ADVISORY queue
+  token — HOLDERS release into the exact channel they acquired from, for the
+  life of their run. Blocked WAITERS do NOT stay bound: every swap closes the
+  retired sem's `retired` channel and Acquire re-binds them to the group's
+  current semaphore, so a limit change (reload or dashboard override) takes
+  effect for already-queued runs immediately — a raise admits them at once
+  (pre-fix they drained at the OLD limit, the "2→10 gha-runner override did
+  nothing" production bug) and a group removed mid-queue fails those acquires
+  loudly rather than stranding them. Pre-existing transients unchanged:
+  in-flight holders above a lowered limit finish normally, and a raise
+  briefly runs the old holders on top of the fresh channel's admissions.
+  Alongside the semaphores the Manager keeps ADVISORY queue
   bookkeeping keyed by group NAME (who holds slots, who waits, in order —
   `QueueDetail`, surfaced as `/concurrency`'s `holders`/`waiting_runs` and
   the dashboard's expandable group rows): display data only, never part of
