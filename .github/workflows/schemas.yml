@@ -1,0 +1,77 @@
+name: Publish schemas to buildhost
+
+# Deploy workflow — the master-only branch filter STAYS (org rule: deploy/
+# publish workflows keep their triggers; only pure CI uses bare `on: push`).
+#
+# The hook.json + concurrency.json schemas used to deploy to GitHub Pages,
+# but GH Pages deploys ride Actions artifacts and the org's artifact
+# storage quota is exhausted — the Pages deploy has failed since
+# 2026-07-17 ("Artifact storage quota has been hit"), freezing the
+# published schema at its 07-15 content. Operator directive 2026-07-19:
+# use buildhost. buildhost-publish-site PUTs one tar.gz straight to
+# sites.pazer.build (GitHub OIDC auth, project auto-provisioned) — no
+# Actions artifacts anywhere.
+#
+# webhook-runner is a private repo, so its buildhost project is private;
+# `public: true` (the X-Public-Site mechanism PR previews use) opens just
+# this one site branch for anonymous reads — release artifacts and the
+# rest of the project stay gated. Canonical schema URLs:
+#   https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json
+#   https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json
+# The legacy GitHub Pages site keeps serving its last-published (07-15)
+# content — nothing is deleted here — and hook.json files may keep the
+# legacy github.io URL in $schema (the runner only requires $schema
+# presence, never a specific URL).
+#
+# Staging: only schema/*.schema.json is published, flat at the site root.
+# The old workflow uploaded the whole schema/ directory, which also
+# published schema_test.go to the public site — fixed here.
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  id-token: write # buildhost OIDC auth
+  contents: read
+
+concurrency:
+  group: schemas
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Stage exactly schema/*.schema.json, flat into a fresh _site/;
+      # every staged file must parse as JSON and carry $schema + $id.
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const src = 'schema';
+            const out = '_site';
+            fs.rmSync(out, { recursive: true, force: true });
+            fs.mkdirSync(out);
+            const files = fs.readdirSync(src).filter((f) => f.endsWith('.schema.json'));
+            if (files.length === 0) {
+              core.setFailed('no schema/*.schema.json files found — refusing to publish an empty site');
+              return;
+            }
+            for (const f of files) {
+              const bytes = fs.readFileSync(path.join(src, f));
+              const parsed = JSON.parse(bytes.toString('utf8'));
+              if (typeof parsed.$schema !== 'string' || typeof parsed.$id !== 'string') {
+                core.setFailed(`${f}: missing $schema/$id — not a publishable JSON Schema`);
+                return;
+              }
+              fs.writeFileSync(path.join(out, f), bytes);
+            }
+            core.info(`staged: ${files.join(', ')}`);
+      - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: webhook-runner # repo-derived: the only site project OIDC authorizes
+          branch: master
+          source_dir: _site
+          public: 'true' # the schema URLs must stay anonymously fetchable

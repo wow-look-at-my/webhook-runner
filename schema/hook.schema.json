@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$id": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "title": "webhook-runner hook configuration",
   "description": "Configuration for a webhook-runner hook. Place this file as hook.json inside a named directory under the hooks root, next to the mandatory Dockerfile that bakes the hook's code into its image.",
   "type": "object",
@@ -10,7 +10,7 @@
     "$schema": {
       "type": "string",
       "format": "uri",
-      "description": "URI of the JSON Schema this hook.json is validated against. Set it to https://wow-look-at-my.github.io/webhook-runner/hook.schema.json."
+      "description": "URI of the JSON Schema this hook.json is validated against. Set it to https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json (the legacy https://wow-look-at-my.github.io/webhook-runner/hook.schema.json is still accepted, but serves frozen 2026-07-15 content)."
     },
     "description": {
       "type": "string",

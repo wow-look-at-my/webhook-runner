@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   // Fixture for the e2e check that `webhook-runner test` propagates a
   // failing test command. Lives outside e2e/hooks so the passing-path
   // invocation (`webhook-runner test e2e/hooks`) never sees it.

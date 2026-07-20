@@ -45,7 +45,7 @@ func TestLoadOne(t *testing.T) {
 	root := t.TempDir()
 	writeHook(t, root, "deploy", `{
 		// pretty
-		"$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
 		"description": "Deploy",
 		"command": ["echo"]
 	}`)
