@@ -1238,18 +1238,20 @@ The dashboard's runs timeline is TypeScript under
 `internal/server/dashboard/ts/` — `timeline.ts`, the webhook-runner
 **adapter** only. The generic `<timeline-view>` component itself is NOT part
 of this repo: the browser imports it at **runtime** from
-[js-snippets](https://github.com/wow-look-at-my/js-snippets)' GitHub Pages
-(`https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`, live at
-master head — the org's standard js-snippets consumption model), so
-component fixes reach this dashboard on js-snippets merge with no
-webhook-runner change. Fix component bugs upstream in js-snippets. The
-chart therefore needs the viewer's browser to reach
-`wow-look-at-my.github.io`; if that fetch fails, the Runs section shows a
-"chart loading…" note and retries on a fixed 5s cadence forever while the
-rest of the dashboard works normally. Types for the URL import come from
-`ts/js-snippets-timeline.d.ts` — an interim hand-maintained shim, slated to
-be replaced by declarations published to Pages by js-snippets and fetched
-mechanically at generate time.
+[js-snippets](https://github.com/wow-look-at-my/js-snippets)' buildhost
+library site
+(`https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`,
+live at master head — the org's standard js-snippets consumption model;
+replaced the quota-dead GitHub Pages deploy), so component fixes reach
+this dashboard on js-snippets merge with no webhook-runner change. Fix
+component bugs upstream in js-snippets. The chart therefore needs the
+viewer's browser to reach `sites.pazer.build`; if that fetch fails, the
+Runs section shows a "chart loading…" note and retries on a fixed 5s
+cadence forever while the rest of the dashboard works normally. Types for
+the URL import come from `ts/js-snippets-timeline.d.ts` — an interim
+hand-maintained shim, slated to be replaced by declarations fetched
+mechanically at generate time (the library site already serves a `.d.ts`
+next to every `.js`).
 [ts0](https://github.com/wow-look-at-my/ts0) type-checks (strict `tsc`, an
 unskippable gate) and bundles the adapter into
 `internal/server/dashboard/assets/timeline.js` per `ts0.json` (an ES

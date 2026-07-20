@@ -994,18 +994,20 @@ The companion repo is `wow-look-at-my/webhooks`.
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
 - The dashboard timeline splits in two: the **`<timeline-view>` component
-  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
-  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
-  (live at master head; the org's standard js-snippets consumption model,
-  NEVER vendored copies) — while this repo ships only the runner-specific
-  adapter. Component fixes deploy to this dashboard on js-snippets merge
+  is consumed at RUNTIME from js-snippets' buildhost library site** — the
+  browser imports
+  `https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`
+  (live at master head — republished on every js-snippets master push;
+  replaced the quota-dead GitHub Pages deploy 2026-07-20; the org's
+  standard js-snippets consumption model, NEVER vendored copies) — while
+  this repo ships only the runner-specific adapter. Component fixes deploy to this dashboard on js-snippets merge
   with no runner change; fix component bugs upstream in js-snippets, full
   stop. Consequences to keep straight: `assets/timeline.js` is a small
   ES-module adapter bundle whose component import passes through UNBUNDLED
   (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
   loaded via `<script type="module">` (after dashboard.js — modules defer,
   so its globals are always ready); the admin dashboard's chart therefore
-  needs reach to wow-look-at-my.github.io at page load. A failed component
+  needs reach to sites.pazer.build at page load. A failed component
   fetch degrades softly and NEVER parks: the adapter module still runs,
   shows a "chart loading…" note in the Runs section, and retries the
   dynamic import on a FIXED 5s cadence forever (cache-busted `?retry=N`,
@@ -1013,9 +1015,10 @@ The companion repo is `wow-look-at-my/webhooks`.
   attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
   are untouched and the runs-table toggle keeps working. TypeScript types
   for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
-  hand-maintained ambient shim (types only) — temporary until js-snippets
-  publishes .d.ts to Pages and the generate step fetches them mechanically
-  (already queued; do not grow the shim beyond what the adapter consumes).
+  hand-maintained ambient shim (types only) — temporary until the generate
+  step fetches js-snippets' published declarations mechanically (the
+  library site already serves a .d.ts next to every .js; do not grow the
+  shim beyond what the adapter consumes).
   The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
   (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
   banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
