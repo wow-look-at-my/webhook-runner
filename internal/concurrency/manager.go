@@ -192,11 +192,28 @@ type groupSem struct {
 	overridden bool // limit came from an operator override
 	// ch is the semaphore: capacity == limit, a token per active slot. It is
 	// immutable for the life of this groupSem — a limit change (reload or
-	// operator override) swaps in a whole new groupSem, and in-flight runs
-	// release into the exact channel they acquired from (the release closure
-	// captures it), so a swap never loses or double-counts a token.
-	ch      chan struct{}
+	// operator override) swaps in a whole new groupSem. HOLDERS stay bound to
+	// the exact channel they acquired from (the release closure captures it),
+	// so a swap never loses or double-counts a token. Blocked WAITERS do NOT
+	// stay bound: retiring a groupSem closes retired, and Acquire re-binds
+	// them to the group's current semaphore, so a limit change applies to
+	// already-queued runs immediately. Two transients are PRE-EXISTING,
+	// unchanged semantics: in-flight holders above a new lower limit finish
+	// normally, and a raise briefly runs the old holders on top of a fresh
+	// (empty) channel's worth of admissions.
+	ch chan struct{}
+	// retired is closed — exactly once, when this groupSem is replaced by a
+	// limit change or its group is removed from the config — as the signal
+	// blocked waiters select on to re-bind.
+	retired chan struct{}
 	waiting atomic.Int64 // runs currently blocked waiting for a slot
+}
+
+// newGroupSem is the sole groupSem constructor: every swap site goes through
+// it so retired is never nil (a nil channel would silently disable waiter
+// re-binding).
+func newGroupSem(declared, limit int, overridden bool) *groupSem {
+	return &groupSem{declared: declared, limit: limit, overridden: overridden, ch: make(chan struct{}, limit), retired: make(chan struct{})}
 }
 
 // NewManager builds a Manager from the given config (nil cfg = no groups).
@@ -215,7 +232,10 @@ func NewManager(cfg *Config) *Manager {
 // overrides stay stored, inert, and re-apply if the group is re-declared).
 // Runs already holding a slot release into the exact channel they acquired
 // from (the release closure captures it), so a reload never loses or
-// double-counts a token.
+// double-counts a token. Runs already QUEUED re-bind to the group's new
+// semaphore (see groupSem.retired), so a changed limit takes effect for them
+// immediately; a queued run whose group is removed fails its Acquire with an
+// error instead of blocking forever.
 func (m *Manager) Update(cfg *Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -239,7 +259,16 @@ func (m *Manager) Update(cfg *Config) {
 				next[name] = old
 				continue
 			}
-			next[name] = &groupSem{declared: declared, limit: effective, overridden: overridden, ch: make(chan struct{}, effective)}
+			next[name] = newGroupSem(declared, effective, overridden)
+		}
+	}
+	// Retire every semaphore not carried into the new config — the replaced
+	// sem of a limit-changed group AND a removed group's — so blocked
+	// waiters re-bind (or, for a removed group, fail their Acquire) instead
+	// of waiting forever on a channel nothing will ever release into.
+	for name, old := range m.groups {
+		if next[name] != old {
+			close(old.retired)
 		}
 	}
 	m.groups = next
@@ -258,7 +287,10 @@ func (m *Manager) Update(cfg *Config) {
 // release into it (never into the new one), and new acquires see only the
 // new semaphore. No token is lost or double-counted. Like a reload that
 // changes a limit, runs already active beyond a lowered limit finish
-// normally; the new limit gates new acquires immediately.
+// normally; the new limit gates new acquires immediately. Runs already
+// QUEUED re-bind to the new semaphore the moment it is installed (see
+// groupSem.retired) — a raise admits them at once, without waiting for a
+// holder to release.
 func (m *Manager) SetLimitOverride(group string, limit int) error {
 	if limit < 1 {
 		return fmt.Errorf("concurrency override for %q: limit must be >= 1, got %d", group, limit)
@@ -277,7 +309,8 @@ func (m *Manager) SetLimitOverride(group string, limit int) error {
 		gs.overridden = true // effective limit unchanged: keep the semaphore
 		return nil
 	}
-	m.groups[group] = &groupSem{declared: gs.declared, limit: limit, overridden: true, ch: make(chan struct{}, limit)}
+	m.groups[group] = newGroupSem(gs.declared, limit, true)
+	close(gs.retired)
 	return nil
 }
 
@@ -299,7 +332,8 @@ func (m *Manager) ClearLimitOverride(group string) {
 		gs.overridden = false // effective limit unchanged: keep the semaphore
 		return
 	}
-	m.groups[group] = &groupSem{declared: gs.declared, limit: gs.declared, ch: make(chan struct{}, gs.declared)}
+	m.groups[group] = newGroupSem(gs.declared, gs.declared, false)
+	close(gs.retired)
 }
 
 // Declared reports whether group is currently declared, and its declared
@@ -337,6 +371,11 @@ func (m *Manager) Declared(group string) (limit int, ok bool) {
 //     each time with a fresh QueueState. Calls are serialized under the
 //     Manager's mutex: they must be fast and must not call back into the
 //     Manager. A run that gets its slot immediately never sees onQueue.
+//   - A limit change while queued (reload or operator override) re-binds
+//     the waiter to the group's new semaphore, so a raised limit admits
+//     queued runs immediately; if the group itself is removed from the
+//     config while queued, Acquire fails with an error (the runner surfaces
+//     that as a failed run — loud beats silently stranded).
 func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue func(QueueState)) (release func(), acquired bool, err error) {
 	if group == "" {
 		return func() {}, true, nil
@@ -372,23 +411,61 @@ func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue f
 	}
 	m.mu.Unlock()
 
-	gs.waiting.Add(1)
-	defer gs.waiting.Add(-1)
-	select {
-	case gs.ch <- struct{}{}:
-		m.mu.Lock()
-		m.dropWaiter(group, w)
-		m.addHolder(group, runID)
-		// Everyone still waiting sees a new holder and a shorter line.
-		m.notifyWaiters(group)
-		m.mu.Unlock()
-		return m.releaser(group, runID, gs.ch), true, nil
-	case <-cancel:
-		m.mu.Lock()
-		m.dropWaiter(group, w)
-		m.notifyWaiters(group)
-		m.mu.Unlock()
-		return nil, false, nil
+	// Block for a slot. The loop re-arms on every semaphore swap: a limit
+	// change (reload or operator override) closes the retired channel of
+	// the semaphore it replaces, and each blocked waiter re-binds to the
+	// group's CURRENT semaphore — so a raised limit admits already-queued
+	// runs immediately, and a lowered one has them contend at the new limit.
+	// The per-sem waiting counter is managed per iteration so it always
+	// tracks the semaphore this waiter is actually blocked on.
+	for {
+		gs.waiting.Add(1)
+		select {
+		case gs.ch <- struct{}{}:
+			gs.waiting.Add(-1)
+			m.mu.Lock()
+			m.dropWaiter(group, w)
+			m.addHolder(group, runID)
+			// Everyone still waiting sees a new holder and a shorter line.
+			m.notifyWaiters(group)
+			m.mu.Unlock()
+			return m.releaser(group, runID, gs.ch), true, nil
+		case <-cancel:
+			gs.waiting.Add(-1)
+			m.mu.Lock()
+			m.dropWaiter(group, w)
+			m.notifyWaiters(group)
+			m.mu.Unlock()
+			return nil, false, nil
+		case <-gs.retired:
+			// The semaphore this waiter was blocked on has been replaced
+			// (limit change) or dropped (group removed). Re-bind.
+			gs.waiting.Add(-1)
+			m.mu.Lock()
+			next := m.groups[group]
+			if next == nil {
+				m.dropWaiter(group, w)
+				m.notifyWaiters(group)
+				m.mu.Unlock()
+				return nil, false, fmt.Errorf("concurrency group %q was removed while queued", group)
+			}
+			gs = next
+			// A raised limit usually means the new semaphore has room: take
+			// a slot right here, atomically with the holder registration.
+			select {
+			case gs.ch <- struct{}{}:
+				m.dropWaiter(group, w)
+				m.addHolder(group, runID)
+				m.notifyWaiters(group)
+				m.mu.Unlock()
+				return m.releaser(group, runID, gs.ch), true, nil
+			default:
+			}
+			// Still full at the new limit: stay in the advisory line
+			// (position and holder views re-derive from the name-keyed
+			// bookkeeping) and re-block on the new channel.
+			m.mu.Unlock()
+		}
 	}
 }
 

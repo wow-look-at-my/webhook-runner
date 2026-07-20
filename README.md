@@ -784,8 +784,10 @@ for exactly that:
 - **Override a concurrency limit**: the Override/Revert controls in the
   dashboard's concurrency section (or `PUT`/`DELETE
   /concurrency/{group}/limit`). The new limit takes effect immediately —
-  runs already holding slots finish normally; new runs are gated by the
-  override. `/concurrency` and the dashboard always show **declared vs
+  runs already holding slots finish normally; runs already **queued**
+  re-bind to the new limit at once (a raise admits them without waiting
+  for a holder to finish); new runs are gated by the override.
+  `/concurrency` and the dashboard always show **declared vs
   effective** so an active override is visible at a glance. A limit of `0`
   is rejected: it would leave queued runs blocked forever — to stop a
   group's hooks entirely, disable the hooks.
