@@ -17,7 +17,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-const hookSchemaURL = "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json"
+const hookSchemaURL = "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"
 
 func compileHookSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
