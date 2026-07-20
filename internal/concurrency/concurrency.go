@@ -12,7 +12,7 @@
 // The file at <hooks-root>/concurrency.json looks like:
 //
 //	{
-//	  "$schema": "https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json",
+//	  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json",
 //	  "groups": {
 //	    "ollama-local": { "description": "...", "limit": 1 }
 //	  }

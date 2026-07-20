@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "e2e scheduled hook: fires on a short timer with no HTTP trigger",
   "command": ["sh", "-c", "echo scheduled-fired && cat $HOOK_PAYLOAD_FILE"],
   "schedule": "3s",
