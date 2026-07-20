@@ -189,10 +189,15 @@ The server listens on two TCP ports plus a Unix socket:
   first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
   "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
   on the run's dashboard row, counts as activity for the idle `timeout`;
-  see the wait bullet under "Things easy to get wrong"), and the friendly
+  see the wait bullet under "Things easy to get wrong"), the friendly
   run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
   chars — names the calling run mid-flight, replacing any run_title
   template title; see the run-title bullet under "Things easy to get
+  wrong"), and the spawn primitive `POST /spawn`
+  (`{"hook","count":1..100,"payload":<JSON object ≤256KiB>}` + optional
+  `"event"` — a permitted hook starts runs of ANOTHER hook through the
+  runner itself, gated by the deny-by-default WEBHOOK_RUNNER_SPAWN_ALLOW
+  allowlist; see the spawn bullet under "Things easy to get
   wrong"). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
@@ -934,6 +939,42 @@ The companion repo is `wow-look-at-my/webhooks`.
   and a retry loop of short waits would double the feed volume. Deploy-first
   rule as usual: older runners 404 `/wait` (hooks should fall back to a
   plain sleep — they lose the badge and the activity credit, nothing else).
+- Spawn (`POST /spawn` on the state API, `internal/server/spawn.go`): a
+  permitted state hook starts `count` runs of ANOTHER hook through the
+  runner itself — the runner-native replacement for a coordinator hook
+  POSTing HMAC-signed synthetic webhooks at the public endpoints. The
+  CALLER (parent hook + run) comes from the verified bearer token, never
+  the body. Authorization is DENY-BY-DEFAULT and RUNNER-side:
+  `WEBHOOK_RUNNER_SPAWN_ALLOW` maps parent→targets
+  (`parent=target,target;...`; unset/empty = nothing may spawn, a
+  malformed value FAILS STARTUP — the reload-poll rule), deliberately
+  NEVER a hook.json field, so the published hook schema stays untouched
+  and consumer hooks need zero new fields. Pre-validation is
+  all-or-nothing BEFORE anything starts — 400/413 bounds (count 1..100,
+  payload a JSON object ≤256KiB, optional `event` ≤100 chars), 409
+  parent run not active (the /wait rule), 404 unknown target, 403 not
+  allowlisted, 409 target effectively disabled (the SAME
+  effective-disabled state handleTrigger and buildScheduleFire read) —
+  each denial a loud `spawn.denied` event. A spawned run is a NORMAL run
+  dispatched the scheduler-Fire way (`runner.StartSpawned` with
+  context.Background() + a synthetic payload/headers pair — the target's
+  concurrency_group applies, excess spawns queue as pending; `run_title`
+  renders from the target's template; `event` becomes the
+  `X-GitHub-Event` header, plus `X-Webhook-Runner-Spawned-By(-Run)`).
+  skip_if is BYPASSED exactly like scheduled fires — a spawn is operator
+  machinery's own doing, not an unwanted delivery; the target's in-code
+  guards still run. The response (`200 {"run_ids":[...]}`, start order)
+  is immediate — Start is async dispatch, the caller never waits on
+  slots — and a mid-loop start failure answers 500 listing the runs that
+  DID start plus the error (honest partial report). Attribution:
+  `RunState.SpawnedBy` {run_id, hook_id} is additive/omitempty (the
+  Title precedent — meta blob ONLY, never the runstore per-hook index
+  value format, byte-asserted in runstore tests), and the
+  run.started/run.finished event MESSAGES carry ", spawned by <hook> run
+  <id>" (runRef style — no event-schema change). Deploy-first rule:
+  this primitive deploys BEFORE any hook calling it — older runners 404
+  `/spawn`, and callers must fail LOUD on 404/405 ("primitive
+  unavailable"), never silently skip their fan-out.
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at
