@@ -349,6 +349,12 @@ func (s *Server) registerRoutes() {
 	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
 	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
 	s.stateMux.HandleFunc("POST /kv/{key}/steal", s.withNamespace(s.handleKVSteal))
+	// Pin/unpin: the holder toggles its lock's steal-protection — a pinned
+	// lock refuses steals (409 naming the pinned holder) until unpinned,
+	// released, or the run ends. Separate routes like steal: a mode change
+	// must be unmistakable in request lines and logs (see state.go).
+	s.stateMux.HandleFunc("POST /kv/{key}/pin", s.withNamespace(s.handleKVPin))
+	s.stateMux.HandleFunc("POST /kv/{key}/unpin", s.withNamespace(s.handleKVUnpin))
 	// First-class declared sleep: blocks ~N seconds, shows on the dashboard,
 	// and counts as activity for the idle timeout (see wait.go).
 	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))

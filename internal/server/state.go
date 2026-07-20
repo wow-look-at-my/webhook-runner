@@ -163,11 +163,15 @@ type lockConflict struct {
 // lockRequest is the acquire/steal request body. TTLSeconds bounds the
 // backstop expiry; Block turns a contended acquire into a held request
 // (see handleKVAcquire); BlockTimeoutSeconds caps the hold (default and max
-// maxWaitSeconds, same 10-minute cap as /wait — loop for longer).
+// maxWaitSeconds, same 10-minute cap as /wait — loop for longer); Pinned
+// (acquire only) applies the steal-protection pin ATOMICALLY with the take
+// — take-and-pin in one compare-and-set, so no stealer can slip between an
+// acquire and a separate POST /kv/{key}/pin.
 type lockRequest struct {
 	TTLSeconds          *int `json:"ttl_seconds"`
 	Block               bool `json:"block"`
 	BlockTimeoutSeconds *int `json:"block_timeout_seconds"`
+	Pinned              bool `json:"pinned"`
 }
 
 func parseLockRequest(w http.ResponseWriter, r *http.Request) (req lockRequest, ttl time.Duration, ok bool) {
@@ -224,7 +228,7 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 	}
 	key := r.PathValue("key")
 
-	info, err := s.kv.AcquireLock(ns, key, runID, ttl)
+	info, err := s.acquireLock(ns, key, runID, ttl, req.Pinned)
 	if err == nil {
 		writeJSON(w, http.StatusOK, info)
 		return
@@ -238,6 +242,16 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 		return
 	}
 	s.blockOnLock(w, r, ns, key, runID, ttl, req, info)
+}
+
+// acquireLock dispatches to the plain or the atomic take-and-pin acquire.
+// One seam so the immediate path and blockOnLock's retry loop can never
+// disagree about the requested pin.
+func (s *Server) acquireLock(ns, key, runID string, ttl time.Duration, pinned bool) (kv.LockInfo, error) {
+	if pinned {
+		return s.kv.AcquireLockPinned(ns, key, runID, ttl)
+	}
+	return s.kv.AcquireLock(ns, key, runID, ttl)
 }
 
 // blockOnLock is the held half of a blocking acquire: the first attempt was
@@ -284,7 +298,7 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 		select {
 		case <-tick.C:
 			run.TouchActivity()
-			info, err := s.kv.AcquireLock(ns, key, runID, ttl)
+			info, err := s.acquireLock(ns, key, runID, ttl, req.Pinned)
 			if err == nil {
 				run.TouchActivity()
 				writeJSON(w, http.StatusOK, info)
@@ -369,6 +383,19 @@ func (s *Server) handleKVSteal(w http.ResponseWriter, r *http.Request, ns, runID
 	key := r.PathValue("key")
 
 	info, displaced, err := s.kv.StealLock(ns, key, runID, ttl)
+	if errors.Is(err, kv.ErrLockPinned) {
+		// The holder marked its critical section non-displaceable. Refuse
+		// LOUDLY (contention is never anonymous — and neither is protection):
+		// the 409 names the pinned holder, and the feed records the refused
+		// displacement so a long-pinned section is visible to the operator.
+		// The caller's correct fallback is a blocking acquire, which wins the
+		// moment the pin lifts or the holder finishes.
+		s.events.Record("lock.steal_refused",
+			fmt.Sprintf("%s run %s: steal of lock %q refused — pinned by run %s", ns, runID, key, info.RunID),
+			map[string]string{"hook": ns, "run": runID})
+		writeJSON(w, http.StatusConflict, lockConflict{Error: err.Error(), HeldBy: &info})
+		return
+	}
 	if err != nil {
 		s.writeKVError(w, ns, err)
 		return
@@ -400,6 +427,31 @@ func (s *Server) handleKVSteal(w http.ResponseWriter, r *http.Request, ns, runID
 // request body is ignored — there is nothing a caller could need to say.
 func (s *Server) handleKVRelease(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	if err := s.kv.ReleaseLock(ns, r.PathValue("key"), runID); err != nil {
+		s.writeKVError(w, ns, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleKVPin marks a lock the calling run holds non-stealable —
+// POST /kv/{key}/pin, no body. Owner-only, the release auth rule: 204
+// pinned (idempotent), 404 not held (absent/expired), 409 held by another
+// run. A separate route rather than an acquire flag so the mode change is
+// unmistakable in request lines and logs (the steal-route precedent); the
+// atomic take-and-pin lives on acquire as {"pinned": true} for callers that
+// need zero window between take and protection.
+func (s *Server) handleKVPin(w http.ResponseWriter, r *http.Request, ns, runID string) {
+	if err := s.kv.PinLock(ns, r.PathValue("key"), runID); err != nil {
+		s.writeKVError(w, ns, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleKVUnpin restores normal steal semantics on a lock the calling run
+// holds — POST /kv/{key}/unpin, no body. Same auth and idempotence as pin.
+func (s *Server) handleKVUnpin(w http.ResponseWriter, r *http.Request, ns, runID string) {
+	if err := s.kv.UnpinLock(ns, r.PathValue("key"), runID); err != nil {
 		s.writeKVError(w, ns, err)
 		return
 	}
@@ -445,6 +497,8 @@ func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 	// Lock contention/ownership outcomes are normal control flow for the
 	// caller (409/404), never write failures — no log, no event.
 	case errors.Is(err, kv.ErrLockHeld):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, kv.ErrLockPinned):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, kv.ErrLockNotHeld):
 		writeError(w, http.StatusNotFound, err.Error())
