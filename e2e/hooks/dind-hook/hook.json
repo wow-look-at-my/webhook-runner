@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "e2e Docker-in-Docker smoke test: starts a nested dockerd and verifies it with docker version && docker info",
   // dind:true makes the runner add --privileged + an anonymous
   // /var/lib/docker volume on BOTH the live-run and `webhook-runner test`

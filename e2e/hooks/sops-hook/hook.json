@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   // Exercises sops secrets end to end: SECRET_MESSAGE is auto-injected from
   // secrets.sops.env, REF_FROM_SECRET resolves a ${NAME} reference against
   // it, and the api_key itself lives in the encrypted file. Decrypted with

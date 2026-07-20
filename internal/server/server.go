@@ -16,6 +16,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
+	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
@@ -53,12 +54,14 @@ type Server struct {
 	reloadSecret string
 	onReload     func() error
 	gate         ReloadGate
+	treeState    func() reloadgate.TreeState
 	hooksRepo    string
 	hooksBranch  string
 	hookBaseURL  string
 	kv           *kv.Store
 	runstore     *runstore.Store
 	overrides    *overrides.Store
+	spawnAllow   SpawnAllowlist
 	version      VersionInfo
 
 	// The admin reload panel's seams (reloadpanel.go): the hooks-repo
@@ -120,6 +123,14 @@ type Options struct {
 	// behavior (any signed POST pulls + reloads).
 	Gate ReloadGate
 
+	// TreeState, when set, reports the reload gate's hooks-tree state —
+	// which commit the served hooks tree is at, and the pending commit +
+	// hold reason while the gate is holding — included as hooks_tree in
+	// /version on both ports (serve wires it to reloadgate.Gate.TreeState).
+	// nil means no gate tracks the tree (no hooks repo, or the legacy
+	// gate-disabled mode) and /version names that mode instead.
+	TreeState func() reloadgate.TreeState
+
 	// HooksRepo is the Git remote URL of the hooks repository (SSH or
 	// HTTPS). Exposed via the admin /config endpoint for the dashboard.
 	HooksRepo string
@@ -160,6 +171,13 @@ type Options struct {
 	// override endpoints (reads treat every hook as enabled).
 	Overrides *overrides.Store
 
+	// SpawnAllow authorizes POST /spawn on the state API: which parent
+	// hooks may spawn runs of which target hooks (see SpawnAllowlist).
+	// DENY-BY-DEFAULT — nil or empty refuses every spawn. Operator config
+	// (the WEBHOOK_RUNNER_SPAWN_ALLOW env var), deliberately never a
+	// hook.json field.
+	SpawnAllow SpawnAllowlist
+
 	// Version identifies the running build; it is reported by /health and
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
@@ -187,12 +205,14 @@ func New(opts Options) *Server {
 		reloadSecret: opts.ReloadSecret,
 		onReload:     opts.OnReload,
 		gate:         opts.Gate,
+		treeState:    opts.TreeState,
 		hooksRepo:    opts.HooksRepo,
 		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
+		spawnAllow:   opts.SpawnAllow,
 		version:      opts.Version,
 		stream:       newStreamHub(),
 		hookMux:      http.NewServeMux(),
@@ -335,6 +355,10 @@ func (s *Server) registerRoutes() {
 	// Friendly-title override: a run whose subject is only known mid-run
 	// (a fleet sweep reaching some repo) names itself (see title.go).
 	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
+	// Spawn: a permitted hook starts runs of ANOTHER hook through the
+	// runner itself — deny-by-default allowlist, normal dispatch, skip_if
+	// deliberately bypassed like scheduled fires (see spawn.go).
+	s.stateMux.HandleFunc("POST /spawn", s.withNamespace(s.handleSpawn))
 }
 
 // runRequestContext returns a background context derived from the server

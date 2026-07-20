@@ -74,6 +74,14 @@ type RunState struct {
 	// consumer (the dashboard feature-detects it) falls back to the id.
 	Title string `json:"title,omitempty"`
 
+	// SpawnedBy identifies the run that started this one through the state
+	// API's POST /spawn — the parent's run and hook IDs — so the dashboard
+	// and run history can answer "who started this". nil for runs started
+	// by a delivery or a schedule tick. Additive and omitempty like Title,
+	// and like Title it persists in the run store's per-run metadata blob
+	// only — never the per-hook index value format.
+	SpawnedBy *SpawnedBy `json:"spawned_by,omitempty"`
+
 	// Started is when the run was accepted and began tracking — the moment
 	// it was QUEUED, before any concurrency-group wait. The JSON name
 	// predates the queue-wait/processing split and is kept for
@@ -356,6 +364,11 @@ func (r *Run) Snapshot(tail int) RunState {
 		w := *cp.WaitingOn
 		w.HolderRunIDs = append([]string(nil), w.HolderRunIDs...)
 		cp.WaitingOn = &w
+	}
+	if cp.SpawnedBy != nil {
+		// Immutable once set, but copy for the same no-aliasing rule.
+		sb := *cp.SpawnedBy
+		cp.SpawnedBy = &sb
 	}
 	return cp
 }

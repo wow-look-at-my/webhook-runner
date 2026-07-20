@@ -28,7 +28,7 @@ internal/attention/        aggregated ACTIVE misconfigurations (the needs-attent
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + concurrency.json (published to GitHub Pages)
+schema/                    JSON schemas for hook.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -45,9 +45,17 @@ examples/hooks/            sample hook configs
   Don't add chi/gorilla/echo.
 - **`$schema` is required.** Every `hook.json` must declare a `$schema`
   field (the `Hook.Schema` field); `Hook.validate` rejects a hook without
-  one. The matching property lives in `schema/hook.schema.json`, which is
-  published to GitHub Pages and is what the `$schema` URL points at. Keep
-  the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  one — presence only, never a specific URL. The matching property lives in
+  `schema/hook.schema.json`, published to buildhost sites on every master
+  push (`.github/workflows/schemas.yml` — replaced the GitHub Pages deploy,
+  which died on the org's Actions artifact-storage quota 2026-07-17;
+  operator directive 2026-07-19: use buildhost). Canonical URL:
+  `https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`
+  (a public site branch under the private repo's private buildhost project,
+  via the publish action's `public: true`). The legacy
+  `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
+  their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
+  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
 ## Architecture: two ports + a state socket
 
@@ -56,10 +64,20 @@ The server listens on two TCP ports plus a Unix socket:
 - **Hook port** (`:9000`): `POST /hook/{id}`, `POST /hook/{id}/cancel/{run}`,
   `GET /health` (body carries the build version), `GET /version` (build
   identity: version + VCS revision/time — the same string the `version`
-  command prints, plumbed from cli via `server.Options.Version`),
+  command prints, plumbed from cli via `server.Options.Version` — plus
+  `hooks_tree`, the reload gate's served-tree state: `state` is
+  `serving` (`serving_sha` + `verified`), `held` (adds `pending_sha`,
+  `pending_state`, rendered `reason`), `unknown` (gate tracking, no
+  serving commit recorded — `serving_sha` omitted, never an ambiguous
+  empty string), or `untracked` (`mode` names the gate-off/no-repo
+  mode). Wired via the nil-safe `Options.TreeState` (serve sets it to
+  `reloadgate.Gate.TreeState`, a pure under-mutex snapshot — no git, no
+  GitHub calls); exposing the private hooks repo's deployed commit sha
+  on this PUBLIC port is a deliberate, operator-requested trade),
   `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/version` (build identity, same as
-  the hook port's; the dashboard footer shows it), `/hooks`, `/hooks/{id}` (one hook's
+- **Admin port** (`:9001`): dashboard, `/version` (build identity +
+  `hooks_tree` state, same as the hook port's; the dashboard footer shows
+  the build string), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
   names only, never any api_key/env/secret value, `skip_conditions` as a
   count — plus image state, KV namespace stats, and run stats over the live
@@ -555,7 +573,17 @@ The companion repo is `wow-look-at-my/webhooks`.
   fail closed). The `concurrency.Manager` holds one buffered-channel
   semaphore per group; `Acquire` captures the channel in its release closure
   so a reload that swaps a group's semaphore can't lose or double-count a
-  token. Alongside the semaphores the Manager keeps ADVISORY queue
+  token — HOLDERS release into the exact channel they acquired from, for the
+  life of their run. Blocked WAITERS do NOT stay bound: every swap closes the
+  retired sem's `retired` channel and Acquire re-binds them to the group's
+  current semaphore, so a limit change (reload or dashboard override) takes
+  effect for already-queued runs immediately — a raise admits them at once
+  (pre-fix they drained at the OLD limit, the "2→10 gha-runner override did
+  nothing" production bug) and a group removed mid-queue fails those acquires
+  loudly rather than stranding them. Pre-existing transients unchanged:
+  in-flight holders above a lowered limit finish normally, and a raise
+  briefly runs the old holders on top of the fresh channel's admissions.
+  Alongside the semaphores the Manager keeps ADVISORY queue
   bookkeeping keyed by group NAME (who holds slots, who waits, in order —
   `QueueDetail`, surfaced as `/concurrency`'s `holders`/`waiting_runs` and
   the dashboard's expandable group rows): display data only, never part of

@@ -265,7 +265,7 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | Method | Path                | Purpose                                    |
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version: `{"status":"ok","version":"..."}`. |
-| GET    | `/version`          | Build identity: `{"version","revision","time"}` — the same string `webhook-runner version` prints, plus the VCS commit/time when the build has them. |
+| GET    | `/version`          | Build identity + served hooks tree: `{"version","revision","time","hooks_tree"}` — the same string `webhook-runner version` prints (plus the VCS commit/time when the build has them), and the reload gate's tree state: `hooks_tree.state` is `serving` (tree at `serving_sha`; `verified` says a gating green vouched for it), `held` (adds `pending_sha`, `pending_state`, and a rendered `reason` like `awaiting all-builds` / `all-builds failure` while the gate holds a newer commit), `unknown` (gate tracking but no serving commit recorded — `serving_sha` omitted, never an empty string), or `untracked` (`mode` names why: no hooks repo, or the CI gate disabled). Deliberately public: the hook port reveals the deployed hooks-tree commit sha. |
 | POST   | `/hook/{id}`        | Trigger a hook. Body becomes `HOOK_PAYLOAD_FILE`. `503 {"error":"hook disabled by operator"}` while the hook's [kill switch](#operational-overrides-the-kill-switch) is flipped. An authenticated delivery matching a [`skip_if` condition](#skip-conditions-skip_if) answers immediately (sync hooks included) with `200 {"run_id","status":"skipped","reason"}` and boots no container. |
 | POST   | `/hook/{id}/cancel/{run}` | Cancel an in-flight run of this hook (same auth as triggering it). Works for disabled hooks too — cancelling is stopping work. |
 | POST   | `/_reload`          | The hooks repo's GitHub webhook endpoint (HMAC auth, requires `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`). Event-aware: a `push` fetches and records the new tip as pending (`200 {"status":"held"}`); a `status` event for the gating context with state `success` is what switches the tree and reloads (`{"status":"reloaded"}`); other events answer `ignored`. See [CI-gated reloads](#ci-gated-reloads). With the gate disabled (env set empty), any signed POST pulls + reloads (legacy). |
@@ -275,7 +275,7 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | Method | Path                | Purpose                                    |
 |--------|---------------------|--------------------------------------------|
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
-| GET    | `/version`          | Build identity (same shape as on the hook port). Shown in the dashboard footer. |
+| GET    | `/version`          | Build identity + `hooks_tree` state (same shape as on the hook port). The dashboard footer shows the build string. |
 | GET    | `/hooks`            | List loaded hooks (id + description + `disabled`, the **effective** kill-switch state: the operator's persisted override when one exists, else the hook.json [`enable` default](#operational-overrides-the-kill-switch) — a disabled hook stays loaded and listed). |
 | GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), the operator kill-switch state (`disabled`), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
 | POST   | `/hooks/{id}/disable` | Flip a hook's [kill switch](#operational-overrides-the-kill-switch) off: deliveries are rejected (`503`) and scheduled runs skipped until re-enabled. Writes an **explicit persisted override** that outranks the hook.json `enable` default; idempotent; `404` for unknown hooks; persisted before the response (a persist failure is a loud `500` with nothing half-applied). |
@@ -459,7 +459,7 @@ service, drive a nested `docker` CLI — can opt into Docker-in-Docker with
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "dind": true
 }
 ```
@@ -502,7 +502,12 @@ wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
 ## hook.json reference
 
 The full schema is published at
-`https://wow-look-at-my.github.io/webhook-runner/hook.schema.json`.
+`https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json`
+(deployed to [buildhost](https://github.com/wow-look-at-my/buildhost) sites
+on every master push by `.github/workflows/schemas.yml`; the legacy
+`https://wow-look-at-my.github.io/webhook-runner/hook.schema.json` still
+serves its frozen 2026-07-15 content and remains accepted in `$schema` —
+the runner only requires the field's presence, never a specific URL).
 See `examples/hooks/` for working examples.
 
 Every `hook.json` **must** declare a `$schema` field pointing at that URL
@@ -511,7 +516,7 @@ image):
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "command": ["sh", "-c", "echo hi"]
 }
 ```
@@ -525,7 +530,7 @@ validate the file against the published schema.
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "script": { "file": "handle.ts", "interpreter": "tsx" }
 }
 ```
@@ -715,7 +720,7 @@ load/validation error — the hook won't load.
 ```jsonc
 // concurrency.json (at the hooks root)
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json",
   "groups": {
     // Serialize everything that hits the single local model server.
     "ollama-local": { "description": "shared local model server", "limit": 1 }
@@ -726,7 +731,7 @@ load/validation error — the hook won't load.
 ```jsonc
 // some-hook/hook.json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "concurrency_group": "ollama-local"
 }
 ```
@@ -745,7 +750,7 @@ the per-hook avg/max wait vs duration stats — so a run stuck behind a busy
 group never reads as a slow run.
 
 The schema is published at
-`https://wow-look-at-my.github.io/webhook-runner/concurrency.schema.json`.
+`https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json`.
 
 ## Operational overrides (the kill switch)
 
@@ -779,8 +784,10 @@ for exactly that:
 - **Override a concurrency limit**: the Override/Revert controls in the
   dashboard's concurrency section (or `PUT`/`DELETE
   /concurrency/{group}/limit`). The new limit takes effect immediately —
-  runs already holding slots finish normally; new runs are gated by the
-  override. `/concurrency` and the dashboard always show **declared vs
+  runs already holding slots finish normally; runs already **queued**
+  re-bind to the new limit at once (a raise admits them without waiting
+  for a holder to finish); new runs are gated by the override.
+  `/concurrency` and the dashboard always show **declared vs
   effective** so an active override is visible at a glance. A limit of `0`
   is rejected: it would leave queued runs blocked forever — to stop a
   group's hooks entirely, disable the hooks.
@@ -803,7 +810,7 @@ A hook can fire itself on a timer, not just on an HTTP `POST`. Add a
 
 ```json
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "fleet reconcile sweep",
   "schedule": "5m",
   "timeout": "10m"
