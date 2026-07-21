@@ -48,6 +48,7 @@ type Server struct {
 	gh           *githubstatus.Client
 	secrets      *hooks.SecretsLoader
 	concurrency  *concurrency.Manager
+	globalCap    *concurrency.Global
 	events       *events.Recorder
 	attention    *attention.Aggregator
 	log          *slog.Logger
@@ -93,6 +94,11 @@ type Options struct {
 	// Concurrency exposes the live state of the named concurrency groups
 	// on the admin port. nil is fine (the endpoint reports no groups).
 	Concurrency *concurrency.Manager
+	// GlobalCap is the server-wide run cap surfaced on GET /concurrency
+	// and controlled by PUT|DELETE /concurrency-global/limit. nil is fine
+	// (the view omits it and the endpoints answer 500 "not configured");
+	// serve always wires one.
+	GlobalCap *concurrency.Global
 	// Events is the activity feed shown on the admin dashboard. nil is
 	// fine (events are dropped).
 	Events *events.Recorder
@@ -199,6 +205,7 @@ func New(opts Options) *Server {
 		managers:     opts.Managers,
 		secrets:      opts.Secrets,
 		concurrency:  opts.Concurrency,
+		globalCap:    opts.GlobalCap,
 		events:       opts.Events,
 		attention:    opts.Attention,
 		log:          opts.Logger,
@@ -309,6 +316,11 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("POST /managers/{id}/restart", s.handleManagerRestart)
 	s.adminMux.HandleFunc("PUT /concurrency/{group}/limit", s.handleConcurrencyOverrideSet)
 	s.adminMux.HandleFunc("DELETE /concurrency/{group}/limit", s.handleConcurrencyOverrideClear)
+	// The GLOBAL run cap's override pair. A dedicated literal path —
+	// deliberately NOT /concurrency/{group}/… — so it can never collide
+	// with a declared group name (group names come from the hooks repo).
+	s.adminMux.HandleFunc("PUT /concurrency-global/limit", s.handleGlobalCapOverrideSet)
+	s.adminMux.HandleFunc("DELETE /concurrency-global/limit", s.handleGlobalCapOverrideClear)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)
