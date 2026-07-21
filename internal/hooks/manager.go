@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -61,6 +62,52 @@ type Manager struct {
 	// {"kind":"start"} event at session start and otherwise only
 	// deliveries.
 	ReconcileIntervalRaw string
+
+	// SpawnTargets is the manager.json spawn_targets field: the hook ids
+	// this manager may start via POST /spawn. THE manifest-sourced spawn
+	// allowlist — deny-by-default (absent/empty = this manager spawns
+	// nothing), loaded from the hooks tree like every other declaration,
+	// so granting a spawn is a GitHub change, never host env. Entries must
+	// name declared HOOKS (managers are supervised, never spawnable);
+	// unknown ids fail load/validation loudly.
+	SpawnTargets []string
+}
+
+// AllowedSpawnTarget reports whether this manager's manifest grants
+// spawning the target hook. Nil-safe; exact id match.
+func (m *Manager) AllowedSpawnTarget(target string) bool {
+	for _, t := range m.SpawnTargets {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckSpawnTargets verifies every manager's spawn_targets against the
+// loaded set: each entry must name a declared HOOK (spawn targets are
+// always hooks; managers are supervised, never spawnable). Violations are
+// load/validation errors — the referencing manager is dropped by callers,
+// the undeclared-concurrency-group rule. Run this against the
+// post-rejection sets so a target dropped for its own errors invalidates
+// its referrers too.
+func CheckSpawnTargets(loaded map[string]*Hook, managers map[string]*Manager) []ManagerLoadError {
+	var errs []ManagerLoadError
+	for id, m := range managers {
+		for _, t := range m.SpawnTargets {
+			if _, ok := loaded[t]; ok {
+				continue
+			}
+			if _, isManager := managers[t]; isManager {
+				errs = append(errs, ManagerLoadError{ManagerID: id,
+					Err: fmt.Errorf("spawn_targets entry %q names a manager: only hooks are spawnable", t)})
+				continue
+			}
+			errs = append(errs, ManagerLoadError{ManagerID: id,
+				Err: fmt.Errorf("spawn_targets entry %q does not name a declared hook", t)})
+		}
+	}
+	return errs
 }
 
 // EnabledByDefault is inherited from the embedded Hook: absent `enable`
@@ -113,6 +160,7 @@ type managerJSON struct {
 	RunTitle         string              `json:"run_title"`
 	GitHubStatus     *GitHubStatusConfig `json:"github_status"`
 	Synchronous      bool                `json:"synchronous"`
+	SpawnTargets     []string            `json:"spawn_targets"`
 
 	APIKey          string `json:"api_key"`
 	APIKeyHeader    string `json:"api_key_header"`
@@ -168,7 +216,7 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 		// KV, locks, /spawn all ride it) — State is implied, never a field.
 		State: true,
 	}
-	m := &Manager{Hook: h, ReconcileIntervalRaw: mj.ReconcileInterval}
+	m := &Manager{Hook: h, ReconcileIntervalRaw: mj.ReconcileInterval, SpawnTargets: mj.SpawnTargets}
 
 	if err := h.resolveScript(); err != nil {
 		return nil, err
@@ -180,6 +228,11 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 	// env keys, skip_if compile, auth exclusivity, test-entry shape.
 	if err := h.validate(); err != nil {
 		return nil, err
+	}
+	for _, t := range mj.SpawnTargets {
+		if strings.TrimSpace(t) == "" {
+			return nil, errors.New("spawn_targets entries must be non-empty hook ids")
+		}
 	}
 	if mj.ReconcileInterval != "" {
 		d, err := time.ParseDuration(mj.ReconcileInterval)

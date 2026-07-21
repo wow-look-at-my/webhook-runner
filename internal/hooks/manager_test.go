@@ -148,3 +148,55 @@ func TestLoadManagersSkipsNonManagerDirs(t *testing.T) {
 	require.Empty(t, errs)
 	assert.Len(t, ms, 1)
 }
+
+// spawn_targets: the manifest-sourced spawn allowlist — parses, matches
+// exactly, and validates against the declared hook set.
+func TestManagerSpawnTargets(t *testing.T) {
+	root := writeManagerTree(t, "m1", `{"$schema":"x","command":["run"],"spawn_targets":["gha-runner","gha-runner-dind"]}`)
+	ms, errs := LoadManagers(DetectLayout(root))
+	require.Empty(t, errs)
+	m := ms["m1"]
+	require.NotNil(t, m)
+	assert.Equal(t, []string{"gha-runner", "gha-runner-dind"}, m.SpawnTargets)
+	assert.True(t, m.AllowedSpawnTarget("gha-runner"))
+	assert.False(t, m.AllowedSpawnTarget("gha-runner-x"), "matching is exact ids, never prefixes")
+	assert.False(t, (&Manager{Hook: &Hook{ID: "x"}}).AllowedSpawnTarget("anything"),
+		"absent spawn_targets denies everything")
+}
+
+func TestParseManagerRejectsBlankSpawnTarget(t *testing.T) {
+	root := writeManagerTree(t, "m1", `{"$schema":"x","command":["run"],"spawn_targets":[" "]}`)
+	_, errs := LoadManagers(DetectLayout(root))
+	require.NotEmpty(t, errs)
+	assert.Contains(t, errs[0].Error(), "spawn_targets")
+}
+
+// CheckSpawnTargets: every entry must name a declared HOOK — unknown ids
+// and manager ids are loud validation errors (callers drop the manager).
+func TestCheckSpawnTargets(t *testing.T) {
+	loaded := map[string]*Hook{"gha-runner": {ID: "gha-runner"}}
+	mk := func(id string, targets ...string) *Manager {
+		return &Manager{Hook: &Hook{ID: id}, SpawnTargets: targets}
+	}
+
+	assert.Empty(t, CheckSpawnTargets(loaded, map[string]*Manager{
+		"coord": mk("coord", "gha-runner"),
+	}), "a declared hook target is valid")
+	assert.Empty(t, CheckSpawnTargets(loaded, map[string]*Manager{
+		"coord": mk("coord"),
+	}), "no spawn_targets is valid (the manager spawns nothing)")
+
+	errs := CheckSpawnTargets(loaded, map[string]*Manager{
+		"coord": mk("coord", "ghost"),
+	})
+	require.Len(t, errs, 1)
+	assert.Equal(t, "coord", errs[0].ManagerID)
+	assert.Contains(t, errs[0].Error(), "does not name a declared hook")
+
+	errs = CheckSpawnTargets(loaded, map[string]*Manager{
+		"coord":     mk("coord", "other-mgr"),
+		"other-mgr": mk("other-mgr"),
+	})
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "names a manager: only hooks are spawnable")
+}

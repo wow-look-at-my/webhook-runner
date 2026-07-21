@@ -61,7 +61,6 @@ type Server struct {
 	kv           *kv.Store
 	runstore     *runstore.Store
 	overrides    *overrides.Store
-	spawnAllow   SpawnAllowlist
 	managers     ManagerControl
 	version      VersionInfo
 
@@ -172,14 +171,6 @@ type Options struct {
 	// override endpoints (reads treat every hook as enabled).
 	Overrides *overrides.Store
 
-	// SpawnAllow authorizes POST /spawn on the state API: which parent
-	// hooks may spawn runs of which target hooks (see SpawnAllowlist).
-	// DENY-BY-DEFAULT — nil or empty refuses every spawn. Operator config
-	// (the WEBHOOK_RUNNER_SPAWN_ALLOW env var), deliberately never a
-	// hook.json field. Manager ids are valid parents (ids share one
-	// namespace with hooks).
-	SpawnAllow SpawnAllowlist
-
 	// Managers is the manager supervisor's server surface (deliveries into
 	// inboxes, /inbox/next, the admin roster/kill switch). nil disables
 	// manager support (a delivery for a declared manager then 503s, which
@@ -221,7 +212,6 @@ func New(opts Options) *Server {
 		kv:           opts.KV,
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
-		spawnAllow:   opts.SpawnAllow,
 		version:      opts.Version,
 		stream:       newStreamHub(),
 		hookMux:      http.NewServeMux(),
