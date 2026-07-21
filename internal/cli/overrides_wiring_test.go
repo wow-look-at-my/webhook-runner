@@ -228,3 +228,34 @@ func TestScheduleFireSkipsDisabledHook(t *testing.T) {
 	fire("d")
 	assert.Equal(t, 2, countEvents(rec, "schedule.fired"), "the explicit enable must win over enable:false")
 }
+
+// The global run cap's restart-survival at the serve wiring level: a fresh
+// process rebuilds the cap from the env/built-in default and applies the
+// persisted dashboard override on top, in runServe's order.
+func TestGlobalCapOverrideSurvivesRestart(t *testing.T) {
+	ovPath := filepath.Join(t.TempDir(), "overrides.json")
+
+	// "First process": the operator overrides the cap on the dashboard.
+	ov1, err := overrides.Open(ovPath)
+	require.NoError(t, err)
+	_, err = ov1.SetGlobalRunLimit(8)
+	require.NoError(t, err)
+
+	// "Restart": open store, build the cap at its default, seed the
+	// persisted override — exactly runServe's sequence.
+	ov2, err := overrides.Open(ovPath)
+	require.NoError(t, err)
+	g := concurrency.NewGlobal(concurrency.DefaultGlobalLimit)
+	limit, ok := ov2.GlobalRunLimit()
+	require.True(t, ok)
+	require.NoError(t, g.SetLimitOverride(limit))
+
+	st := g.Status()
+	assert.Equal(t, 8, st.Limit, "the persisted cap override must be effective at boot")
+	assert.True(t, st.Overridden)
+	assert.Equal(t, concurrency.DefaultGlobalLimit, st.Default)
+
+	// Clearing reverts to the default — what DELETE /concurrency-global/limit does.
+	g.ClearLimitOverride()
+	assert.Equal(t, concurrency.DefaultGlobalLimit, g.Status().Limit)
+}
