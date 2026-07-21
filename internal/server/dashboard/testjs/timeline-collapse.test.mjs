@@ -186,6 +186,26 @@ const p2 = run('p2p2p2p2p2p2p2p2p2p2p2p2p2', 'gha-runner', t0 - 80_000, 'pending
 const p3 = run('p3p3p3p3p3p3p3p3p3p3p3p3p3', 'gha-runner', t0 - 70_000, 'pending');
 const exec = { ...run('rrrrrrrrrrrrrrrrrrrrrrrrrr', 'gha-runner', t0 - 60_000, 'running'), started_at: new Date(t0 - 59_000).toISOString() };
 
+test('a ~170-deep pending flood feeds ONE aggregate row, not a wall of sub-tracks', async () => {
+	// The production shape that filled the whole view: one lane, ~170
+	// pending runs, each on its own packing sub-track. The no-wall property
+	// is asserted DIRECTLY on what the component is fed: the lane
+	// contributes exactly its executing spans + ONE ×170 aggregate.
+	const flood = [];
+	for (let i = 0; i < 170; i++) {
+		flood.push(run(`w${String(i).padStart(25, '0')}`, 'gha-runner', t0 - 500_000 + i * 1_000, 'pending'));
+	}
+	const h = await bootSeeded([...flood, exec]);
+
+	const seed = lastCallWithIntervals(h.calls, 'setData');
+	const laneIntervals = seed.data.intervals.filter((i) => i.laneId === 'gha-runner');
+	assert.equal(laneIntervals.length, 2, 'the flooded lane feeds exactly [1 running span, 1 aggregate]');
+	const agg = laneIntervals.find((i) => i.id === AGG);
+	assert.ok(agg, 'the backlog aggregate must exist');
+	assert.equal(agg.label, '×170 queued', 'the badge carries the full backlog depth');
+	assert.ok(laneIntervals.some((i) => i.id === exec.id), 'the executing run keeps its own span');
+});
+
 test('a pending backlog collapses into ONE ×N aggregate span', async () => {
 	const h = await bootSeeded([p1, p2, p3, exec]);
 
