@@ -22,17 +22,58 @@
      hazard, a recognized event-derived problem) this banner pins itself
      above BOTH views (it sits outside <main>, position: sticky) until the
      underlying state resolves — entries self-clear, no acknowledgement.
-     "View" jumps to the Needs attention panel on the overview. -->
+     "View" opens the dedicated Attention page. -->
 <div id="attention-banner" class="attention-banner" hidden>
   <span class="attention-banner-icon" aria-hidden="true">&#9888;</span>
   <span id="attention-banner-text"></span>
   <a href="#" id="attention-banner-link">view</a>
 </div>
 
+<!-- The persistent sidebar: every top-level section is its own page
+     (#page=<name> fragments; the plain # hash is the chart-first overview),
+     with per-hook and manager drill-downs below. dashboard.js routes on
+     hashchange and highlights the active link; the dynamic hook/manager
+     sub-lists are filled from the same data the tables render. -->
+<div class="layout">
+<nav id="sidebar" aria-label="Sections">
+  <a href="#" data-page="overview" class="nav-link">Overview</a>
+  <a href="#page=hooks" data-page="hooks" class="nav-link">Hooks</a>
+  <div id="nav-hooks" class="nav-sub"></div>
+  <a href="#page=managers" data-page="managers" class="nav-link">Managers</a>
+  <div id="nav-managers" class="nav-sub"></div>
+  <a href="#page=runs" data-page="runs" class="nav-link">Runs</a>
+  <a href="#page=events" data-page="events" class="nav-link">Activity</a>
+  <a href="#page=kv" data-page="kv" class="nav-link">State (KV)</a>
+  <a href="#page=concurrency" data-page="concurrency" class="nav-link">Concurrency</a>
+  <a href="#page=images" data-page="images" class="nav-link">Images</a>
+  <a href="#page=attention" data-page="attention" class="nav-link">Attention</a>
+  <a href="#page=reload" data-page="reload" class="nav-link">Hooks repo</a>
+</nav>
+<div class="content">
 <!-- Two views share the page: the global overview, and a per-app drill-down
      (an "app" is one hook, for now) selected by the #hook=<id> fragment.
      dashboard.js toggles between them on hashchange — no server routing. -->
 <main id="overview-view">
+  <section id="timeline-section">
+    <!-- The primary runs view: a realtime swimlane timeline, one lane per
+         hook (stable hue per hook). A bar runs queued→finished with the
+         queue wait as a dim lead-in; hatching = a declared wait or a
+         blocked lock, emphasis = failure, hollow + dashed border =
+         cancelled (the kill tail marked as a terminal cut), diamond pips =
+         instant runs (overlapping pips cluster into ×N markers that split
+         apart on zoom). Wheel/drag pans,
+         ctrl/cmd+wheel zooms, and dragging into the past pages history via
+         /runs?before= until retention runs out. Clicking a bar opens the
+         run modal; clicking a lane label opens that hook's page. Rendered
+         by timeline.js (generated from ts/ — see dashboard.go). The old
+         runs table below stays reachable via the toggle. -->
+    <div class="section-head">
+      <h2>Runs</h2>
+      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
+    </div>
+    <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
   <!-- Hidden while healthy (the banner above is the alert); every row is
        one active problem with what's wrong, which hook (linked), where the
        entry derives from, and how long it has been active. Rows disappear
@@ -103,6 +144,27 @@
     <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
   </section>
 
+  <!-- First-class MANAGERS: persistent, single-instance watchers the
+       runner supervises as one long-lived container each. NOT runs — they
+       never appear in the runs list or the timeline; this panel (and the
+       #manager=<id> drill-down) is their surface: state, live instance,
+       restarts, inbox depth, last event/tick, the kill switch, and a
+       bounce button. -->
+  <section id="managers-section">
+    <h2>Managers</h2>
+    <table id="managers-table">
+      <thead><tr><th>Manager</th><th>Status</th><th>State</th><th>Instance</th><th>Restarts</th><th>Inbox</th><th>Last event</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="managers-empty" class="empty" hidden>No managers declared.</p>
+    <div id="manager-detail" hidden>
+      <h3 id="manager-detail-title"></h3>
+      <dl id="manager-detail-meta"></dl>
+      <h3>Instance output</h3>
+      <pre id="manager-detail-output" class="manager-output"></pre>
+    </div>
+  </section>
+
   <section id="images-section">
     <h2>Images</h2>
     <table id="images-table">
@@ -127,25 +189,6 @@
     <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
   </section>
 
-  <section id="timeline-section">
-    <!-- The primary runs view: a realtime swimlane timeline, one lane per
-         hook (stable hue per hook). A bar runs queued→finished with the
-         queue wait as a dim lead-in; hatching = a declared wait or a
-         blocked lock, emphasis = failure, hollow + dashed border =
-         cancelled (the kill tail marked as a terminal cut), diamond pips =
-         instant runs (overlapping pips cluster into ×N markers that split
-         apart on zoom). Wheel/drag pans,
-         ctrl/cmd+wheel zooms, and dragging into the past pages history via
-         /runs?before= until retention runs out. Clicking a bar opens the
-         run modal; clicking a lane label opens that hook's page. Rendered
-         by timeline.js (generated from ts/ — see dashboard.go). The old
-         runs table below stays reachable via the toggle. -->
-    <div class="section-head">
-      <h2>Runs</h2>
-      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
-    </div>
-    <timeline-view id="runs-timeline"></timeline-view>
-  </section>
 
   <section id="runs-section" hidden>
     <h2>Recent runs (list)</h2>
@@ -252,6 +295,8 @@
     </section>
   </div>
 </main>
+</div><!-- /.content -->
+</div><!-- /.layout -->
 
 <!-- Run detail opens as a modal so output is visible immediately, without
      scrolling past the hooks/images/runs/activity tables to the page bottom. -->

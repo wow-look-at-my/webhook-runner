@@ -175,15 +175,20 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 		writeError(w, http.StatusServiceUnavailable, "spawn not configured")
 		return
 	}
-	// The parent run must be live — the /wait and /title rule: a token always
-	// names a real (namespace, run) pair, but the run can be over or evicted
+	// The parent must be live — the /wait and /title rule: a token always
+	// names a real (namespace, id) pair, but the run can be over or evicted
 	// from the bounded tracker, and a dead parent has nothing to attribute
 	// its spawns to. The HookID check mirrors handleCancelRun's cross-hook
-	// guard (belt-only — the HMAC already binds the pair).
+	// guard (belt-only — the HMAC already binds the pair). MANAGER
+	// instances are valid parents too (first-class identity, not a run):
+	// the liveness check goes to the supervisor — a stale instance's token
+	// 409s here, the API-level single-instance guard.
 	parent := s.tracker.Get(runID)
 	if parent == nil || parent.HookID() != ns || parent.Status().Terminal() {
-		writeError(w, http.StatusConflict, "run is not active")
-		return
+		if !s.managerCaller(ns, runID) {
+			writeError(w, http.StatusConflict, "run is not active")
+			return
+		}
 	}
 
 	// Pre-validation of the TARGET, all-or-nothing, before anything starts.

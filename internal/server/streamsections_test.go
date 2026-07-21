@@ -178,10 +178,23 @@ func TestSectionsForEvent(t *testing.T) {
 		// enable default), and a kill-switch flip changes which hook-scoped
 		// entries GET /attention's read-time filter hides — both dirty
 		// "attention" so the banner count tracks the toggle.
-		"hooks.reloaded":               {"events", "hooks", "images", "concurrency", "reload", "attention"},
-		"hook.load_error":              {"events", "hooks"},
-		"hook.disabled":                {"events", "hooks", "attention"},
-		"hook.enabled":                 {"events", "hooks", "attention"},
+		"hooks.reloaded":  {"events", "hooks", "managers", "images", "concurrency", "reload", "attention"},
+		"hook.load_error": {"events", "hooks", "managers"},
+		"hook.disabled":   {"events", "hooks", "attention"},
+		"hook.enabled":    {"events", "hooks", "attention"},
+		// Manager lifecycle moves the Managers panel; the manager kill
+		// switch also changes which attention entries the read-time
+		// disabled filter hides.
+		"manager.disabled":             {"events", "managers", "attention"},
+		"manager.enabled":              {"events", "managers", "attention"},
+		"manager.started":              {"events", "managers"},
+		"manager.exited":               {"events", "managers"},
+		"manager.leased":               {"events", "managers"},
+		"manager.inbox_dropped":        {"events", "managers"},
+		"manager.skipped":              {"events", "managers"},
+		"manager.wait":                 {"events", "managers"},
+		"manager.lease_waiting":        {"events", "managers"},
+		"manager.restart_requested":    {"events", "managers"},
 		"image.built":                  {"events", "images"},
 		"image.build_failed":           {"events", "images"},
 		"image.inspect_failed":         {"events", "images"},

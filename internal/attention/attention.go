@@ -64,6 +64,12 @@ const (
 	// not verified green. Reported and resolved by the gate itself as
 	// commits verify, switch, or the operator forces (admin /reload).
 	SourceReload = "reload"
+	// SourceManager: a manager that should be running has no live instance
+	// (start failing, crash-looping, image unbuildable). Re-derived by the
+	// supervisor on every state change; clears the moment an instance runs
+	// — or the manager is disabled (the read-time disabled filter applies
+	// like every hook-scoped entry) or removed.
+	SourceManager = "manager"
 )
 
 // Entry is one active problem. Identity is (Source, Hook, Key); Message is

@@ -31,9 +31,25 @@ func init() {
 				errs = append(errs, cerr)
 				cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
 			}
-			refs := make(map[string]string, len(loaded))
+			// Managers validate alongside hooks: same Dockerfile/$schema/
+			// skip_if/auth rules plus reconcile_interval, a hook/manager id
+			// collision check (one id namespace), and the same
+			// concurrency-group reference rule.
+			loadedManagers, merrs := hooks.LoadManagers(layout)
+			errs = append(errs, merrs...)
+			for id := range loadedManagers {
+				if _, clash := loaded[id]; clash {
+					errs = append(errs, fmt.Errorf("manager %q: id collides with a hook of the same name (hooks and managers share one id namespace)", id))
+					delete(loadedManagers, id)
+				}
+			}
+
+			refs := make(map[string]string, len(loaded)+len(loadedManagers))
 			for id, h := range loaded {
 				refs[id] = h.ConcurrencyGroup
+			}
+			for id, m := range loadedManagers {
+				refs[id] = m.ConcurrencyGroup
 			}
 			badRef := map[string]bool{}
 			for _, re := range concurrency.CheckRefs(cfg, refs) {
@@ -59,13 +75,31 @@ func init() {
 				}
 				fmt.Fprintf(out, "ok  %s (%s)%s\n", id, tag, grp)
 			}
+			for id, m := range loadedManagers {
+				if badRef[id] {
+					continue // surfaced as an error below
+				}
+				tag, tagErr := runner.ImageTag(m.Hook)
+				if tagErr != nil {
+					tag = "?"
+				}
+				iv := "event-only"
+				if m.ReconcileIntervalRaw != "" {
+					iv = "reconcile " + m.ReconcileIntervalRaw
+				}
+				fmt.Fprintf(out, "ok  %s (manager, %s, %s)\n", id, tag, iv)
+			}
 			if len(errs) > 0 {
 				for _, e := range errs {
 					fmt.Fprintf(cmd.ErrOrStderr(), "ERR %v\n", e)
 				}
 				return errors.New("one or more hooks failed validation")
 			}
-			fmt.Fprintf(out, "%d hook(s) validated\n", len(loaded))
+			if len(loadedManagers) > 0 {
+				fmt.Fprintf(out, "%d hook(s) + %d manager(s) validated\n", len(loaded), len(loadedManagers))
+			} else {
+				fmt.Fprintf(out, "%d hook(s) validated\n", len(loaded))
+			}
 			return nil
 		},
 	})
