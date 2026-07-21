@@ -85,22 +85,20 @@ jobs:
         with:
           name: go-build
           path: build
-      # The suite invokes the binary as
-      # "$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" — go-toolchain's dats
-      # phase contract, which its embedded run exports automatically; this
-      # standalone job supplies the same variable. The hand-off carries the
+      # The suite invokes `webhook-runner` via PATH; the hand-off carries the
       # platform-suffixed build name, so stage the unsuffixed name beside it.
       - name: Stage CLI binary
         run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
       # dats prebuilt binary from buildhost (public download). Installed into
-      # build/ — no sudo, works on any runner.
+      # build/ so the single PATH prepend below covers both binaries — no
+      # sudo, works on any runner.
       - name: Install dats
         run: |
           curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o build/dats
           chmod +x build/dats
           build/dats version
       - name: Run CLI contract tests
-        run: GO_TOOLCHAIN_DATS_BUILD_DIR="$PWD/build" build/dats test dats
+        run: PATH="$PWD/build:$PATH" dats test dats
 
   # Builds the Dockerfile from the go-build hand-off (the reusable workflow
   # cache-downloads `go-build` into build/) and pushes

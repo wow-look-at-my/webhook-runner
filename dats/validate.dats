@@ -8,7 +8,7 @@
 
 tests:
   - desc: valid legacy tree (JSONC comments allowed) validates with exit 0
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.myhook/hook.json}")/.."'
     inputs:
       files:
         myhook/hook.json: |
@@ -33,7 +33,7 @@ tests:
   - desc: the committed examples/hooks tree stays loader-valid
     # cwd is the invocation cwd (the repo root), so the committed examples are
     # reachable directly — this doubles as the drift gate for examples/hooks/.
-    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate examples/hooks'
+    cmd: webhook-runner validate examples/hooks
     exit: 0
     outputs:
       stdout:
@@ -42,7 +42,7 @@ tests:
         - hook(s) validated
 
   - desc: valid src layout with concurrency group and manager validates with exit 0
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
     inputs:
       files:
         cfg/concurrency.json: |
@@ -75,7 +75,7 @@ tests:
         - 1 hook(s) + 1 manager(s) validated
 
   - desc: a tree with zero hooks fails loudly (never a silent empty fleet)
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.README.md}")"'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.README.md}")"'
     inputs:
       files:
         README.md: "no hook directories here\n"
@@ -86,7 +86,7 @@ tests:
         - one or more hooks failed validation
 
   - desc: a nonexistent hooks dir is a validation failure, not a crash
-    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate /nonexistent/dats-contract-test'
+    cmd: webhook-runner validate /nonexistent/dats-contract-test
     exit: 1
     outputs:
       stderr:
@@ -94,7 +94,7 @@ tests:
         - one or more hooks failed validation
 
   - desc: hook without a Dockerfile is rejected
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -105,7 +105,7 @@ tests:
         - 'ERR hook "h": hook must ship a Dockerfile next to hook.json'
 
   - desc: hook.json without $schema is rejected
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -118,7 +118,7 @@ tests:
         - 'ERR hook "h": $schema is required'
 
   - desc: unknown hook.json field is rejected (DisallowUnknownFields)
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -132,7 +132,7 @@ tests:
         - unknown field "image"
 
   - desc: referencing an undeclared concurrency group fails closed
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -145,7 +145,7 @@ tests:
         - hook "h" references undeclared concurrency group "nope"
 
   - desc: skip_if with a non-compiling regex is a load error
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -158,7 +158,7 @@ tests:
         - 'skip_if[0] key "header:x-github-event": invalid regex'
 
   - desc: skip_if with an unknown operator is a load error
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -171,7 +171,7 @@ tests:
         - unknown operator "frobnicate"
 
   - desc: run_title with an unterminated placeholder is a load error
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -184,7 +184,7 @@ tests:
         - 'invalid run_title: unterminated "{{" placeholder'
 
   - desc: mixed layout (top-level hook dir beside src/hooks/) is a hard error
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.leftover/hook.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.leftover/hook.json}")/.."'
     inputs:
       files:
         src/hooks/alpha/hook.json: |
@@ -205,7 +205,7 @@ tests:
         - leftover
 
   - desc: manager spawn_targets naming an undeclared hook fails closed
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
     inputs:
       files:
         cfg/concurrency.json: |
@@ -224,7 +224,7 @@ tests:
         - 'ERR manager "boss": spawn_targets entry "ghost" does not name a declared hook'
 
   - desc: manager id colliding with a hook id is rejected (one namespace)
-    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
+    cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
     inputs:
       files:
         cfg/concurrency.json: |

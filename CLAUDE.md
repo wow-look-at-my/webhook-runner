@@ -72,18 +72,11 @@ paths, and version/help/argument/flag errors — the authoritative case list
 is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
 dashboard need Docker/network and stay in `e2e/`.
 
-Every case invokes the binary as
-`"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner"` — go-toolchain's dats-phase
-contract (the variable points at a throwaway dir of the freshly built
-binaries; go-toolchain's own dogfood suite is the reference pattern). Never
-a bare `webhook-runner` resolved from PATH: the embedded dats phase does
-not prepend PATH, so bare names exit 127 there. go-toolchain runs the
-suites automatically after every build; to run them standalone from the
-repo root (build first so `build/webhook-runner` exists; install dats per
-README's "CLI contract tests (dats)" section):
+Run locally from the repo root (build first so `build/webhook-runner`
+exists; install dats per README's "CLI contract tests (dats)" section):
 
     go-toolchain
-    GO_TOOLCHAIN_DATS_BUILD_DIR="$PWD/build" dats test dats
+    PATH="$PWD/build:$PATH" dats test dats
 
 ci.yml's `dats` job runs the same invocation against the `test` job's
 `go-build` hand-off — local and CI are identical by design.
