@@ -49,8 +49,13 @@ function noteOldest(r) {
     oldestStartedRaw = r.started;
   }
 }
+function staleRegression(incoming) {
+  const prev = runsById.get(incoming.id);
+  return prev !== void 0 && isTerminal(prev.status) && !isTerminal(incoming.status);
+}
 function ingestRuns(page) {
   for (const r of page) {
+    if (staleRegression(r)) continue;
     runsById.set(r.id, r);
     noteOldest(r);
   }
@@ -80,6 +85,7 @@ function fresh() {
   chart?.extendCoverage();
 }
 function ingestDelta(r) {
+  if (staleRegression(r)) return;
   const prev = runsById.get(r.id);
   runsById.set(r.id, r);
   noteOldest(r);
@@ -111,12 +117,49 @@ async function reconcileMissing(page) {
   }
   if (dropped) chart?.rebuild();
 }
+var serverHasActiveSet = false;
+function dropAbsentActive(serverActive) {
+  let dropped = false;
+  for (const [id, r] of runsById) {
+    if (!isTerminal(r.status) && !serverActive.has(id)) {
+      runsById.delete(id);
+      dropped = true;
+    }
+  }
+  if (dropped) chart?.rebuild();
+}
+var reconcileAddsInFlight = false;
+async function reconcileActive(active) {
+  serverHasActiveSet = true;
+  dropAbsentActive(new Set(active));
+  const missing = active.filter((id) => !runsById.has(id));
+  if (missing.length === 0 || reconcileAddsInFlight) return;
+  reconcileAddsInFlight = true;
+  try {
+    if (missing.length === 1) {
+      ingestDelta(await fetchJSONBounded(`/runs/${encodeURIComponent(missing[0])}?tail=0`));
+    } else {
+      ingestPage(await fetchJSONBounded("/runs?live=1"));
+    }
+  } catch (e) {
+    console.error("timeline: active-set reconcile fetch failed:", e);
+  } finally {
+    reconcileAddsInFlight = false;
+  }
+}
+async function reconcilePage(page) {
+  if (serverHasActiveSet) {
+    dropAbsentActive(new Set(page.filter((r) => !isTerminal(r.status)).map((r) => r.id)));
+    return;
+  }
+  await reconcileMissing(page);
+}
 async function resyncOnce() {
   try {
     const page = await fetchJSONBounded(`/runs?max=${RESYNC_MAX}`);
     ingestPage(page);
     fresh();
-    await reconcileMissing(page);
+    await reconcilePage(page);
   } catch (e) {
     console.error("timeline: resync failed:", e);
   }
@@ -124,6 +167,7 @@ async function resyncOnce() {
 function openStream() {
   es = new EventSource(STREAM_PATH);
   es.onopen = () => {
+    serverHasActiveSet = false;
     setStreamLive(true);
     void resyncOnce();
   };
@@ -146,7 +190,14 @@ function openStream() {
       console.error("timeline: bad run event:", err);
     }
   });
-  es.addEventListener("hb", () => fresh());
+  es.addEventListener("hb", (e) => {
+    fresh();
+    try {
+      const d = JSON.parse(e.data);
+      if (Array.isArray(d.active)) void reconcileActive(d.active);
+    } catch {
+    }
+  });
   es.addEventListener("changed", (e) => {
     try {
       const d = JSON.parse(e.data);
@@ -172,7 +223,7 @@ function startFeedSupervisor() {
       fetchJSONBounded(`/runs?max=${RESYNC_MAX}`).then((page) => {
         ingestPage(page);
         fresh();
-        return reconcileMissing(page);
+        return reconcilePage(page);
       }).catch((e) => console.error("timeline: fallback poll failed:", e)).finally(() => {
         fallbackInFlight = false;
       });
@@ -294,6 +345,74 @@ function runToInterval(r) {
     data: r
   };
 }
+var COLLAPSE_MIN = 2;
+var AGG_PREFIX = "queued:";
+var collapsedLanes = /* @__PURE__ */ new Set();
+function pendingByLane(source) {
+  const out = /* @__PURE__ */ new Map();
+  for (const r of source) {
+    if (r.status !== "pending") continue;
+    const list = out.get(r.hook_id);
+    if (list) list.push(r);
+    else out.set(r.hook_id, [r]);
+  }
+  for (const list of out.values()) {
+    list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+  }
+  return out;
+}
+function computeCollapsedLanes(pending) {
+  const out = /* @__PURE__ */ new Set();
+  for (const [lane, list] of pending) {
+    if (list.length >= COLLAPSE_MIN) out.add(lane);
+  }
+  return out;
+}
+function sameLaneSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const lane of a) if (!b.has(lane)) return false;
+  return true;
+}
+function aggInterval(lane, backlog) {
+  return {
+    id: AGG_PREFIX + lane,
+    laneId: lane,
+    start: Date.parse(backlog[0].started),
+    // oldest-first per pendingByLane
+    end: null,
+    label: `\xD7${backlog.length} queued`,
+    category: lane,
+    // the lane's stable hue, like every run interval
+    state: "queued",
+    data: { count: backlog.length }
+  };
+}
+function buildAllIntervals(source) {
+  const pending = pendingByLane(source);
+  collapsedLanes = computeCollapsedLanes(pending);
+  const out = [];
+  for (const r of source) {
+    if (r.status === "pending" && collapsedLanes.has(r.hook_id)) continue;
+    out.push(runToInterval(r));
+  }
+  for (const lane of collapsedLanes) {
+    out.push(aggInterval(lane, pending.get(lane)));
+  }
+  return out;
+}
+function coverageFloorMs(rows, now) {
+  let oldestTerminal = Infinity;
+  let oldestAny = Infinity;
+  for (const r of rows) {
+    const ms = Date.parse(r.started);
+    if (!Number.isFinite(ms)) continue;
+    if (ms < oldestAny) oldestAny = ms;
+    if (isTerminal(r.status) && ms < oldestTerminal) oldestTerminal = ms;
+  }
+  if (Number.isFinite(oldestTerminal)) return oldestTerminal;
+  if (Number.isFinite(oldestAny)) return oldestAny;
+  return now - 6e4;
+}
 function computeLanes() {
   const ids = new Set(hookMeta.keys());
   for (const r of runsById.values()) ids.add(r.hook_id);
@@ -400,11 +519,25 @@ function laneTooltip(lane) {
   frag.appendChild(ttRow("", "click to open this hook\u2019s page"));
   return frag;
 }
+function aggTooltip(lane) {
+  const backlog = pendingByLane(runsById.values()).get(lane) ?? [];
+  const frag = document.createDocumentFragment();
+  frag.appendChild(el("div", { class: "tt-title" }, `${lane} \xB7 \xD7${backlog.length} queued`));
+  for (const r of backlog.slice(0, 3)) {
+    frag.appendChild(ttRow("", `${runTitle(r) ?? shortRunId(r.id)} \u2014 queued ${fmtTime(r.started)}`));
+  }
+  if (backlog.length > 3) frag.appendChild(ttRow("", `\u2026and ${backlog.length - 3} more`));
+  frag.appendChild(ttRow("", "click to open this hook\u2019s page"));
+  return frag;
+}
 function initTimeline() {
   const tl = document.getElementById("runs-timeline");
   if (tl === null || typeof tl.setData !== "function") return;
   tl.tooltipFor = (hit) => {
     if (hit.type === "interval") {
+      if (hit.interval.id.startsWith(AGG_PREFIX)) {
+        return aggTooltip(hit.interval.id.slice(AGG_PREFIX.length));
+      }
       const r = runsById.get(hit.interval.id);
       return r ? runTooltip(r) : null;
     }
@@ -420,6 +553,10 @@ function initTimeline() {
   }
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
+    if (detail.interval.id.startsWith(AGG_PREFIX)) {
+      location.hash = "#hook=" + encodeURIComponent(detail.interval.id.slice(AGG_PREFIX.length));
+      return;
+    }
     void showRun(detail.interval.id);
   });
   tl.addEventListener("laneclick", (e) => {
@@ -447,7 +584,9 @@ function initTimeline() {
         syncLanes(tl);
         const oldest = rows[rows.length - 1];
         tl.mergeData({
-          intervals: rows.map(runToInterval),
+          // A history page can carry pending runs; a lane's collapsed
+          // backlog owns those — the live paths restamp its aggregate.
+          intervals: rows.filter((r) => !(r.status === "pending" && collapsedLanes.has(r.hook_id))).map(runToInterval),
           coverage: { start: Date.parse(oldest.started), end: cursorMs }
         });
         cursor = oldest.started;
@@ -476,11 +615,13 @@ function initTimeline() {
     const now = Date.now();
     rebuildWaiterIndex();
     if (maybePrune(tl, now)) return;
-    const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 6e4;
+    const pageFloorMs = coverageFloorMs(page, now);
     liveCoveredToMs = Math.max(liveCoveredToMs, now);
+    const prevCollapsed = collapsedLanes;
     const data = {
-      intervals: [...runsById.values()].map(runToInterval),
-      coverage: { start: pageOldestMs, end: now }
+      intervals: buildAllIntervals([...runsById.values()]),
+      // refreshes collapsedLanes
+      coverage: { start: pageFloorMs, end: now }
     };
     if (!seeded) {
       seeded = true;
@@ -488,6 +629,9 @@ function initTimeline() {
       tl.setData(data);
       tl.setViewport(now - 10 * 6e4, now);
       armBackfill();
+    } else if (!sameLaneSet(collapsedLanes, prevCollapsed)) {
+      rebuildAll();
+      return;
     } else {
       tl.mergeData(data);
     }
@@ -498,11 +642,34 @@ function initTimeline() {
       applyPage([...runsById.values()]);
       return;
     }
+    const pending = pendingByLane(runsById.values());
+    const nowCollapsed = computeCollapsedLanes(pending);
+    if (!sameLaneSet(nowCollapsed, collapsedLanes)) {
+      rebuildAll();
+      return;
+    }
     const affected = /* @__PURE__ */ new Set([r.id]);
     for (const holder of holderIdsOf(prev)) affected.add(holder);
     for (const holder of holderIdsOf(r)) affected.add(holder);
     rebuildWaiterIndex();
-    const intervals = [...affected].map((id) => runsById.get(id)).filter((x) => x !== void 0).map(runToInterval);
+    const intervals = [];
+    const restampAgg = /* @__PURE__ */ new Set();
+    for (const id of affected) {
+      const run = runsById.get(id);
+      if (run === void 0) continue;
+      if (run.status === "pending" && nowCollapsed.has(run.hook_id)) {
+        restampAgg.add(run.hook_id);
+        continue;
+      }
+      intervals.push(runToInterval(run));
+    }
+    if (prev && prev.status === "pending" && nowCollapsed.has(prev.hook_id)) {
+      restampAgg.add(prev.hook_id);
+    }
+    for (const lane of restampAgg) {
+      const backlog = pending.get(lane);
+      if (backlog && backlog.length >= COLLAPSE_MIN) intervals.push(aggInterval(lane, backlog));
+    }
     tl.mergeData({ intervals, coverage: claimLiveCoverage(Date.now()) });
     syncLanes(tl);
   };
@@ -510,17 +677,19 @@ function initTimeline() {
     oldestStartedRaw = null;
     oldestStartedMs = Infinity;
     for (const r of runsById.values()) noteOldest(r);
+    rebuildWaiterIndex();
     laneOrderKey = "";
     const lanes = computeLanes();
     laneOrderKey = lanes.map((l) => l.id).join("\n");
     const now = Date.now();
     liveCoveredToMs = Math.max(liveCoveredToMs, now);
+    const held = [...runsById.values()];
     tl.setData({
       lanes,
-      intervals: [...runsById.values()].map(runToInterval),
+      intervals: buildAllIntervals(held),
       connectors: [],
       // rebuild replaces data — pin connectors to none
-      coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : now - 6e4, end: now }
+      coverage: { start: coverageFloorMs(held, now), end: now }
     });
   };
   chart = {
@@ -562,10 +731,10 @@ function maybePrune(tl, now) {
   liveCoveredToMs = Math.max(liveCoveredToMs, now);
   tl.setData({
     lanes,
-    intervals: keep.map(runToInterval),
+    intervals: buildAllIntervals(keep),
     connectors: [],
     // prune replaces data — pin connectors to none
-    coverage: { start: oldestStartedMs, end: now }
+    coverage: { start: coverageFloorMs(keep, now), end: now }
   });
   return true;
 }
