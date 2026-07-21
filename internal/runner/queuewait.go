@@ -71,3 +71,56 @@ func (r *Runner) groupQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue fu
 	}
 	return onQueue, clearQueued
 }
+
+// acquireGlobalSlot reserves a slot under the server-wide run cap, the
+// group acquire's sibling: a one-time run.queued event when the run
+// actually has to wait, waiting_on mirroring (kind "group", key
+// concurrency.GlobalWaitKey), cancellation honored while queued. A nil cap
+// returns instantly with a no-op release. release must be called exactly
+// once when the run finishes; clearQueued once the slot is acquired.
+func (r *Runner) acquireGlobalSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, clearQueued func()) {
+	onQueue, clearQueued := r.globalQueueObserver(hook, run)
+	release, acquired = r.globalCap.Acquire(run.ID(), run.Cancelled(), onQueue)
+	return release, acquired, clearQueued
+}
+
+// globalQueueObserver is groupQueueObserver's global-cap twin: it mirrors a
+// run queued on the global cap into waiting_on — the same kind "group"
+// shape the dashboard and timeline already render, keyed by
+// concurrency.GlobalWaitKey — and records the one-time run.queued event on
+// the first callback. Same dedup and locking rules as the group observer.
+func (r *Runner) globalQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue func(concurrency.QueueState), clearQueued func()) {
+	var mu sync.Mutex
+	var seq uint64
+	var lastKey string
+	queued := false
+	onQueue = func(qs concurrency.QueueState) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !queued {
+			queued = true
+			r.log.Info("hook run queued on the global run cap",
+				"hook", hook.ID, "run", run.ID())
+			r.events.Record("run.queued",
+				fmt.Sprintf("%s run %s queued on the global run cap", hook.ID, run.ID()),
+				map[string]string{"hook": hook.ID, "run": run.ID(), "group": concurrency.GlobalWaitKey})
+		}
+		key := fmt.Sprintf("%d|%s", qs.Position, strings.Join(qs.Holders, ","))
+		if key == lastKey {
+			return
+		}
+		lastKey = key
+		seq = run.SetWaitingOn(runs.WaitingOn{
+			Kind:         runs.WaitingOnGroup,
+			Key:          concurrency.GlobalWaitKey,
+			HolderRunIDs: qs.Holders,
+			Position:     qs.Position,
+		})
+	}
+	clearQueued = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		run.ClearWaitingOn(seq) // seq 0 (never queued) is a no-op by contract
+	}
+	return onQueue, clearQueued
+}

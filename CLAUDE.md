@@ -152,9 +152,13 @@ The server listens on two TCP ports plus a Unix socket:
   first — the dashboard's red banner + panel; see the attention bullet
   under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill
   switch (`POST /hooks/{id}/disable|enable`,
-  `PUT|DELETE /concurrency/{group}/limit` — see the overrides bullet under
-  "Things easy to get wrong"), `/concurrency` (live per-group
-  effective limit/declared/overridden/active/waiting), `/kv` (read-only state-store stats:
+  `PUT|DELETE /concurrency/{group}/limit`,
+  `PUT|DELETE /concurrency-global/limit` — see the overrides and
+  global-run-cap bullets under
+  "Things easy to get wrong"), `/concurrency` (`{global, groups}`: the
+  global run cap's limit/default/overridden/active/waiting plus live
+  per-group effective limit/declared/overridden/active/waiting, each with
+  holders/waiting_runs drill-down), `/kv` (read-only state-store stats:
   per-namespace key count and bytes — shape unchanged, still value-free),
   `/kv/{namespace}` (one namespace's keys, sorted, `?prefix=` filters:
   name, size, and `expires_at` + remaining `ttl_seconds` when a TTL is
@@ -684,6 +688,36 @@ The companion repo is `wow-look-at-my/webhooks`.
   `group:<name>`, exactly like lock waits. `concurrency_group` is a new hook.json field (so `Parse`'s
   `DisallowUnknownFields` means old binaries reject it — same deploy-first
   rule as above), and `concurrency.json` has its own published schema.
+- The GLOBAL run cap (`concurrency.Global`, `internal/concurrency/global.go`)
+  bounds how many hook executions run containers SIMULTANEOUSLY across ALL
+  hooks — the Docker-bridge IPv4 guard (every running container holds a
+  bridge IP; an unbounded flood exhausts the pool). It is a Manager
+  pseudo-group in its own PRIVATE Manager instance (so the name can never
+  collide with a declared group), reusing the semaphore/waiter-rebind
+  machinery verbatim. Ordering is load-bearing: execute acquires the GROUP
+  slot first, THEN the global slot (group-then-global everywhere — no
+  lock-order cycles, and global slots are never consumed by runs parked on
+  a group queue), both before the container starts, so a globally-queued
+  run stays `pending` with the watchdog unarmed and cancellation honored.
+  Precedence: persisted dashboard override (overrides.json
+  `global_run_limit`, PUT|DELETE /concurrency-global/limit — a dedicated
+  literal path so it can't collide with a group name) >
+  WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS (set-but-invalid FAILS startup) >
+  the built-in default 64. The cap is a CEILING over the groups, never a
+  replacement — group limits keep gating under it. SCOPE: hook runs only
+  (deliveries, scheduled fires, /spawn); manager instances, image builds,
+  and `webhook-runner test` containers are deliberately outside it. A
+  queued run's waiting_on is kind "group" with key "global"
+  (concurrency.GlobalWaitKey — display-only; the dashboard words it "the
+  global run cap"). Related: every hook-run container is stamped with the
+  `io.webhook-runner.run` label and serve REAPS labeled leftovers at boot
+  (`runner.SweepOrphanContainers` — a server hard-killed mid-drain
+  orphans its containers on the daemon, each holding a bridge IP forever;
+  safe because the runstore's bbolt flock guarantees no concurrent serve
+  process once Open succeeds, and manager/test containers are never
+  labeled). Don't gate managers "for consistency": one persistent
+  container per manager is bounded by declaration, and capping them could
+  deadlock a manager behind its own spawned workers.
 - Hooks AND concurrency groups AND schedules reload together through one
   closure (`buildLoadAndApply` in cli/serve.go), used by both the
   admin/webhook reload and the filesystem watcher. The watcher is now

@@ -311,9 +311,11 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, reload-gate verdicts (`reload.held`, `reload.held_red`, `reload.switched`, `reload.verified`, `reload.unverified`, `reload.ignored_stale`, `reload.forced`, `reload.poll_blind`, plus the manual panel's `reload.check` and `reload.switch_refused` — see [CI-gated reloads](#ci-gated-reloads)), hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), unresolved env references (`env.unresolved`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
 | GET    | `/attention`        | The **needs-attention** problem set: `{count, entries}` where each entry is `{source, hook, key, message, since}`, oldest first. Sources: `load` (hook dropped at load/validation — the reason quoted), `zero-hooks` (nothing loaded at all), `secrets` (unresolvable `${NAME}` `api_key`/`env` references or a failing sops decrypt, statically re-probed on every reload), `server` (the containerized-without-TMPDIR hazard — boot-scoped, needs a restart to clear), `event` (derived from recognized activity events: today a delivery denied over a broken api_key reference; reserved kinds `hook.reported_misconfigured`/`hook.reported_healthy` are the seam for future hook-emitted signals). Entries are value-free (they name references, never resolved values) and **self-clearing**: state-derived ones vanish on the reload that fixes them, the event-derived api_key one when a reload's probe finds the reference resolvable (or the hook is removed), reported ones on the hook's paired all-clear event. `since` = when the problem first became active (stable while it persists; in-memory, so a restart re-derives state entries at boot). Entries of hooks that are **effectively disabled** (operator override, or an `"enable": false` default) are filtered out at read time — an off hook's failures are moot — and resurface the moment the hook is re-enabled. The dashboard's red banner + "Needs attention" panel render this. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
-| GET    | `/concurrency`      | Live state of every declared concurrency group: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it — plus the queue drill-down: `holders` (the runs occupying the slots, in acquire order) and `waiting_runs` (the queue, in order), each entry a `{run_id, hook_id, title, status, since, started, started_at}` enriched from the live tracker (an evicted run keeps its `run_id`/`since`). The dashboard renders this as an expandable group row: one click from a saturated group to any holder's or waiter's run modal. |
+| GET    | `/concurrency`      | One document: `groups` — every declared concurrency group's live state: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it — plus the queue drill-down: `holders` (the runs occupying the slots, in acquire order) and `waiting_runs` (the queue, in order), each entry a `{run_id, hook_id, title, status, since, started, started_at}` enriched from the live tracker (an evicted run keeps its `run_id`/`since`). And `global` — the [global run cap](#the-global-run-cap)'s state in the same shape (`limit`, `default`, `overridden`, `active`, `waiting`, `holders`, `waiting_runs`). The dashboard renders both as expandable rows: one click from a saturated group (or the cap) to any holder's or waiter's run modal. |
 | PUT    | `/concurrency/{group}/limit` | Override a group's limit live: body `{"limit": N}`, `N >= 1` (`0` is rejected — it would deadlock queued runs; to stop a group's hooks entirely, disable the hooks). `404` for undeclared groups. The swap is safe with runs in flight, and the override survives reloads and restarts until deleted. |
 | DELETE | `/concurrency/{group}/limit` | Remove the override; the declared limit takes effect again. Idempotent; also accepts a group that is no longer declared but still has a stored (orphaned) override. |
+| PUT    | `/concurrency-global/limit` | Override the [global run cap](#the-global-run-cap) live: body `{"limit": N}`, `N >= 1` (`0` is rejected — it would block every run on the server). A dedicated path — deliberately not `/concurrency/{group}/…` — so it can never collide with a declared group name. Persisted (survives restarts) and applied to already-queued runs immediately. |
+| DELETE | `/concurrency-global/limit` | Remove the cap override; the `WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS` / built-in default (64) takes effect again. Idempotent. |
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total (no values at this level; shape unchanged for existing consumers). |
 | GET    | `/kv/{namespace}`   | List one namespace's keys (namespace == hook ID): per key its name, value size in bytes, and — when a TTL is set — `expires_at` (absolute) plus `ttl_seconds` (remaining); both absent for keys without a TTL. Sorted by key; `?prefix=` filters. Unknown/empty namespaces list as empty. |
 | GET    | `/kv/{namespace}/{key}` | Read one entry: the metadata above **plus the stored value** — `value_base64` always, `value_utf8` additionally when the bytes are valid UTF-8. `404` when absent **or expired** (the same lazy-expiry rule the state API applies). The key is one path segment: URL-encode it (`%2F` for `/`, `%23` for `#`). |
@@ -853,6 +855,50 @@ group never reads as a slow run.
 The schema is published at
 `https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json`.
 
+## The global run cap
+
+Groups bound the hooks that opt in; everything else still runs unbounded —
+and every running hook container holds a Docker bridge-network IPv4
+address, so a delivery flood across many group-less hooks can exhaust the
+pool (`docker: … no available IPv4 addresses on this network's address
+pools`). The **global run cap** is the ceiling over all of it: at most N
+hook containers run at once, **across every hook**; excess executions
+queue exactly like a group queue (status `pending`, timeout clock not
+running, cancellable) and start as slots free — never dropped, never
+errored.
+
+- **Default 64.** Set a different default with
+  `WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS` (an invalid or `< 1` value fails
+  startup); override it live from the dashboard (below), which wins over
+  the env default and persists across restarts.
+- **A ceiling, not a replacement**: group limits keep gating
+  independently under it (a run acquires its group slot first, then a
+  global slot), so raising the cap never loosens a group, and a run
+  queued on a full group never consumes a global slot.
+- **Live-editable**: the dashboard's Concurrency page shows the cap —
+  default vs effective, active, waiting, with the same holders/queue
+  drill-down as a group row — and Override…/Revert controls
+  (`PUT`/`DELETE /concurrency-global/limit`). Changes apply to
+  already-queued runs immediately: a raise admits them at once.
+- **Scope**: the cap gates hook-run containers — webhook deliveries,
+  scheduled fires, and `/spawn`-started runs all pass through it.
+  [Manager](#managers-persistent-watchers) instances (one persistent
+  container each), image builds, and `webhook-runner test` containers sit
+  outside it.
+- A run queued on the cap shows `waiting_on` `{kind: "group", key:
+  "global", …}` — the same shape as a group queue — and a one-time
+  `run.queued` activity event names the wait.
+
+The server also **reaps orphaned hook containers at startup**: a server
+process killed with runs in flight (a deploy whose stop grace expired
+mid-drain, an OOM kill, a crash) leaves its containers running on the
+Docker daemon with no owner — no watchdog, no cancel path — each holding
+a bridge IP until it exits on its own. Every hook-run container is
+stamped with the `io.webhook-runner.run` label, and serve force-removes
+any leftover labeled container at boot (`run.orphans_removed` on the
+activity feed), so orphans can't accumulate across restarts and starve
+the address pool.
+
 ## Operational overrides (the kill switch)
 
 When a hook runs away — a retry storm, a sweep flooding an org with PRs —
@@ -892,6 +938,13 @@ for exactly that:
   effective** so an active override is visible at a glance. A limit of `0`
   is rejected: it would leave queued runs blocked forever — to stop a
   group's hooks entirely, disable the hooks.
+- **Override the [global run cap](#the-global-run-cap)**: the Override/
+  Revert controls on the cap's own row above the groups (or `PUT`/`DELETE
+  /concurrency-global/limit`, body `{"limit": N}`, `N >= 1`). Same live
+  semantics as a group override — queued runs feel it immediately — and
+  the override persists in `overrides.json` until reverted, when the
+  `WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS` / built-in default (64) takes
+  effect again.
 
 Overrides are **operational state, not hooks-repo config**: they persist in
 `<data-dir>/overrides.json` (atomic writes; a failed write is a `500` and
@@ -1055,6 +1108,7 @@ PATH="$PWD/build:$PATH" dats test dats
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
 | `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
 | `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
+| `WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS` | `64`                      | Default for the [global run cap](#the-global-run-cap): the max hook containers running at once across ALL hooks; excess executions queue. A set-but-invalid value (unparseable or `< 1`) fails startup. The dashboard's persisted override (`PUT /concurrency-global/limit`) wins over this default. |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | GitHub token for commit statuses: required if any hook uses `github_status`, and read by the reload gate's [reconciliation poll](#ci-gated-reloads) to check the hooks repo's gating status (needs read access to the hooks repo's commit statuses — a fine-grained PAT with "Commit statuses: Read" + "Metadata: Read" on that repo, or classic `repo:status`). Without it the poll holds loudly on tip changes. |
 | `WEBHOOK_RUNNER_GSM_URL`          | (none — gateway off)         | Enforced GitHub gateway: when set, every hook/manager/test container gets `api.github.com` blackholed (`--add-host api.github.com:0.0.0.0`) plus a `GITHUB_API_URL` env default pointing here, so all GitHub API reads ride the gateway (e.g. a github-state-mirror deployment). Unset = zero behavior change. |
 | `WEBHOOK_RUNNER_GITHUB_DIRECT`    | (none)                       | Comma-separated hook/manager ids EXEMPT from the GSM gateway (no blackhole, no env default) — for containers whose payloads must reach GitHub directly, e.g. `gha-runner,gha-runner-dind` (CI job traffic cannot ride the gateway). Only meaningful with `WEBHOOK_RUNNER_GSM_URL` set. |
