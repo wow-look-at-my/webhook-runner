@@ -1085,16 +1085,19 @@ command-line test runner.
 
 - Each test declares its hooks-tree fixture inline and runs the real built
   binary against it; everything is docker-free, offline, and secret-free.
-- CI runs the suite in the `dats` job against the exact binary the `test`
-  job built. Details for contributors are in `CLAUDE.md`.
+- Suites exec `"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"`, so
+  they work under go-toolchain's dats phase and standalone from the repo root.
+- CI runs the suites twice: go-toolchain's dats phase inside the `test` job,
+  and the `dats` job against that job's built binary. Details in `CLAUDE.md`.
 
 ```sh
 # once: install dats (prebuilt binary from buildhost)
 curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o /usr/local/bin/dats && chmod +x /usr/local/bin/dats
 
-# build the binary, then run the suite from the repo root
+# build the binary (this already runs the suites, via go-toolchain's dats
+# phase); to run them standalone afterwards, from the repo root:
 go-toolchain
-PATH="$PWD/build:$PATH" dats test dats
+dats test dats
 ```
 
 ## Server configuration

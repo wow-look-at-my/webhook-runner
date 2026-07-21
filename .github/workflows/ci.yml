@@ -85,8 +85,10 @@ jobs:
         with:
           name: go-build
           path: build
-      # The suite invokes `webhook-runner` via PATH; the hand-off carries the
-      # platform-suffixed build name, so stage the unsuffixed name beside it.
+      # The suites exec "${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner";
+      # that env var is unset here, so they fall back to build/. The hand-off
+      # carries the platform-suffixed build name, so stage the unsuffixed name
+      # beside it.
       - name: Stage CLI binary
         run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
       # dats prebuilt binary from buildhost (public download). Installed into
