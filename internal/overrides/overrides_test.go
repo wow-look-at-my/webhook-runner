@@ -232,3 +232,81 @@ func TestNilStore(t *testing.T) {
 	_, err = s.ClearConcurrencyLimit("g")
 	require.Error(t, err)
 }
+
+// The global run cap override: validated, idempotent, restart-surviving,
+// rollback-on-persist-failure — the same contract as group limits.
+func TestGlobalRunLimitOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overrides.json")
+	s, err := Open(path)
+	require.NoError(t, err)
+
+	_, ok := s.GlobalRunLimit()
+	assert.False(t, ok, "no override in the zero state")
+
+	_, err = s.SetGlobalRunLimit(0)
+	require.Error(t, err, "a 0 cap is rejected — it would block every run")
+
+	changed, err := s.SetGlobalRunLimit(96)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	changed, err = s.SetGlobalRunLimit(96)
+	require.NoError(t, err)
+	assert.False(t, changed, "same value again is idempotent")
+
+	// Simulated restart: the override is read back from disk.
+	s2, err := Open(path)
+	require.NoError(t, err)
+	n, ok := s2.GlobalRunLimit()
+	require.True(t, ok, "the global cap override must survive a restart")
+	assert.Equal(t, 96, n)
+
+	changed, err = s2.ClearGlobalRunLimit()
+	require.NoError(t, err)
+	assert.True(t, changed)
+	changed, err = s2.ClearGlobalRunLimit()
+	require.NoError(t, err)
+	assert.False(t, changed, "clearing an absent override is idempotent")
+
+	s3, err := Open(path)
+	require.NoError(t, err)
+	_, ok = s3.GlobalRunLimit()
+	assert.False(t, ok, "the cleared override stays cleared across a restart")
+}
+
+func TestGlobalRunLimitPersistFailureRollsBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	path := filepath.Join(dir, "overrides.json")
+	s, err := Open(path)
+	require.NoError(t, err)
+	_, err = s.SetGlobalRunLimit(10)
+	require.NoError(t, err)
+
+	// Sabotage: replace the parent dir with a regular file so the next
+	// temp-file creation fails.
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.WriteFile(dir, []byte("not a dir"), 0o644))
+
+	changed, err := s.SetGlobalRunLimit(20)
+	require.Error(t, err)
+	assert.False(t, changed)
+	n, ok := s.GlobalRunLimit()
+	require.True(t, ok)
+	assert.Equal(t, 10, n, "a failed set must roll back to the previous value")
+
+	changed, err = s.ClearGlobalRunLimit()
+	require.Error(t, err)
+	assert.False(t, changed)
+	n, ok = s.GlobalRunLimit()
+	require.True(t, ok)
+	assert.Equal(t, 10, n, "a failed clear must roll back")
+}
+
+func TestNilStoreGlobalRunLimit(t *testing.T) {
+	var s *Store
+	_, ok := s.GlobalRunLimit()
+	assert.False(t, ok)
+	_, err := s.SetGlobalRunLimit(1)
+	require.Error(t, err)
+	_, err = s.ClearGlobalRunLimit()
+	require.Error(t, err)
+}

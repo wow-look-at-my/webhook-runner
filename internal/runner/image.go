@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -158,4 +160,31 @@ func (w *slogLineWriter) Write(p []byte) (int, error) {
 		w.buf = w.buf[i+1:]
 	}
 	return len(p), nil
+}
+
+// imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
+// CMD, or ENTRYPOINT plus hookCommand when the hook overrides the command — via
+// docker inspect. State hooks set the KV shim as the container entrypoint, so
+// the shim must be handed the original command to exec after starting the proxy.
+func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
+	out, err := exec.Command(dockerBin, "inspect", image,
+		"--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}").Output()
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	var entrypoint, cmd []string
+	_ = json.Unmarshal([]byte(parts[0]), &entrypoint)
+	if len(parts) > 1 {
+		_ = json.Unmarshal([]byte(parts[1]), &cmd)
+	}
+	tail := hookCommand
+	if len(tail) == 0 {
+		tail = cmd
+	}
+	argv := append(append([]string{}, entrypoint...), tail...)
+	if len(argv) == 0 {
+		return nil, errors.New("image declares no entrypoint or cmd and the hook sets no command")
+	}
+	return argv, nil
 }
