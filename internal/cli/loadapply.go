@@ -91,6 +91,15 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			delete(loadedManagers, re.HookID)
 		}
 
+		// A manager's spawn_targets must name declared hooks — the
+		// manifest IS the spawn allowlist, so an undeclared target is a
+		// misconfiguration and the manager is dropped (fail closed), the
+		// undeclared-group rule. Checked against the post-rejection sets.
+		for _, se := range hooks.CheckSpawnTargets(loaded, loadedManagers) {
+			errs = append(errs, se)
+			delete(loadedManagers, se.ManagerID)
+		}
+
 		for _, e := range errs {
 			logger.Error("hook reload error", "err", e)
 			rec.Record("hook.load_error", e.Error(), nil)

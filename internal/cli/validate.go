@@ -9,6 +9,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
+	"strings"
 )
 
 func init() {
@@ -56,6 +57,24 @@ func init() {
 				errs = append(errs, re)
 				badRef[re.HookID] = true
 			}
+			// spawn_targets must name declared hooks — the manifest is the
+			// spawn allowlist; an undeclared target fails validation.
+			checkable := make(map[string]*hooks.Hook, len(loaded))
+			for id, h := range loaded {
+				if !badRef[id] {
+					checkable[id] = h
+				}
+			}
+			checkableManagers := make(map[string]*hooks.Manager, len(loadedManagers))
+			for id, m := range loadedManagers {
+				if !badRef[id] {
+					checkableManagers[id] = m
+				}
+			}
+			for _, se := range hooks.CheckSpawnTargets(checkable, checkableManagers) {
+				errs = append(errs, se)
+				badRef[se.ManagerID] = true
+			}
 
 			out := cmd.OutOrStdout()
 			for _, name := range cfg.Names() {
@@ -87,7 +106,11 @@ func init() {
 				if m.ReconcileIntervalRaw != "" {
 					iv = "reconcile " + m.ReconcileIntervalRaw
 				}
-				fmt.Fprintf(out, "ok  %s (manager, %s, %s)\n", id, tag, iv)
+				spawns := ""
+				if len(m.SpawnTargets) > 0 {
+					spawns = " [spawns: " + strings.Join(m.SpawnTargets, ",") + "]"
+				}
+				fmt.Fprintf(out, "ok  %s (manager, %s, %s)%s\n", id, tag, iv, spawns)
 			}
 			if len(errs) > 0 {
 				for _, e := range errs {
