@@ -751,6 +751,24 @@ The companion repo is `wow-look-at-my/webhooks`.
   `Shutdown` — Shutdown drains in-flight handlers, and stream handlers
   only return when their subscription closes or their client hangs up.
   `streamHeartbeat` is a package var so tests can shrink it.
+  Every `hb` write carries the ACTIVE (non-terminal) run-id set —
+  `{"active":[...]}` via `runs.Tracker.ActiveIDs` (sorted; `[]` when
+  idle, NEVER null — the empty array is a real "nothing is active"
+  verdict clients act on) — the timeline's truth-reconcile beat, purely
+  additive (pre-payload clients read hb as bare liveness). The
+  /runs-shaped reads pair with it: `mergedRuns` (runlist.go) caps
+  TERMINAL rows only on cursorless windows — every active run is ALWAYS
+  included however small `?max=` is, and `?live=1` serves exactly the
+  active set — while `?before=` cursor pages keep the legacy newest-max
+  TOTAL cap on purpose (the paging walk advances its cursor from each
+  page's oldest row; an uncapped ancient active row would make it skip
+  terminal history). The tracker's per-hook trim (`runs.Tracker.New`,
+  internal/runs/tracker.go) evicts oldest TERMINAL runs only: an active
+  run is current truth and is never evicted — the per-hook list may
+  exceed MaxRunsPerHook while that many runs are genuinely active, and
+  it shrinks back as they finish. Don't reintroduce a status-blind trim:
+  it made GET /runs/{id} 404 for still-running runs during floods (the
+  runstore fallback is terminal-only) and cut live runs out of windows.
   The SAME connection multiplexes the dashboard's section-invalidation
   push (`event: changed`, `{"sections":[...]}` — "changed → refetch
   once", never payloads): per-subscriber it is a bounded dirty SET + a
