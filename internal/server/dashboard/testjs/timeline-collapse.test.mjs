@@ -202,7 +202,13 @@ test('a ~170-deep pending flood feeds ONE aggregate row, not a wall of sub-track
 	assert.equal(laneIntervals.length, 2, 'the flooded lane feeds exactly [1 running span, 1 aggregate]');
 	const agg = laneIntervals.find((i) => i.id === AGG);
 	assert.ok(agg, 'the backlog aggregate must exist');
-	assert.equal(agg.label, '×170 queued', 'the badge carries the full backlog depth');
+	// The badge must be UNMISTAKABLE: the count AND the word "waiting" —
+	// a regression to a cryptic bare bar fails here.
+	assert.equal(agg.label, '×170 waiting', 'the badge carries the full backlog depth');
+	assert.ok(/×170/.test(agg.label) && /waiting/.test(agg.label), 'count + the word "waiting", always');
+	assert.ok(Array.isArray(agg.labelTiers) && agg.labelTiers[0] === '×170 waiting for a slot',
+		'the widest tier spells the meaning out in full');
+	assert.equal(agg.labelTiers[agg.labelTiers.length - 1], '×170', 'the narrowest tier is still the count');
 	assert.ok(laneIntervals.some((i) => i.id === exec.id), 'the executing run keeps its own span');
 });
 
@@ -212,7 +218,8 @@ test('a pending backlog collapses into ONE ×N aggregate span', async () => {
 	const seed = lastCallWithIntervals(h.calls, 'setData');
 	const aggs = seed.data.intervals.filter((i) => i.id === AGG);
 	assert.equal(aggs.length, 1, 'exactly one aggregate per collapsed lane');
-	assert.equal(aggs[0].label, '×3 queued', 'the badge carries the backlog depth');
+	assert.equal(aggs[0].label, '×3 waiting', 'the badge carries the backlog depth');
+	assert.ok(/×3/.test(aggs[0].label) && /waiting/.test(aggs[0].label), 'count + the word "waiting", always');
 	assert.equal(aggs[0].end, null, 'the backlog rides the live edge');
 	assert.equal(aggs[0].start, Date.parse(p1.started), 'the aggregate starts at the earliest queued run');
 	const ids = seed.data.intervals.map((i) => i.id);
@@ -239,7 +246,8 @@ test('leaving the backlog re-individualizes the run and restamps the badge', asy
 	assert.ok(ids.includes(p1.id), 'the now-running span appears individually');
 	const agg = merge.data.intervals.find((i) => i.id === AGG);
 	assert.ok(agg, 'the aggregate restamps in the same merge');
-	assert.equal(agg.label, '×2 queued', 'the badge decrements with the backlog');
+	assert.equal(agg.label, '×2 waiting', 'the badge decrements with the backlog');
+	assert.ok(/waiting/.test(agg.label), 'the restamped badge keeps the spelled-out meaning');
 });
 
 test('draining below 2 retires the aggregate and restores real spans', async () => {

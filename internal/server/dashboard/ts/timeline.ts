@@ -874,17 +874,24 @@ function sameLaneSet(a: Set<string>, b: Set<string>): boolean {
 }
 
 /** The lane's collapsed backlog as ONE synthetic interval: earliest queued
- * start → live edge (end null), the dim queued treatment, ×N depth badge. */
+ * start → live edge (end null), the dim queued treatment, and a count that
+ * must be UNMISTAKABLE at any width — the operator reads this row as "N
+ * waiting runners", never a cryptic bar. Explicit label tiers (fullest →
+ * most compact) spell the meaning out wide and keep the ×N count to the
+ * narrowest fit; a component without labelTiers falls back to the base
+ * label, whose 3-character clip floor is still exactly the bare ×N. */
 function aggInterval(lane: string, backlog: RunState[]): TimelineInterval {
+	const n = backlog.length;
 	return {
 		id: AGG_PREFIX + lane,
 		laneId: lane,
 		start: Date.parse(backlog[0].started), // oldest-first per pendingByLane
 		end: null,
-		label: `×${backlog.length} queued`,
+		label: `×${n} waiting`,
+		labelTiers: [`×${n} waiting for a slot`, `×${n} waiting`, `×${n}`],
 		category: lane, // the lane's stable hue, like every run interval
 		state: 'queued',
-		data: { count: backlog.length },
+		data: { count: n },
 	};
 }
 
@@ -1068,14 +1075,28 @@ function laneTooltip(lane: TimelineLane): Node {
 	return frag;
 }
 
-/** Tooltip for a lane's collapsed queued-backlog aggregate: the depth, the
- * first few queued runs (title or short id, oldest first), and where a
- * click goes. Recomputed from runsById per hover, so it always reads the
- * CURRENT backlog even between aggregate restamps. */
+/** Tooltip for a lane's collapsed queued-backlog aggregate: a first line
+ * that reads like a sentence ("22 runs waiting for a gha-runner slot" when
+ * the whole backlog waits on one named group; generic otherwise), then the
+ * lane, the first few queued runs (oldest first), and where a click goes.
+ * Recomputed from runsById per hover, so it always reads the CURRENT
+ * backlog even between aggregate restamps. */
 function aggTooltip(lane: string): Node {
 	const backlog = pendingByLane(runsById.values()).get(lane) ?? [];
+	const n = backlog.length;
+	// Name the slot when every queued run waits on the same group; the
+	// global run cap's display key ("global") and mixed/unknown waits get
+	// the generic wording.
+	const keys = new Set(
+		backlog.map((r) => (r.waiting_on?.kind === 'group' ? r.waiting_on.key || '' : '')),
+	);
+	const only = keys.size === 1 ? [...keys][0] : '';
+	const what = only !== '' && only !== 'global' ? `a ${only} slot` : 'a slot to run';
 	const frag = document.createDocumentFragment();
-	frag.appendChild(el('div', { class: 'tt-title' }, `${lane} · ×${backlog.length} queued`));
+	frag.appendChild(
+		el('div', { class: 'tt-title' }, `${n} run${n === 1 ? '' : 's'} waiting for ${what}`),
+	);
+	frag.appendChild(ttRow('hook', lane));
 	for (const r of backlog.slice(0, 3)) {
 		frag.appendChild(ttRow('', `${runTitle(r) ?? shortRunId(r.id)} — queued ${fmtTime(r.started)}`));
 	}
@@ -1134,6 +1155,7 @@ function initTimeline(): void {
 		tl.legendEntries = [
 			{ glyph: '⧗', text: 'waiting for a concurrency-group slot (group · place in line)' },
 			{ glyph: '⏳N', text: 'holding a slot N queued runs are waiting on' },
+			{ glyph: '×N waiting', text: 'a collapsed queued backlog: N pending runs as one dim row (each executing run keeps its own colored bar; click opens the hook page)' },
 		];
 	}
 
