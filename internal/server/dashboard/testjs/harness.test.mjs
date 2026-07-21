@@ -408,3 +408,35 @@ test('a revealed runs table refills immediately', async () => {
 	await h.advance(1_000);
 	assert.deepEqual(h.urls(), ['/runs?max=50']);
 });
+
+test('manager output copy: the clipboard text assembles from the DATA, exactly as rendered', async () => {
+	// The copy button's payload comes from managerOutputText over the
+	// /managers/{id} response's output array — never from DOM innerText.
+	// Pin the exact assembly (input lines → copied string) and that the
+	// drill-down <pre> renders the SAME assembly, so the copied text is
+	// byte-identical to what is on screen. (A real clipboard click needs a
+	// browser; headless coverage stops at the assembly + render parity.)
+	const h = await boot();
+	const text = h.sandbox.managerOutputText;
+	assert.equal(typeof text, 'function', 'managerOutputText must be a page-global function');
+	// Lines join with single newlines; no trailing newline is invented.
+	assert.equal(text(['a', 'b', 'c']), 'a\nb\nc');
+	assert.equal(text(['single']), 'single');
+	// Blank lines and internal whitespace survive byte-for-byte.
+	assert.equal(text(['one', '', '  indented', 'tab\tkept']), 'one\n\n  indented\ntab\tkept');
+	// Absent/empty output is the empty string — never "undefined".
+	assert.equal(text([]), '');
+	assert.equal(text(undefined), '');
+	assert.equal(text(null), '');
+
+	h.sandbox.location.hash = '#manager=gha-coordinator';
+	h.sandbox.renderManagerDetail({
+		id: 'gha-coordinator',
+		state: 'running',
+		restarts: 0,
+		inbox_depth: 0,
+		output: ['line 1', '', 'line 3'],
+	});
+	const pre = h.sandbox.document.getElementById('manager-detail-output');
+	assert.equal(pre.textContent, text(['line 1', '', 'line 3']), 'the <pre> and the copy payload share one assembly');
+});
