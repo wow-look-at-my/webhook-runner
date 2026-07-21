@@ -31,6 +31,7 @@ internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
+dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
 examples/hooks/            sample hook configs
 ```
 
@@ -57,6 +58,61 @@ examples/hooks/            sample hook configs
   `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
   their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
   Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
+
+## CLI contract tests (dats/)
+
+`dats/*.dats` are black-box tests of the CLI's contract — exit codes,
+stdout/stderr, messages — run by the org's
+[dats](https://github.com/wow-look-at-my/dats) test runner against the REAL
+built binary (unlike `internal/cli/commands_test.go`, which drives cobra
+in-process). They are deliberately docker-free, offline, and secret-free so
+they pass on a bare runner: covered are `validate`'s full gate contract
+(both layouts, JSONC, zero-hooks, mixed layout, Dockerfile/$schema/unknown
+field, undeclared concurrency group, malformed skip_if/run_title, manager
+spawn_targets + id collision), `test`'s docker-free paths (no declared
+tests; load errors), and `version`/help/argument/flag errors. `serve`,
+real `test` runs, and the dashboard need Docker/network and stay in `e2e/`.
+
+Run locally from the repo root (build first so `build/webhook-runner`
+exists):
+
+    go-toolchain
+    PATH="$PWD/build:$PATH" dats test dats
+
+Install dats via the prebuilt binary:
+`curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o /usr/local/bin/dats && chmod +x /usr/local/bin/dats`.
+CI runs the same command in ci.yml's `dats` job: it restores the `go-build`
+hand-off (the e2e job's pattern), stages `build/webhook-runner`, installs
+dats into `build/`, and runs `PATH="$PWD/build:$PATH" dats test dats` — the
+local and CI invocations are identical by design.
+
+Format facts (empirically verified against dats v0.0.0-20260720; keep in
+mind when adding cases):
+
+- A `.dats` file is `tests:` — a list of `{desc, cmd, exit, timeout,
+  inputs.{files,env}, outputs.{stdout,stderr,files}}`. The parser is
+  strict: unknown keys are errors; `dats syntax dats` checks without
+  running.
+- Tests are SANDBOXED but not chdir'd: `inputs.files` (map of relative
+  path -> content) materialize under a per-test temp dir, the command runs
+  with cwd = the invocation cwd, and `{inputs.<path>}` in `cmd` expands to
+  a fixture's ABSOLUTE path. There is no directory placeholder, so a
+  fixture tree's root is recovered as
+  `"$(dirname "{inputs.<hook>/hook.json}")/.."` — the suite's standard
+  anchor pattern. Every case is self-contained; never share fixtures on
+  disk.
+- Stream assertions: LIST entries are substring-contains; MAP entries are
+  0-based line numbers matched as REGEXES (escape `(`/`[`; the two forms
+  really do differ). `outputs.files` asserts on `{outputs.<name>}` paths.
+- dats runs ALL tests, by design — no filtering/skip/only mechanisms
+  exist, and none should be added or emulated.
+- NEVER write a case that invokes bare `webhook-runner <word>`: the root
+  command's `[hooks-dir]` positional means any unrecognized word STARTS
+  THE SERVER (binds :9000/:9001) instead of erroring. Tests near the
+  serve path must error before binding (and carry a `timeout:` hang
+  guard, e.g. `30s`).
+- Assert only observed behavior: run the built binary by hand first and
+  copy the exact exit code/message, don't guess.
 
 ## Architecture: two ports + a state socket
 
