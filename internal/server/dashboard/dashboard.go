@@ -16,11 +16,13 @@
 // wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
 // compiled by ts0 (type-check + bundle, config in ts0.json; the component
 // URL passes through unbundled). The committed bundle is authoritative and
-// embedded as-is: the npx //go:generate directive that rebuilt it was
-// removed (the build must not need node/npm/npx), so regeneration is
-// temporarily a manual step — run ts0 yourself after editing ts/ and commit
-// the regenerated bundle. A prebuilt ts0 binary served from buildhost,
-// fetched by a small Go bootstrap, is landing next to re-automate this.
+// embedded as-is (go:embed) — a normal build needs no Node. Regenerate it
+// after editing ts/ with `go generate ./internal/server/dashboard/`: the
+// //go:generate directive in generate.go runs gen.go, which fetches a
+// pinned, prebuilt ts0 from buildhost and runs it with the local Node.js
+// runtime (no npm/npx/git); commit the updated bundle. CI runs the same
+// generate through go-toolchain and then fails on a dirty tree, so a stale
+// committed bundle turns CI red.
 package dashboard
 
 import (
