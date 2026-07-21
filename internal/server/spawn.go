@@ -1,8 +1,8 @@
 package server
 
 // POST /spawn on the state API — the runner-native spawn primitive: a
-// permitted state hook starts runs of ANOTHER hook through the runner
-// itself, replacing the retired pattern of a coordinator hook POSTing
+// permitted MANAGER starts runs of ANOTHER hook through the runner
+// itself, replacing the retired pattern of a coordinator POSTing
 // HMAC-signed synthetic webhooks at the public hook endpoints.
 //
 // The CALLER (parent + run/instance id) comes from the verified bearer

@@ -86,9 +86,9 @@ directory). The runner supervises ONE long-lived container per manager:
   the fast path, ticks are the ground-truth floor. Event-only managers
   (no interval) are first-class too -- pr-minder's no-tick doctrine
   (section 7).
-- **Worker-spawning**: managers call the existing `POST /spawn`; the
-  `WEBHOOK_RUNNER_SPAWN_ALLOW` allowlist works verbatim with manager ids as
-  parents (section 10).
+- **Worker-spawning**: managers call the existing `POST /spawn`,
+  authorized by their own manager.json `spawn_targets` manifest
+  (section 10).
 - **gsm-fed**: a manager's GitHub reads ride the enforced gsm gateway like
   the rest of the fleet (sections 8-9); the gateway's cache is made sound
   enough to reconcile against, rather than routed around.
@@ -656,11 +656,16 @@ today's routing. Hard dependency, called out in the plan (section 15).
 
 ## 10. Spawn integration (constraint 7)
 
-- `WEBHOOK_RUNNER_SPAWN_ALLOW` is UNCHANGED in format and semantics: parent
-  ids may now name managers (ids share one namespace with hooks). The
-  operative pair `gha-coordinator=gha-runner,gha-runner-dind` carries over
-  byte-for-byte across the migration. Deny-by-default preserved; malformed
-  values still fail startup.
+- Spawn authorization is MANIFEST-SOURCED: the caller's own manager.json
+  `spawn_targets` array names the hook ids it may spawn — deny-by-default
+  (absent/empty = spawns nothing), loaded from the hooks tree like every
+  other declaration, so granting a spawn is a hooks-repo change, never
+  host env. Only managers carry the field (the published hook schema is
+  frozen; hook-run callers 403). Entries must name declared hooks: an
+  unknown id or a manager id fails load/validation and drops the manager
+  (fail closed). The operative grant is
+  `"spawn_targets": ["gha-runner", "gha-runner-dind"]` in the
+  coordinator's own manager.json.
 - `/spawn`'s parent check gains a manager branch (`managerCaller`): a
   token whose namespace is a declared manager AND whose instance id is
   the supervisor's CURRENT one authorizes the spawn; a stale (dead)
@@ -971,9 +976,9 @@ today), explicitly gated on the gsm fixes (section 9d).
 - **Runbook ORDERING (load-bearing, because the manager ships enabled)**:
   an enabled coordinator starts working -- or failing loudly -- the moment
   its tree deploys, so the preconditions land FIRST: (1) the
-  manager-capable runner (this PR) deployed; (2) the
-  `WEBHOOK_RUNNER_SPAWN_ALLOW` allowlist entries
-  (`gha-coordinator=gha-runner,gha-runner-dind`) on the service env; (3)
+  manifest-spawn-capable runner deployed — the coordinator's own
+  manager.json `spawn_targets: ["gha-runner", "gha-runner-dind"]` is the
+  whole grant, nothing on the service env; (2)
   the App's repository **Actions: Read** grant. Only THEN does PR C merge
   (which the reload gate deploys on green); verification happens on the
   draft PR before merge. Webhook flip/retire and DRAIN=0 steps follow

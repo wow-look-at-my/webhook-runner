@@ -370,9 +370,10 @@ func (s *Server) registerRoutes() {
 	// Friendly-title override: a run whose subject is only known mid-run
 	// (a fleet sweep reaching some repo) names itself (see title.go).
 	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
-	// Spawn: a permitted hook starts runs of ANOTHER hook through the
-	// runner itself — deny-by-default allowlist, normal dispatch, skip_if
-	// deliberately bypassed like scheduled fires (see spawn.go).
+	// Spawn: a permitted MANAGER starts runs of ANOTHER hook through the
+	// runner itself — deny-by-default manager.json spawn_targets, normal
+	// dispatch, skip_if deliberately bypassed like scheduled fires (see
+	// spawn.go).
 	s.stateMux.HandleFunc("POST /spawn", s.withNamespace(s.handleSpawn))
 }
 
