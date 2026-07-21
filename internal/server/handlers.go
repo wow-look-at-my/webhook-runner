@@ -368,6 +368,16 @@ func tailOutput(st *runs.RunState, tail int) {
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	// ?live=1: exactly the current ACTIVE (non-terminal) set — the one-shot
+	// truth fetch for clients reconciling against the stream's hb active-id
+	// payload. No cap, no cursor (the active set IS the answer); ?hook=
+	// still narrows. Additive: absent/false keeps the merged view below.
+	if v := r.URL.Query().Get("live"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil && b {
+			writeJSON(w, http.StatusOK, s.liveRuns(r.URL.Query().Get("hook")))
+			return
+		}
+	}
 	max := 100
 	if m := r.URL.Query().Get("max"); m != "" {
 		if n, err := strconv.Atoi(m); err == nil && n > 0 {
@@ -389,39 +399,78 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), before, max))
 }
 
-// mergedRuns is the /runs read path: live tracker runs (active + recent)
-// merged with the persisted completed history, deduped by run ID (the live
-// copy wins — for the same run it can never be older than the persisted
-// one), newest-first, capped at max. A non-zero before keeps only runs
-// queued strictly before it (the page cursor); zero means unbounded. Output
-// is never shipped in the list view; clients fetch /runs/{id} for that.
-func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.RunState {
-	// With a cursor the newest-max live window may sit entirely at-or-after
-	// it, hiding older live runs behind the cap — list uncapped (the tracker
-	// is bounded anyway) and let the filter plus the final cap do the work.
-	liveMax := max
-	if !before.IsZero() {
-		liveMax = 0
-	}
+// liveRuns is GET /runs?live=1: every non-terminal tracked run, output
+// stripped, newest-first, waiters attached — the same row shape as /runs.
+// Always non-nil so an idle server answers [] (a real "nothing is active"
+// verdict), never null.
+func (s *Server) liveRuns(hookID string) []runs.RunState {
 	var live []*runs.Run
 	if hookID != "" {
-		live = s.tracker.ListByHook(hookID, liveMax)
+		live = s.tracker.ListByHook(hookID, 0)
 	} else {
-		live = s.tracker.ListAll(liveMax)
+		live = s.tracker.ListAll(0)
 	}
 	out := make([]runs.RunState, 0, len(live))
-	seen := make(map[string]struct{}, len(live))
 	for _, r := range live {
 		snap := r.Snapshot(0)
-		if !before.IsZero() && !snap.Started.Before(before) {
+		if snap.Status.Terminal() {
 			continue
 		}
 		snap.Output = nil
 		snap.OutputTimes = nil
 		out = append(out, snap)
+	}
+	s.attachWaiters(out)
+	return out
+}
+
+// mergedRuns is the /runs read path: live tracker runs (active + recent)
+// merged with the persisted completed history, deduped by run ID (the live
+// copy wins — for the same run it can never be older than the persisted
+// one), newest-first. On the CURSORLESS live windows (the plain /runs
+// list, the SSE connect snapshot) the cap applies to TERMINAL rows only:
+// every active (non-terminal) run is ALWAYS included, however small max is
+// — a live window must never hide work that is happening right now (the
+// old total cap cut still-running runs out of flood-time snapshots, and
+// clients read absence as termination). A non-zero before keeps only runs
+// queued strictly before it (the page cursor) and KEEPS the legacy
+// newest-max total cap: history pages must be complete down to their
+// oldest row — the paging walk advances its cursor from it, and an
+// uncapped ancient active row would make the walk skip terminal history.
+// Output is never shipped in the list view; clients fetch /runs/{id}.
+func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.RunState {
+	// List the tracker uncapped: the active partition must be COMPLETE
+	// (a newest-max pre-cut could hide older active runs behind newer
+	// terminal ones), and with a cursor the newest-max live window may sit
+	// entirely at-or-after it. The tracker is bounded anyway.
+	var live []*runs.Run
+	if hookID != "" {
+		live = s.tracker.ListByHook(hookID, 0)
+	} else {
+		live = s.tracker.ListAll(0)
+	}
+	paged := !before.IsZero()
+	// active stays non-nil so an empty merge still serializes as [].
+	active := make([]runs.RunState, 0, len(live))
+	var capped []runs.RunState
+	seen := make(map[string]struct{}, len(live))
+	for _, r := range live {
+		snap := r.Snapshot(0)
+		if paged && !snap.Started.Before(before) {
+			continue
+		}
+		snap.Output = nil
+		snap.OutputTimes = nil
 		seen[snap.ID] = struct{}{}
+		if !paged && !snap.Status.Terminal() {
+			active = append(active, snap)
+		} else {
+			capped = append(capped, snap)
+		}
 	}
 	if s.runstore != nil {
+		// Persisted history is terminal by construction (write-once at
+		// terminal status), so it always lands in the capped partition.
 		var persisted []runs.RunState
 		if hookID != "" {
 			persisted = s.runstore.ListByHookBefore(hookID, before, max)
@@ -432,15 +481,19 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.Run
 			if _, dup := seen[st.ID]; dup {
 				continue
 			}
-			out = append(out, st)
+			capped = append(capped, st)
 		}
 	}
+	sort.SliceStable(capped, func(i, j int) bool {
+		return capped[i].Started.After(capped[j].Started)
+	})
+	if max > 0 && len(capped) > max {
+		capped = capped[:max]
+	}
+	out := append(active, capped...)
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Started.After(out[j].Started)
 	})
-	if max > 0 && len(out) > max {
-		out = out[:max]
-	}
 	s.attachWaiters(out)
 	return out
 }

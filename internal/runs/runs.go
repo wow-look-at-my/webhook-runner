@@ -56,7 +56,11 @@ func (s Status) Terminal() bool {
 // worst case is ~MaxRunsPerHook*MaxOutputLines lines (~10-20MB) per hook.
 const MaxOutputLines = 2000
 
-// MaxRunsPerHook is the most recent finished runs retained per hook ID.
+// MaxRunsPerHook is the most recent TERMINAL runs retained per hook ID.
+// It bounds history, never truth: the trim in New evicts oldest terminal
+// runs only — a run that has not finished is CURRENT STATE and is never
+// evicted, however many pile up (a flood of queued spawns must not make
+// the tracker forget work that is genuinely still pending/running).
 const MaxRunsPerHook = 50
 
 // RunState is the value-type, mutex-free, JSON-marshalable view of a run.
@@ -650,11 +654,27 @@ func (t *Tracker) New(hookID string) *Run {
 	r.onChange = t.onChange
 	t.byID[r.state.ID] = r
 	t.byHook[hookID] = append(t.byHook[hookID], r)
+	// Trim past maxByHook — oldest TERMINAL runs only, NEVER an active one.
+	// A non-terminal run is the server's current truth: evicting it made
+	// GET /runs/{id} 404 for a genuinely-running run during floods (the
+	// runstore fallback holds terminal snapshots only), cut live runs out
+	// of /runs windows, and degraded /concurrency's holder rows. The
+	// per-hook list may therefore exceed maxByHook while more than
+	// maxByHook runs are truly active — bounded by real concurrent work,
+	// and later News keep trimming as those runs finish. (Status() locks
+	// the run under t.mu: tracker-then-run is the package's lock order,
+	// same as HasActive.)
 	if extra := len(t.byHook[hookID]) - t.maxByHook; extra > 0 {
-		for _, old := range t.byHook[hookID][:extra] {
-			delete(t.byID, old.state.ID)
+		kept := t.byHook[hookID][:0]
+		for _, old := range t.byHook[hookID] {
+			if extra > 0 && old.Status().Terminal() {
+				delete(t.byID, old.state.ID)
+				extra--
+				continue
+			}
+			kept = append(kept, old)
 		}
-		t.byHook[hookID] = append(t.byHook[hookID][:0], t.byHook[hookID][extra:]...)
+		t.byHook[hookID] = kept
 	}
 	t.mu.Unlock()
 	// The creation notification: a fresh pending run is a lifecycle event
@@ -717,6 +737,25 @@ func (t *Tracker) ListAll(max int) []*Run {
 		out = out[:max]
 	}
 	return out
+}
+
+// ActiveIDs returns the ID of every tracked run that has not reached a
+// terminal status, sorted. This is the live-set truth the stream's hb
+// heartbeat carries so clients can reconcile their view against what is
+// actually active RIGHT NOW (drop runs the server no longer knows, fetch
+// runs they never saw). Always non-nil — an empty active set must
+// serialize as [] (a real "nothing is active" verdict), never null.
+func (t *Tracker) ActiveIDs() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	ids := make([]string, 0, len(t.byID))
+	for _, r := range t.byID {
+		if !r.Status().Terminal() {
+			ids = append(ids, r.state.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // newID returns 16 random bytes encoded as lowercase base32 without
