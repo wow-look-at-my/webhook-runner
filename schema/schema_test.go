@@ -134,6 +134,48 @@ func TestSchemaDind(t *testing.T) {
 	}
 }
 
+const managerSchemaURL = "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json"
+
+func compileManagerSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	raw, err := os.ReadFile("manager.schema.json")
+	require.NoError(t, err)
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	require.NoError(t, err)
+	c := jsonschema.NewCompiler()
+	require.NoError(t, c.AddResource(managerSchemaURL, doc))
+	sch, err := c.Compile(managerSchemaURL)
+	require.NoError(t, err)
+	return sch
+}
+
+// spawn_targets is an array of unique, non-empty strings. (Whether each
+// entry names a DECLARED hook is the Go loader's check — the schema cannot
+// see the tree.)
+func TestSchemaManagerSpawnTargets(t *testing.T) {
+	sch := compileManagerSchema(t)
+	good := []string{
+		`{"$schema":"s","spawn_targets":["gha-runner","gha-runner-dind"]}`,
+		`{"$schema":"s","spawn_targets":[]}`,
+		`{"$schema":"s"}`,
+	}
+	for _, doc := range good {
+		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
+	}
+	bad := []string{
+		// An id list, full stop: no bare string, no non-strings, no
+		// empties, no duplicates.
+		`{"$schema":"s","spawn_targets":"gha-runner"}`,
+		`{"$schema":"s","spawn_targets":[1]}`,
+		`{"$schema":"s","spawn_targets":[""]}`,
+		`{"$schema":"s","spawn_targets":["a","a"]}`,
+		`{"$schema":"s","spawn_targets":null}`,
+	}
+	for _, doc := range bad {
+		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)
+	}
+}
+
 func TestSchemaRejectsBadSkipIf(t *testing.T) {
 	sch := compileHookSchema(t)
 	bad := []string{

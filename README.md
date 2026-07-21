@@ -97,10 +97,11 @@ graph LR
   equally watchdog-safe, shown as *waiting on lock … held by …* with the
   holder's runs listing their waiters), and `steal` hands the lock to the
   caller while cancelling the displaced run.
-- **Spawn**: a permitted state hook starts runs of another hook through
-  the runner itself (`POST /spawn` on its state API) — normal, tracked,
-  concurrency-gated runs attributed to their parent. Gated by a
-  deny-by-default server-side allowlist (`WEBHOOK_RUNNER_SPAWN_ALLOW`).
+- **Spawn**: a [manager](#managers-persistent-watchers) starts runs of
+  another hook through the runner itself (`POST /spawn` on its state
+  API) — normal, tracked, concurrency-gated runs attributed to their
+  parent. Authorized deny-by-default by the caller's own manager.json
+  `spawn_targets` manifest — a hooks-repo declaration, never server env.
   See the [State KV API](#state-kv-api-httplocalhost9002-in-state-hooks).
 - **Managers**: persistent, single-instance watchers as a first-class
   sibling entity to hooks — ONE supervised long-lived container each
@@ -363,7 +364,7 @@ own data.
 | POST   | `/kv/{key}/steal` | **Destructively take the lock**: atomically transfer it to the calling run AND cancel the displaced holder (the existing cancel path kills its container; its terminal error reads `cancelled: lock "{key}" stolen by run …`, and its *other* locks release normally on finish — the stolen one is already the thief's). `200` `{"run_id","hook_id","acquired_at","expires_at","stolen_from":{"run_id","hook_id"}}`; `stolen_from` is absent when the lock was free — a steal of an uncontended lock is exactly an acquire, and a holder that finished first makes this a plain acquire (no error, race-safe). Namespace scoping means a run can only ever steal from — and cancel — runs of its **own** hook. Blocked waiters are not inherited: they keep polling, now against the new holder. Optional `{"ttl_seconds"}` as for acquire. |
 | POST   | `/wait`          | **Declared sleep.** Body `{"seconds": 1..600, "reason": "..."}` — both required (a wait must be explained; one call caps at 10 minutes, loop for longer). Blocks ~`seconds`, then returns `200` `{"waited": N}`. While it blocks, the run row on the dashboard shows `waiting Ns: reason` and the wait **counts as activity for the idle `timeout`** — a declared in-process sleep can never be reaped as silence (see [Timeouts](#timeouts)). Returns early with `{"waited": M, "interrupted": true, "cause": "run finished"\|"run cancelled"}` when the run ends or a cancel is requested. `400` invalid body; `409` when the calling run is no longer active. |
 | POST   | `/title`         | **Name the run mid-flight.** Body `{"title": "..."}` (trimmed, 1–200 characters). Sets the calling run's friendly display title — the live dashboard row, timeline chip, `/runs` JSON, and the persisted terminal snapshot all pick it up — replacing any [`run_title`](#run-titles-run_title) template title (last write wins). For runs whose subject is only known mid-run: a fleet sweep titles itself `sweep: owner/repo` once it knows which repo mattered. `204` on success; `400` empty/overlong; `409` when the calling run is no longer active. |
-| POST   | `/spawn`         | **Start runs of ANOTHER hook through the runner** (built for coordinator hooks — replaces POSTing HMAC-signed synthetic webhooks at the public endpoints). Body `{"hook":"<target id>","count":1..100,"payload":<JSON object, ≤256 KiB>}` + optional `"event":"<string>"` — the payload becomes each spawned run's `HOOK_PAYLOAD_FILE` verbatim, and `event` becomes their `X-GitHub-Event` header (hooks branch on it); every spawned run also gets `X-Webhook-Runner-Spawned-By` / `X-Webhook-Runner-Spawned-By-Run` headers naming the caller. Authorization is a **deny-by-default, runner-side allowlist** (`WEBHOOK_RUNNER_SPAWN_ALLOW`, see [Server configuration](#server-configuration)) — never a hook.json field. Pre-validated all-or-nothing before anything starts: `400`/`413` bad body or bounds; `409` calling run not active; `404` unknown target; `403` caller not allowlisted for that target; `409` target disabled by the [kill switch](#operational-overrides-the-kill-switch) — each denial records a `spawn.denied` activity event. On success, `count` **normal runs** of the target start (tracked, gated by the target's [concurrency group](#concurrency-groups) — excess spawns queue as `pending` — KV-enabled, persisted) and the response is `200 {"run_ids":[...]}` in start order, immediately: dispatch is async, the caller never waits on slots. [`skip_if`](#skip-conditions-skip_if) is **bypassed** like scheduled fires (a spawn is operator machinery's own doing, not an unwanted delivery). Spawned runs carry `spawned_by {run_id,hook_id}` in their run JSON/history, and their `run.started` feed lines name the parent. Older runners `404` this route — deploy the runner before merging any hook that calls it, and treat `404`/`405` as "primitive unavailable", loudly. |
+| POST   | `/spawn`         | **Start runs of ANOTHER hook through the runner** (built for coordinator [managers](#managers-persistent-watchers) — replaces POSTing HMAC-signed synthetic webhooks at the public endpoints). Body `{"hook":"<target id>","count":1..100,"payload":<JSON object, ≤256 KiB>}` + optional `"event":"<string>"` — the payload becomes each spawned run's `HOOK_PAYLOAD_FILE` verbatim, and `event` becomes their `X-GitHub-Event` header (hooks branch on it); every spawned run also gets `X-Webhook-Runner-Spawned-By` / `X-Webhook-Runner-Spawned-By-Run` headers naming the caller. Authorization is **manifest-sourced and deny-by-default**: the caller must be a [manager](#managers-persistent-watchers) whose own manager.json names the target in `spawn_targets` — never a hook.json field (hooks cannot spawn) and never server env (granting a spawn is a hooks-repo change deployed like any other declaration). Pre-validated all-or-nothing before anything starts: `400`/`413` bad body or bounds; `409` calling run/instance not active; `404` unknown target; `403` caller not a manager, or target not in its `spawn_targets`; `409` target disabled by the [kill switch](#operational-overrides-the-kill-switch) — each denial records a `spawn.denied` activity event. On success, `count` **normal runs** of the target start (tracked, gated by the target's [concurrency group](#concurrency-groups) — excess spawns queue as `pending` — KV-enabled, persisted) and the response is `200 {"run_ids":[...]}` in start order, immediately: dispatch is async, the caller never waits on slots. [`skip_if`](#skip-conditions-skip_if) is **bypassed** like scheduled fires (a spawn is operator machinery's own doing, not an unwanted delivery). Spawned runs carry `spawned_by {run_id,hook_id}` in their run JSON/history, and their `run.started` feed lines name the parent. Older runners `404` this route — deploy the runner before merging any manager that calls it, and treat `404`/`405` ("primitive unavailable") and `403` (no grant) as loud failures, never a silent skip. |
 
 ### Sync vs async
 
@@ -543,6 +544,7 @@ the mandatory `Dockerfile`, code baked in — exactly the hook rules):
   "secret": "…",                 // the hook auth trio, verbatim
   "reconcile_interval": "3m",    // optional ticks; omit = event-only
   "timeout": "10m",              // wedge detection (see below)
+  "spawn_targets": ["worker-hook"], // hooks this manager may /spawn
   "skip_if": [ { "header:x-github-event": { "ne": "workflow_job" } } ]
 }
 ```
@@ -573,6 +575,14 @@ the mandatory `Dockerfile`, code baked in — exactly the hook rules):
   finishes that event), `github_status` (per-delivery statuses), `dind`.
   Only `state` (implied true) and `schedule` (superseded by
   `reconcile_interval`) are rejected.
+- **`spawn_targets` = the spawn grant** (managers only): the hook ids
+  this manager may start via
+  [`POST /spawn`](#state-kv-api-httplocalhost9002-in-state-hooks),
+  deny-by-default — absent or empty spawns nothing, and hooks can never
+  spawn at all. Entries must name hooks declared in the same tree: an
+  unknown id or a manager id fails load/`validate` and drops the
+  manager. Granting a spawn is a hooks-repo change deployed like any
+  other declaration, never server configuration.
 - **`timeout` = wedge detection, not a lifetime**: the activity watchdog
   only arms while an event is checked out (or queued with nobody
   consuming); a manager parked in its long-poll with an empty inbox is
@@ -1042,7 +1052,6 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_DATA_DIR`         | (hooks-dir parent)           | Directory for KV state (`kv/<namespace>.json`), the token `state-secret`, and the run history (`runs.db`). Defaults alongside the hooks clone + deploy key. |
 | `WEBHOOK_RUNNER_STATE_SOCKET`     | `$TMPDIR/whr-state.sock`     | Path of the KV API's internal Unix socket (the proxy shim bridges `localhost:9002` to it). Must stay in a host-shared dir (defaults under `TMPDIR`, which already is). |
 | `WEBHOOK_RUNNER_STATE_SECRET`     | (generated + persisted)      | HMAC secret signing per-hook KV tokens. Set it to share one secret across replicas; otherwise it's generated and saved to `<data-dir>/state-secret`. |
-| `WEBHOOK_RUNNER_SPAWN_ALLOW`      | (none — spawning disabled)   | Deny-by-default allowlist for the state API's `POST /spawn`: which parent hooks may spawn which targets. Semicolon-separated `parent=target[,target...]` entries (whitespace tolerated, duplicate parents merge), e.g. `gha-coordinator=gha-runner,gha-runner-dind`. Unset/empty = nothing may spawn; a malformed value **fails startup** (a typo must never silently disable spawning). Deliberately server config, not hook.json. |
 | `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
 | `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | GitHub token for commit statuses: required if any hook uses `github_status`, and read by the reload gate's [reconciliation poll](#ci-gated-reloads) to check the hooks repo's gating status (needs read access to the hooks repo's commit statuses — a fine-grained PAT with "Commit statuses: Read" + "Metadata: Read" on that repo, or classic `repo:status`). Without it the poll holds loudly on tip changes. |

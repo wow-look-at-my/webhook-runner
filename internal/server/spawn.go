@@ -1,16 +1,18 @@
 package server
 
 // POST /spawn on the state API — the runner-native spawn primitive: a
-// permitted state hook starts runs of ANOTHER hook through the runner
-// itself, replacing the retired pattern of a coordinator hook POSTing
+// permitted MANAGER starts runs of ANOTHER hook through the runner
+// itself, replacing the retired pattern of a coordinator POSTing
 // HMAC-signed synthetic webhooks at the public hook endpoints.
 //
-// The CALLER (parent hook + parent run) comes from the verified bearer
+// The CALLER (parent + run/instance id) comes from the verified bearer
 // token, never the body — the same auth path as /wait and the lock routes.
-// Authorization is a DENY-BY-DEFAULT allowlist configured RUNNER-side
-// (WEBHOOK_RUNNER_SPAWN_ALLOW; see SpawnAllowlist), deliberately NOT a
-// hook.json field: the published hook schema stays untouched, so consumers
-// need zero new hook.json fields.
+// Authorization is MANIFEST-SOURCED and deny-by-default: the caller's own
+// manager.json declares its allowed targets (spawn_targets), loaded from
+// the GitHub-synced hooks tree like every other declaration — granting a
+// spawn is a repo change, never host env. Only MANAGERS carry the field
+// (the published hook schema is frozen), so hook-run callers are denied
+// outright; a manager with no/empty spawn_targets spawns nothing.
 //
 // A spawned run is a NORMAL run of the target hook, dispatched the way the
 // scheduler's Fire callback dispatches (registry lookup → runner start with
@@ -47,57 +49,6 @@ const (
 	// (real GitHub event names are short words).
 	maxSpawnEventLen = 100
 )
-
-// SpawnAllowlist is POST /spawn's DENY-BY-DEFAULT authorization: which
-// parent hooks may spawn which target hooks. It is runner-side OPERATOR
-// config (the WEBHOOK_RUNNER_SPAWN_ALLOW env var, parsed by
-// ParseSpawnAllow), deliberately NOT a hook.json field — the published hook
-// schema is frozen and consumers must need zero new hook.json fields. A
-// nil/empty allowlist refuses every spawn.
-type SpawnAllowlist map[string]map[string]bool
-
-// Allowed reports whether parent may spawn target. Nil-safe: a nil (or
-// empty) allowlist denies everything.
-func (a SpawnAllowlist) Allowed(parent, target string) bool {
-	return a[parent][target]
-}
-
-// ParseSpawnAllow parses the WEBHOOK_RUNNER_SPAWN_ALLOW value:
-// semicolon-separated entries, each "parent=target[,target...]", whitespace
-// around every token trimmed, empty entries ignored — so a compose file can
-// write it readably:
-//
-//	WEBHOOK_RUNNER_SPAWN_ALLOW=gha-coordinator=gha-runner,gha-runner-dind; other=target
-//
-// Duplicate parent entries merge (union of targets). "" parses to an empty
-// allowlist (spawning disabled — the deny-by-default). A malformed entry —
-// no "=", an empty parent, an empty target — is an ERROR the caller must
-// fail startup on: a typo here would otherwise silently turn spawning off.
-func ParseSpawnAllow(raw string) (SpawnAllowlist, error) {
-	out := SpawnAllowlist{}
-	for _, entry := range strings.Split(raw, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		parent, targets, ok := strings.Cut(entry, "=")
-		parent = strings.TrimSpace(parent)
-		if !ok || parent == "" {
-			return nil, fmt.Errorf("spawn allowlist entry %q: want parent=target[,target...]", entry)
-		}
-		for _, target := range strings.Split(targets, ",") {
-			target = strings.TrimSpace(target)
-			if target == "" {
-				return nil, fmt.Errorf("spawn allowlist entry %q: empty target hook id", entry)
-			}
-			if out[parent] == nil {
-				out[parent] = map[string]bool{}
-			}
-			out[parent][target] = true
-		}
-	}
-	return out, nil
-}
 
 // spawnRequest is the POST /spawn body. Payload is REQUIRED and must be a
 // JSON object — it becomes each spawned run's payload file verbatim. Event,
@@ -200,14 +151,23 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 		writeError(w, http.StatusNotFound, "no such hook")
 		return
 	}
-	// Deny-by-default: only an explicit WEBHOOK_RUNNER_SPAWN_ALLOW pair may
-	// spawn. Checked after existence (the brief 404/403 split) — spawn
-	// callers are operator-curated hooks, not an untrusted surface.
-	if !s.spawnAllow.Allowed(ns, target.ID) {
+	// Deny-by-default, manifest-sourced: the caller's OWN manager.json
+	// spawn_targets is the allowlist. Checked after existence (the brief
+	// 404/403 split). Hook-run callers have no manifest field to grant
+	// them (the published hook schema is frozen) and are denied.
+	caller, isManager := s.registry.GetManager(ns)
+	if !isManager {
 		s.events.Record("spawn.denied",
-			fmt.Sprintf("%s run %s: not allowlisted to spawn %s (WEBHOOK_RUNNER_SPAWN_ALLOW)", ns, runID, target.ID),
+			fmt.Sprintf("%s run %s: only managers may spawn (hooks carry no spawn_targets manifest)", ns, runID),
 			map[string]string{"hook": ns, "run": runID, "target": target.ID})
-		writeError(w, http.StatusForbidden, ns+" is not allowed to spawn "+target.ID)
+		writeError(w, http.StatusForbidden, ns+" is not allowed to spawn: only managers declare spawn_targets")
+		return
+	}
+	if !caller.AllowedSpawnTarget(target.ID) {
+		s.events.Record("spawn.denied",
+			fmt.Sprintf("%s run %s: %s is not in its manager.json spawn_targets", ns, runID, target.ID),
+			map[string]string{"hook": ns, "run": runID, "target": target.ID})
+		writeError(w, http.StatusForbidden, ns+" is not allowed to spawn "+target.ID+" (not in spawn_targets)")
 		return
 	}
 	// The operator kill switch gates spawns exactly like deliveries and

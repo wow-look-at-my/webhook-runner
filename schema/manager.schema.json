@@ -59,6 +59,12 @@
       },
       "then": { "required": ["context"] }
     },
+    "spawn_targets": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "The hook ids this manager may start via the state API's POST /spawn — the manifest-sourced spawn allowlist, deny-by-default: absent or empty means this manager spawns nothing. Entries must name HOOKS declared in the same tree (managers are supervised, never spawnable); an entry naming an unknown id or a manager fails load/validation and drops this manager. Granting a spawn is a hooks-repo change deployed like any other, never host configuration."
+    },
     "dind": {
       "type": "boolean",
       "default": false,
