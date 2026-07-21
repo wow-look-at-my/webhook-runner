@@ -220,9 +220,9 @@ The server listens on two TCP ports plus a Unix socket:
   atomic take-and-pin; see the pinning bullet under "Things easy to get
   wrong"), the spawn primitive `POST /spawn`
   (`{"hook","count":1..100,"payload":<JSON object ≤256KiB>}` + optional
-  `"event"` — a permitted hook starts runs of ANOTHER hook through the
-  runner itself, gated by the deny-by-default WEBHOOK_RUNNER_SPAWN_ALLOW
-  allowlist; see the spawn bullet under "Things easy to get
+  `"event"` — a MANAGER starts runs of ANOTHER hook through the
+  runner itself, authorized deny-by-default by its own manager.json
+  `spawn_targets` manifest; see the spawn bullet under "Things easy to get
   wrong"), and — for MANAGERS only — the inbox long-poll
   `POST /inbox/next` (`{"wait_seconds":1..600}`; 200 = one event, 204 =
   none in time, 409 = superseded instance; calling again settles the
@@ -987,7 +987,9 @@ The companion repo is `wow-look-at-my/webhooks`.
   and working, never dormant-gated — the org-wide shipping rule; the
   dashboard switch is an emergency control). (6) Full hook field parity, manager-shaped:
   `concurrency_group` = the instance holds one slot for its LIFETIME;
-  `run_title` = instance panel title; `dind` = same two flags; only
+  `run_title` = instance panel title; `dind` = same two flags; plus the
+  manager-ONLY `spawn_targets` (the /spawn grant — see the spawn
+  bullet); only
   `state` (implied) and `schedule` (superseded by `reconcile_interval` —
   coalesced flat ticks + one `start` event per instance; omitted =
   event-only, first-class) are REJECTED at parse. (7) Reloads: a
@@ -1045,21 +1047,28 @@ The companion repo is `wow-look-at-my/webhooks`.
   rule as usual: older runners 404 `/wait` (hooks should fall back to a
   plain sleep — they lose the badge and the activity credit, nothing else).
 - Spawn (`POST /spawn` on the state API, `internal/server/spawn.go`): a
-  permitted state hook starts `count` runs of ANOTHER hook through the
-  runner itself — the runner-native replacement for a coordinator hook
-  POSTing HMAC-signed synthetic webhooks at the public endpoints. The
-  CALLER (parent hook + run) comes from the verified bearer token, never
-  the body. Authorization is DENY-BY-DEFAULT and RUNNER-side:
-  `WEBHOOK_RUNNER_SPAWN_ALLOW` maps parent→targets
-  (`parent=target,target;...`; unset/empty = nothing may spawn, a
-  malformed value FAILS STARTUP — the reload-poll rule), deliberately
-  NEVER a hook.json field, so the published hook schema stays untouched
-  and consumer hooks need zero new fields. Pre-validation is
+  MANAGER starts `count` runs of ANOTHER hook through the runner
+  itself — the runner-native replacement for a coordinator POSTing
+  HMAC-signed synthetic webhooks at the public endpoints. The CALLER
+  (parent + run/instance id) comes from the verified bearer token, never
+  the body. Authorization is DENY-BY-DEFAULT and MANIFEST-SOURCED: the
+  caller's own manager.json `spawn_targets` array names the hook ids it
+  may spawn (absent/empty = spawns nothing), loaded from the hooks tree
+  like every other declaration — granting a spawn is a hooks-repo
+  change, never host env. Entries must name declared HOOKS: an entry
+  naming an unknown id or a manager fails load/validation and DROPS the
+  manager (fail closed, the undeclared-concurrency-group rule —
+  `hooks.CheckSpawnTargets`, run against the post-rejection sets in
+  BOTH `buildLoadAndApply` and `validate`, so hooks-repo CI catches it).
+  Only managers carry the field — the published hook schema stays
+  frozen, so a hook-run caller is 403'd outright, and managers are never
+  spawnable targets. Pre-validation is
   all-or-nothing BEFORE anything starts — 400/413 bounds (count 1..100,
   payload a JSON object ≤256KiB, optional `event` ≤100 chars), 409
-  parent run not active (the /wait rule), 404 unknown target, 403 not
-  allowlisted, 409 target effectively disabled (the SAME
-  effective-disabled state handleTrigger and buildScheduleFire read) —
+  parent run/instance not active (the /wait rule), 404 unknown target,
+  403 caller not a manager or target not in its spawn_targets, 409
+  target effectively disabled (the SAME effective-disabled state
+  handleTrigger and buildScheduleFire read) —
   each denial a loud `spawn.denied` event. A spawned run is a NORMAL run
   dispatched the scheduler-Fire way (`runner.StartSpawned` with
   context.Background() + a synthetic payload/headers pair — the target's
@@ -1077,9 +1086,11 @@ The companion repo is `wow-look-at-my/webhooks`.
   value format, byte-asserted in runstore tests), and the
   run.started/run.finished event MESSAGES carry ", spawned by <hook> run
   <id>" (runRef style — no event-schema change). Deploy-first rule:
-  this primitive deploys BEFORE any hook calling it — older runners 404
-  `/spawn`, and callers must fail LOUD on 404/405 ("primitive
-  unavailable"), never silently skip their fan-out.
+  a runner with manifest-spawn support deploys BEFORE any manager
+  declaring `spawn_targets` merges (older manager-capable runners fail
+  the manager's load on the unknown field; pre-manager runners 404
+  `/spawn`), and callers must fail LOUD on 404/405 ("primitive
+  unavailable") and 403 (no grant), never silently skip their fan-out.
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at
