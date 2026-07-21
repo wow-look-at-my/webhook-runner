@@ -124,6 +124,14 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
 	if !ok {
+		// Managers share the endpoint (and the id namespace): a delivery
+		// for a manager id lands in its inbox instead of booting a
+		// container — same auth, same skip_if, same kill switch. See
+		// managers.go.
+		if mgr, isManager := s.registry.GetManager(id); isManager {
+			s.handleManagerTrigger(w, r, mgr)
+			return
+		}
 		// Rejected requests are activity too: a caller hitting a wrong URL or
 		// a stale key is exactly the misconfiguration the dashboard must be
 		// able to answer "did you receive anything?" about.

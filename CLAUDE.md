@@ -14,7 +14,8 @@ cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
-internal/hooks/            hook.json model, loader, registry, watcher, git repo
+internal/hooks/            hook.json + manager.json models, loader, registry, watcher, git repo
+internal/managers/         the manager entity's runtime: bounded inbox (checkout/settle handles) + supervisor (flock lease, flat restarts, output ring, attention seam)
 internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
 internal/concurrency/      named concurrency groups (central concurrency.json) + semaphore manager (+ operator limit overrides)
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
@@ -28,7 +29,7 @@ internal/attention/        aggregated ACTIVE misconfigurations (the needs-attent
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
+schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
 examples/hooks/            sample hook configs
 ```
@@ -114,7 +115,14 @@ The server listens on two TCP ports plus a Unix socket:
   **deliberate reversal** of the original "never values" stance, made at
   the operator's explicit request — the admin port is operator-only
   behind Zero Trust; the hook port and `/hooks/{id}` stay value-free
-  (`/hooks/{id}`'s KV field remains the count/bytes summary). Internal,
+  (`/hooks/{id}`'s KV field remains the count/bytes summary). Plus the
+  MANAGER surface: `GET /managers` (roster: state, effective disabled,
+  instance id/started, restarts, inbox depth, last delivery/tick, config
+  summary), `GET /managers/{id}` (roster row + the instance's recent
+  output lines — managers are not runs, their logs live HERE, never in
+  /runs), and the manager kill switch + bounce
+  (`POST /managers/{id}/disable|enable|restart` — disable gracefully
+  stops the instance and parks; restart bounces it). Internal,
   behind Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment
   opens a per-hook "app" page built on those endpoints — an app is
   exactly one hook for now; grouping several hooks into one app is
@@ -123,7 +131,20 @@ The server listens on two TCP ports plus a Unix socket:
   renders a "State (KV)" section: the key table (name, size, TTL
   remaining) with click-through to the stored value (pretty-printed when
   it parses as JSON, base64 for binary; text-node rendering, so stored
-  bytes can't inject markup). The overview's PRIMARY runs view is a
+  bytes can't inject markup). The page is organized by a PERSISTENT
+  SIDEBAR (dashboard.js's hash router): the bare `#` hash is the
+  chart-first overview (timeline front and center), and every other
+  section is its own `#page=<name>` route (hooks, managers, runs,
+  events, kv, concurrency, images, attention, reload), with dynamic
+  per-hook (`#hook=`) and per-manager (`#manager=`) drill-down links in
+  the sidebar. Routing toggles a `.page-off` CLASS only — never the
+  `hidden` attribute — so it composes with each section's own
+  data-driven visibility (attention hides when healthy, the runs table
+  behind timeline.js's toggle) and every section keeps refreshing over
+  the same SSE section feed regardless of the active page (nothing is
+  lost, only organized; the dedicated Managers page renders the roster
+  with the hook-style slider kill switch, a Restart bounce, and the
+  drill-down's live output tail). The overview's PRIMARY runs view is a
   realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
   hook, hue per hook): queue wait as a dim lead-in segment, declared
   waits/blocked locks/queued group acquires hatched. Wait indication is
@@ -193,12 +214,20 @@ The server listens on two TCP ports plus a Unix socket:
   run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
   chars — names the calling run mid-flight, replacing any run_title
   template title; see the run-title bullet under "Things easy to get
-  wrong"), and the spawn primitive `POST /spawn`
+  wrong"), the pin toggle `POST /kv/{key}/pin` / `POST /kv/{key}/unpin`
+  (owner-only, idempotent — a pinned lock refuses steals with 409 +
+  `held_by.pinned:true`; acquire also takes `{"pinned":true}` for an
+  atomic take-and-pin; see the pinning bullet under "Things easy to get
+  wrong"), the spawn primitive `POST /spawn`
   (`{"hook","count":1..100,"payload":<JSON object ≤256KiB>}` + optional
   `"event"` — a permitted hook starts runs of ANOTHER hook through the
   runner itself, gated by the deny-by-default WEBHOOK_RUNNER_SPAWN_ALLOW
   allowlist; see the spawn bullet under "Things easy to get
-  wrong"). Hooks don't touch the socket directly: the runner
+  wrong"), and — for MANAGERS only — the inbox long-poll
+  `POST /inbox/next` (`{"wait_seconds":1..600}`; 200 = one event, 204 =
+  none in time, 409 = superseded instance; calling again settles the
+  previous event as processed — see the managers bullet under "Things
+  easy to get wrong"; hooks 404 here). Hooks don't touch the socket directly: the runner
   injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
   as the container entrypoint, so the hook reaches the API at a plain
   `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
@@ -910,6 +939,82 @@ The companion repo is `wow-look-at-my/webhooks`.
   carry a derived `waiters` list ("N waiting on this run's locks") —
   computed by `server.attachWaiters` from live runs' `waiting_on` at READ
   time, never stored; don't add waiter state to the lock table.
+- Lock pinning (`internal/kv/lock.go` `pinned` + `internal/server/state.go`
+  pin/unpin routes): a lock HOLDER can flip its lock not-stealable
+  (`POST /kv/{key}/pin`) and back (`/unpin`), or take-and-pin atomically
+  (`{"pinned":true}` on acquire — honored mid-blocking-retry too). A
+  steal of a live pinned lock mutates NOTHING: 409 with
+  `held_by.pinned:true` + a `lock.steal_refused` event, and the refused
+  contender's correct fallback is a blocking acquire (which still wins on
+  release — latest-event-wins survives, it just waits out the pinned
+  critical section instead of interrupting it). Owner-only in both
+  directions (409 otherwise), idempotent, `ErrLockPinned` maps to 409.
+  THE INVARIANT: a pin NEVER outlives its run — the finish-seam
+  `ReleaseRunLocks` and the TTL backstop apply to pinned locks unchanged
+  (pinning restricts STEALING, never releasing), and a re-acquire by the
+  same run preserves an existing pin. The single-instance manager lease
+  is deliberately NOT built on an always-pinned lock — it stays the
+  separate kernel-flock layer (operator ruling; composition argument in
+  docs/manager-entity-design.md 10b).
+- MANAGERS (`internal/managers` + `internal/hooks/manager.go` +
+  `internal/runner/managersession.go` + `internal/server/managers.go`):
+  persistent, single-instance watchers as a first-class SIBLING entity to
+  hooks — declared at `src/managers/<id>/manager.json` (+ mandatory
+  Dockerfile; SDK layout only, legacy trees never scanned; ids share ONE
+  namespace with hooks, collision = loud load error). The things to hold
+  straight: (1) an INSTANCE IS NOT A RUN (operator ruling) — it never
+  touches the tracker, /runs, the timeline, or the runstore; it carries
+  an instance id in the run-id alphabet so `kv.Token(managerID,
+  instanceID)`, locks (incl. pinning), /wait, /title, and /spawn reuse
+  verbatim, with the supervisor's `OnInstanceEnd` as the finish-seam
+  analog (lock release + `lock.released_on_finish`); spawned WORKER runs
+  stay normal tracked runs. (2) Deliveries feed a BOUNDED INBOX (256,
+  drop-oldest loudly — `manager.inbox_dropped`), never boot containers;
+  dispatch order is kill switch → auth → skip_if → inbox (a skip_if
+  match answers 200 skipped + `manager.skipped`, no run record); the
+  manager consumes via long-poll `POST /inbox/next`, and CALLING NEXT
+  AGAIN is the ack — it settles the previous event as processed, which
+  is what completes `synchronous` delivery holds (200 processed;
+  drop/abandon = 500; timeout-degrade to 202 per the hook sync rule) and
+  per-delivery `github_status` (pending on accept, success/error on
+  settle; ticks post nothing). (3) The WATCHDOG arms only while an event
+  is checked out or queued unconsumed — an idle parked long-poll is
+  healthy FOREVER; /wait and output bytes touch it (`TouchInstance`).
+  (4) Single-instance = kernel flock on `<data-dir>/managers.lock` (flat
+  2s poll, fail-closed on errors) + deterministic container name
+  `webhook-runner-mgr-<id>` + orphan `docker rm -f` before every start;
+  restart is FLAT 10s forever (no backoff, no give-up), with failures on
+  the attention seam (`manager` source) until an instance holds.
+  (5) `enable` defaults TRUE exactly like hooks (features ship enabled
+  and working, never dormant-gated — the org-wide shipping rule; the
+  dashboard switch is an emergency control). (6) Full hook field parity, manager-shaped:
+  `concurrency_group` = the instance holds one slot for its LIFETIME;
+  `run_title` = instance panel title; `dind` = same two flags; only
+  `state` (implied) and `schedule` (superseded by `reconcile_interval` —
+  coalesced flat ticks + one `start` event per instance; omitted =
+  event-only, first-class) are REJECTED at parse. (7) Reloads: a
+  content-hash change supersedes the live instance ("superseded by
+  reload"); managers reload atomically with hooks/groups/schedules
+  through the same `buildLoadAndApply` (internal/cli/loadapply.go) —
+  don't fork a second reload path. Deploy-first rule as usual: old
+  binaries never scan `src/managers/`, so the runner deploys before the
+  first manager directory merges.
+- The enforced-GitHub gateway (`internal/runner/managersession.go`
+  `gsmArgs`/`GSMConfig`, wired in runner.execute + runOneTest +
+  RunManagerSession): with `WEBHOOK_RUNNER_GSM_URL` set, every
+  hook/manager/test container EXCEPT the `WEBHOOK_RUNNER_GITHUB_DIRECT`
+  csv exemptions gets `--add-host api.github.com:0.0.0.0` (fail-closed
+  blackhole) + a `GITHUB_API_URL` env DEFAULT pointing at the gateway
+  (injected BEFORE hook env, so a hook's own value wins — the blackhole,
+  not the env var, is the enforcement). Unset (the default) = ZERO
+  docker args, byte-identical behavior — the knob is an operator
+  infrastructure flip gated on the gsm caching fixes (PR B), not a
+  feature gate. The runner's OWN GitHub calls (githubstatus posts, the
+  reload poll) follow the knob via `gh.SetAPIURL` —
+  `WEBHOOK_RUNNER_GITHUB_API_URL` overrides that separately. Run+test
+  parity is load-bearing (the dind precedent): both paths inject the
+  same args, so a hook's `tests` see the same network posture as its
+  runs.
 - First-class waits (`internal/server/wait.go`, `POST /wait` on the state
   socket): a hook that wants to pause SLEEPS IN-PROCESS by declaring it —
   `{"seconds": 1..600, "reason": "..."}`, both required (waits must be

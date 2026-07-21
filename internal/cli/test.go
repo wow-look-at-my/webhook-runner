@@ -35,22 +35,35 @@ Hooks without a "tests" array are skipped. Exits non-zero if any hook fails
 to load or any test command fails.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			loaded, errs := hooks.LoadDir(args[0])
+			layout := hooks.DetectLayout(args[0])
+			loaded, errs := hooks.LoadLayout(layout)
+			// Managers test exactly like hooks: their declared `tests`
+			// commands run in the built image (same contract — no env, no
+			// secrets, no state socket; self-contained).
+			loadedManagers, merrs := hooks.LoadManagers(layout)
+			errs = append(errs, merrs...)
 			if len(errs) > 0 {
 				for _, e := range errs {
 					fmt.Fprintf(cmd.ErrOrStderr(), "ERR %v\n", e)
 				}
 				return errors.New("one or more hooks failed validation")
 			}
-			ids := make([]string, 0, len(loaded))
-			for id := range loaded {
+			testable := make(map[string]*hooks.Hook, len(loaded)+len(loadedManagers))
+			for id, h := range loaded {
+				testable[id] = h
+			}
+			for id, m := range loadedManagers {
+				testable[id] = m.Hook
+			}
+			ids := make([]string, 0, len(testable))
+			for id := range testable {
 				ids = append(ids, id)
 			}
 			sort.Strings(ids)
 
 			for _, want := range only {
-				if _, ok := loaded[want]; !ok {
-					return fmt.Errorf("--hook %s: no such hook", want)
+				if _, ok := testable[want]; !ok {
+					return fmt.Errorf("--hook %s: no such hook or manager", want)
 				}
 			}
 
@@ -58,7 +71,7 @@ to load or any test command fails.`,
 			tested, commands := 0, 0
 			var failures []error
 			for _, id := range ids {
-				h := loaded[id]
+				h := testable[id]
 				if len(h.Tests) == 0 {
 					continue
 				}
@@ -71,6 +84,7 @@ to load or any test command fails.`,
 					Docker:  docker,
 					Timeout: timeout,
 					Out:     out,
+					GSM:     gsmFromEnv(),
 				}); err != nil {
 					failures = append(failures, err)
 				}

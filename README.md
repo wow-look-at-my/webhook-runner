@@ -102,6 +102,16 @@ graph LR
   concurrency-gated runs attributed to their parent. Gated by a
   deny-by-default server-side allowlist (`WEBHOOK_RUNNER_SPAWN_ALLOW`).
   See the [State KV API](#state-kv-api-httplocalhost9002-in-state-hooks).
+- **Managers**: persistent, single-instance watchers as a first-class
+  sibling entity to hooks — ONE supervised long-lived container each
+  (flat restart forever, kernel-flock single-instance lease), fed by an
+  inbox instead of per-delivery boots, with the full hook feature set.
+  Enabled by default; declared under `src/managers/`. See
+  [Managers](#managers-persistent-watchers).
+- **Lock pinning**: a lock holder can flip its lock not-stealable and
+  back (`POST /kv/{key}/pin`/`/unpin`, or acquire with `"pinned": true`)
+  to protect a short critical section from latest-event-wins steals —
+  refused steals name the pinned holder; a pin never outlives its run.
 - **Declarative skips**: `skip_if` conditions over the request headers and
   parsed JSON payload answer unwanted-but-unmutable deliveries (e.g. a
   GitHub event type bundled into a checkbox you need for another event)
@@ -307,7 +317,12 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/kv`               | Read-only state-store stats: per-namespace key count and byte total (no values at this level; shape unchanged for existing consumers). |
 | GET    | `/kv/{namespace}`   | List one namespace's keys (namespace == hook ID): per key its name, value size in bytes, and — when a TTL is set — `expires_at` (absolute) plus `ttl_seconds` (remaining); both absent for keys without a TTL. Sorted by key; `?prefix=` filters. Unknown/empty namespaces list as empty. |
 | GET    | `/kv/{namespace}/{key}` | Read one entry: the metadata above **plus the stored value** — `value_base64` always, `value_utf8` additionally when the bytes are valid UTF-8. `404` when absent **or expired** (the same lazy-expiry rule the state API applies). The key is one path segment: URL-encode it (`%2F` for `/`, `%23` for `#`). |
-| GET    | `/`                 | Dashboard; `/#hook={id}` opens a hook's drill-down page. |
+| GET    | `/managers`         | The [manager](#managers-persistent-watchers) roster: per manager its state (`running`/`starting`/`restart-wait`/`stopping`/`disabled`/`waiting-lease`), effective `disabled`, live `instance_id` + `instance_started`, restarts since boot, inbox depth, last delivery/tick, and config summary (reconcile interval, sync, group). Empty list when none are declared. |
+| GET    | `/managers/{id}`    | One manager's drill-down: the roster row plus the live instance's recent `output` lines — managers are NOT runs, so their logs live here, never in `/runs`. |
+| POST   | `/managers/{id}/disable` | The manager [kill switch](#operational-overrides-the-kill-switch) (same persisted overrides store as hooks; ids share one namespace): gracefully stops the live instance and parks the supervisor loop; deliveries are `503` until re-enabled. An **emergency control** — managers default enabled. |
+| POST   | `/managers/{id}/enable`  | Flip it back: the supervisor starts a fresh instance. Both flips are idempotent, `404` for unknown managers. |
+| POST   | `/managers/{id}/restart` | Bounce the live instance: graceful stop, then the supervisor's normal loop starts a fresh one (fresh instance id, orphan reap first). `409` when disabled or no instance is live. |
+| GET    | `/`                 | Dashboard. A persistent sidebar routes every section as its own page (`/#page=hooks`, `#page=managers`, `#page=runs`, …; the bare `#` is the chart-first overview); `/#hook={id}` opens a hook's drill-down, `/#manager={id}` a manager's. |
 
 The dashboard's static assets are content-addressed: the served index.html
 references `/dashboard.<hash>.css|.js` and `/timeline.<hash>.js` (hash of the
@@ -342,6 +357,9 @@ own data.
 | POST   | `/kv/{key}/incr` | Atomically add to an integer counter. Optional body `{"delta":N}` (default `+1`) and TTL as for PUT. Returns `{"value":<int64>}`; `409` if the existing value isn't an integer. |
 | POST   | `/kv/{key}/acquire` | Take the cooperative lock named `{key}`, owned by the **calling run** (the identity in the token — no client-side owner tokens). `200` `{"run_id","hook_id","acquired_at","expires_at"}` when this run took or already held it (idempotent); `409` when another live run holds it — **naming the holder** in `held_by` (`{"run_id","hook_id","acquired_at","expires_at"}`), so contention is actionable: display it, keep waiting, or steal (nothing is mutated by a contended try). Optional body `{"ttl_seconds": 1..3600}` sets the secondary backstop expiry (default 15m). **Blocking**: add `{"block": true}` (+ optional `"block_timeout_seconds"` 1..600, default 600) and a contended acquire is HELD until the lock is taken (`200`), the timeout passes (`409` + `held_by`), or the run ends. While blocked, the run shows as *waiting on lock `{key}` held by …* on the dashboard and the hold **counts as activity** for the idle `timeout` — same protection as `/wait`. Fairness is best-effort (waiters poll every ~250ms; no FIFO queue). The **primary** release is automatic: when the holding run finishes — success, error, timeout, or cancel — the runner frees all its locks. Locks are in-memory (a restart starts lock-free; no run survives a restart anyway) and separate from stored values: GET/PUT/DELETE on the same key touch the value, never the lock. |
 | POST   | `/kv/{key}/release` | Release early, before the run ends (optional hygiene). `204` released; `404` not held (absent or expired); `409` held by a different run — ownership is verified server-side from the token. |
+| POST   | `/kv/{key}/pin`  | **Make the held lock not-stealable.** Owner-only (`409` held by another run, `404` not held), idempotent `200` with the lock info (`"pinned": true`). While pinned, `steal` is refused with `409` + the pinned holder in `held_by` (and a `lock.steal_refused` event) — contenders fall back to waiting/blocking, which still wins the lock on release. The pin protects a short critical section (e.g. push→verify→arm) from latest-event-wins displacement; it dies with the run like the lock itself (finish-seam release + TTL backstop unchanged). Acquire can also take-and-pin atomically: `{"pinned": true}` on `/kv/{key}/acquire` (honored on the blocking path too). |
+| POST   | `/kv/{key}/unpin` | Flip it back stealable. Owner-only, idempotent `200`. |
+| POST   | `/inbox/next`    | **Managers only** ([Managers](#managers-persistent-watchers)): long-poll the manager's inbox. Body `{"wait_seconds": 1..600}` (optional; default 60). `200` = one event `{"id","kind":"delivery"\|"tick"\|"start","received_at","headers","payload"}`; `204` = nothing arrived within the wait; `409` = the token's instance is no longer the live one (a superseded instance must exit, not consume). Calling it again acknowledges the previous event as processed (settling any [`synchronous`](#managers-persistent-watchers) delivery hold and `github_status` for it). Hooks `404` here. |
 | POST   | `/kv/{key}/steal` | **Destructively take the lock**: atomically transfer it to the calling run AND cancel the displaced holder (the existing cancel path kills its container; its terminal error reads `cancelled: lock "{key}" stolen by run …`, and its *other* locks release normally on finish — the stolen one is already the thief's). `200` `{"run_id","hook_id","acquired_at","expires_at","stolen_from":{"run_id","hook_id"}}`; `stolen_from` is absent when the lock was free — a steal of an uncontended lock is exactly an acquire, and a holder that finished first makes this a plain acquire (no error, race-safe). Namespace scoping means a run can only ever steal from — and cancel — runs of its **own** hook. Blocked waiters are not inherited: they keep polling, now against the new holder. Optional `{"ttl_seconds"}` as for acquire. |
 | POST   | `/wait`          | **Declared sleep.** Body `{"seconds": 1..600, "reason": "..."}` — both required (a wait must be explained; one call caps at 10 minutes, loop for longer). Blocks ~`seconds`, then returns `200` `{"waited": N}`. While it blocks, the run row on the dashboard shows `waiting Ns: reason` and the wait **counts as activity for the idle `timeout`** — a declared in-process sleep can never be reaped as silence (see [Timeouts](#timeouts)). Returns early with `{"waited": M, "interrupted": true, "cause": "run finished"\|"run cancelled"}` when the run ends or a cancel is requested. `400` invalid body; `409` when the calling run is no longer active. |
 | POST   | `/title`         | **Name the run mid-flight.** Body `{"title": "..."}` (trimmed, 1–200 characters). Sets the calling run's friendly display title — the live dashboard row, timeline chip, `/runs` JSON, and the persisted terminal snapshot all pick it up — replacing any [`run_title`](#run-titles-run_title) template title (last write wins). For runs whose subject is only known mid-run: a fleet sweep titles itself `sweep: owner/repo` once it knows which repo mattered. `204` on success; `400` empty/overlong; `409` when the calling run is no longer active. |
@@ -505,6 +523,73 @@ wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
 > **Deploy-first:** `dind` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"dind":
 > true` (older binaries reject unknown fields via `DisallowUnknownFields`).
+
+## Managers (persistent watchers)
+
+Some workloads are not webhooks: they are persistent, single-instance
+reconcilers (a coordinator dispatching CI runners, a PR minder). Running
+those as hooks means one cold container per delivery and lock
+choreography to fake single-instance-ness. A **manager** is the
+first-class alternative: the runner supervises ONE long-lived container
+for it, restarted on any exit after a flat 10s delay, forever.
+
+Declare one under the src layout at `src/managers/<id>/manager.json` (+
+the mandatory `Dockerfile`, code baked in — exactly the hook rules):
+
+```jsonc
+{
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json",
+  "description": "Reconcile queued CI jobs and spawn workers",
+  "secret": "…",                 // the hook auth trio, verbatim
+  "reconcile_interval": "3m",    // optional ticks; omit = event-only
+  "timeout": "10m",              // wedge detection (see below)
+  "skip_if": [ { "header:x-github-event": { "ne": "workflow_job" } } ]
+}
+```
+
+- **Deliveries feed an inbox, not containers**: `POST /hook/<id>` is
+  authenticated and `skip_if`-filtered exactly like a hook, then the
+  delivery lands in a bounded in-memory inbox (256; overflow drops
+  oldest, loudly). The manager consumes it via long-poll `POST
+  /inbox/next` on its [state API](#state-kv-api-httplocalhost9002-in-state-hooks).
+- **Ticks are inbox events too**: with `reconcile_interval` set, the
+  runner enqueues a coalesced `{"kind":"tick"}` on that flat cadence,
+  plus a `start` event when an instance boots — the crash-recovery pass.
+  Event-only managers (no interval) are first-class.
+- **Single-instance, fleet-wide**: a kernel flock lease
+  (`<data-dir>/managers.lock`) + deterministic container names
+  (`webhook-runner-mgr-<id>`) + orphan `docker rm -f` on acquire make a
+  second live instance impossible, across rolling deploys and crashes.
+- **Instances are NOT runs**: nothing manager-shaped appears in `/runs`
+  or on the timeline (a forever-running bar would drown real work). The
+  manager's state, restarts, and live output live on
+  [`GET /managers`](#admin-port-9001) and the dashboard's Managers page.
+  Runs the manager dispatches via [`/spawn`](#state-kv-api-httplocalhost9002-in-state-hooks)
+  are normal tracked runs.
+- **Full hook feature set**, manager-shaped: `env`/secrets, `tests`,
+  `script`/`command`, `concurrency_group` (the instance holds one slot
+  for its lifetime), `run_title` (panel title; `POST /title` renames),
+  `synchronous` (each delivery's response holds until the manager
+  finishes that event), `github_status` (per-delivery statuses), `dind`.
+  Only `state` (implied true) and `schedule` (superseded by
+  `reconcile_interval`) are rejected.
+- **`timeout` = wedge detection, not a lifetime**: the activity watchdog
+  only arms while an event is checked out (or queued with nobody
+  consuming); a manager parked in its long-poll with an empty inbox is
+  healthy forever. A wedged instance is killed and restarted.
+- **Enabled by default**: a declared manager works the moment it
+  deploys. The dashboard's Managers page carries the same slider
+  [kill switch](#operational-overrides-the-kill-switch) as hooks — an
+  emergency stop (graceful; re-enable starts a fresh instance), plus a
+  Restart bounce.
+- **KV continuity**: namespace == manager id, so a hook migrated to a
+  manager keeps all its stored state; locks (including
+  [pinning](#state-kv-api-httplocalhost9002-in-state-hooks)) are held by
+  the instance and released when it ends.
+
+> **Deploy-first:** managers need a runner build with this support —
+> older binaries never scan `src/managers/`, so deploy the runner before
+> the first manager directory merges.
 
 ## hook.json reference
 
@@ -961,6 +1046,9 @@ of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 | `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
 | `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
 | `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | GitHub token for commit statuses: required if any hook uses `github_status`, and read by the reload gate's [reconciliation poll](#ci-gated-reloads) to check the hooks repo's gating status (needs read access to the hooks repo's commit statuses — a fine-grained PAT with "Commit statuses: Read" + "Metadata: Read" on that repo, or classic `repo:status`). Without it the poll holds loudly on tip changes. |
+| `WEBHOOK_RUNNER_GSM_URL`          | (none — gateway off)         | Enforced GitHub gateway: when set, every hook/manager/test container gets `api.github.com` blackholed (`--add-host api.github.com:0.0.0.0`) plus a `GITHUB_API_URL` env default pointing here, so all GitHub API reads ride the gateway (e.g. a github-state-mirror deployment). Unset = zero behavior change. |
+| `WEBHOOK_RUNNER_GITHUB_DIRECT`    | (none)                       | Comma-separated hook/manager ids EXEMPT from the GSM gateway (no blackhole, no env default) — for containers whose payloads must reach GitHub directly, e.g. `gha-runner,gha-runner-dind` (CI job traffic cannot ride the gateway). Only meaningful with `WEBHOOK_RUNNER_GSM_URL` set. |
+| `WEBHOOK_RUNNER_GITHUB_API_URL`   | (`WEBHOOK_RUNNER_GSM_URL`, else `https://api.github.com`) | Base URL for the runner's OWN GitHub API calls (`github_status` posts, the reload poll's status reads). Follows the GSM knob by default; set explicitly to split the two. |
 | `WEBHOOK_RUNNER_SOPS_BIN`         | `sops`                       | sops binary used to decrypt `secrets.sops.env` files. Key material is plain sops config on the service env (e.g. `SOPS_AGE_KEY_FILE`). |
 | `WEBHOOK_RUNNER_LOG_FORMAT`       | `text`                       | Or `json`.                                                   |
 | `TMPDIR`                          | `/tmp`                       | Where per-run payload/header files AND the KV socket + proxy shim live before being bind-mounted into hook containers. Must be host-shared when the server itself runs in a container (below). |

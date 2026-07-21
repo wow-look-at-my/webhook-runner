@@ -43,6 +43,11 @@ var (
 	ErrLockHeld = errors.New("kv: lock held by another run")
 	// ErrLockNotHeld: nothing (live) to release.
 	ErrLockNotHeld = errors.New("kv: lock not held")
+	// ErrLockPinned: a steal was refused because the holder PINNED the lock
+	// (marked its critical section non-displaceable). The refusal mutates
+	// nothing; the caller can fall back to a blocking acquire, which wins
+	// the moment the pin lifts or the holder finishes (finish-seam release).
+	ErrLockPinned = errors.New("kv: lock is pinned by its holder (steal refused)")
 )
 
 // DefaultLockTTL is the backstop expiry applied when an acquire names no
@@ -56,6 +61,12 @@ type lockEntry struct {
 	runID      string
 	acquiredAt time.Time
 	expiresAt  time.Time
+	// pinned marks the holder's critical section non-displaceable: a steal
+	// of a live pinned lock is refused with ErrLockPinned. Pin protects
+	// against STEAL only — never against the holder's own release, the
+	// finish-seam release, or the TTL backstop expiry (expired() ignores
+	// it), so a pin can never outlive its run.
+	pinned bool
 }
 
 func (l lockEntry) expired(now time.Time) bool {
@@ -66,16 +77,19 @@ func (l lockEntry) expired(now time.Time) bool {
 // reports back to the caller, and — on a contended acquire — WHO currently
 // holds the lock (so a contender can display, wait on, or steal from a
 // named holder rather than an anonymous 409). HookID is the lock's
-// namespace, which is the holding run's hook.
+// namespace, which is the holding run's hook. Pinned reports the holder's
+// steal-protection mark, so a refused stealer sees not just who holds but
+// that displacement was deliberately forbidden.
 type LockInfo struct {
 	RunID      string    `json:"run_id"`
 	HookID     string    `json:"hook_id"`
 	AcquiredAt time.Time `json:"acquired_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	Pinned     bool      `json:"pinned,omitempty"`
 }
 
 func (e lockEntry) info(ns string) LockInfo {
-	return LockInfo{RunID: e.runID, HookID: ns, AcquiredAt: e.acquiredAt, ExpiresAt: e.expiresAt}
+	return LockInfo{RunID: e.runID, HookID: ns, AcquiredAt: e.acquiredAt, ExpiresAt: e.expiresAt, Pinned: e.pinned}
 }
 
 // AcquireLock atomically takes the cooperative lock at key in ns for runID.
@@ -99,7 +113,26 @@ func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo,
 
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
-	info, _, err := s.takeLockLocked(ns, key, runID, ttl, false)
+	info, _, err := s.takeLockLocked(ns, key, runID, ttl, false, false)
+	return info, err
+}
+
+// AcquireLockPinned is AcquireLock with the pin applied ATOMICALLY in the
+// same compare-and-set — take-and-pin in one step, so no stealer can slip
+// between an acquire and a separate PinLock call. Same contention semantics
+// as AcquireLock.
+func (s *Store) AcquireLockPinned(ns, key, runID string, ttl time.Duration) (LockInfo, error) {
+	if !validNamespace(ns) {
+		return LockInfo{}, ErrBadNamespace
+	}
+	if runID == "" {
+		return LockInfo{}, errors.New("kv: lock requires a run identity")
+	}
+	ttl = lockTTL(ttl)
+
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	info, _, err := s.takeLockLocked(ns, key, runID, ttl, false, true)
 	return info, err
 }
 
@@ -112,6 +145,11 @@ func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo,
 // holder skips it (ownership check) while still freeing the holder's OTHER
 // locks. Cancelling the displaced run is the CALLER's job (the server does
 // it via the tracker) — this package doesn't know about runs.
+//
+// A live lock the holder PINNED refuses the steal: ErrLockPinned together
+// with the holder's info (Pinned true), nothing mutated. The refused caller
+// falls back to a blocking acquire, which wins when the pin lifts or the
+// holder finishes — a newer event is deferred, never dropped.
 func (s *Store) StealLock(ns, key, runID string, ttl time.Duration) (info LockInfo, displaced LockInfo, err error) {
 	if !validNamespace(ns) {
 		return LockInfo{}, LockInfo{}, ErrBadNamespace
@@ -123,7 +161,50 @@ func (s *Store) StealLock(ns, key, runID string, ttl time.Duration) (info LockIn
 
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
-	return s.takeLockLocked(ns, key, runID, ttl, true)
+	return s.takeLockLocked(ns, key, runID, ttl, true, false)
+}
+
+// PinLock marks the lock at key non-stealable. ONLY the holding run may pin
+// (the ReleaseLock auth rule): ErrLockNotHeld when the lock is absent or
+// expired, ErrLockHeld when a different live run holds it. Idempotent — a
+// pinned lock pins again silently. The pin changes nothing else: acquiredAt
+// and the TTL backstop are untouched, and the finish-seam release frees a
+// pinned lock exactly like any other (a pin never outlives its run).
+func (s *Store) PinLock(ns, key, runID string) error {
+	return s.setPinLocked(ns, key, runID, true)
+}
+
+// UnpinLock clears the pin, restoring normal steal semantics. Same
+// owner-only auth and idempotence as PinLock.
+func (s *Store) UnpinLock(ns, key, runID string) error {
+	return s.setPinLocked(ns, key, runID, false)
+}
+
+func (s *Store) setPinLocked(ns, key, runID string, pinned bool) error {
+	if !validNamespace(ns) {
+		return ErrBadNamespace
+	}
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+
+	m, ok := s.locks[ns]
+	if !ok {
+		return ErrLockNotHeld
+	}
+	prev, ok := m[key]
+	if !ok {
+		return ErrLockNotHeld
+	}
+	if prev.expired(time.Now()) {
+		delete(m, key)
+		return ErrLockNotHeld
+	}
+	if prev.runID != runID {
+		return ErrLockHeld
+	}
+	prev.pinned = pinned
+	m[key] = prev
+	return nil
 }
 
 func lockTTL(ttl time.Duration) time.Duration {
@@ -133,18 +214,26 @@ func lockTTL(ttl time.Duration) time.Duration {
 	return ttl
 }
 
-// takeLockLocked is the one compare-and-set both acquire and steal share.
-// Caller holds lockMu. When steal is false and another live run holds the
-// lock, it returns that holder's info with ErrLockHeld (mutating nothing);
-// when steal is true the entry is transferred to runID and the displaced
-// holder's info returned.
-func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal bool) (info LockInfo, displaced LockInfo, err error) {
+// takeLockLocked is the one compare-and-set acquire, take-and-pin, and
+// steal all share. Caller holds lockMu. When steal is false and another
+// live run holds the lock, it returns that holder's info with ErrLockHeld
+// (mutating nothing); when steal is true the entry is transferred to runID
+// and the displaced holder's info returned — UNLESS the holder pinned the
+// lock, in which case the steal is refused with ErrLockPinned (mutating
+// nothing; the info names the pinned holder). pin marks the freshly taken
+// entry pinned atomically with the take; a plain re-acquire by the live
+// owner PRESERVES an existing pin (unpinning is only ever the explicit
+// UnpinLock, never a side effect).
+func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal, pin bool) (info LockInfo, displaced LockInfo, err error) {
 	now := time.Now()
 	m, nsExisted := s.locks[ns]
 	if nsExisted {
 		if prev, ok := m[key]; ok && !prev.expired(now) && prev.runID != runID {
 			if !steal {
 				return prev.info(ns), LockInfo{}, ErrLockHeld
+			}
+			if prev.pinned {
+				return prev.info(ns), LockInfo{}, ErrLockPinned
 			}
 			displaced = prev.info(ns)
 		}
@@ -158,10 +247,12 @@ func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal b
 
 	prev, keyExisted := m[key]
 
-	e := lockEntry{runID: runID, acquiredAt: now, expiresAt: now.Add(ttl)}
+	e := lockEntry{runID: runID, acquiredAt: now, expiresAt: now.Add(ttl), pinned: pin}
 	if keyExisted && !prev.expired(now) && prev.runID == runID {
-		// Idempotent re-acquire by the live owner: keep the original take time.
+		// Idempotent re-acquire by the live owner: keep the original take
+		// time, and keep an existing pin (explicit unpin only).
 		e.acquiredAt = prev.acquiredAt
+		e.pinned = pin || prev.pinned
 	}
 	m[key] = e
 	return e.info(ns), displaced, nil

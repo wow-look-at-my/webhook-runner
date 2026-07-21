@@ -203,13 +203,21 @@ func sectionsForEvent(kind string) []string {
 		// state, the declared concurrency groups, and the reload panel's
 		// live-commit view at once — and, via a changed hook.json `enable`
 		// default, the effective disabled states GET /attention filters on.
-		out = append(out, "hooks", "images", "concurrency", "reload", "attention")
+		out = append(out, "hooks", "managers", "images", "concurrency", "reload", "attention")
 	case kind == "hook.disabled", kind == "hook.enabled":
 		// A kill-switch flip changes the roster's disabled flags AND which
 		// hook-scoped attention entries the read-time filter hides.
 		out = append(out, "hooks", "attention")
+	case kind == "manager.disabled", kind == "manager.enabled":
+		// The manager kill switch: same roster+attention consequences,
+		// manager panel instead of the hooks table.
+		out = append(out, "managers", "attention")
+	case strings.HasPrefix(kind, "manager."):
+		// Manager lifecycle (started/exited/leased/inbox_dropped/wait/
+		// skipped/restart_requested) moves the Managers panel.
+		out = append(out, "managers")
 	case kind == "hook.load_error":
-		out = append(out, "hooks")
+		out = append(out, "hooks", "managers")
 	case strings.HasPrefix(kind, "image."):
 		out = append(out, "images")
 	case strings.HasPrefix(kind, "concurrency."):
