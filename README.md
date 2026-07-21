@@ -1093,8 +1093,9 @@ command-line test runner.
 curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o /usr/local/bin/dats && chmod +x /usr/local/bin/dats
 
 # build the binary, then run the suite from the repo root
+# (go-toolchain also runs it automatically as its dats phase)
 go-toolchain
-PATH="$PWD/build:$PATH" dats test dats
+GO_TOOLCHAIN_DATS_BUILD_DIR="$PWD/build" dats test dats
 ```
 
 ## Server configuration

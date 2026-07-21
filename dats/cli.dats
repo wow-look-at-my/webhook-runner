@@ -8,7 +8,7 @@
 
 tests:
   - desc: version prints a version string and exits 0
-    cmd: webhook-runner version
+    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" version'
     exit: 0
     outputs:
       # line 0 must look like a version: dev, dev-<sha>, or v<pseudo-version>
@@ -16,7 +16,7 @@ tests:
         0: (dev|v[0-9])
 
   - desc: root --help lists the public subcommands and exits 0
-    cmd: webhook-runner --help
+    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" --help'
     exit: 0
     outputs:
       stdout:
@@ -26,14 +26,14 @@ tests:
         - version
 
   - desc: validate --help documents the hooks-dir argument
-    cmd: webhook-runner validate --help
+    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate --help'
     exit: 0
     outputs:
       stdout:
         - webhook-runner validate <hooks-dir>
 
   - desc: an unknown flag is an error, not a server start
-    cmd: webhook-runner --frobnicate
+    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" --frobnicate'
     timeout: 30s
     exit: 1
     outputs:
@@ -41,7 +41,7 @@ tests:
         - "unknown flag: --frobnicate"
 
   - desc: validate without its hooks-dir argument is an argument error
-    cmd: webhook-runner validate
+    cmd: '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" validate'
     exit: 1
     outputs:
       stderr:
@@ -50,7 +50,7 @@ tests:
   - desc: serve without a hooks dir or repo fails before binding anything
     # env -u makes the test hermetic even if the host exports these vars;
     # the timeout is the hang guard should this ever regress into serving.
-    cmd: env -u WEBHOOK_RUNNER_HOOKS_DIR -u WEBHOOK_RUNNER_HOOKS_REPO webhook-runner
+    cmd: 'env -u WEBHOOK_RUNNER_HOOKS_DIR -u WEBHOOK_RUNNER_HOOKS_REPO "$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner"'
     timeout: 30s
     exit: 1
     outputs:
@@ -58,7 +58,7 @@ tests:
         - hooks directory required
 
   - desc: test on a valid tree with no declared tests reports and exits 0 (docker-free)
-    cmd: sh -c 'webhook-runner test "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" test "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
@@ -71,7 +71,7 @@ tests:
         - no hooks declare tests
 
   - desc: test on a tree that fails to load exits non-zero before any docker use
-    cmd: sh -c 'webhook-runner test "$(dirname "{inputs.h/hook.json}")/.."'
+    cmd: sh -c '"$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner" test "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
         h/hook.json: |
