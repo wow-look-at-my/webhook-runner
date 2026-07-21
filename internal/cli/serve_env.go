@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 )
 
@@ -28,6 +29,13 @@ type serveOptions struct {
 	stateSecret     string
 	runRetention    time.Duration
 	runRetentionMax int
+
+	// maxConcurrentRuns is the DEFAULT global run cap — the server-wide
+	// ceiling on simultaneously running hook containers
+	// (WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS; unset = the built-in 64). The
+	// dashboard's persisted override (overrides.json) wins over it at
+	// runtime; this is only what "no override" reverts to.
+	maxConcurrentRuns int
 
 	// gateContext is the commit-status context that gates hooks-repo
 	// reloads ("" = gate disabled, legacy pull-on-any-signed-POST).
@@ -92,6 +100,25 @@ func applyServeEnv(o *serveOptions) error {
 	if o.runRetentionMax <= 0 {
 		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX")); err == nil && n > 0 {
 			o.runRetentionMax = n
+		}
+	}
+	if o.maxConcurrentRuns <= 0 {
+		// The global run cap default. Unset/empty means the built-in
+		// default; a set-but-invalid value FAILS startup (the
+		// reloadPollInterval rule) — a typo'd cap silently falling back
+		// to 64 could mask a deliberately tightened limit.
+		o.maxConcurrentRuns = concurrency.DefaultGlobalLimit
+		if v := os.Getenv("WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS %q: %w (integer >= 1; unset means the default %d)",
+					v, err, concurrency.DefaultGlobalLimit)
+			}
+			if n < 1 {
+				return fmt.Errorf("WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS %q: must be >= 1 — a 0 cap would block every run (unset means the default %d)",
+					v, concurrency.DefaultGlobalLimit)
+			}
+			o.maxConcurrentRuns = n
 		}
 	}
 	if o.logFormat == "" {
