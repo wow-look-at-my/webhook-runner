@@ -72,14 +72,26 @@ paths, and version/help/argument/flag errors — the authoritative case list
 is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
 dashboard need Docker/network and stay in `e2e/`.
 
-Run locally from the repo root (build first so `build/webhook-runner`
-exists; install dats per README's "CLI contract tests (dats)" section):
+Every suite command execs the binary as
+`"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare
+PATH lookup. go-toolchain itself runs these suites as its **dats phase**
+after every build (go-toolchain#330): it stages throwaway binary copies
+under `$GO_TOOLCHAIN_DATS_BUILD_DIR` and does NOT put them on PATH, so a
+bare `webhook-runner` in a `cmd` exits 127 there (the 2026-07-21 CI
+breakage). The `:-build` fallback keeps standalone runs working from the
+repo root. Note dats runs each `cmd` with `bash -c`, so the expansion
+needs no `sh -c` wrapper.
+
+Run locally from the repo root (a plain `go-toolchain` already runs the
+suites via its dats phase; to run them standalone, build first so
+`build/webhook-runner` exists and install dats per README's "CLI contract
+tests (dats)" section):
 
     go-toolchain
-    PATH="$PWD/build:$PATH" dats test dats
+    dats test dats
 
-ci.yml's `dats` job runs the same invocation against the `test` job's
-`go-build` hand-off — local and CI are identical by design.
+ci.yml's `dats` job runs the standalone invocation against the `test`
+job's `go-build` hand-off — local and CI are identical by design.
 
 Facts to keep in mind when adding cases (dats' own docs are authoritative
 for the general format — `docs/file-format.md` in the dats repo; the
