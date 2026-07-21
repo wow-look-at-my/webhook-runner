@@ -1076,6 +1076,27 @@ commands live next to the code they test instead of being hardcoded into a
 workflow. Each command is capped by `--timeout` (default 10m, independent
 of the hook's run `timeout`); `--hook <id>` filters to specific hooks.
 
+## CLI contract tests (dats)
+
+Black-box tests of the CLI's own contract — exit codes, stdout/stderr,
+error messages — live in `dats/*.dats`, run by
+[dats](https://github.com/wow-look-at-my/dats), the org's declarative
+command-line test runner.
+
+- Each test declares its hooks-tree fixture inline and runs the real built
+  binary against it; everything is docker-free, offline, and secret-free.
+- CI runs the suite in the `dats` job against the exact binary the `test`
+  job built. Details for contributors are in `CLAUDE.md`.
+
+```sh
+# once: install dats (prebuilt binary from buildhost)
+curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o /usr/local/bin/dats && chmod +x /usr/local/bin/dats
+
+# build the binary, then run the suite from the repo root
+go-toolchain
+PATH="$PWD/build:$PATH" dats test dats
+```
+
 ## Server configuration
 
 | Variable                          | Default                      | Notes                                                        |

@@ -62,24 +62,6 @@ func newTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *runn
 func hook(s *Server) http.Handler  { return s.HookHandler() }
 func admin(s *Server) http.Handler { return s.AdminHandler() }
 
-func TestHealthHookPort(t *testing.T) {
-	s, _, _, _ := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rec := httptest.NewRecorder()
-	hook(s).ServeHTTP(rec, req)
-	require.Equal(t, 200, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"ok"`)
-}
-
-func TestHealthAdminPort(t *testing.T) {
-	s, _, _, _ := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rec := httptest.NewRecorder()
-	admin(s).ServeHTTP(rec, req)
-	require.Equal(t, 200, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"ok"`)
-}
-
 func TestListHooks(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{
