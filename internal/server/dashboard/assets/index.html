@@ -175,8 +175,29 @@
   </section>
 
   <section id="concurrency-section">
-    <h2>Concurrency groups</h2>
-    <p class="window-note">Click a group to see which runs hold its slots and which are queued.</p>
+    <h2>Concurrency</h2>
+    <!-- The GLOBAL run cap: the server-wide ceiling on simultaneously
+         running hook containers (each holds a Docker bridge-network IP).
+         It is a CEILING over everything, not a replacement for group
+         limits: the groups below keep gating independently under it.
+         Override… PUTs /concurrency-global/limit; Revert DELETEs it
+         (back to the WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS / built-in
+         default). Hidden when the server predates the cap. -->
+    <div id="concurrency-global-cap" hidden>
+      <h3>Global run cap</h3>
+      <p class="window-note">Ceiling on how many hook containers run at once across ALL hooks
+        (each running container holds a Docker bridge-network IP; excess runs queue and start as
+        slots free). Per-group limits below are separate and keep applying under this ceiling —
+        raising the cap never lifts a group's own limit. Click the row for holders and queue.</p>
+      <table id="concurrency-global-table">
+        <thead><tr><th></th><th>Default</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h3>Groups</h3>
+    <p class="window-note">Declared in the hooks repo's concurrency.json; each gates its own hooks
+      independently, under the global cap. Click a group to see which runs hold its slots and
+      which are queued.</p>
     <!-- Declared = the limit in concurrency.json; Effective = what gates
          runs right now (an operator override wins and survives reloads
          and restarts). Override… PUTs /concurrency/{group}/limit; Revert
@@ -261,6 +282,13 @@
 
     <section id="app-runs-section">
       <h2>Recent runs</h2>
+      <!-- Status filter: chips toggle each status in/out of the table
+           (filtering the DATA fed to the renderer, not CSS). Skipped runs
+           are hidden BY DEFAULT — during a flood they drown the rows that
+           matter — with the chip carrying the hidden count so the table
+           never silently disagrees with the stats. The choice persists
+           (localStorage) like the runs-table toggle. -->
+      <div id="app-runs-filter" class="runs-filter"></div>
       <!-- Waited = queue time (accepted → container launch, live for pending
            runs); Duration = processing time only. Kept separate so a run
            stuck behind a concurrency group never reads as a slow run. -->

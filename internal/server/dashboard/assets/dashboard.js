@@ -134,7 +134,10 @@ function waitNote(r) {
   }
   if (w.kind === "group") {
     const holders = w.holder_run_ids || [];
-    let text = `queued for a slot in group ${w.key || "?"}`;
+    // Key "global" is the server-wide run cap, not a declared group.
+    let text = w.key === "global"
+      ? "queued on the global run cap"
+      : `queued for a slot in group ${w.key || "?"}`;
     if (w.position > 0) text += ` — ${ordinal(w.position)} in line`;
     if (holders.length) text += `, held by ${holders.map(shortId).join(", ")}`;
     return el("span", { class: "wait-note", title: holders.join("\n") }, text);
@@ -174,7 +177,9 @@ function waitDetail(r) {
     return frag;
   }
   if (w.kind === "group") {
-    let lead = `for a slot in group ${w.key || "?"}`;
+    let lead = w.key === "global"
+      ? "on the global run cap"
+      : `for a slot in group ${w.key || "?"}`;
     if (w.position > 0) lead += ` — ${ordinal(w.position)} in line`;
     const holders = w.holder_run_ids || [];
     frag.appendChild(document.createTextNode(lead + (holders.length ? ", held by " : "")));
@@ -230,9 +235,11 @@ function shortId(id) {
 }
 
 // What a waiter entry waits FOR: attachWaiters marks group waits with a
-// "group:" key prefix; anything else is a cooperative lock key.
+// "group:" key prefix ("group:global" = the server-wide run cap); anything
+// else is a cooperative lock key.
 function waiterWants(x) {
   if (!x.key) return "this run";
+  if (x.key === "group:global") return "a global run slot";
   if (x.key.startsWith("group:")) return `a slot in group ${x.key.slice(6)}`;
   return `lock ${x.key}`;
 }
@@ -1027,11 +1034,103 @@ async function clearLimitOverride(name, declared) {
 // Which concurrency group's drill-down row is expanded (persists across the
 // poll's re-render, same pattern as appKVOpenKey).
 let concurrencyOpenGroup = null;
+// Whether the global cap's holders/queue drill-down is expanded.
+let concurrencyGlobalOpen = false;
 
-function renderConcurrency(groups) {
+// --- The GLOBAL run cap: the ceiling over ALL runs ------------------------
+//
+// Rendered as its own labeled block ABOVE the groups so it cannot be
+// misread as one of them: the cap is the server-wide ceiling on
+// simultaneously running hook containers, and the per-group limits keep
+// gating independently UNDER it. Override… PUTs /concurrency-global/limit
+// (persisted, survives restarts); Revert DELETEs it (back to the
+// env/built-in default).
+
+async function overrideGlobalCap(def, current) {
+  const v = prompt(
+    `Override the GLOBAL run cap (default ${def}) — the ceiling on hook containers running at once, across all hooks.\n` +
+    "Must be an integer >= 1 — a 0 cap would block every run. Per-group limits still apply under it.",
+    String(current)
+  );
+  if (v == null) return;
+  const n = Number(v.trim());
+  if (!Number.isInteger(n) || n < 1) {
+    alert("Limit must be an integer >= 1 (a 0 cap would block every run).");
+    return;
+  }
+  try {
+    const res = await fetch("/concurrency-global/limit", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: n }),
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to override the global run cap: ${err.message}`);
+  }
+  refresh();
+}
+
+async function clearGlobalCapOverride(def) {
+  if (!confirm(`Revert the global run cap to its default (${def})?`)) return;
+  try {
+    const res = await fetch("/concurrency-global/limit", { method: "DELETE" });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  } catch (err) {
+    alert(`Failed to revert the global run cap: ${err.message}`);
+  }
+  refresh();
+}
+
+// One table row mirroring the group rows (same columns, same drill-down —
+// groupDetailRow reads holders/waiting_runs from the cap's entry too).
+// Hidden entirely when the server doesn't report a cap (older server).
+function renderGlobalCap(g) {
+  const wrap = document.getElementById("concurrency-global-cap");
+  if (!wrap) return;
+  wrap.hidden = !g;
+  if (!g) return;
+  const tbody = document.querySelector("#concurrency-global-table tbody");
+  tbody.innerHTML = "";
+  const editBtn = el("button", {
+    class: "toggle-btn",
+    title: "Override the global run cap live (persists across reloads/restarts until reverted)",
+  }, "Override…");
+  editBtn.addEventListener("click", () => overrideGlobalCap(g.default, g.limit));
+  const actions = el("td", { class: "row-actions" }, editBtn);
+  if (g.overridden) {
+    const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the default cap (${g.default}) takes effect` }, "Revert");
+    revertBtn.addEventListener("click", () => clearGlobalCapOverride(g.default));
+    actions.appendChild(revertBtn);
+  }
+  const tr = el("tr", { class: concurrencyGlobalOpen ? "group-open" : "",
+    title: "click to see which runs hold global slots and which are queued" },
+    el("td", null, el("strong", null, "All runs")),
+    el("td", null, String(g.default)),
+    el("td", null,
+      String(g.limit),
+      g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
+    ),
+    el("td", null, String(g.active)),
+    el("td", null, String(g.waiting)),
+    actions,
+  );
+  tr.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    concurrencyGlobalOpen = !concurrencyGlobalOpen;
+    refresh();
+  });
+  tbody.appendChild(tr);
+  if (concurrencyGlobalOpen) tbody.appendChild(groupDetailRow(g));
+}
+
+function renderConcurrency(data) {
+  // {global, groups} from cap-aware servers; a bare array from older ones
+  // (and the test harness) keeps rendering as groups-only.
+  const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
+  renderGlobalCap(Array.isArray(data) ? null : data && data.global);
   const tbody = document.querySelector("#concurrency-table tbody");
   tbody.innerHTML = "";
-  groups = groups || [];
   document.getElementById("concurrency-empty").hidden = groups.length > 0;
   for (const g of groups) {
     const editBtn = el("button", {
@@ -1380,10 +1479,78 @@ function renderApp(detail, runs, events) {
     ["On disk", others || "none"],
   ]);
 
+  renderAppRunsTable(runs);
+
+  renderEventRows("app-events-table", "app-events-empty", events);
+}
+
+// --- App runs table status filter ------------------------------------------
+//
+// Skipped runs are hidden BY DEFAULT: a flooded hook's table is otherwise
+// wall-to-wall purple "skipped" rows drowning the runs that did work. Every
+// status gets a toggle chip (click to hide/show), the choice persists in
+// localStorage (the runs-table toggle precedent), and the filtering happens
+// on the DATA fed to the renderer — a pure selection over the run list,
+// never CSS-hidden rows — so what the table shows and what it counts always
+// agree. The hidden count rides the chips ("skipped ×N" dimmed), and an
+// all-hidden table says so instead of pretending there are no runs.
+
+const APP_RUNS_FILTER_KEY = "whr.appRuns.hiddenStatuses";
+const APP_RUNS_FILTER_DEFAULT = ["skipped"];
+
+// The persisted hidden-status set. null (never saved) means the default;
+// an explicitly saved empty string means "show everything".
+function appRunsHiddenStatuses() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(APP_RUNS_FILTER_KEY);
+  } catch {
+    /* storage unavailable: fall through to the default */
+  }
+  if (raw === null) return new Set(APP_RUNS_FILTER_DEFAULT);
+  return new Set(raw.split(",").filter(Boolean));
+}
+
+function saveAppRunsHiddenStatuses(hidden) {
+  try {
+    localStorage.setItem(APP_RUNS_FILTER_KEY, [...hidden].sort().join(","));
+  } catch {
+    /* storage unavailable: the choice just doesn't persist */
+  }
+}
+
+// The pure selection the table renders: runs whose status is not hidden,
+// plus how many each hidden status filtered out (for the chip counts).
+function filterAppRuns(runs, hidden) {
+  const shown = [];
+  const hiddenCounts = new Map();
+  for (const r of runs || []) {
+    if (hidden.has(r.status)) {
+      hiddenCounts.set(r.status, (hiddenCounts.get(r.status) || 0) + 1);
+    } else {
+      shown.push(r);
+    }
+  }
+  return { shown, hiddenCounts };
+}
+
+let lastAppRuns = [];
+
+function renderAppRunsTable(runs) {
+  lastAppRuns = runs || [];
+  const hidden = appRunsHiddenStatuses();
+  const { shown, hiddenCounts } = filterAppRuns(lastAppRuns, hidden);
+  renderAppRunsFilter(lastAppRuns, hidden);
+
   const tbody = document.querySelector("#app-runs-table tbody");
   tbody.innerHTML = "";
-  document.getElementById("app-runs-empty").hidden = runs.length > 0;
-  for (const r of runs) {
+  const empty = document.getElementById("app-runs-empty");
+  empty.hidden = shown.length > 0;
+  const totalHidden = [...hiddenCounts.values()].reduce((a, b) => a + b, 0);
+  empty.textContent = totalHidden > 0 && lastAppRuns.length > 0
+    ? `All ${lastAppRuns.length} recent run(s) are hidden by the status filter above.`
+    : "No runs yet.";
+  for (const r of shown) {
     // Queued = accepted; Waited = queue time until launch (live for pending
     // runs); Duration = processing only (live while running).
     const tr = el("tr", null,
@@ -1397,8 +1564,38 @@ function renderApp(detail, runs, events) {
     tr.addEventListener("click", () => showRun(r.id));
     tbody.appendChild(tr);
   }
+}
 
-  renderEventRows("app-events-table", "app-events-empty", events);
+// One chip per status: every status present in the data, plus every hidden
+// one (its chip must stay visible while it hides), plus the default-hidden
+// "skipped" (so the control is discoverable even with zero skips). Active
+// chips hide on click; dimmed (hidden) chips show on click.
+function renderAppRunsFilter(runs, hidden) {
+  const bar = document.getElementById("app-runs-filter");
+  if (!bar) return;
+  bar.innerHTML = "";
+  const counts = new Map();
+  for (const r of runs || []) counts.set(r.status, (counts.get(r.status) || 0) + 1);
+  const statuses = new Set([...counts.keys(), ...hidden, ...APP_RUNS_FILTER_DEFAULT]);
+  for (const st of [...statuses].sort()) {
+    const n = counts.get(st) || 0;
+    const off = hidden.has(st);
+    const chip = el("button", {
+      type: "button",
+      class: `filter-chip status ${st}${off ? " filter-off" : ""}`,
+      title: off
+        ? `${n} ${st} run(s) hidden — click to show them`
+        : `click to hide ${st} runs from the table`,
+    }, `${st} ×${n}`);
+    chip.addEventListener("click", () => {
+      const next = appRunsHiddenStatuses();
+      if (next.has(st)) next.delete(st);
+      else next.add(st);
+      saveAppRunsHiddenStatuses(next);
+      renderAppRunsTable(lastAppRuns); // re-select from the same data
+    });
+    bar.appendChild(chip);
+  }
 }
 
 // --- Per-app State (KV) inspection -----------------------------------------
@@ -1546,10 +1743,51 @@ async function refreshRunDetail(openDialog) {
     if (currentRunId !== id) return; // modal moved on while fetching
     renderRunDetail(r, openDialog);
   } catch (e) {
-    // Transient failure: keep showing the last rendered state; the next
-    // poll (or delta) retries. Never blank an open modal over one error.
     console.error("run detail refresh:", e);
+    // On the INITIAL open a failed fetch must still SAY something: run
+    // links (timeline bars, the concurrency drill-down, waiter lists) can
+    // reference a run /runs/{id} no longer answers — most commonly a 404
+    // because the server no longer tracks it — and swallowing that made
+    // the click a silent no-op with the modal never appearing.
+    if (openDialog && currentRunId === id) {
+      renderRunDetailUnavailable(id, e);
+      return;
+    }
+    // Mid-refresh transient failure: keep showing the last rendered
+    // state; the next poll (or delta) retries. Never blank an open modal
+    // over one error.
   }
+}
+
+// The modal's "this run cannot be shown" state: opened when the INITIAL
+// detail fetch fails, so a click always produces a visible, honest answer.
+// A 404 means the run is genuinely not being served — no longer tracked by
+// this server (whatever the reason; wording stays neutral) — while any
+// other failure renders as a plain load error.
+function renderRunDetailUnavailable(id, err) {
+  currentRunTerminal = true; // nothing to live-poll — the run isn't served
+  document.getElementById("run-detail-name").textContent = "Run";
+  document.getElementById("run-detail-id").textContent = id;
+  const is404 = /: 404$/.test(String((err && err.message) || ""));
+  const dl = document.getElementById("run-detail-meta");
+  dl.innerHTML = "";
+  dl.appendChild(el("dt", null, "Status"));
+  dl.appendChild(el("dd", null,
+    el("span", { class: "status error" }, is404 ? "no longer tracked" : "unavailable")));
+  currentRunLines = [];
+  currentRunTimes = [];
+  currentRunTurns = null;
+  document.getElementById("run-detail-view-toggle").hidden = true;
+  document.getElementById("run-detail-copy").disabled = true;
+  const out = document.getElementById("run-detail-output");
+  out.innerHTML = "";
+  out.appendChild(el("pre", { class: "raw-log" },
+    is404
+      ? "This run is no longer tracked by the server, so its details and output cannot be shown. " +
+        "Runs in flight during a server restart are not persisted, and old runs age out of the run history."
+      : `Failed to load this run: ${(err && err.message) || err}`));
+  const dlg = document.getElementById("run-detail");
+  if (!dlg.open) dlg.showModal();
 }
 
 function renderRunDetail(r, openDialog) {
