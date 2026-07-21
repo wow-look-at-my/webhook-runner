@@ -205,16 +205,33 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 	}
 
+	// The GLOBAL run cap: a server-wide ceiling on simultaneously running
+	// hook containers (every container holds a Docker bridge-network IPv4
+	// address; an unbounded flood exhausts the pool). Group caps still
+	// apply first — the cap is the ceiling over ALL of them, never a
+	// replacement. Precedence: the dashboard's persisted override
+	// (overrides.json, seeded here like the group overrides) >
+	// WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS > the built-in default 64.
+	globalCap := concurrency.NewGlobal(o.maxConcurrentRuns)
+	if limit, ok := ovStore.GlobalRunLimit(); ok {
+		if err := globalCap.SetLimitOverride(limit); err != nil {
+			logger.Error("ignoring invalid persisted global run cap override", "limit", limit, "err", err)
+			rec.Record("override.invalid",
+				fmt.Sprintf("ignoring persisted global run cap override: %v", err), nil)
+		}
+	}
+
 	rn := runner.New(runner.Options{
-		Tracker:  tracker,
-		Logger:   logger,
-		TmpDir:   tmpDir,
-		Secrets:  secrets,
-		Events:   rec,
-		Groups:   concurrencyMgr,
-		KV:       kvStore,
-		KVSocket: socketPath,
-		KVShim:   shimPath,
+		Tracker:   tracker,
+		Logger:    logger,
+		TmpDir:    tmpDir,
+		Secrets:   secrets,
+		Events:    rec,
+		Groups:    concurrencyMgr,
+		GlobalCap: globalCap,
+		KV:        kvStore,
+		KVSocket:  socketPath,
+		KVShim:    shimPath,
 		// Enforced GitHub gateway: inert while WEBHOOK_RUNNER_GSM_URL is
 		// unset (the shipped default — zero behavior change).
 		GSM: runner.GSMConfig{URL: o.gsmURL, Direct: parseGithubDirect(o.githubDirect)},
@@ -225,6 +242,13 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			gh.PostFinish(context.Background(), h, r, payload)
 		},
 	})
+
+	// Reap hook containers orphaned by a previous server process (a
+	// SIGKILL mid-drain, a crash): each one holds a bridge-network IP
+	// forever with no owner. Safe here and only here — the run store's
+	// bbolt flock above proves no concurrent serve process is live, and
+	// this process has started no runs yet. See runner.SweepOrphanContainers.
+	rn.SweepOrphanContainers()
 
 	// The manager supervisor: one long-lived instance per declared manager,
 	// exactly-one-fleet-wide behind the kernel-flock lease in the data dir.
@@ -292,6 +316,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		GitHub:       gh,
 		Secrets:      secrets,
 		Concurrency:  concurrencyMgr,
+		GlobalCap:    globalCap,
 		Events:       rec,
 		Attention:    agg,
 		Logger:       logger,

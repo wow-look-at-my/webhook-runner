@@ -290,9 +290,11 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 		w := httptest.NewRecorder()
 		admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/concurrency", nil))
 		require.Equal(t, 200, w.Code)
-		var st []concurrency.GroupStatus
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &st))
-		return st
+		var doc struct {
+			Groups []concurrency.GroupStatus `json:"groups"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &doc))
+		return doc.Groups
 	}
 
 	// Baseline: declared 3, not overridden.

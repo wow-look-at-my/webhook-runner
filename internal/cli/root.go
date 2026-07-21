@@ -52,6 +52,8 @@ Configuration via environment:
   WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
   WEBHOOK_RUNNER_RUN_RETENTION        persisted run-history retention, Go duration (default 48h)
   WEBHOOK_RUNNER_RUN_RETENTION_MAX    persisted runs kept per hook, disk safety net (default 200000)
+  WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS  global cap on simultaneously running hook containers (default 64;
+                                      the dashboard's persisted override wins over it; excess runs queue)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
   WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),
