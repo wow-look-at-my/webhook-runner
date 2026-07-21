@@ -31,6 +31,7 @@ internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
+dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
 examples/hooks/            sample hook configs
 ```
 
@@ -57,6 +58,56 @@ examples/hooks/            sample hook configs
   `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
   their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
   Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
+
+## CLI contract tests (dats/)
+
+`dats/*.dats` are black-box tests of the CLI's contract — exit codes,
+stdout/stderr, messages — run by the org's
+[dats](https://github.com/wow-look-at-my/dats) test runner against the REAL
+built binary (unlike `internal/cli/commands_test.go`, which drives cobra
+in-process). They are deliberately docker-free, offline, and secret-free so
+they pass on a bare runner: `validate`'s full gate contract (plus a drift
+gate that `validate examples/hooks` stays green), `test`'s docker-free
+paths, and version/help/argument/flag errors — the authoritative case list
+is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
+dashboard need Docker/network and stay in `e2e/`.
+
+Run locally from the repo root (build first so `build/webhook-runner`
+exists; install dats per README's "CLI contract tests (dats)" section):
+
+    go-toolchain
+    PATH="$PWD/build:$PATH" dats test dats
+
+ci.yml's `dats` job runs the same invocation against the `test` job's
+`go-build` hand-off — local and CI are identical by design.
+
+Facts to keep in mind when adding cases (dats' own docs are authoritative
+for the general format — `docs/file-format.md` in the dats repo; the
+parser is strict and `dats syntax dats` checks without running):
+
+- Tests are SANDBOXED but not chdir'd: `inputs.files` (map of relative
+  path -> content) materialize under a per-test temp dir, the command runs
+  with cwd = the invocation cwd, and `{inputs.<path>}` in `cmd` expands to
+  a fixture's ABSOLUTE path. There is no directory placeholder, so a
+  fixture tree's root is recovered as
+  `"$(dirname "{inputs.<hook>/hook.json}")/.."` — the suite's standard
+  anchor pattern. Every case is self-contained; never share fixtures on
+  disk.
+- Stream assertions: LIST entries are substring-contains; MAP entries are
+  0-based line numbers matched as REGEXES (escape `(`/`[`; the two forms
+  really do differ — an unescaped `(s)` in a map entry silently changes
+  meaning).
+- dats runs ALL tests, by design — no filtering/skip/only mechanisms
+  exist, and none should be added or emulated.
+- NEVER write a case that invokes bare `webhook-runner <word>`: the root
+  command's `[hooks-dir]` positional means any unrecognized word STARTS
+  THE SERVER (binds :9000/:9001) instead of erroring. Tests near the
+  serve path must error before binding (and carry a `timeout:` hang
+  guard, e.g. `30s`).
+- Assert only observed behavior — run the built binary by hand first and
+  copy the exact exit code/message — and pin the minimal DISCRIMINATING
+  substring, not remediation prose or valid-value rosters (those churn
+  on compatible changes).
 
 ## Architecture: two ports + a state socket
 
