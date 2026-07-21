@@ -232,9 +232,8 @@ func TestRunsStreamHeartbeatCarriesActiveSet(t *testing.T) {
 		if len(set) == 0 {
 			return // converged on the empty verdict
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("heartbeat never converged on the empty active set, last %v", set)
-		}
+		require.False(t, time.Now().After(deadline))
+
 	}
 }
 
