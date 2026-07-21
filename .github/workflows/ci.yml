@@ -71,6 +71,35 @@ jobs:
         with:
           file: e2e/e2e.test.ts
 
+  # Black-box CLI-contract tests (dats/*.dats, run by the org's dats test
+  # runner) against the real built binary — docker-free, offline, no
+  # secrets; see CLAUDE.md "CLI contract tests".
+  dats:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      # Restore the binary go-toolchain@v1 handed off in the test job (the
+      # same central `go-build` upload the e2e job restores).
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      # The suite invokes `webhook-runner` via PATH; the hand-off carries the
+      # platform-suffixed build name, so stage the unsuffixed name beside it.
+      - name: Stage CLI binary
+        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
+      # dats prebuilt binary from buildhost (public download). Installed into
+      # build/ so the single PATH prepend below covers both binaries — no
+      # sudo, works on any runner.
+      - name: Install dats
+        run: |
+          curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o build/dats
+          chmod +x build/dats
+          build/dats version
+      - name: Run CLI contract tests
+        run: PATH="$PWD/build:$PATH" dats test dats
+
   # Builds the Dockerfile from the go-build hand-off (the reusable workflow
   # cache-downloads `go-build` into build/) and pushes
   # ghcr.io/wow-look-at-my/webhook-runner:latest. The push itself is gated to
