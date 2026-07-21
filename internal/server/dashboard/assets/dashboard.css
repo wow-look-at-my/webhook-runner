@@ -690,3 +690,94 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
   min-width: 22rem;
   max-width: 100%;
 }
+
+/* --- Layout: persistent sidebar + paged sections ------------------------ */
+/* The long single scroll became pages: the sidebar is the map, #page=<x>
+   fragments pick one section (the bare # hash is the chart-first
+   overview). .page-off is the ROUTER's visibility switch — a class, never
+   the `hidden` attribute, so it composes with every section's own
+   data-driven hidden logic (attention hides when healthy, the runs table
+   behind its toggle, setup only with a repo configured). */
+.layout {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 0 1.25rem;
+  align-items: start;
+}
+#sidebar {
+  position: sticky;
+  top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.5rem 0.4rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  font-size: 0.92rem;
+}
+#sidebar .nav-link {
+  display: block;
+  padding: 0.32rem 0.55rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+#sidebar .nav-link:hover { background: rgba(128, 128, 128, 0.12); }
+#sidebar .nav-link.active {
+  background: rgba(88, 132, 255, 0.16);
+  font-weight: 600;
+}
+#sidebar .nav-sub { display: flex; flex-direction: column; }
+#sidebar .nav-sub a {
+  display: block;
+  padding: 0.16rem 0.55rem 0.16rem 1.4rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.85;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sidebar .nav-sub a:hover { background: rgba(128, 128, 128, 0.12); }
+#sidebar .nav-sub a.active { background: rgba(88, 132, 255, 0.16); }
+.page-off { display: none !important; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  #sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+  }
+  #sidebar .nav-sub { display: none; }
+}
+
+/* --- Managers panel ----------------------------------------------------- */
+#manager-detail {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #2a2f3a);
+  padding-top: 0.75rem;
+}
+.manager-output {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.6rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.state-chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border, #2a2f3a);
+}
+.state-chip.running { color: #3fb950; border-color: #3fb950; }
+.state-chip.disabled { opacity: 0.6; }
+.state-chip.restart-wait, .state-chip.starting { color: #d29922; border-color: #d29922; }
+.state-chip.waiting-lease { color: #58a6ff; border-color: #58a6ff; }

@@ -54,6 +54,18 @@ func (w *idleWatchdog) Touch() {
 	w.mu.Unlock()
 }
 
+// Disarm stops the clock without firing. Manager sessions arm the watchdog
+// only while an inbox event is checked out (delivered and not yet followed
+// by the manager's next /inbox/next call) — a manager parked in its
+// long-poll with an empty inbox owes no output and must never be reaped,
+// however long it idles. Hook runs never disarm (their whole lifetime is
+// the checked-out section).
+func (w *idleWatchdog) Disarm() {
+	w.mu.Lock()
+	w.armed = false
+	w.mu.Unlock()
+}
+
 // check reports whether the watchdog should fire now and, when it shouldn't,
 // how long to wait before re-checking: the earliest instant it could
 // possibly fire (so output flowing steadily costs one wake-up per limit),

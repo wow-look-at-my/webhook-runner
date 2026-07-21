@@ -91,3 +91,16 @@ func (l Layout) ConcurrencyPath() string {
 	}
 	return filepath.Join(l.Root, "concurrency.json")
 }
+
+// ManagersDir is the directory whose immediate children are scanned for
+// manager.json folders (<root>/src/managers), or "" under the legacy
+// layout: managers are an SDK-layout-only entity — a legacy tree is never
+// scanned for them, so a pre-manager runner and a legacy tree are both
+// structurally incapable of loading one (the deploy-first hazard that bit
+// every new hook.json field cannot exist for managers).
+func (l Layout) ManagersDir() string {
+	if l.SDK {
+		return filepath.Join(l.Root, "src", "managers")
+	}
+	return ""
+}
