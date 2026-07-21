@@ -66,33 +66,25 @@ stdout/stderr, messages — run by the org's
 [dats](https://github.com/wow-look-at-my/dats) test runner against the REAL
 built binary (unlike `internal/cli/commands_test.go`, which drives cobra
 in-process). They are deliberately docker-free, offline, and secret-free so
-they pass on a bare runner: covered are `validate`'s full gate contract
-(both layouts, JSONC, zero-hooks, mixed layout, Dockerfile/$schema/unknown
-field, undeclared concurrency group, malformed skip_if/run_title, manager
-spawn_targets + id collision), `test`'s docker-free paths (no declared
-tests; load errors), and `version`/help/argument/flag errors. `serve`,
-real `test` runs, and the dashboard need Docker/network and stay in `e2e/`.
+they pass on a bare runner: `validate`'s full gate contract (plus a drift
+gate that `validate examples/hooks` stays green), `test`'s docker-free
+paths, and version/help/argument/flag errors — the authoritative case list
+is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
+dashboard need Docker/network and stay in `e2e/`.
 
 Run locally from the repo root (build first so `build/webhook-runner`
-exists):
+exists; install dats per README's "CLI contract tests (dats)" section):
 
     go-toolchain
     PATH="$PWD/build:$PATH" dats test dats
 
-Install dats via the prebuilt binary:
-`curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o /usr/local/bin/dats && chmod +x /usr/local/bin/dats`.
-CI runs the same command in ci.yml's `dats` job: it restores the `go-build`
-hand-off (the e2e job's pattern), stages `build/webhook-runner`, installs
-dats into `build/`, and runs `PATH="$PWD/build:$PATH" dats test dats` — the
-local and CI invocations are identical by design.
+ci.yml's `dats` job runs the same invocation against the `test` job's
+`go-build` hand-off — local and CI are identical by design.
 
-Format facts (empirically verified against dats v0.0.0-20260720; keep in
-mind when adding cases):
+Facts to keep in mind when adding cases (dats' own docs are authoritative
+for the general format — `docs/file-format.md` in the dats repo; the
+parser is strict and `dats syntax dats` checks without running):
 
-- A `.dats` file is `tests:` — a list of `{desc, cmd, exit, timeout,
-  inputs.{files,env}, outputs.{stdout,stderr,files}}`. The parser is
-  strict: unknown keys are errors; `dats syntax dats` checks without
-  running.
 - Tests are SANDBOXED but not chdir'd: `inputs.files` (map of relative
   path -> content) materialize under a per-test temp dir, the command runs
   with cwd = the invocation cwd, and `{inputs.<path>}` in `cmd` expands to
@@ -103,7 +95,8 @@ mind when adding cases):
   disk.
 - Stream assertions: LIST entries are substring-contains; MAP entries are
   0-based line numbers matched as REGEXES (escape `(`/`[`; the two forms
-  really do differ). `outputs.files` asserts on `{outputs.<name>}` paths.
+  really do differ — an unescaped `(s)` in a map entry silently changes
+  meaning).
 - dats runs ALL tests, by design — no filtering/skip/only mechanisms
   exist, and none should be added or emulated.
 - NEVER write a case that invokes bare `webhook-runner <word>`: the root
@@ -111,8 +104,10 @@ mind when adding cases):
   THE SERVER (binds :9000/:9001) instead of erroring. Tests near the
   serve path must error before binding (and carry a `timeout:` hang
   guard, e.g. `30s`).
-- Assert only observed behavior: run the built binary by hand first and
-  copy the exact exit code/message, don't guess.
+- Assert only observed behavior — run the built binary by hand first and
+  copy the exact exit code/message — and pin the minimal DISCRIMINATING
+  substring, not remediation prose or valid-value rosters (those churn
+  on compatible changes).
 
 ## Architecture: two ports + a state socket
 

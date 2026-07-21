@@ -72,10 +72,8 @@ jobs:
           file: e2e/e2e.test.ts
 
   # Black-box CLI-contract tests (dats/*.dats, run by the org's dats test
-  # runner): exercise the REAL built binary's exit codes, stdout/stderr, and
-  # messages for the docker-free CLI surface — validate's gate contract,
-  # `test`'s load-error paths, version/help/argument errors. Offline, no
-  # docker, no secrets; see dats/ and CLAUDE.md "CLI contract tests".
+  # runner) against the real built binary — docker-free, offline, no
+  # secrets; see CLAUDE.md "CLI contract tests".
   dats:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: test

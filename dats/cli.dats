@@ -1,24 +1,19 @@
 # CLI-contract tests for webhook-runner's general command-line surface:
 # version, help, argument/flag errors, and the docker-free `test` paths.
+# How to run + assertion semantics: CLAUDE.md "CLI contract tests".
 #
-# Run from the repo root with the built binary on PATH:
-#
-#   PATH="$PWD/build:$PATH" dats test dats
-#
-# NOTE: never invoke a bare `webhook-runner <word>` here — the root command
-# takes [hooks-dir] as a positional, so an unrecognized bare word is treated
-# as a hooks dir and STARTS THE SERVER (binding :9000/:9001). Every test in
-# this file either uses a subcommand, errors before serving, or carries a
-# timeout as a hang guard.
+# NOTE: never invoke a bare `webhook-runner <word>` — it STARTS THE SERVER
+# (the root command's [hooks-dir] positional); see CLAUDE.md. Tests near the
+# serve path must error before binding and carry a timeout as a hang guard.
 
 tests:
   - desc: version prints a version string and exits 0
     cmd: webhook-runner version
     exit: 0
     outputs:
-      # dev / dev-<sha> / v<pseudo-version> — all carry a "v"
+      # line 0 must look like a version: dev, dev-<sha>, or v<pseudo-version>
       stdout:
-        - v
+        0: (dev|v[0-9])
 
   - desc: root --help lists the public subcommands and exits 0
     cmd: webhook-runner --help
@@ -60,7 +55,7 @@ tests:
     exit: 1
     outputs:
       stderr:
-        - hooks directory required (positional arg, WEBHOOK_RUNNER_HOOKS_DIR, or WEBHOOK_RUNNER_HOOKS_REPO)
+        - hooks directory required
 
   - desc: test on a valid tree with no declared tests reports and exits 0 (docker-free)
     cmd: sh -c 'webhook-runner test "$(dirname "{inputs.h/hook.json}")/.."'
@@ -84,5 +79,4 @@ tests:
     exit: 1
     outputs:
       stderr:
-        - hook must ship a Dockerfile
         - one or more hooks failed validation

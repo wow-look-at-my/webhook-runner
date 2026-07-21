@@ -1,16 +1,10 @@
 # CLI-contract tests for `webhook-runner validate` — the docker-free hooks-tree
 # gate whose exit codes and messages the webhooks fleet repo's CI depends on.
 #
-# Run from the repo root with the built binary on PATH:
-#
-#   PATH="$PWD/build:$PATH" dats test dats
-#
-# Every test declares its own hooks tree inline via inputs.files (materialized
-# into the per-test sandbox). {inputs.<path>} expands to the fixture's absolute
-# path; a tree's ROOT is recovered as "$(dirname "{inputs.<hook>/hook.json}")/.."
-# (dats has no directory placeholder). Stream assertions come in two forms:
-# LIST entries are substring-contains checks; MAP entries are keyed by 0-based
-# line number and matched as regular expressions (escape ( ) [ ] etc.).
+# Each test declares its own hooks tree inline via inputs.files; {inputs.<path>}
+# expands to a fixture file's ABSOLUTE path, so a tree's root is recovered as
+# "$(dirname "{inputs.<hook>/hook.json}")/.." (dats has no directory
+# placeholder). How to run + assertion semantics: CLAUDE.md "CLI contract tests".
 
 tests:
   - desc: valid legacy tree (JSONC comments allowed) validates with exit 0
@@ -28,10 +22,24 @@ tests:
           FROM alpine
     exit: 0
     outputs:
+      # Deliberately the suite's ONE positional (line-map regex) case: it pins
+      # the output ORDER and that nothing else appears on stdout. Everything
+      # else uses the substring-list form — don't spread this one.
       stdout:
         0: 'layout: legacy'
         1: 'ok  myhook \(whr-hook/myhook:'
         2: '1 hook\(s\) validated'
+
+  - desc: the committed examples/hooks tree stays loader-valid
+    # cwd is the invocation cwd (the repo root), so the committed examples are
+    # reachable directly — this doubles as the drift gate for examples/hooks/.
+    cmd: webhook-runner validate examples/hooks
+    exit: 0
+    outputs:
+      stdout:
+        - "layout: legacy"
+        - ok  run-tests
+        - hook(s) validated
 
   - desc: valid src layout with concurrency group and manager validates with exit 0
     cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
@@ -161,7 +169,6 @@ tests:
     outputs:
       stderr:
         - unknown operator "frobnicate"
-        - "valid: eq, ne, in, exists, prefix, regex"
 
   - desc: run_title with an unterminated placeholder is a load error
     cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.h/hook.json}")/.."'
@@ -196,7 +203,6 @@ tests:
       stderr:
         - "ERR mixed hook layout: top-level hook directory"
         - leftover
-        - hard error, not a silent skip
 
   - desc: manager spawn_targets naming an undeclared hook fails closed
     cmd: sh -c 'webhook-runner validate "$(dirname "{inputs.cfg/concurrency.json}")/.."'
