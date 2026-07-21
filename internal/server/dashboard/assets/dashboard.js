@@ -885,11 +885,62 @@ function renderManagers(list) {
   if (!currentManagerId()) document.getElementById("manager-detail").hidden = true;
 }
 
+// --- Manager output copy ----------------------------------------------------
+//
+// One-click copy of the drill-down's "Instance output" log. The text is
+// assembled FROM THE DATA the /managers/{id} endpoint returned (the
+// instance's bounded recent-output ring — i.e. everything the server still
+// retains), never from the DOM's innerText, which can truncate or reflow.
+// The same assembly feeds the <pre>, so the copied text is exactly what is
+// shown, byte for byte.
+let managerDetailOutputLines = [];
+
+// Pure: the clipboard text for an output-lines array — lines joined with
+// single newlines, no trailing newline; [] and a missing array both → "".
+function managerOutputText(lines) {
+  return (lines || []).join("\n");
+}
+
+async function copyManagerOutput(btn) {
+  const text = managerOutputText(managerDetailOutputLines);
+  const flash = (label) => {
+    const prev = btn.textContent;
+    btn.textContent = label;
+    btn.disabled = true;
+    setTimeout(() => {
+      btn.textContent = prev;
+      btn.disabled = false;
+    }, 1500);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // Minimal legacy fallback (non-secure contexts only).
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    flash("Copied");
+  } catch (err) {
+    console.error("copy manager output failed:", err);
+    flash("Copy failed");
+  }
+}
+
+document.getElementById("manager-output-copy").addEventListener("click", (e) => {
+  void copyManagerOutput(e.currentTarget);
+});
+
 function renderManagerDetail(d) {
   const open = currentManagerId();
   const box = document.getElementById("manager-detail");
   if (!open || !d || d.id !== open) {
     box.hidden = true;
+    managerDetailOutputLines = [];
     return;
   }
   box.hidden = false;
@@ -922,8 +973,9 @@ function renderManagerDetail(d) {
   if (d.synchronous) row("Synchronous", "yes — deliveries hold until processed");
   if (d.concurrency_group) row("Concurrency group", d.concurrency_group);
   row("Enable default", d.enabled_by_default ? "enabled (ships working; the switch is the emergency stop)" : "disabled in manager.json (explicit enable:false)");
+  managerDetailOutputLines = d.output || [];
   const out = document.getElementById("manager-detail-output");
-  out.textContent = (d.output || []).join("\n");
+  out.textContent = managerOutputText(managerDetailOutputLines);
   out.scrollTop = out.scrollHeight;
 }
 

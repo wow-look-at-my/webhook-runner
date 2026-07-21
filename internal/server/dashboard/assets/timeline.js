@@ -374,17 +374,19 @@ function sameLaneSet(a, b) {
   return true;
 }
 function aggInterval(lane, backlog) {
+  const n = backlog.length;
   return {
     id: AGG_PREFIX + lane,
     laneId: lane,
     start: Date.parse(backlog[0].started),
     // oldest-first per pendingByLane
     end: null,
-    label: `\xD7${backlog.length} queued`,
+    label: `\xD7${n} waiting`,
+    labelTiers: [`\xD7${n} waiting for a slot`, `\xD7${n} waiting`, `\xD7${n}`],
     category: lane,
     // the lane's stable hue, like every run interval
     state: "queued",
-    data: { count: backlog.length }
+    data: { count: n }
   };
 }
 function buildAllIntervals(source) {
@@ -521,8 +523,17 @@ function laneTooltip(lane) {
 }
 function aggTooltip(lane) {
   const backlog = pendingByLane(runsById.values()).get(lane) ?? [];
+  const n = backlog.length;
+  const keys = new Set(
+    backlog.map((r) => r.waiting_on?.kind === "group" ? r.waiting_on.key || "" : "")
+  );
+  const only = keys.size === 1 ? [...keys][0] : "";
+  const what = only !== "" && only !== "global" ? `a ${only} slot` : "a slot to run";
   const frag = document.createDocumentFragment();
-  frag.appendChild(el("div", { class: "tt-title" }, `${lane} \xB7 \xD7${backlog.length} queued`));
+  frag.appendChild(
+    el("div", { class: "tt-title" }, `${n} run${n === 1 ? "" : "s"} waiting for ${what}`)
+  );
+  frag.appendChild(ttRow("hook", lane));
   for (const r of backlog.slice(0, 3)) {
     frag.appendChild(ttRow("", `${runTitle(r) ?? shortRunId(r.id)} \u2014 queued ${fmtTime(r.started)}`));
   }
@@ -548,7 +559,8 @@ function initTimeline() {
   if ("legendEntries" in tl) {
     tl.legendEntries = [
       { glyph: "\u29D7", text: "waiting for a concurrency-group slot (group \xB7 place in line)" },
-      { glyph: "\u23F3N", text: "holding a slot N queued runs are waiting on" }
+      { glyph: "\u23F3N", text: "holding a slot N queued runs are waiting on" },
+      { glyph: "\xD7N waiting", text: "a collapsed queued backlog: N pending runs as one dim row (each executing run keeps its own colored bar; click opens the hook page)" }
     ];
   }
   tl.addEventListener("intervalclick", (e) => {

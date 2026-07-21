@@ -45,6 +45,10 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
 		/** null/undefined = ongoing (renders to the live "now" edge). */
 		end?: number | Date | null;
 		label?: string;
+		/** Explicit label tiers, fullest → most compact; the component picks
+		 * the widest tier that fits the bar (falls back to deriving from
+		 * `label`). Older components ignore the field. */
+		labelTiers?: string[];
 		/** Color key: same category = same hue. Defaults to lane.group, then laneId. */
 		category?: string;
 		/** Style-map key: rendering treatment (e.g. 'failed', 'dim', 'cancelled'). */

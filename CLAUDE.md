@@ -258,6 +258,45 @@ The server listens on two TCP ports plus a Unix socket:
   rebuildAll re-registered coverage to now; deleting it hatched the
   whole live window over live bars — the 2026-07-15 incident); the
   testjs timeline-coverage harness pins the contract.
+  THE CHART IS POSITIVELY RECOVERING (operator directive): it must
+  always reflect what is happening RIGHT NOW, derived from the server's
+  live snapshot of active state — never from replaying accumulated
+  start/end events. Every hb carries the active run-id set and the
+  adapter diffs runsById against it each beat (`reconcileActive` in
+  ts/timeline.ts): local non-terminal runs ABSENT from the set drop
+  (uncapped, no per-run probes — absence from truth IS the verdict; one
+  rebuildAll per batch), unknown active ids truth-fetch once
+  (`/runs?live=1` for several, `/runs/{id}` for one) — so a missed
+  start/end costs at most ~one heartbeat of fiction. Feature-detected
+  PER STREAM CONNECTION (`serverHasActiveSet`, reset on open, proven by
+  the first payload-bearing hb): an old server's `data: {}` keeps the
+  capped legacy `reconcileMissing` probes byte-for-byte. While the
+  stream is DOWN, fallback-poll pages from a capable server are
+  themselves active-complete, so `reconcilePage` applies the same
+  uncapped diff — zombies die during outages too. Two supporting
+  invariants: terminal-is-final (`staleRegression` — an out-of-band
+  fetch racing a terminal delta can never regress a run to live; no
+  later delta would fix it) and coverage floors (`coverageFloorMs` —
+  full-feed claims reach down to the oldest TERMINAL row only, since
+  pages now always carry every active run and an ancient live span must
+  not vouch unfetched terminal history as known-empty). The testjs
+  timeline-reconcile harness pins all of it.
+  PENDING-BACKLOG COLLAPSE (operator directive — a flood must read as
+  depth, not a wall of idle spans): per lane, 2+ status=pending runs
+  feed ONE synthetic `queued:<lane>` aggregate interval (earliest
+  queued start → live edge, `×N queued` badge restamped as the depth
+  moves) with the individual pending spans withheld; executing runs
+  (running, declared waits/locks included) stay individual; N=1 renders
+  the real span. The DATA model stays per-run — runsById and the truth
+  reconcile never see the aggregation, it exists only in the fed
+  interval set (`buildAllIntervals`). Collapse-boundary crossings in
+  either direction rebuild via setData (mergeData cannot remove
+  intervals); within a collapsed state, depth changes are aggregate
+  upserts. Aggregate click opens the lane's hook page (a run modal
+  cannot show N runs); its tooltip names the depth + the first few
+  queued runs. The ':' in the aggregate id namespace can never appear
+  in a run id (26-char base32), so ids never collide. The testjs
+  timeline-collapse harness pins it.
   A bar click opens the run modal, a lane-label click opens `#hook={id}`,
   and the old runs table stays behind a persisted "Show table" toggle.
   waiting_on/waiters and unknown statuses are feature-detected, so the
@@ -805,7 +844,8 @@ The companion repo is `wow-look-at-my/webhooks`.
   what makes the write exactly-once, and Finish fires on *every* runner path,
   so the runner needed no changes). Nothing is ever rehydrated into the
   tracker: the store is read-side only, merged behind the live tracker by
-  `/runs`, `/runs/{id}` (fallback for evicted runs), and `/hooks/{id}` stats
+  `/runs`, `/runs/{id}` (fallback for evicted TERMINAL runs — the tracker
+  never evicts active ones, see the stream bullet), and `/hooks/{id}` stats
   (deduped by run ID, live wins). A run in flight during a restart never
   completed and exists nowhere afterwards — that's by design, don't "fix" it.
   Retention is time-based (`WEBHOOK_RUNNER_RUN_RETENTION`, default 48h, the
@@ -848,6 +888,24 @@ The companion repo is `wow-look-at-my/webhooks`.
   `Shutdown` — Shutdown drains in-flight handlers, and stream handlers
   only return when their subscription closes or their client hangs up.
   `streamHeartbeat` is a package var so tests can shrink it.
+  Every `hb` write carries the ACTIVE (non-terminal) run-id set —
+  `{"active":[...]}` via `runs.Tracker.ActiveIDs` (sorted; `[]` when
+  idle, NEVER null — the empty array is a real "nothing is active"
+  verdict clients act on) — the timeline's truth-reconcile beat, purely
+  additive (pre-payload clients read hb as bare liveness). The
+  /runs-shaped reads pair with it: `mergedRuns` (runlist.go) caps
+  TERMINAL rows only on cursorless windows — every active run is ALWAYS
+  included however small `?max=` is, and `?live=1` serves exactly the
+  active set — while `?before=` cursor pages keep the legacy newest-max
+  TOTAL cap on purpose (the paging walk advances its cursor from each
+  page's oldest row; an uncapped ancient active row would make it skip
+  terminal history). The tracker's per-hook trim (`runs.Tracker.New`,
+  internal/runs/tracker.go) evicts oldest TERMINAL runs only: an active
+  run is current truth and is never evicted — the per-hook list may
+  exceed MaxRunsPerHook while that many runs are genuinely active, and
+  it shrinks back as they finish. Don't reintroduce a status-blind trim:
+  it made GET /runs/{id} 404 for still-running runs during floods (the
+  runstore fallback is terminal-only) and cut live runs out of windows.
   The SAME connection multiplexes the dashboard's section-invalidation
   push (`event: changed`, `{"sections":[...]}` — "changed → refetch
   once", never payloads): per-subscriber it is a bounded dirty SET + a
