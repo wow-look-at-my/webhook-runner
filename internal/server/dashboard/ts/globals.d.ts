@@ -44,7 +44,9 @@ declare function currentHookId(): string | null;
 //   window.whrStreamLive          — true while the stream is open
 //   'whr:stream-state' (window)   — CustomEvent {detail: {live}} on change
 //   'whr:run-delta' (window)      — CustomEvent {detail: {id, run}} per run
-//                                    lifecycle delta from the stream
+//                                    lifecycle delta from the stream (coalesced
+//                                    to one flush per animation frame, deduped
+//                                    by id — a backlog fires as a single batch)
 //   'whr:sections-changed' (window) — CustomEvent {detail: {sections}}: the
 //                                    server's coarse "these admin sections
 //                                    changed, refetch once" signal
