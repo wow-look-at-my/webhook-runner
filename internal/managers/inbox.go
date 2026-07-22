@@ -140,7 +140,13 @@ type Inbox struct {
 	disarm     func() // watchdog Disarm — nil-safe
 	touch      func() // watchdog Touch — the /wait activity feed; nil-safe
 	checkedOut *entry // the event delivered by the last Next, until the next Next
-	parked     int    // Next calls currently blocked waiting for an event
+	// parked counts Next calls currently IN FLIGHT — from the moment one
+	// passes its instance check to whichever return it takes, not merely the
+	// cond.Wait park. It is the wedge guard's "a consumer is present" signal:
+	// counting the settle/disarm prelude too is what keeps a push landing
+	// mid-Next from reading parked==0 && checkedOut==nil and spuriously
+	// arming an actively-consuming manager (see the parked++ comment in Next).
+	parked int
 
 	// lastDelivered/lastTick are observability stamps for the admin API.
 	lastDelivered time.Time
@@ -326,6 +332,16 @@ func (ib *Inbox) Next(ctx context.Context, instanceID string, wait time.Duration
 		ib.mu.Unlock()
 		return Event{}, false, ErrNotSession
 	}
+	// Count the consumer present for the WHOLE call, before checkedOut is
+	// cleared below. Pre-fix, parked++ happened only at the wait loop, so a
+	// push landing between this section and the park saw parked==0 &&
+	// checkedOut==nil and fired the wedge-guard arm at an actively-consuming
+	// manager — a redundant extra Arm in prod (the checkout re-arms right
+	// behind it) and a nondeterministic arm COUNT in
+	// TestInboxWatchdogArming (the 2026-07-22 CI flake: expected 3, got 4).
+	// Every return path below parked--; only the not-this-instance return
+	// above precedes the count.
+	ib.parked++
 	var done *entry
 	var disarm func()
 	if ib.checkedOut != nil {
@@ -366,7 +382,6 @@ func (ib *Inbox) Next(ctx context.Context, instanceID string, wait time.Duration
 	defer close(stopWake)
 
 	ib.mu.Lock()
-	ib.parked++
 	for {
 		if ib.instanceID != instanceID {
 			ib.parked--
