@@ -84,13 +84,31 @@ function fresh() {
   chart?.markFresh();
   chart?.extendCoverage();
 }
+var pendingDeltas = /* @__PURE__ */ new Map();
+var deltaFlushHandle = 0;
+function scheduleDeltaFlush() {
+  if (deltaFlushHandle !== 0) return;
+  deltaFlushHandle = requestAnimationFrame(flushDeltas);
+}
+function flushDeltas() {
+  deltaFlushHandle = 0;
+  if (pendingDeltas.size === 0) return;
+  if (chart === null) return;
+  const batch = [...pendingDeltas.values()];
+  pendingDeltas.clear();
+  chart.onDeltas(batch);
+  for (const { run } of batch) {
+    window.dispatchEvent(new CustomEvent("whr:run-delta", { detail: { id: run.id, run } }));
+  }
+}
 function ingestDelta(r) {
   if (staleRegression(r)) return;
   const prev = runsById.get(r.id);
   runsById.set(r.id, r);
   noteOldest(r);
-  chart?.onDelta(r, prev);
-  window.dispatchEvent(new CustomEvent("whr:run-delta", { detail: { id: r.id, run: r } }));
+  const existing = pendingDeltas.get(r.id);
+  pendingDeltas.set(r.id, { run: r, prev: existing ? existing.prev : prev });
+  scheduleDeltaFlush();
   fresh();
 }
 function ingestPage(page) {
@@ -624,6 +642,7 @@ function initTimeline() {
     }
   })();
   const applyPage = (page) => {
+    pendingDeltas.clear();
     const now = Date.now();
     rebuildWaiterIndex();
     if (maybePrune(tl, now)) return;
@@ -649,7 +668,8 @@ function initTimeline() {
     }
     syncLanes(tl);
   };
-  const applyDelta = (r, prev) => {
+  const applyDeltas = (batch) => {
+    if (batch.length === 0) return;
     if (!seeded) {
       applyPage([...runsById.values()]);
       return;
@@ -660,12 +680,18 @@ function initTimeline() {
       rebuildAll();
       return;
     }
-    const affected = /* @__PURE__ */ new Set([r.id]);
-    for (const holder of holderIdsOf(prev)) affected.add(holder);
-    for (const holder of holderIdsOf(r)) affected.add(holder);
     rebuildWaiterIndex();
-    const intervals = [];
+    const affected = /* @__PURE__ */ new Set();
     const restampAgg = /* @__PURE__ */ new Set();
+    for (const { run, prev } of batch) {
+      affected.add(run.id);
+      for (const holder of holderIdsOf(prev)) affected.add(holder);
+      for (const holder of holderIdsOf(run)) affected.add(holder);
+      if (prev && prev.status === "pending" && nowCollapsed.has(prev.hook_id)) {
+        restampAgg.add(prev.hook_id);
+      }
+    }
+    const intervals = [];
     for (const id of affected) {
       const run = runsById.get(id);
       if (run === void 0) continue;
@@ -675,9 +701,6 @@ function initTimeline() {
       }
       intervals.push(runToInterval(run));
     }
-    if (prev && prev.status === "pending" && nowCollapsed.has(prev.hook_id)) {
-      restampAgg.add(prev.hook_id);
-    }
     for (const lane of restampAgg) {
       const backlog = pending.get(lane);
       if (backlog && backlog.length >= COLLAPSE_MIN) intervals.push(aggInterval(lane, backlog));
@@ -686,6 +709,7 @@ function initTimeline() {
     syncLanes(tl);
   };
   const rebuildAll = () => {
+    pendingDeltas.clear();
     oldestStartedRaw = null;
     oldestStartedMs = Infinity;
     for (const r of runsById.values()) noteOldest(r);
@@ -706,7 +730,7 @@ function initTimeline() {
   };
   chart = {
     onPage: applyPage,
-    onDelta: applyDelta,
+    onDeltas: applyDeltas,
     rebuild: rebuildAll,
     markFresh: () => {
       if (typeof tl.markFresh === "function") tl.markFresh();

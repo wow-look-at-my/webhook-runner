@@ -342,13 +342,21 @@ function ingestRuns(page: RunState[]): void {
 
 // -- The live feed -------------------------------------------------------------
 
+/** One coalesced delta: the run plus the state it replaced (undefined for a
+ * brand-new run). prev drives the collapse/waiter transition logic, so a
+ * batch preserves the FIRST-seen prev per run id (see pendingDeltas). */
+type RunDelta = { run: RunState; prev: RunState | undefined };
+
 /** The chart's hooks into the feed; attached once the component loads. */
 interface FeedConsumer {
 	onPage(page: RunState[]): void;
-	/** prev = the state this delta replaced (undefined for a new run) —
-	 * needed to re-render bars the run STOPPED affecting (e.g. the former
-	 * holders' waiter badges when its wait ended). */
-	onDelta(r: RunState, prev: RunState | undefined): void;
+	/** A frame's worth of coalesced deltas (see pendingDeltas / flushDeltas),
+	 * applied in ONE mergeData. Each entry's prev = the state that delta
+	 * replaced (undefined for a new run) — needed to re-render bars the run
+	 * STOPPED affecting (e.g. the former holders' waiter badges when its wait
+	 * ended). Batched because doing a full merge PER delta froze the tab for
+	 * ~15s when a backgrounded backlog of thousands flushed at once. */
+	onDeltas(batch: RunDelta[]): void;
 	/** Rebuild from runsById outright — used after removals, which
 	 * mergeData cannot express. */
 	rebuild(): void;
@@ -403,13 +411,54 @@ function fresh(): void {
 
 /** One run delta: update the store, the chart, and anyone else listening
  * (dashboard.js's run modal refreshes in place off this event). */
+// -- Coalesced delta flush -----------------------------------------------------
+//
+// Each SSE `run` delta updates runsById synchronously (reconcile/page reads
+// depend on it), but the EXPENSIVE work — the component mergeData and the
+// whr:run-delta fan-out — is batched to ONE flush per animation frame. Doing
+// it per delta synchronously froze the main thread for ~15s with ZERO repaints
+// when a ~6k-delta backlog, buffered while the tab sat backgrounded for hours,
+// flushed all at once on wake (the 2026-07-21 incident): 6,335 `run` events at
+// ~2.4ms each, back to back, no yield. rAF is parked while a tab is
+// backgrounded, so the whole backlog now collapses into a SINGLE deduped flush
+// on foreground instead of a per-delta storm, and a merely-fast live stream
+// coalesces to at most one merge per frame.
+const pendingDeltas = new Map<string, RunDelta>();
+let deltaFlushHandle = 0;
+
+function scheduleDeltaFlush(): void {
+	if (deltaFlushHandle !== 0) return;
+	deltaFlushHandle = requestAnimationFrame(flushDeltas);
+}
+
+/** Drain the coalesced deltas on the frame: ONE chart merge for the whole
+ * batch, then the per-run whr:run-delta fan-out (dashboard.js's runs list +
+ * open-modal refresh — the event contract is unchanged, just batched in
+ * time, and deduped by id so a run that changed N times fires once). */
+function flushDeltas(): void {
+	deltaFlushHandle = 0;
+	if (pendingDeltas.size === 0) return;
+	if (chart === null) return; // component not attached yet — applyPage subsumes it on attach
+	const batch = [...pendingDeltas.values()];
+	pendingDeltas.clear();
+	chart.onDeltas(batch);
+	for (const { run } of batch) {
+		window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: run.id, run } }));
+	}
+}
+
 function ingestDelta(r: RunState): void {
 	if (staleRegression(r)) return;
 	const prev = runsById.get(r.id);
-	runsById.set(r.id, r);
+	runsById.set(r.id, r); // model updates NOW — reconcile/page reads depend on it
 	noteOldest(r);
-	chart?.onDelta(r, prev);
-	window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: r.id, run: r } }));
+	// Queue the chart merge + fan-out for the next frame. Preserve the
+	// FIRST-seen prev for this run id so the batched apply sees the true
+	// pre-batch transition (a run that went pending→running→done in one batch
+	// must still restamp its lane's backlog from the pending it started at).
+	const existing = pendingDeltas.get(r.id);
+	pendingDeltas.set(r.id, { run: r, prev: existing ? existing.prev : prev });
+	scheduleDeltaFlush();
 	fresh(); // data arrived — the freshness clock advances HERE, unconditionally
 }
 
@@ -1265,6 +1314,10 @@ function initTimeline(): void {
 	// -- Feed → chart -----------------------------------------------------------
 
 	const applyPage = (page: RunState[]): void => {
+		// A full render from runsById subsumes any queued deltas (their runs
+		// are already in the map) — drop them so a trailing flush can't
+		// redundantly re-merge the same state.
+		pendingDeltas.clear();
 		const now = Date.now();
 		rebuildWaiterIndex(); // labels/tooltips read it during interval mapping
 		if (maybePrune(tl, now)) return; // prune did a full setData already
@@ -1303,37 +1356,50 @@ function initTimeline(): void {
 		syncLanes(tl);
 	};
 
-	// Skipped runs need no special-casing: each is a zero-duration instant
-	// interval upserted like any other delta — the component's scale-aware
-	// ×N clustering absorbs redelivery bursts (one packing slot per
-	// cluster), so no adapter-side pre-merge or rebuild debounce exists.
-	const applyDelta = (r: RunState, prev: RunState | undefined): void => {
+	// One frame's worth of coalesced deltas (see ingestDelta / flushDeltas),
+	// applied in ONE mergeData — the whole batch's affected bars, one collapse
+	// check, one waiter-index rebuild. Skipped runs still need no special-
+	// casing: each is a zero-duration instant interval upserted like any other
+	// delta (the batch dedupes by id but never PRE-CLUSTERS skips — the
+	// component's own scale-aware ×N clustering absorbs redelivery bursts).
+	const applyDeltas = (batch: RunDelta[]): void => {
+		if (batch.length === 0) return;
 		if (!seeded) {
 			// No coverage yet (deltas can precede the first page when the
 			// stream connects before the seed fetch returns): render what we
-			// hold as the seed.
+			// hold as the seed. runsById already holds every batched run, so
+			// the page subsumes the batch (applyPage clears pendingDeltas).
 			applyPage([...runsById.values()]);
 			return;
 		}
-		// Collapse boundary first: a delta that tips a lane across the
-		// threshold (a 2nd pending arrives; a backlog drains below 2) can
-		// only be expressed as a full replace — mergeData cannot remove the
-		// newly-subsumed spans or the emptied aggregate.
+		// Collapse boundary first, evaluated ONCE over the batch's net state:
+		// a delta that tips a lane across the threshold (a 2nd pending
+		// arrives; a backlog drains below 2) can only be expressed as a full
+		// replace — mergeData cannot remove the newly-subsumed spans or the
+		// emptied aggregate.
 		const pending = pendingByLane(runsById.values());
 		const nowCollapsed = computeCollapsedLanes(pending);
 		if (!sameLaneSet(nowCollapsed, collapsedLanes)) {
-			rebuildAll(); // rebuilds the waiter index + claims coverage itself
+			rebuildAll(); // rebuilds from runsById (whole batch) + waiter index + claims coverage
 			return;
 		}
-		// A delta can change OTHER bars' badges: every run this one was — or
+		// A delta can change OTHER bars' badges: every run any delta was — or
 		// now is — waiting on gains/loses its ⏳ waiter count. Re-merge the
-		// union of the old and new holder sets alongside the run itself.
-		const affected = new Set<string>([r.id]);
-		for (const holder of holderIdsOf(prev)) affected.add(holder);
-		for (const holder of holderIdsOf(r)) affected.add(holder);
+		// union of every delta plus its old and new holder sets, once.
 		rebuildWaiterIndex();
-		const intervals: TimelineInterval[] = [];
+		const affected = new Set<string>();
 		const restampAgg = new Set<string>();
+		for (const { run, prev } of batch) {
+			affected.add(run.id);
+			for (const holder of holderIdsOf(prev)) affected.add(holder);
+			for (const holder of holderIdsOf(run)) affected.add(holder);
+			// Leaving a collapsed backlog (started running / went terminal)
+			// moves the lane's aggregate depth too — restamp it alongside.
+			if (prev && prev.status === 'pending' && nowCollapsed.has(prev.hook_id)) {
+				restampAgg.add(prev.hook_id);
+			}
+		}
+		const intervals: TimelineInterval[] = [];
 		for (const id of affected) {
 			const run = runsById.get(id);
 			if (run === undefined) continue;
@@ -1345,16 +1411,11 @@ function initTimeline(): void {
 			}
 			intervals.push(runToInterval(run));
 		}
-		// Leaving a collapsed backlog (started running / went terminal)
-		// moves the lane's aggregate depth too — restamp it alongside.
-		if (prev && prev.status === 'pending' && nowCollapsed.has(prev.hook_id)) {
-			restampAgg.add(prev.hook_id);
-		}
 		for (const lane of restampAgg) {
 			const backlog = pending.get(lane);
 			if (backlog && backlog.length >= COLLAPSE_MIN) intervals.push(aggInterval(lane, backlog));
 		}
-		// The delta also vouches the range since the last claim (fold the
+		// The batch also vouches the range since the last claim (fold the
 		// trailing-coverage extension into the merge this path already does —
 		// without it nothing extends coverage on a live stream, and the
 		// component hatches [connect snapshot, now] as unknown history).
@@ -1367,6 +1428,7 @@ function initTimeline(): void {
 	// all land here. Coverage restarts at the held window's floor, so deeper
 	// panning re-pages from the server; same trade maybePrune makes.
 	const rebuildAll = (): void => {
+		pendingDeltas.clear(); // full render from runsById subsumes any queued deltas
 		oldestStartedRaw = null;
 		oldestStartedMs = Infinity;
 		for (const r of runsById.values()) noteOldest(r);
@@ -1387,7 +1449,7 @@ function initTimeline(): void {
 
 	chart = {
 		onPage: applyPage,
-		onDelta: applyDelta,
+		onDeltas: applyDeltas,
 		rebuild: rebuildAll,
 		markFresh: () => {
 			if (typeof tl.markFresh === 'function') tl.markFresh();

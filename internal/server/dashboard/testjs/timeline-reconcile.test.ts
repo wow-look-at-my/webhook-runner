@@ -12,9 +12,9 @@
 //   3. A legacy server's hb `{}` (no active array) changes nothing —
 //      feature detection keeps old-server behavior byte-identical.
 //   4. Coverage claims still ride the reconcile paths (the 2026-07-15
-//      trailing-hatch contract — see timeline-coverage.test.mjs).
+//      trailing-hatch contract — see timeline-coverage.test.ts).
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -112,7 +112,7 @@ function makeSandbox() {
 		clearTimeout,
 		setInterval: () => 0, // the forever supervisor would pin the event loop
 		clearInterval: () => {},
-		requestAnimationFrame: (fn) => setTimeout(fn, 0),
+		requestAnimationFrame: (fn) => { setImmediate(fn); return 1; }, // flush drains via settle()'s setImmediate loop
 		localStorage: { getItem: () => null, setItem: () => {} },
 		tsPresent: (s) => typeof s === 'string' && s !== '' && !s.startsWith('0001-01-01'),
 		fmtTime: (s) => s ?? '',

@@ -1,5 +1,5 @@
 // Focused harness for two dashboard behaviors, driving the REAL committed
-// assets/dashboard.js in a vm sandbox (the harness.test.mjs approach, with
+// assets/dashboard.js in a vm sandbox (the harness.test.ts approach, with
 // a leaner stub DOM that records enough structure to assert on):
 //
 //   1. The app runs table's status filter: filterAppRuns is a pure
@@ -11,7 +11,7 @@
 //   3. renderConcurrency accepts both response shapes: the {global,
 //      groups} document and the older bare array.
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +27,7 @@ const dashboardSrc = readFileSync(
 
 // -- Stub DOM (recording variant) -------------------------------------------
 //
-// Like harness.test.mjs's element stub, but appendChild RECORDS children
+// Like harness.test.ts's element stub, but appendChild RECORDS children
 // (so a rendered message is assertable) and <dialog> methods actually
 // track open state — the whole point of test 2 is "did the modal open".
 function makeElement(id) {
