@@ -115,7 +115,7 @@ function makeSandbox() {
 		// these tests drive the stream directly.
 		setInterval: () => 0,
 		clearInterval: () => {},
-		requestAnimationFrame: (fn) => setTimeout(fn, 0),
+		requestAnimationFrame: (fn) => { setImmediate(fn); return 1; }, // flush drains via settle()'s setImmediate loop
 		localStorage: { getItem: () => null, setItem: () => {} },
 		// Page globals dashboard.js provides at runtime (ts/globals.d.ts):
 		// tsPresent gates every interval build; the rest are render/click

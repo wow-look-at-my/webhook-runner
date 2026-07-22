@@ -112,7 +112,7 @@ function makeSandbox() {
 		clearTimeout,
 		setInterval: () => 0, // the forever supervisor would pin the event loop
 		clearInterval: () => {},
-		requestAnimationFrame: (fn) => setTimeout(fn, 0),
+		requestAnimationFrame: (fn) => { setImmediate(fn); return 1; }, // flush drains via settle()'s setImmediate loop
 		localStorage: { getItem: () => null, setItem: () => {} },
 		tsPresent: (s) => typeof s === 'string' && s !== '' && !s.startsWith('0001-01-01'),
 		fmtTime: (s) => s ?? '',

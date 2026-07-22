@@ -258,6 +258,21 @@ The server listens on two TCP ports plus a Unix socket:
   rebuildAll re-registered coverage to now; deleting it hatched the
   whole live window over live bars — the 2026-07-15 incident); the
   testjs timeline-coverage harness pins the contract.
+  RUN DELTAS ARE FRAME-COALESCED (the 2026-07-21 freeze fix): each SSE
+  `run` delta updates `runsById` synchronously but defers the expensive
+  component mergeData + the `whr:run-delta` fan-out to ONE
+  `requestAnimationFrame` flush (`pendingDeltas` / `flushDeltas` in
+  ts/timeline.ts), deduped by run id. A backlog buffered while the tab
+  sat backgrounded for hours — a captured profile showed 6,335 deltas
+  flushed in a single 15.3s main-thread block, zero repaints — used to
+  run one full merge PER delta synchronously on the SSE handler; rAF is
+  parked while backgrounded, so the whole backlog now collapses into a
+  single deduped flush on foreground. `onDelta` became `onDeltas(batch)`;
+  the batched apply does one collapse check + one waiter-index rebuild +
+  one mergeData for the union of affected bars (skips are still fed
+  individually, never pre-clustered). The testjs timeline-batch harness
+  pins it (one merge per burst, deduped, zero synchronous chart work on
+  the handler).
   THE CHART IS POSITIVELY RECOVERING (operator directive): it must
   always reflect what is happening RIGHT NOW, derived from the server's
   live snapshot of active state — never from replaying accumulated
