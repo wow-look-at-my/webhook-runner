@@ -1,5 +1,5 @@
 // Pending-backlog collapse harness: evaluates the REAL assets/timeline.js
-// in the vm sandbox (see timeline-coverage.test.mjs for the pattern) and
+// in the vm sandbox (see timeline-coverage.test.ts for the pattern) and
 // pins the ×N queued view model:
 //
 //   1. M pending runs in one lane feed EXACTLY ONE synthetic aggregate
@@ -12,7 +12,7 @@
 //      disappears (full setData replace) and the survivor renders as its
 //      real span. (N=0 is the same boundary from 1.)
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

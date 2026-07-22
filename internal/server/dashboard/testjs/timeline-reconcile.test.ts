@@ -12,9 +12,9 @@
 //   3. A legacy server's hb `{}` (no active array) changes nothing —
 //      feature detection keeps old-server behavior byte-identical.
 //   4. Coverage claims still ride the reconcile paths (the 2026-07-15
-//      trailing-hatch contract — see timeline-coverage.test.mjs).
+//      trailing-hatch contract — see timeline-coverage.test.ts).
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

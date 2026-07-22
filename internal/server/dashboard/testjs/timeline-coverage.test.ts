@@ -13,7 +13,7 @@
 //   4. Claims are CONTIGUOUS: each starts at (or before) the previous end,
 //      so the tracker merges them into one range — no seam gaps to hatch.
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 // No dependencies; node's built-in test runner.
 
 import { test } from 'node:test';

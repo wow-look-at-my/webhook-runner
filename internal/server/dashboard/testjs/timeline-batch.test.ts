@@ -16,7 +16,7 @@
 //        (a run that changed N times in the burst is one interval, last
 //        state wins).
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 // No dependencies; node's built-in test runner.
 
 import { test } from 'node:test';
@@ -217,7 +217,7 @@ test('a burst of run deltas does ZERO work on the handler and coalesces to ONE m
 		assert.ok(ids.has(mkid(i)), `run ${mkid(i)} missing from the coalesced merge`);
 	}
 	// The batched merge still vouches trailing coverage (the live-stream hatch
-	// contract — see timeline-coverage.test.mjs).
+	// contract — see timeline-coverage.test.ts).
 	assert.ok(merges[0].data.coverage, 'the coalesced merge dropped its coverage claim');
 	assert.ok(Math.abs(merges[0].data.coverage.end - Date.now()) < 5_000, 'coalesced-merge coverage must end ~now');
 });
