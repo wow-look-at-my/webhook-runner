@@ -255,3 +255,31 @@ test('fan-out: one whr:run-delta per changed run fires from the flush (deduped),
 	await settle();
 	assert.deepEqual([...seen].sort(), [ID, 'otherotherotherotherotherz'].sort(), 'expected one deduped fan-out event per changed run');
 });
+
+test('the fan-out survives a component that never loads (the feed is not the chart)', async () => {
+	// The <timeline-view> component is imported at RUNTIME from js-snippets;
+	// that fetch can fail for a while. The feed's OTHER consumers — the runs
+	// table and the open run modal — are this module's contract and must not
+	// go dark with it. (Pre-fix, flushDeltas returned early on a null chart,
+	// swallowing every event AND growing pendingDeltas without bound.)
+	const h = makeSandbox();
+	// A component fetch that never settles: the load parks (as it does while
+	// the site is unreachable) and `chart` stays null for the whole test.
+	h.sandbox.__import = () => new Promise(() => {});
+	new vm.Script(scriptSrc, { filename: 'timeline.js' }).runInContext(h.sandbox);
+	await settle();
+	assert.equal(h.sources.length, 1, 'the feed must open its stream without waiting on the component');
+
+	const seen = [];
+	h.sandbox.window.addEventListener('whr:run-delta', (e) => seen.push(e.detail.id));
+	const ID = 'nochartnochartnochartnocha';
+	h.sources[0].emit('run', run(ID, 'gha-runner', Date.now(), 'running'));
+	await settle();
+
+	assert.deepEqual(seen, [ID], 'deltas must still fan out with no chart attached');
+	assert.equal(
+		h.calls.filter((c) => c.kind === 'mergeData').length,
+		0,
+		'…and no chart work may be attempted while the component is missing',
+	);
+});

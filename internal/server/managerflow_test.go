@@ -38,6 +38,7 @@ type fakeManagers struct {
 	instances map[string]string
 	titles    map[string]string
 	stopped   []string
+	onChange  func()
 }
 
 func newFakeManagers(ids ...string) *fakeManagers {
@@ -115,6 +116,29 @@ func (f *fakeManagers) RequestStop(id, reason string) {
 }
 
 func (f *fakeManagers) Poke(string) {}
+
+// SetOnChange mirrors the real supervisor's wiring: the seam the server
+// turns into a "managers" section signal, fed here by the inboxes (depth
+// and stamps are exactly what the roster shows).
+func (f *fakeManagers) SetOnChange(fn func()) {
+	f.mu.Lock()
+	f.onChange = fn
+	f.mu.Unlock()
+	for _, ib := range f.inboxes {
+		ib.SetOnChange(fn)
+	}
+}
+
+// changed fires the seam as a supervision-side mutation would (an output
+// line, a state transition).
+func (f *fakeManagers) changed() {
+	f.mu.Lock()
+	fn := f.onChange
+	f.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
 
 // managerServer builds a Server with one declared manager (secret-authed,
 // one skip_if condition) and the fake control.
