@@ -23,12 +23,11 @@ type TestOptions struct {
 	Timeout time.Duration // per-command cap; <= 0 = DefaultTestTimeout
 	Out     io.Writer     // combined progress + container output; nil = io.Discard
 
-	// GSM applies the enforced-GitHub-gateway injection to test containers
-	// too (run/test parity, the dind rule): when the knob is set, a test
-	// that illegally calls api.github.com fails loudly instead of
-	// depending on production GitHub — tests are hermetic by contract.
-	// Zero value = off, the default.
-	GSM GSMConfig
+	// The enforced-GitHub-gateway injection is UNCONDITIONAL (see
+	// GSMBaseURL) and applies to test containers too — run/test parity,
+	// the dind rule — so there is nothing to configure here: a test that
+	// calls api.github.com directly fails loudly instead of depending on
+	// production GitHub. Tests are hermetic by contract.
 }
 
 // RunHookTests executes the hook's declared test commands (hook.json
@@ -66,7 +65,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 		label := fmt.Sprintf("%s: test %d/%d", hook.ID, i+1, len(hook.Tests))
 		fmt.Fprintf(out, "=== %s: %s\n", label, strings.Join(argv, " "))
 		start := time.Now()
-		if err := runOneTest(docker, hook, image, argv, timeout, out, opts.GSM); err != nil {
+		if err := runOneTest(docker, hook, image, argv, timeout, out); err != nil {
 			fmt.Fprintf(out, "--- %s FAILED after %s: %v\n", label, time.Since(start).Round(time.Millisecond), err)
 			failures = append(failures, fmt.Sprintf("test %d (%s): %v", i+1, strings.Join(argv, " "), err))
 			continue
@@ -79,7 +78,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 	return nil
 }
 
-func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer, gsm GSMConfig) error {
+func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer) error {
 	suffix := make([]byte, 8)
 	if _, err := rand.Read(suffix); err != nil {
 		return fmt.Errorf("generate container name: %w", err)
@@ -91,9 +90,9 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 		"--name", name,
 		"-e", "HOOK_ID=" + hook.ID,
 	}
-	// Enforced GitHub gateway, run/test parity (inert while the knob is
-	// unset): hermetic tests must not depend on api.github.com either.
-	args = append(args, gsmInjectArgs(gsm, hook.ID)...)
+	// Mirror routing, run/test parity (unconditional): a test's GitHub
+	// reads ride the mirror exactly as a live run's do.
+	args = append(args, gsmInjectArgs()...)
 	// A dind hook gets the same --privileged + anonymous /var/lib/docker
 	// volume here as on the live-run path (execute()), so its declared tests
 	// can start a nested container daemon; without this parity a dind hook's
