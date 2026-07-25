@@ -314,6 +314,22 @@ The server listens on two TCP ports plus a Unix socket:
   timeline-collapse harness pins it.
   A bar click opens the run modal, a lane-label click opens `#hook={id}`,
   and the old runs table stays behind a persisted "Show table" toggle.
+  THE RUN MODAL POLLS `/runs/{id}` EVERY 3s WHILE IT IS OPEN ON A
+  NON-TERMINAL RUN — deliberately, stream or no stream, and the one
+  place the zero-polling-while-live rule does not apply. Deltas cannot
+  carry OUTPUT (`runs.Run.AppendOutput` fires no OnChange: deltas are
+  output-stripped and per-line fan-out would hit every client), so a run
+  that is merely logging emits no deltas and the old
+  `whrStreamLive === true` stand-down froze the open modal for the whole
+  run. Deltas still refresh it instantly for the state changes they DO
+  carry, and any refresh restarts the 3s clock (`lastRunDetailFetch`),
+  so a busy run still costs at most one fetch per interval; it stops at
+  a terminal render and on close. The delta fan-out itself must survive
+  a missing chart: `flushDeltas` drains and dispatches even when the
+  runtime-imported component never attached (pre-fix it returned early,
+  killing the modal's and table's feed and growing `pendingDeltas`
+  unbounded) — the testjs rundetail-live and timeline-batch harnesses
+  pin both halves.
   waiting_on/waiters and unknown statuses are feature-detected, so the
   timeline works against servers with or without first-class waits.
   Dashboard assets are content-addressed (`internal/server/

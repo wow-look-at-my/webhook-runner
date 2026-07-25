@@ -1805,9 +1805,21 @@ function runLink(id) {
 // (fixed cadence, no backoff, structurally cannot stop itself): it runs
 // whenever the dialog is open for a non-terminal run and stops only when
 // the dialog closes or the run reaches a terminal status (whose render IS
-// the final state — a terminal run never changes again). A later PR
-// upgrades the refresh trigger to server-push deltas (/runs/stream);
-// polling stays as its fallback.
+// the final state — a terminal run never changes again).
+//
+// THE POLL RUNS EVEN WHILE THE STREAM IS LIVE, and that is not a leftover:
+// stream deltas cannot carry a run's OUTPUT. runs.Run.AppendOutput
+// deliberately does not fire the tracker's OnChange seam (deltas are
+// output-stripped snapshots, and one fan-out per output line would hit
+// every connected client), so between SetRunning and Finish a chatty run
+// emits NO deltas at all. Standing the poll down whenever whrStreamLive
+// was true therefore froze the open modal's log for the entire run —
+// exactly while the dashboard was healthiest. Deltas still refresh it
+// INSTANTLY on the state changes they do carry (running, waits, cancel,
+// terminal); the poll covers the growing log in between, and a refresh
+// from either source restarts the 3s clock so the two never double up.
+// The zero-polling-while-live rule governs the IDLE dashboard's sections;
+// a modal the operator has open on a running job is not idle.
 
 const TERMINAL_RUN_STATUSES = ["success", "failure", "timeout", "error", "cancelled", "skipped"];
 const RUN_DETAIL_POLL_MS = 3000;
@@ -1815,6 +1827,10 @@ const RUN_DETAIL_POLL_MS = 3000;
 let currentRunId = null; // run shown in the open modal, null when closed
 let currentRunView = null; // the user's raw/conversation choice, null = auto
 let currentRunTerminal = false; // last rendered status was terminal
+// When the modal's run was last fetched (any source: open, delta, poll) —
+// the poll skips a tick a delta already covered, so a busy run costs at
+// most one /runs/{id} per RUN_DETAIL_POLL_MS however many deltas arrive.
+let lastRunDetailFetch = 0;
 
 async function showRun(id) {
   currentRunId = id;
@@ -1829,6 +1845,7 @@ async function showRun(id) {
 async function refreshRunDetail(openDialog) {
   const id = currentRunId;
   if (!id) return;
+  lastRunDetailFetch = Date.now();
   try {
     const r = await fetchJSON(`/runs/${id}`);
     if (currentRunId !== id) return; // modal moved on while fetching
@@ -1963,15 +1980,13 @@ document.getElementById("run-detail-view-toggle").addEventListener("click", (e) 
 // The live refresh loop: one fixed-cadence interval for the page's life,
 // gated on "modal open, run known, not yet rendered terminal". A terminal
 // render is final — the run cannot change — so polling stops there; errors
-// inside refreshRunDetail are caught (the loop itself can never die).
-// PUSH-FIRST: while timeline.js's /runs/stream EventSource is live
-// (window.whrStreamLive), deltas drive the refresh at push latency and
-// this poll stands down; it takes over automatically whenever the stream
-// is down (or the timeline module never loaded — whrStreamLive undefined).
+// inside refreshRunDetail are caught (the loop itself can never die). It
+// runs regardless of stream state because deltas never carry output (see
+// the section comment); a delta-driven refresh just defers the next tick.
 setInterval(() => {
   if (!currentRunId || currentRunTerminal) return;
   if (!runDetailDialog.open) return;
-  if (window.whrStreamLive === true) return; // stream deltas own the refresh
+  if (Date.now() - lastRunDetailFetch < RUN_DETAIL_POLL_MS) return; // a delta just refreshed it
   void refreshRunDetail(false);
 }, RUN_DETAIL_POLL_MS);
 // Stream deltas: refresh the open modal the moment ITS run changes (the
