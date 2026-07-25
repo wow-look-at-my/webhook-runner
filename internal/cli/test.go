@@ -84,7 +84,6 @@ to load or any test command fails.`,
 					Docker:  docker,
 					Timeout: timeout,
 					Out:     out,
-					GSM:     gsmFromEnv(),
 				}); err != nil {
 					failures = append(failures, err)
 				}
