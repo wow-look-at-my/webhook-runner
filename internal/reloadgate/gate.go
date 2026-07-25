@@ -114,6 +114,10 @@ type Gate struct {
 	verified     bool   // a green gating status (or operator force) vouched for servingSHA
 	pendingSHA   string // a newer commit fetched but not yet green ("" = none)
 	pendingState string // "pending", "failure", or "error"
+	// verdicts records every terminal gating status seen, so the poll can
+	// answer from a delivery it already verified instead of the API. See
+	// verdicts.go.
+	verdicts []verdictRecord
 	// lastPollBlind dedupes the poll's cannot-determine reporting: the
 	// event fires once per distinct problem, not once per hourly tick
 	// (the attention entry is the persistent surface). In-memory only.
@@ -127,6 +131,9 @@ type gateState struct {
 	PendingSHA   string    `json:"pending_sha,omitempty"`
 	PendingState string    `json:"pending_state,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Verdicts is additive: an older binary ignores the field, and a file
+	// written without it loads as an empty store.
+	Verdicts []verdictRecord `json:"verdicts,omitempty"`
 }
 
 // New builds a Gate, loading persisted state from cfg.StatePath. A missing
@@ -173,6 +180,8 @@ func New(cfg Config) (*Gate, error) {
 	}
 	g.servingSHA, g.verified = st.ServingSHA, st.Verified
 	g.pendingSHA, g.pendingState = st.PendingSHA, st.PendingState
+	g.verdicts = st.Verdicts
+	g.pruneVerdictsLocked(time.Now().UTC())
 	return g, nil
 }
 
@@ -423,8 +432,14 @@ func (g *Gate) handleStatus(body []byte) (string, error) {
 		// status adds nothing.
 		return "ignored", nil
 	case "failure", "error":
+		g.recordVerdict(p.SHA, p.State)
 		return g.holdRed(p.SHA, p.State)
 	case "success":
+		// Record BEFORE the ordering rule runs: a green the rule refuses
+		// today (out of order, or ahead of a rollback) is still a verified
+		// fact about that sha, and discarding it is what left the poll
+		// buying it back from the API. See verdicts.go.
+		g.recordVerdict(p.SHA, p.State)
 		return g.trySwitch(p.SHA)
 	default:
 		return "ignored", nil
@@ -652,6 +667,7 @@ func (g *Gate) persistLocked() {
 		PendingSHA:   g.pendingSHA,
 		PendingState: g.pendingState,
 		UpdatedAt:    time.Now().UTC(),
+		Verdicts:     g.verdicts,
 	}
 	if err := writeState(g.statePath, st); err != nil {
 		g.log.Error("reload gate state persist failed", "path", g.statePath, "err", err)

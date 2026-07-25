@@ -30,10 +30,25 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   affirmative green, through the exact same trySwitch ordering path as
   (1) — never a forked copy. Red/pending/no-status-yet hold via the same
   `reload.held`/`held_red` bookkeeping; an UNREADABLE status (no token,
-  API error, underivable URL) holds BLIND — `reload.poll_blind` + the
-  `KeyReloadPoll` attention entry, one event per distinct problem, and it
-  is impossible for the poll to switch to a tip that is not affirmatively
-  green. Repeat ticks over an unchanged verdict are quiet. The poll makes
+  API error, underivable URL) falls back to a RECORDED VERDICT and, absent
+  one, holds BLIND — `reload.poll_blind` + the `KeyReloadPoll` attention
+  entry, one event per distinct problem, and it is impossible for the poll
+  to switch to a tip that is not affirmatively green.
+  RECORDED VERDICTS (`internal/reloadgate/verdicts.go`): every terminal
+  gating status the gate accepts is written to a bounded, TTL'd sha->state
+  map in the same state file (`verdicts`, additive/omitempty), INCLUDING
+  greens the ordering rule then refuses — a delivered verdict is a
+  verified fact about that sha, and discarding it is what left the poll
+  buying it back from an API it may have no credential for (the 2026-07-25
+  rollback: the gate had applied `802df44`'s green, rolled back, then held
+  blind asking GitHub about it). `readGatingState` asks the API FIRST and
+  its answer always wins — the poll exists to catch what the webhook
+  missed, so a stale record must never mask a fresher red — with the
+  record standing in only when the API cannot answer at all. The store
+  answers "is this sha green?", never "should the tree switch to it?":
+  trySwitch's recent-history + not-older-than-serving checks still gate
+  every apply, so a record is an input to that rule, not a bypass.
+  Repeat ticks over an unchanged verdict are quiet. The poll makes
   the repo webhook's Statuses-event checkbox a latency optimization, not
   a correctness requirement. GATED MODE ONLY: with the gate disabled the
   poller never starts (one log line; legacy stays timerless).

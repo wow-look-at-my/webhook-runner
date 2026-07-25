@@ -2,6 +2,7 @@ package reloadgate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
@@ -66,11 +67,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 	// The tip moved past what is serving: the poll must determine the
 	// gating status before anything can switch. Fail closed — an
 	// unreadable status HOLDS, loudly.
-	if g.status == nil {
-		g.holdBlind(tip, "no status reader configured")
-		return "held-blind"
-	}
-	state, err := g.status(ctx, tip)
+	state, err := g.readGatingState(ctx, tip)
 	if err != nil {
 		g.holdBlind(tip, err.Error())
 		return "held-blind"
@@ -128,6 +125,36 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 		g.mu.Unlock()
 		return "held-pending"
 	}
+}
+
+// readGatingState determines the tip's gating state for the poll. The API is
+// asked FIRST and its answer always wins: the poll exists to catch what the
+// status webhook missed, so a recorded verdict must never mask a fresher read
+// (a CI re-run flipping green->red whose status event was lost is exactly that
+// case). Only when the API cannot answer at all — no reader configured, or the
+// call failed — does a previously delivered verdict stand in, which is what
+// makes the credential an optimization rather than a hard dependency for any
+// sha the gate has already been told about. Neither path switches the tree on
+// its own: trySwitch's ordering rule still gates every apply.
+func (g *Gate) readGatingState(ctx context.Context, tip string) (string, error) {
+	apiErr := errors.New("no status reader configured")
+	if g.status != nil {
+		state, err := g.status(ctx, tip)
+		if err == nil {
+			return state, nil
+		}
+		apiErr = err
+	}
+	state, ok := g.verdictFor(tip)
+	if !ok {
+		return "", apiErr
+	}
+	g.log.Info("reload poll: using the recorded gating verdict (status API unreadable)",
+		"sha", tip, "state", state, "context", g.context, "api_err", apiErr)
+	g.events.Record("reload.poll_recorded", fmt.Sprintf(
+		"reload poll: %s status for %s could not be read (%s); using the %q verdict recorded from that commit's own status delivery",
+		g.context, short(tip), apiErr, state), nil)
+	return state, nil
 }
 
 // alreadyHeld reports whether the hold for sha with this state is already
