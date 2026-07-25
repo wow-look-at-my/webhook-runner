@@ -1,6 +1,6 @@
-# Gotchas: managers and the enforced-GitHub gateway
+# Gotchas: managers and github-state-mirror routing
 
-Managers as a first-class sibling entity to hooks -- an instance is not a run -- and the fail-closed GitHub API gateway.
+Managers as a first-class sibling entity to hooks -- an instance is not a run -- and the unconditional github-state-mirror routing for all GitHub traffic.
 
 Moved VERBATIM out of `CLAUDE.md` when that file went over the
 40,000-character instruction-file budget. Nothing here was condensed.
@@ -50,19 +50,29 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   don't fork a second reload path. Deploy-first rule as usual: old
   binaries never scan `src/managers/`, so the runner deploys before the
   first manager directory merges.
-- The enforced-GitHub gateway (`internal/runner/managersession.go`
-  `gsmArgs`/`GSMConfig`, wired in runner.execute + runOneTest +
-  RunManagerSession): with `WEBHOOK_RUNNER_GSM_URL` set, every
-  hook/manager/test container EXCEPT the `WEBHOOK_RUNNER_GITHUB_DIRECT`
-  csv exemptions gets `--add-host api.github.com:0.0.0.0` (fail-closed
-  blackhole) + a `GITHUB_API_URL` env DEFAULT pointing at the gateway
-  (injected BEFORE hook env, so a hook's own value wins — the blackhole,
-  not the env var, is the enforcement). Unset (the default) = ZERO
-  docker args, byte-identical behavior — the knob is an operator
-  infrastructure flip gated on the gsm caching fixes (PR B), not a
-  feature gate. The runner's OWN GitHub calls (githubstatus posts, the
-  reload poll) follow the knob via `gh.SetAPIURL` —
-  `WEBHOOK_RUNNER_GITHUB_API_URL` overrides that separately. Run+test
-  parity is load-bearing (the dind precedent): both paths inject the
-  same args, so a hook's `tests` see the same network posture as its
-  runs.
+- github-state-mirror routing (`internal/runner/managersession.go`
+  `GSMBaseURL`/`gsmArgs`, wired in runner.execute + runOneTest +
+  RunManagerSession): EVERY hook/manager/test container is launched with
+  `-e GITHUB_API_URL=https://github-state-mirror.pazer.io`, and the
+  runner's own GitHub calls (githubstatus posts, the reload poll) use the
+  same base via `gh.SetAPIURL`. **UNCONDITIONAL — there is no knob**
+  (operator ruling 2026-07-25: "*Everything* must go through GSM
+  otherwise we are blowing up our API quota and github servers for ZERO
+  benefit"). `WEBHOOK_RUNNER_GSM_URL`, `WEBHOOK_RUNNER_GITHUB_DIRECT`
+  and `WEBHOOK_RUNNER_GITHUB_API_URL` are DELETED; do not reintroduce an
+  off switch or a per-id carve-out. **GSM IS A PROXY, NOT A FIREWALL**
+  (operator correction, same day: "GSM is not a blackhole") — #98's
+  `--add-host api.github.com:0.0.0.0` was never requested and is gone.
+  The mirror passes through whatever it does not model, so pointing
+  GITHUB_API_URL at it IS the mechanism; blackholing would only break
+  callers that cannot honor GITHUB_API_URL (tenant CI job steps), which
+  is breakage, not routing. NOTE a transparent DNS redirect of
+  api.github.com to the mirror is NOT possible: the mirror terminates no
+  TLS itself and its edge serves a `github-state-mirror.pazer.io`
+  certificate, so any client opening `https://api.github.com` fails
+  hostname verification (it would need a cert for api.github.com, which
+  no public CA will issue). The injection lands BEFORE hook env (docker
+  keeps the last -e), so a hook.json declaring its own GITHUB_API_URL
+  still wins — today pr-minder and required-builds declare this exact
+  base, so the injection makes those lines redundant rather than
+  conflicting. Run+test parity is load-bearing (the dind precedent).
