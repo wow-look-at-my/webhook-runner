@@ -13,7 +13,7 @@
 //   4. Claims are CONTIGUOUS: each starts at (or before) the previous end,
 //      so the tracker merges them into one range — no seam gaps to hatch.
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 // No dependencies; node's built-in test runner.
 
 import { test } from 'node:test';
@@ -115,7 +115,7 @@ function makeSandbox() {
 		// these tests drive the stream directly.
 		setInterval: () => 0,
 		clearInterval: () => {},
-		requestAnimationFrame: (fn) => setTimeout(fn, 0),
+		requestAnimationFrame: (fn) => { setImmediate(fn); return 1; }, // flush drains via settle()'s setImmediate loop
 		localStorage: { getItem: () => null, setItem: () => {} },
 		// Page globals dashboard.js provides at runtime (ts/globals.d.ts):
 		// tsPresent gates every interval build; the rest are render/click

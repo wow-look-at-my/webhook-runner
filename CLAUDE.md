@@ -14,6 +14,7 @@ cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
 internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regenerated via `go generate` — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (authored in TypeScript, run DIRECTLY via `node --test`'s native type-stripping — no build step; CI pins Node with actions/setup-node). the convention is to author/commit `.ts` source, not generated `.mjs` (gitignored via `*.mjs`; a genuine edge-case `.mjs` can be `git add -f`'d). The one deliberately-committed generated artifact is the dashboard adapter's `assets/timeline.js` bundle — a `.js` (not caught by the `*.mjs` rule), embedded via go:embed and regenerated via ts0
 internal/hooks/            hook.json + manager.json models, loader, registry, watcher, git repo
 internal/managers/         the manager entity's runtime: bounded inbox (checkout/settle handles) + supervisor (flock lease, flat restarts, output ring, attention seam)
 internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
@@ -258,6 +259,21 @@ The server listens on two TCP ports plus a Unix socket:
   rebuildAll re-registered coverage to now; deleting it hatched the
   whole live window over live bars — the 2026-07-15 incident); the
   testjs timeline-coverage harness pins the contract.
+  RUN DELTAS ARE FRAME-COALESCED (the 2026-07-21 freeze fix): each SSE
+  `run` delta updates `runsById` synchronously but defers the expensive
+  component mergeData + the `whr:run-delta` fan-out to ONE
+  `requestAnimationFrame` flush (`pendingDeltas` / `flushDeltas` in
+  ts/timeline.ts), deduped by run id. A backlog buffered while the tab
+  sat backgrounded for hours — a captured profile showed 6,335 deltas
+  flushed in a single 15.3s main-thread block, zero repaints — used to
+  run one full merge PER delta synchronously on the SSE handler; rAF is
+  parked while backgrounded, so the whole backlog now collapses into a
+  single deduped flush on foreground. `onDelta` became `onDeltas(batch)`;
+  the batched apply does one collapse check + one waiter-index rebuild +
+  one mergeData for the union of affected bars (skips are still fed
+  individually, never pre-clustered). The testjs timeline-batch harness
+  pins it (one merge per burst, deduped, zero synchronous chart work on
+  the handler).
   THE CHART IS POSITIVELY RECOVERING (operator directive): it must
   always reflect what is happening RIGHT NOW, derived from the server's
   live snapshot of active state — never from replaying accumulated
@@ -1154,22 +1170,32 @@ The companion repo is `wow-look-at-my/webhooks`.
   don't fork a second reload path. Deploy-first rule as usual: old
   binaries never scan `src/managers/`, so the runner deploys before the
   first manager directory merges.
-- The enforced-GitHub gateway (`internal/runner/managersession.go`
-  `gsmArgs`/`GSMConfig`, wired in runner.execute + runOneTest +
-  RunManagerSession): with `WEBHOOK_RUNNER_GSM_URL` set, every
-  hook/manager/test container EXCEPT the `WEBHOOK_RUNNER_GITHUB_DIRECT`
-  csv exemptions gets `--add-host api.github.com:0.0.0.0` (fail-closed
-  blackhole) + a `GITHUB_API_URL` env DEFAULT pointing at the gateway
-  (injected BEFORE hook env, so a hook's own value wins — the blackhole,
-  not the env var, is the enforcement). Unset (the default) = ZERO
-  docker args, byte-identical behavior — the knob is an operator
-  infrastructure flip gated on the gsm caching fixes (PR B), not a
-  feature gate. The runner's OWN GitHub calls (githubstatus posts, the
-  reload poll) follow the knob via `gh.SetAPIURL` —
-  `WEBHOOK_RUNNER_GITHUB_API_URL` overrides that separately. Run+test
-  parity is load-bearing (the dind precedent): both paths inject the
-  same args, so a hook's `tests` see the same network posture as its
-  runs.
+- github-state-mirror routing (`internal/runner/managersession.go`
+  `GSMBaseURL`/`gsmArgs`, wired in runner.execute + runOneTest +
+  RunManagerSession): EVERY hook/manager/test container is launched with
+  `-e GITHUB_API_URL=https://github-state-mirror.pazer.io`, and the
+  runner's own GitHub calls (githubstatus posts, the reload poll) use the
+  same base via `gh.SetAPIURL`. **UNCONDITIONAL — there is no knob**
+  (operator ruling 2026-07-25: "*Everything* must go through GSM
+  otherwise we are blowing up our API quota and github servers for ZERO
+  benefit"). `WEBHOOK_RUNNER_GSM_URL`, `WEBHOOK_RUNNER_GITHUB_DIRECT`
+  and `WEBHOOK_RUNNER_GITHUB_API_URL` are DELETED; do not reintroduce an
+  off switch or a per-id carve-out. **GSM IS A PROXY, NOT A FIREWALL**
+  (operator correction, same day: "GSM is not a blackhole") — #98's
+  `--add-host api.github.com:0.0.0.0` was never requested and is gone.
+  The mirror passes through whatever it does not model, so pointing
+  GITHUB_API_URL at it IS the mechanism; blackholing would only break
+  callers that cannot honor GITHUB_API_URL (tenant CI job steps), which
+  is breakage, not routing. NOTE a transparent DNS redirect of
+  api.github.com to the mirror is NOT possible: the mirror terminates no
+  TLS itself and its edge serves a `github-state-mirror.pazer.io`
+  certificate, so any client opening `https://api.github.com` fails
+  hostname verification (it would need a cert for api.github.com, which
+  no public CA will issue). The injection lands BEFORE hook env (docker
+  keeps the last -e), so a hook.json declaring its own GITHUB_API_URL
+  still wins — today pr-minder and required-builds declare this exact
+  base, so the injection makes those lines redundant rather than
+  conflicting. Run+test parity is load-bearing (the dind precedent).
 - First-class waits (`internal/server/wait.go`, `POST /wait` on the state
   socket): a hook that wants to pause SLEEPS IN-PROCESS by declaring it —
   `{"seconds": 1..600, "reason": "..."}`, both required (waits must be

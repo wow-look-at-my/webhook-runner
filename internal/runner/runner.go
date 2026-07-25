@@ -101,10 +101,6 @@ type Runner struct {
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
 
-	// gsm is the enforced-GitHub-gateway injection config (inert while
-	// URL is empty — the default). See gsmArgs in managersession.go.
-	gsm GSMConfig
-
 	wg sync.WaitGroup
 
 	// draining is set once shutdown begins: no NEW runs may start (a run
@@ -138,11 +134,6 @@ type Options struct {
 	KV       KVInjector
 	KVSocket string
 	KVShim   string
-
-	// GSM configures the enforced GitHub gateway (WEBHOOK_RUNNER_GSM_URL +
-	// WEBHOOK_RUNNER_GITHUB_DIRECT). Zero value = enforcement off, zero
-	// behavior change — the shipped default.
-	GSM GSMConfig
 }
 
 // New constructs a Runner.
@@ -169,7 +160,6 @@ func New(opts Options) *Runner {
 		kv:        opts.KV,
 		kvSocket:  opts.KVSocket,
 		kvShim:    opts.KVShim,
-		gsm:       opts.GSM,
 		dockerBin: opts.Docker,
 	}
 }
@@ -421,11 +411,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
 		)
 	}
-	// Enforced GitHub gateway (inert while WEBHOOK_RUNNER_GSM_URL is unset):
-	// the api.github.com blackhole + the GITHUB_API_URL fleet default,
-	// injected BEFORE secrets/hook env so an explicit hook.json value still
-	// wins — the blackhole, not the env, is the enforcement.
-	args = append(args, r.gsmArgs(hook.ID)...)
+	// github-state-mirror routing (unconditional — see GSMBaseURL): the
+	// GITHUB_API_URL fleet default, injected BEFORE secrets/hook env so an
+	// explicit hook.json value still wins.
+	args = append(args, r.gsmArgs()...)
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
 	}

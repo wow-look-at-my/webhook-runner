@@ -53,11 +53,17 @@ jobs:
       - uses: actions/checkout@v4
       # Dashboard client harnesses: drive the real committed assets
       # (dashboard.js — the push-first section feed; timeline.js — the
-      # stream-vouched trailing-coverage claims) in vm sandboxes. The shell
-      # glob picks up every testjs/*.test.mjs (node's bare-directory form
-      # is not portable across 22.x). Plain `node --test`, no dependencies.
+      # stream-vouched trailing-coverage claims) in vm sandboxes. Authored in
+      # TypeScript and run DIRECTLY via node's native type-stripping — no
+      # build step, and no committed generated .mjs (see .gitignore; the repo
+      # commits .ts source only). The shell glob picks up every
+      # testjs/*.test.ts (node's bare-directory form is not portable across
+      # 22.x). setup-node pins a Node new enough to strip types.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Dashboard client harness
-        run: node --test internal/server/dashboard/testjs/*.test.mjs
+        run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
       # Restore the binary go-toolchain@v1 handed off in the test job through
       # the actions cache (its central `go-build` upload — go-toolchain uploads
       # its build/ dir as `go-build`, so the contents restore into build/ here;
