@@ -13,6 +13,45 @@ permissions:
   checks: read
 
 jobs:
+  # Every CLAUDE.md is inlined into an agent's context VERBATIM the moment it
+  # works in that directory, and nothing truncates it: Claude Code's only hard
+  # cap skips a file over 4 MiB outright, and the "limit" the CLI mentions is a
+  # warning threshold that changes nothing about what gets sent — and renders
+  # only in the terminal UI, so it reaches neither the web surface nor the
+  # model. An oversized CLAUDE.md is simply re-billed on every request. Keep
+  # them indexes: depth goes to docs/ VERBATIM behind a pointer.
+  claude-md-budget:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const BUDGET = 40000;
+            const found: string[] = [];
+            const walk = (dir: string): void => {
+              for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (e.name === '.git' || e.name === 'node_modules') continue;
+                const p = path.join(dir, e.name);
+                if (e.isDirectory()) walk(p);
+                else if (e.name === 'CLAUDE.md') found.push(p);
+              }
+            };
+            walk('.');
+            const over: string[] = [];
+            for (const file of found.sort()) {
+              const chars = fs.readFileSync(file, 'utf-8').length;
+              core.info(`${file}: ${chars} chars`);
+              if (chars > BUDGET) over.push(`${file}: ${chars} chars (${chars - BUDGET} over)`);
+            }
+            if (over.length) {
+              core.setFailed(
+                `Over the ${BUDGET}-char CLAUDE.md budget. Move the depth into docs/ VERBATIM ` +
+                  `and leave a one-line pointer — extraction, never summarization:\n` +
+                  over.join('\n'),
+              );
+            }
+
   test:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
