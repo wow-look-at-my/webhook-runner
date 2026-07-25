@@ -1,6 +1,6 @@
 # Gotchas: the run live tail and the needs-attention surface
 
-The SSE stream hub and its never-block invariant, section-invalidation signals, and the aggregated needs-attention entries with their clear rules.
+The SSE stream hub and its never-block invariant, the five section-signal seams, and the aggregated needs-attention entries with their clear rules.
 
 Moved VERBATIM out of `CLAUDE.md` when that file went over the
 40,000-character instruction-file budget. Nothing here was condensed.
@@ -49,7 +49,7 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   1-slot wake channel, NOT the delta queue, so signal storms coalesce
   into one drain and signals can never overflow/drop/block anyone — only
   run deltas drop a slow client, and a reconnecting client refetches
-  every section on open so no signal is load-bearing. Four seams feed
+  every section on open so no signal is load-bearing. Five seams feed
   `streamHub.signal`, wired in `server.New`: (1) the tracker OnChange
   wrapper also dirties "concurrency" (group active/waiting/holders move
   exactly with run lifecycle/waiting_on — a deliberate superset); (2)
@@ -65,7 +65,15 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   /kv views can lag expiry by ≤1 sweep interval); (4)
   `attention.Aggregator.SetOnChange` → "attention" (fired only on REAL
   set changes — an identical re-derivation on a quiet reload signals
-  nothing). All four callbacks run
+  nothing); (5) `managers.Supervisor.SetOnChange` → "managers" (instance
+  OUTPUT lines, inbox depth/stamps, and supervision state transitions —
+  none of which record an activity event, so before this seam the
+  Managers page and the `#manager=<id>` drill-down only moved on the
+  occasional lifecycle event and F5 was the operator's refresh button;
+  output is deliberately UNTHROTTLED — the hub's dirty set and the
+  client's 1s coalescing absorb a chatty instance, whereas a throttle
+  here could only lose the last line, i.e. the stale tail itself). All
+  five callbacks run
   synchronously on mutating goroutines under their owners' mutexes —
   keep them trivial (the hub only flips bounded dirty bits), never let
   them call back into their owner. Client side: timeline.ts re-publishes

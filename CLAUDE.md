@@ -140,7 +140,7 @@ The server listens on two TCP ports plus a Unix socket:
   GitHub calls); exposing the private hooks repo's deployed commit sha
   on this PUBLIC port is a deliberate, operator-requested trade),
   `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): the dashboard plus the operator API — hook/run/manager reads and drill-downs, the activity feed, `/attention`, `/concurrency`, the KV views, the reload panel, and the operator kill switches (disable a hook, override a concurrency limit, disable/restart a manager). `/runs/stream` is the SSE live tail that also multiplexes section-invalidation signals, so the dashboard never polls while it is up. Internal, behind Cloudflare Zero Trust.
+- **Admin port** (`:9001`): the dashboard plus the operator API — hook/run/manager reads and drill-downs, the activity feed, `/attention`, `/concurrency`, the KV views, the reload panel, and the operator kill switches (disable a hook, override a concurrency limit, disable/restart a manager). `/runs/stream` is the SSE live tail that also multiplexes section-invalidation signals, so the dashboard never polls while it is up — with ONE deliberate exception: an open run modal on a non-terminal run polls `/runs/{id}` every 3s, because deltas are output-stripped and a merely-logging run emits none. Internal, behind Cloudflare Zero Trust.
   - **A manager instance is NOT a run**: its logs live under `/managers/{id}`, never in `/runs`.
   - `/kv/{namespace}/{key}` deliberately EXPOSES stored values (operator request; the admin port is operator-only). The hook port and `/hooks/{id}` stay value-free.
   - [docs/internals/admin-api.md](docs/internals/admin-api.md) -- every endpoint, the per-hook app page, and the realtime swimlane timeline.
@@ -178,8 +178,7 @@ The server listens on two TCP ports plus a Unix socket:
   networking, no `--unix-socket`. Each request is authenticated by the per-hook
   bearer token the runner injects, and the namespace is derived from that
   token, never from the URL — so a hook can only ever reach its own data.
-  Backed by `internal/kv` (disk-backed under the data dir; see
-  docs/internals/kv-and-locks.md). The
+  Backed by `internal/kv` (disk-backed under the data dir; see below). The
   `Server` struct exposes `StateHandler()` (served on the socket listener)
   alongside `HookHandler()`/`AdminHandler()`.
   The dashboard's one-time webhook-setup instructions live in a
@@ -191,8 +190,7 @@ The server listens on two TCP ports plus a Unix socket:
   the feed but never to the 401 body) and the runner (image builds, run
   lifecycle, `env.unresolved` when an env reference expands to nothing)
   — memory only (run history, by contrast, persists completed runs via
-  `internal/runstore`; see docs/internals/runs-concurrency-and-overrides.md).
-  Rejections are events on purpose:
+  `internal/runstore`; see below). Rejections are events on purpose:
   the dashboard must be able to answer "did you receive anything?".
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
@@ -243,9 +241,9 @@ Read before changing any of these areas:
 
 - [docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md) -- the CI-gated reload, cancellation, secrets/env refs, the two tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, `dind`, `script`.
 - [docs/internals/runs-concurrency-and-overrides.md](docs/internals/runs-concurrency-and-overrides.md) -- the activity-based timeout, `skip_if`, `run_title`, concurrency groups, the global run cap, the operator kill switch, the scheduler, the run store.
-- [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, section signals, the needs-attention surface.
+- [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, the five section-signal seams, the needs-attention surface.
 - [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
-- [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run) and unconditional github-state-mirror routing.
+- [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run), the push-fed admin surface, and unconditional github-state-mirror routing.
 - [docs/internals/waits-and-spawn.md](docs/internals/waits-and-spawn.md) -- declared waits and the manifest-authorized spawn primitive.
 - [docs/internals/shim-and-timeline.md](docs/internals/shim-and-timeline.md) -- the state-socket proxy shim and the dashboard timeline adapter.
 - [docs/manager-entity-design.md](docs/manager-entity-design.md) -- the manager entity design, as built.

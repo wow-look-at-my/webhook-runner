@@ -1,6 +1,6 @@
 # Gotchas: managers and github-state-mirror routing
 
-Managers as a first-class sibling entity to hooks -- an instance is not a run -- and the unconditional github-state-mirror routing for all GitHub traffic.
+Managers as a first-class sibling entity to hooks -- an instance is not a run -- the push-fed admin surface, and unconditional github-state-mirror routing.
 
 Moved VERBATIM out of `CLAUDE.md` when that file went over the
 40,000-character instruction-file budget. Nothing here was condensed.
@@ -47,7 +47,15 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   content-hash change supersedes the live instance ("superseded by
   reload"); managers reload atomically with hooks/groups/schedules
   through the same `buildLoadAndApply` (internal/cli/loadapply.go) —
-  don't fork a second reload path. Deploy-first rule as usual: old
+  don't fork a second reload path. (8) The admin surface is PUSH-fed:
+  `Supervisor.SetOnChange` (fired by the output sink, the inbox, and
+  every state transition) dirties the "managers" stream section — see
+  the streamhub bullet — which is what keeps the roster and the
+  `#manager=<id>` drill-down live without polling. Client side, the log
+  tail follows the bottom ONLY while the operator is already there (a
+  refresh per output line must not yank a scrolled-back reader down) and
+  the "Instance up" row ticks locally between refreshes, so a silent
+  instance's panel still reads as live. Deploy-first rule as usual: old
   binaries never scan `src/managers/`, so the runner deploys before the
   first manager directory merges.
 - github-state-mirror routing (`internal/runner/managersession.go`
