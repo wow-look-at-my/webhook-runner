@@ -894,6 +894,9 @@ function renderManagers(list) {
 // The same assembly feeds the <pre>, so the copied text is exactly what is
 // shown, byte for byte.
 let managerDetailOutputLines = [];
+// The open drill-down's last payload — kept so derived, time-based fields
+// (instance uptime) can advance locally between pushed refreshes.
+let managerDetailData = null;
 
 // Pure: the clipboard text for an output-lines array — lines joined with
 // single newlines, no trailing newline; [] and a missing array both → "".
@@ -941,8 +944,10 @@ function renderManagerDetail(d) {
   if (!open || !d || d.id !== open) {
     box.hidden = true;
     managerDetailOutputLines = [];
+    managerDetailData = null;
     return;
   }
+  managerDetailData = d;
   box.hidden = false;
   document.getElementById("manager-detail-title").replaceChildren(
     el("code", null, d.id),
@@ -960,7 +965,11 @@ function renderManagerDetail(d) {
   row("Title", d.title);
   row("Instance", d.instance_id ? el("code", null, d.instance_id) : "none");
   if (tsPresent(d.instance_started)) {
-    row("Instance up", fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`);
+    // Tagged so the local uptime ticker can advance it between refetches —
+    // a silent instance produces no output and no events, and a frozen
+    // "up 4m" is exactly the staleness this page is not allowed to show.
+    meta.appendChild(el("dt", null, "Instance up"));
+    meta.appendChild(el("dd", { id: "manager-uptime" }, managerUptimeText(d)));
   }
   row("Restarts since boot", String(d.restarts));
   if (d.consecutive_failures) row("Consecutive failures", String(d.consecutive_failures));
@@ -975,9 +984,39 @@ function renderManagerDetail(d) {
   row("Enable default", d.enabled_by_default ? "enabled (ships working; the switch is the emergency stop)" : "disabled in manager.json (explicit enable:false)");
   managerDetailOutputLines = d.output || [];
   const out = document.getElementById("manager-detail-output");
+  // Follow the tail only while the operator is AT the tail: the log now
+  // refetches on every pushed output line, and yanking a scrolled-back
+  // reader to the bottom once a second would make history unreadable.
+  const stick = managerOutputAtBottom(out);
   out.textContent = managerOutputText(managerDetailOutputLines);
-  out.scrollTop = out.scrollHeight;
+  if (stick) out.scrollTop = out.scrollHeight;
 }
+
+// True when the output box is scrolled to (or within a couple of pixels
+// of) the bottom — including the just-opened case, where the box has no
+// geometry yet and following the tail is the right default.
+function managerOutputAtBottom(out) {
+  const height = Number(out.clientHeight) || 0;
+  const total = Number(out.scrollHeight) || 0;
+  const top = Number(out.scrollTop) || 0;
+  if (total === 0) return true;
+  return top + height >= total - 4;
+}
+
+// The instance-uptime text, recomputed from the detail payload's start
+// stamp (so it can advance without a refetch).
+function managerUptimeText(d) {
+  return fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`;
+}
+
+// The uptime ticker: purely local, no requests — everything else on this
+// panel arrives pushed.
+setInterval(() => {
+  const d = managerDetailData;
+  if (!d || !tsPresent(d.instance_started)) return;
+  const cell = document.getElementById("manager-uptime");
+  if (cell) cell.textContent = managerUptimeText(d);
+}, 1000);
 
 // --- Needs attention: the misconfiguration cry-for-help ---------------------
 //
@@ -1766,9 +1805,21 @@ function runLink(id) {
 // (fixed cadence, no backoff, structurally cannot stop itself): it runs
 // whenever the dialog is open for a non-terminal run and stops only when
 // the dialog closes or the run reaches a terminal status (whose render IS
-// the final state — a terminal run never changes again). A later PR
-// upgrades the refresh trigger to server-push deltas (/runs/stream);
-// polling stays as its fallback.
+// the final state — a terminal run never changes again).
+//
+// THE POLL RUNS EVEN WHILE THE STREAM IS LIVE, and that is not a leftover:
+// stream deltas cannot carry a run's OUTPUT. runs.Run.AppendOutput
+// deliberately does not fire the tracker's OnChange seam (deltas are
+// output-stripped snapshots, and one fan-out per output line would hit
+// every connected client), so between SetRunning and Finish a chatty run
+// emits NO deltas at all. Standing the poll down whenever whrStreamLive
+// was true therefore froze the open modal's log for the entire run —
+// exactly while the dashboard was healthiest. Deltas still refresh it
+// INSTANTLY on the state changes they do carry (running, waits, cancel,
+// terminal); the poll covers the growing log in between, and a refresh
+// from either source restarts the 3s clock so the two never double up.
+// The zero-polling-while-live rule governs the IDLE dashboard's sections;
+// a modal the operator has open on a running job is not idle.
 
 const TERMINAL_RUN_STATUSES = ["success", "failure", "timeout", "error", "cancelled", "skipped"];
 const RUN_DETAIL_POLL_MS = 3000;
@@ -1776,6 +1827,10 @@ const RUN_DETAIL_POLL_MS = 3000;
 let currentRunId = null; // run shown in the open modal, null when closed
 let currentRunView = null; // the user's raw/conversation choice, null = auto
 let currentRunTerminal = false; // last rendered status was terminal
+// When the modal's run was last fetched (any source: open, delta, poll) —
+// the poll skips a tick a delta already covered, so a busy run costs at
+// most one /runs/{id} per RUN_DETAIL_POLL_MS however many deltas arrive.
+let lastRunDetailFetch = 0;
 
 async function showRun(id) {
   currentRunId = id;
@@ -1790,6 +1845,7 @@ async function showRun(id) {
 async function refreshRunDetail(openDialog) {
   const id = currentRunId;
   if (!id) return;
+  lastRunDetailFetch = Date.now();
   try {
     const r = await fetchJSON(`/runs/${id}`);
     if (currentRunId !== id) return; // modal moved on while fetching
@@ -1924,15 +1980,13 @@ document.getElementById("run-detail-view-toggle").addEventListener("click", (e) 
 // The live refresh loop: one fixed-cadence interval for the page's life,
 // gated on "modal open, run known, not yet rendered terminal". A terminal
 // render is final — the run cannot change — so polling stops there; errors
-// inside refreshRunDetail are caught (the loop itself can never die).
-// PUSH-FIRST: while timeline.js's /runs/stream EventSource is live
-// (window.whrStreamLive), deltas drive the refresh at push latency and
-// this poll stands down; it takes over automatically whenever the stream
-// is down (or the timeline module never loaded — whrStreamLive undefined).
+// inside refreshRunDetail are caught (the loop itself can never die). It
+// runs regardless of stream state because deltas never carry output (see
+// the section comment); a delta-driven refresh just defers the next tick.
 setInterval(() => {
   if (!currentRunId || currentRunTerminal) return;
   if (!runDetailDialog.open) return;
-  if (window.whrStreamLive === true) return; // stream deltas own the refresh
+  if (Date.now() - lastRunDetailFetch < RUN_DETAIL_POLL_MS) return; // a delta just refreshed it
   void refreshRunDetail(false);
 }, RUN_DETAIL_POLL_MS);
 // Stream deltas: refresh the open modal the moment ITS run changes (the

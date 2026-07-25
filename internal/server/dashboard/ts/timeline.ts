@@ -434,14 +434,22 @@ function scheduleDeltaFlush(): void {
 /** Drain the coalesced deltas on the frame: ONE chart merge for the whole
  * batch, then the per-run whr:run-delta fan-out (dashboard.js's runs list +
  * open-modal refresh — the event contract is unchanged, just batched in
- * time, and deduped by id so a run that changed N times fires once). */
+ * time, and deduped by id so a run that changed N times fires once).
+ *
+ * The batch is ALWAYS drained and ALWAYS fanned out, chart or no chart:
+ * the component is imported at runtime from js-snippets and that fetch can
+ * fail for a while, but the feed's other consumers (the runs table, the
+ * open run modal) are this module's contract and must not go dark with it.
+ * Only the chart merge is conditional — an attach rebuilds from runsById,
+ * which ingestDelta already updated, so nothing is lost by clearing here.
+ * Returning early instead (pre-fix) also let pendingDeltas grow without
+ * bound for as long as the component stayed unreachable. */
 function flushDeltas(): void {
 	deltaFlushHandle = 0;
 	if (pendingDeltas.size === 0) return;
-	if (chart === null) return; // component not attached yet — applyPage subsumes it on attach
 	const batch = [...pendingDeltas.values()];
 	pendingDeltas.clear();
-	chart.onDeltas(batch);
+	chart?.onDeltas(batch);
 	for (const { run } of batch) {
 		window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: run.id, run } }));
 	}

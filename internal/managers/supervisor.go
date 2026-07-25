@@ -2,9 +2,7 @@ package managers
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
@@ -131,7 +129,12 @@ type Supervisor struct {
 	onAttention   func([]AttentionEntry)
 	onInstanceEnd func(string)
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// onChange is the admin-surface change seam (see SetOnChange): every
+	// mutation the /managers roster or a /managers/{id} drill-down would
+	// show. Read under mu; invoked with mu RELEASED (it must never call
+	// back into the Supervisor).
+	onChange func()
 	desired  map[string]*hooks.Manager
 	states   map[string]*managed
 	leased   bool
@@ -182,6 +185,33 @@ func New(opts Options) *Supervisor {
 	}
 }
 
+// SetOnChange registers fn to run after every change to the ADMIN-VISIBLE
+// manager surface: roster state, instance identity/title, inbox
+// depth/stamps, and instance output lines. The dashboard's push feed rides
+// it (signal "managers"), and that is what makes the Managers page and the
+// #manager=<id> drill-down live — output and inbox churn record no
+// activity events, so before this seam those panels moved only on the rare
+// lifecycle event, leaving F5 as the operator's refresh button.
+//
+// Contract is the events.Recorder / kv.Store one: trivial, non-blocking,
+// never calls back into the Supervisor (it is invoked from the supervision
+// loops and the output sink). Set once at wiring time, before Run.
+func (s *Supervisor) SetOnChange(fn func()) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
+// changed fires the admin-surface seam. Call it with s.mu RELEASED.
+func (s *Supervisor) changed() {
+	s.mu.Lock()
+	fn := s.onChange
+	s.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 // Update replaces the desired manager set — the reload path, called from
 // the same loadAndApply closure that replaces hooks/groups/schedules so
 // the entity sets can never drift apart. A running instance whose content
@@ -205,6 +235,9 @@ func (s *Supervisor) Update(managers map[string]*hooks.Manager) {
 				state: "waiting-lease",
 			}
 			mg.inbox = NewInbox(0, s.inboxDropReporter(id))
+			// Inbox depth and the last-delivery/last-tick stamps are part of
+			// the admin surface: route their mutations through the same seam.
+			mg.inbox.SetOnChange(s.changed)
 			s.states[id] = mg
 			if s.leased && !s.shutdown {
 				s.startLoopLocked(mg)
@@ -228,6 +261,7 @@ func (s *Supervisor) Update(managers map[string]*hooks.Manager) {
 	}
 	s.mu.Unlock()
 	s.reportAttention()
+	s.changed()
 }
 
 // Run acquires the single-instance lease (flat-polling until ctx ends),
@@ -252,6 +286,7 @@ func (s *Supervisor) Run(ctx context.Context) {
 		s.startLoopLocked(mg)
 	}
 	s.mu.Unlock()
+	s.changed() // the lease landed: every row leaves "waiting-lease"
 
 	<-ctx.Done()
 	s.Shutdown()
@@ -274,199 +309,4 @@ func (s *Supervisor) Shutdown() {
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
-}
-
-// startLoopLocked launches a manager's supervision loop (caller holds mu).
-func (s *Supervisor) startLoopLocked(mg *managed) {
-	if mg.loopRunning || s.shutdown {
-		return
-	}
-	mg.loopRunning = true
-	s.wg.Add(1)
-	go s.managerLoop(mg)
-}
-
-// managerLoop is one manager's whole supervised life: start an instance,
-// watch it end, restart flat — forever, until the manager is removed,
-// disabled (parks), or the supervisor shuts down.
-func (s *Supervisor) managerLoop(mg *managed) {
-	defer s.wg.Done()
-	for {
-		s.mu.Lock()
-		if s.shutdown {
-			mg.loopRunning = false
-			mg.state = "stopping"
-			s.mu.Unlock()
-			return
-		}
-		m := s.desired[mg.id]
-		if m == nil {
-			mg.loopRunning = false
-			delete(s.states, mg.id)
-			s.mu.Unlock()
-			s.reportAttention()
-			return
-		}
-		disabled := s.disabledFn != nil && s.disabledFn(mg.id, m.EnabledByDefault())
-		if disabled {
-			mg.state = "disabled"
-			s.mu.Unlock()
-			s.reportAttention()
-			if !s.sleepFlat(ParkPoll) {
-				s.markLoopDone(mg)
-				return
-			}
-			continue
-		}
-		stopCh := make(chan StopRequest, 1)
-		mg.sessionStop = stopCh
-		mg.state = "starting"
-		instanceID := NewInstanceID()
-		mg.instanceID = instanceID
-		mg.instanceStarted = time.Now().UTC()
-		// The instance's panel title: the run_title template's static
-		// render (placeholders resolve against nothing — a manager's title
-		// context is its own to set via POST /title mid-flight).
-		mg.title = m.RenderRunTitle(nil, http.Header{})
-		hash, _ := m.ContentHash()
-		mg.runningHash = hash
-		sink := s.outputSink(mg)
-		s.mu.Unlock()
-		s.reportAttention()
-
-		name := ContainerName(mg.id)
-		// Reap any orphan/stale container first: a crashed predecessor
-		// process leaves its (dockerd-owned) instance running; the
-		// deterministic name is what makes it findable.
-		s.runner.RemoveManagerContainer(name)
-
-		// Seed the instance's first event BEFORE it starts, so the very
-		// first /inbox/next returns it: the tick is the handover/crash
-		// recovery pass (event-only managers get the start event instead).
-		if m.ReconcileInterval() > 0 {
-			mg.inbox.PushTick()
-		} else {
-			mg.inbox.PushStart()
-		}
-		tickStop := make(chan struct{})
-		if iv := m.ReconcileInterval(); iv > 0 {
-			go tickPump(iv, mg.inbox, tickStop)
-		}
-
-		onStarted := func() { s.instanceRunning(mg) }
-		outcome := s.runner.RunManagerSession(s.runContext(), m, mg.inbox, instanceID, name, stopCh, onStarted, sink)
-		close(tickStop)
-
-		// The finish-seam analog: the instance is over — release whatever
-		// run-shaped resources it held (cooperative locks, incl. pinned).
-		if s.onInstanceEnd != nil {
-			s.onInstanceEnd(instanceID)
-		}
-
-		s.mu.Lock()
-		mg.sessionStop = nil
-		mg.runningHash = ""
-		mg.instanceID = ""
-		mg.instanceStarted = time.Time{}
-		mg.touch = nil
-		mg.restarts++
-		if outcome.RequestedStop {
-			mg.consecFails = 0
-			mg.lastError = ""
-			mg.lastStopReason = outcome.Err
-		} else if outcome.Status == runs.StatusCancelled {
-			// An operator restart/bounce, not a failure.
-			mg.consecFails = 0
-			mg.lastError = ""
-			mg.lastStopReason = outcome.Err
-		} else {
-			mg.consecFails++
-			mg.lastError = fmt.Sprintf("instance ended: %s", outcome.Status)
-			if outcome.Err != "" {
-				mg.lastError += ": " + outcome.Err
-			}
-			mg.lastStopReason = ""
-		}
-		requested := outcome.RequestedStop
-		s.mu.Unlock()
-		s.reportAttention()
-
-		if requested {
-			continue // re-evaluate immediately: disable parks, replace restarts, removal exits
-		}
-		s.mu.Lock()
-		mg.state = "restart-wait"
-		s.mu.Unlock()
-		if !s.sleepFlat(RestartDelay) {
-			s.markLoopDone(mg)
-			return
-		}
-	}
-}
-
-// instanceRunning flips the manager to running the moment its container
-// actually launched, and captures the live watchdog touch for /wait.
-func (s *Supervisor) instanceRunning(mg *managed) {
-	s.mu.Lock()
-	mg.state = "running"
-	mg.touch = mg.inbox.sessionTouch()
-	s.mu.Unlock()
-	s.reportAttention()
-}
-
-func (s *Supervisor) markLoopDone(mg *managed) {
-	s.mu.Lock()
-	mg.loopRunning = false
-	s.mu.Unlock()
-}
-
-// runContext returns the supervisor's run context (Background before Run —
-// tests that drive loops without Run).
-func (s *Supervisor) runContext() context.Context {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.runCtx != nil {
-		return s.runCtx
-	}
-	return context.Background()
-}
-
-// sleepFlat waits d, checking for shutdown on a flat 250ms cadence.
-// false = shutting down.
-func (s *Supervisor) sleepFlat(d time.Duration) bool {
-	deadline := time.Now().Add(d)
-	for {
-		s.mu.Lock()
-		down := s.shutdown
-		s.mu.Unlock()
-		if down {
-			return false
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return true
-		}
-		step := remaining
-		if step > 250*time.Millisecond {
-			step = 250 * time.Millisecond
-		}
-		time.Sleep(step)
-	}
-}
-
-func (s *Supervisor) requestStopLocked(mg *managed, reason string) {
-	if mg.sessionStop == nil {
-		return
-	}
-	select {
-	case mg.sessionStop <- StopRequest{Reason: reason}:
-	default: // a stop is already pending; the first reason wins
-	}
-}
-
-func (s *Supervisor) pokeLocked(mg *managed) {
-	select {
-	case mg.poke <- struct{}{}:
-	default:
-	}
 }

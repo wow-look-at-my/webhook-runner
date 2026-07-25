@@ -93,10 +93,9 @@ function scheduleDeltaFlush() {
 function flushDeltas() {
   deltaFlushHandle = 0;
   if (pendingDeltas.size === 0) return;
-  if (chart === null) return;
   const batch = [...pendingDeltas.values()];
   pendingDeltas.clear();
-  chart.onDeltas(batch);
+  chart?.onDeltas(batch);
   for (const { run } of batch) {
     window.dispatchEvent(new CustomEvent("whr:run-delta", { detail: { id: run.id, run } }));
   }
