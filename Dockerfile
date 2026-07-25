@@ -4,7 +4,12 @@
 # downloaded into build/ by the publish-ghcr workflow. This Dockerfile only
 # packages that prebuilt artifact, mirroring the buildhost pattern. The
 # runtime needs docker-cli, git, and ssh because the server shells out to
-# `docker run` for each hook and clones/pulls the hooks repo over SSH. It also
+# `docker run` for each hook and clones/pulls the hooks repo over SSH.
+# docker-cli-buildx is REQUIRED, not optional: THIS CLI drives every hook image
+# build, and without the plugin it silently falls back to the legacy builder,
+# which cannot parse `# syntax=` frontends or flags like `ADD --unpack` however
+# capable the host daemon is. It also
+
 # needs sops to decrypt per-hook `secrets.sops.env` files: the server execs the
 # `sops` binary host-side (hooks.SecretsLoader), then injects the decrypted
 # values into the hook container as plain env vars — the hook container itself
@@ -14,7 +19,7 @@
 # is never baked into the image.
 
 FROM alpine:3.20
-RUN apk add --no-cache docker-cli git openssh-client ca-certificates tzdata sops age && \
+RUN apk add --no-cache docker-cli docker-cli-buildx git openssh-client ca-certificates tzdata sops age && \
     addgroup -S webhook && adduser -S -G webhook webhook
 
 ARG VERSION=dev
