@@ -66,13 +66,10 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	tracker := runs.NewTracker()
 	gh := githubstatus.New(o.ghToken, logger)
 	// The runner's OWN GitHub client (commit statuses; the reload-gate
-	// poll's status reads) follows the enforced-gateway knob unless
-	// explicitly overridden — one config surface for the whole fleet's
-	// GitHub routing.
-	if base := firstNonEmpty(o.githubAPIURL, o.gsmURL); base != "" {
-		gh.SetAPIURL(base)
-		logger.Info("github api base overridden", "base", base)
-	}
+	// poll's status reads) rides the mirror like every container does —
+	// unconditional, no knob (see runner.GSMBaseURL).
+	gh.SetAPIURL(runner.GSMBaseURL)
+	logger.Info("github api base", "base", runner.GSMBaseURL)
 	// Activity feed for the admin dashboard (in-memory, bounded — same
 	// persistence model as run history).
 	rec := events.NewRecorder(500)
@@ -232,9 +229,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		KV:        kvStore,
 		KVSocket:  socketPath,
 		KVShim:    shimPath,
-		// Enforced GitHub gateway: inert while WEBHOOK_RUNNER_GSM_URL is
-		// unset (the shipped default — zero behavior change).
-		GSM: runner.GSMConfig{URL: o.gsmURL, Direct: parseGithubDirect(o.githubDirect)},
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
