@@ -927,7 +927,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   1-slot wake channel, NOT the delta queue, so signal storms coalesce
   into one drain and signals can never overflow/drop/block anyone — only
   run deltas drop a slow client, and a reconnecting client refetches
-  every section on open so no signal is load-bearing. Four seams feed
+  every section on open so no signal is load-bearing. Five seams feed
   `streamHub.signal`, wired in `server.New`: (1) the tracker OnChange
   wrapper also dirties "concurrency" (group active/waiting/holders move
   exactly with run lifecycle/waiting_on — a deliberate superset); (2)
@@ -943,7 +943,15 @@ The companion repo is `wow-look-at-my/webhooks`.
   /kv views can lag expiry by ≤1 sweep interval); (4)
   `attention.Aggregator.SetOnChange` → "attention" (fired only on REAL
   set changes — an identical re-derivation on a quiet reload signals
-  nothing). All four callbacks run
+  nothing); (5) `managers.Supervisor.SetOnChange` → "managers" (instance
+  OUTPUT lines, inbox depth/stamps, and supervision state transitions —
+  none of which record an activity event, so before this seam the
+  Managers page and the `#manager=<id>` drill-down only moved on the
+  occasional lifecycle event and F5 was the operator's refresh button;
+  output is deliberately UNTHROTTLED — the hub's dirty set and the
+  client's 1s coalescing absorb a chatty instance, whereas a throttle
+  here could only lose the last line, i.e. the stale tail itself). All
+  five callbacks run
   synchronously on mutating goroutines under their owners' mutexes —
   keep them trivial (the hub only flips bounded dirty bits), never let
   them call back into their owner. Client side: timeline.ts re-publishes
@@ -1166,7 +1174,15 @@ The companion repo is `wow-look-at-my/webhooks`.
   content-hash change supersedes the live instance ("superseded by
   reload"); managers reload atomically with hooks/groups/schedules
   through the same `buildLoadAndApply` (internal/cli/loadapply.go) —
-  don't fork a second reload path. Deploy-first rule as usual: old
+  don't fork a second reload path. (8) The admin surface is PUSH-fed:
+  `Supervisor.SetOnChange` (fired by the output sink, the inbox, and
+  every state transition) dirties the "managers" stream section — see
+  the streamhub bullet — which is what keeps the roster and the
+  `#manager=<id>` drill-down live without polling. Client side, the log
+  tail follows the bottom ONLY while the operator is already there (a
+  refresh per output line must not yank a scrolled-back reader down) and
+  the "Instance up" row ticks locally between refreshes, so a silent
+  instance's panel still reads as live. Deploy-first rule as usual: old
   binaries never scan `src/managers/`, so the runner deploys before the
   first manager directory merges.
 - github-state-mirror routing (`internal/runner/managersession.go`

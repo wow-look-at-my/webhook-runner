@@ -153,6 +153,29 @@ type Inbox struct {
 	lastTick      time.Time
 
 	onDrop func(Event) // overflow observer — nil-safe
+	// onChange is the admin-surface seam (Supervisor.SetOnChange): depth,
+	// the last-delivered/last-tick stamps, and the instance binding are all
+	// on GET /managers. Invoked with ib.mu RELEASED; nil-safe.
+	onChange func()
+}
+
+// SetOnChange registers fn to run after every mutation the admin surface
+// would show (queue depth, delivery/tick stamps, instance binding). The
+// Supervisor wires it to its own change seam; nil is safe.
+func (ib *Inbox) SetOnChange(fn func()) {
+	ib.mu.Lock()
+	ib.onChange = fn
+	ib.mu.Unlock()
+}
+
+// notifyChanged fires the seam. Call with ib.mu RELEASED.
+func (ib *Inbox) notifyChanged() {
+	ib.mu.Lock()
+	fn := ib.onChange
+	ib.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // NewInbox constructs an inbox with the given capacity (<=0 =
@@ -185,6 +208,7 @@ func (ib *Inbox) BindInstance(instanceID string, arm, disarm, touch func()) {
 		stale.d.settle(false)
 	}
 	ib.cond.Broadcast()
+	ib.notifyChanged()
 }
 
 // sessionTouch returns the live instance's watchdog Touch (nil when none)
@@ -212,6 +236,7 @@ func (ib *Inbox) UnbindInstance() {
 		stale.d.settle(false)
 	}
 	ib.cond.Broadcast()
+	ib.notifyChanged()
 }
 
 // InstanceID reports the bound instance's identity ("" = none live).
@@ -316,6 +341,7 @@ func (ib *Inbox) push(e entry) {
 		}
 	}
 	ib.cond.Broadcast()
+	ib.notifyChanged()
 }
 
 // Next is the long-poll pop behind POST /inbox/next: called by the CURRENT
@@ -401,6 +427,7 @@ func (ib *Inbox) Next(ctx context.Context, instanceID string, wait time.Duration
 			if arm != nil {
 				arm()
 			}
+			ib.notifyChanged() // depth dropped: the panel's inbox count moved
 			return e.ev, true, nil
 		}
 		if ctx.Err() != nil || !time.Now().Before(deadline) {

@@ -91,12 +91,14 @@ func (s *Supervisor) TouchInstance(id, instanceID string) bool {
 // false = not the current instance.
 func (s *Supervisor) SetInstanceTitle(id, instanceID, title string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	mg := s.states[id]
 	if mg == nil || mg.instanceID == "" || mg.instanceID != instanceID {
+		s.mu.Unlock()
 		return false
 	}
 	mg.title = title
+	s.mu.Unlock()
+	s.changed()
 	return true
 }
 
@@ -179,6 +181,13 @@ func (s *Supervisor) outputSink(mg *managed) func(string) {
 			mg.output = mg.output[len(mg.output)-OutputTailLines:]
 		}
 		s.mu.Unlock()
+		// The drill-down's log tail just moved. This is the seam's
+		// highest-rate source by far; it stays unthrottled because the
+		// consumer coalesces (the stream hub's per-subscriber dirty SET,
+		// then the dashboard's 1s section coalescing) — a throttle here
+		// could only lose the LAST line's signal, which is exactly the
+		// stale-tail bug this fixes.
+		s.changed()
 	}
 }
 

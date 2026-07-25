@@ -236,7 +236,7 @@ func New(opts Options) *Server {
 	//
 	// The same connection also carries coarse "section changed → refetch
 	// once" signals for the non-run admin sections, so an idle dashboard
-	// polls NOTHING (see streamhub.go). Three seams cover every section:
+	// polls NOTHING (see streamhub.go). Four seams cover every section:
 	//   - run lifecycle (below): concurrency-group active/waiting/holder
 	//     state moves exactly with run lifecycle and waiting_on changes
 	//     (acquire = start, release = finish, queue join/position =
@@ -248,6 +248,8 @@ func New(opts Options) *Server {
 	//     records flow through the same shared Recorder.
 	//   - kv entry mutations: the store's own seam (state-API writes and
 	//     sweeper reclaims alike).
+	//   - the manager supervisor: instance output, inbox depth/stamps and
+	//     state transitions, none of which record an activity event.
 	if opts.Tracker != nil {
 		opts.Tracker.SetOnChange(func(st runs.RunState) {
 			s.stream.publish(st)
@@ -271,6 +273,16 @@ func New(opts Options) *Server {
 	if opts.KV != nil {
 		opts.KV.SetOnMutate(func() {
 			s.stream.signal("kv")
+		})
+	}
+	// The manager seam: instance OUTPUT lines, inbox depth/stamps, and
+	// supervision state transitions are all on the Managers panel and the
+	// #manager=<id> drill-down, and none of them record an activity event —
+	// so without this the panel only moved on the occasional lifecycle
+	// event (manager.started/exited) and F5 was the operator's refresh.
+	if opts.Managers != nil {
+		opts.Managers.SetOnChange(func() {
+			s.stream.signal("managers")
 		})
 	}
 	s.registerRoutes()

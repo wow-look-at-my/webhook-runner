@@ -894,6 +894,9 @@ function renderManagers(list) {
 // The same assembly feeds the <pre>, so the copied text is exactly what is
 // shown, byte for byte.
 let managerDetailOutputLines = [];
+// The open drill-down's last payload — kept so derived, time-based fields
+// (instance uptime) can advance locally between pushed refreshes.
+let managerDetailData = null;
 
 // Pure: the clipboard text for an output-lines array — lines joined with
 // single newlines, no trailing newline; [] and a missing array both → "".
@@ -941,8 +944,10 @@ function renderManagerDetail(d) {
   if (!open || !d || d.id !== open) {
     box.hidden = true;
     managerDetailOutputLines = [];
+    managerDetailData = null;
     return;
   }
+  managerDetailData = d;
   box.hidden = false;
   document.getElementById("manager-detail-title").replaceChildren(
     el("code", null, d.id),
@@ -960,7 +965,11 @@ function renderManagerDetail(d) {
   row("Title", d.title);
   row("Instance", d.instance_id ? el("code", null, d.instance_id) : "none");
   if (tsPresent(d.instance_started)) {
-    row("Instance up", fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`);
+    // Tagged so the local uptime ticker can advance it between refetches —
+    // a silent instance produces no output and no events, and a frozen
+    // "up 4m" is exactly the staleness this page is not allowed to show.
+    meta.appendChild(el("dt", null, "Instance up"));
+    meta.appendChild(el("dd", { id: "manager-uptime" }, managerUptimeText(d)));
   }
   row("Restarts since boot", String(d.restarts));
   if (d.consecutive_failures) row("Consecutive failures", String(d.consecutive_failures));
@@ -975,9 +984,39 @@ function renderManagerDetail(d) {
   row("Enable default", d.enabled_by_default ? "enabled (ships working; the switch is the emergency stop)" : "disabled in manager.json (explicit enable:false)");
   managerDetailOutputLines = d.output || [];
   const out = document.getElementById("manager-detail-output");
+  // Follow the tail only while the operator is AT the tail: the log now
+  // refetches on every pushed output line, and yanking a scrolled-back
+  // reader to the bottom once a second would make history unreadable.
+  const stick = managerOutputAtBottom(out);
   out.textContent = managerOutputText(managerDetailOutputLines);
-  out.scrollTop = out.scrollHeight;
+  if (stick) out.scrollTop = out.scrollHeight;
 }
+
+// True when the output box is scrolled to (or within a couple of pixels
+// of) the bottom — including the just-opened case, where the box has no
+// geometry yet and following the tail is the right default.
+function managerOutputAtBottom(out) {
+  const height = Number(out.clientHeight) || 0;
+  const total = Number(out.scrollHeight) || 0;
+  const top = Number(out.scrollTop) || 0;
+  if (total === 0) return true;
+  return top + height >= total - 4;
+}
+
+// The instance-uptime text, recomputed from the detail payload's start
+// stamp (so it can advance without a refetch).
+function managerUptimeText(d) {
+  return fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`;
+}
+
+// The uptime ticker: purely local, no requests — everything else on this
+// panel arrives pushed.
+setInterval(() => {
+  const d = managerDetailData;
+  if (!d || !tsPresent(d.instance_started)) return;
+  const cell = document.getElementById("manager-uptime");
+  if (cell) cell.textContent = managerUptimeText(d);
+}, 1000);
 
 // --- Needs attention: the misconfiguration cry-for-help ---------------------
 //
