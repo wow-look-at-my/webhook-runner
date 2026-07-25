@@ -13,8 +13,11 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   `docker-updater.pre-check.url=:9001/restart-ready` makes an update skip
   that cycle and retry the next. `/health` cannot serve this — it answers
   "is the process up", always yes. Shutdown ALREADY drains correctly
-  (BeginShutdown 503s new deliveries, then an unbounded `rn.Wait()` before
-  the runstore flock releases); what it cannot survive is the SIGKILL after
+  (BeginShutdown refuses new runs — deliveries arriving from then on are
+  PARKED in the spool and answered 202, see
+  [delivery-durability.md](delivery-durability.md) — then an unbounded
+  `rn.Wait()` runs before the runstore flock releases, with the hook port
+  and state socket still up); what it cannot survive is the SIGKILL after
   docker-updater's hardcoded stop grace — 30s normal, 300s rolling, both
   shorter than a CI job — after which the runs are orphaned and the
   successor's `SweepOrphanContainers` reaps the very `gha-runner` container

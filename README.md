@@ -1456,9 +1456,11 @@ ships.
   docker-updater skips that cycle and retries on the next. `/health` cannot
   serve this purpose — it answers "is the process up", which is always yes.
 
-  Shutdown already drains correctly on SIGTERM (new deliveries get a
-  retryable 503, then `rn.Wait()` blocks unbounded for in-flight runs before
-  the runstore flock releases). What it cannot survive is the SIGKILL after
+  Shutdown already drains correctly on SIGTERM: new deliveries are parked in
+  the delivery spool and answered 202 (see **Deploy windows** below), then
+  `rn.Wait()` blocks unbounded for in-flight runs — with the hook port and the
+  state socket still listening — before the runstore flock releases. What it
+  cannot survive is the SIGKILL after
   the stop grace period, which docker-updater hardcodes at 30s for a normal
   update and 300s for a rolling one — both far shorter than a CI job. Past
   that kill the runs are orphaned, and the successor's boot-time
@@ -1477,6 +1479,12 @@ ships.
   otherwise pin the binary at its current version, a silent freeze that looks
   exactly like a working gate. Any idle moment resets the clock; a negative
   value never forces.
+- **A delivery that arrives during a restart is not lost.** Shutdown refuses
+  new *runs*, but parks the delivery in `<data-dir>/spool/` and answers
+  `202 {"status":"spooled"}`; the next process replays it as an ordinary run.
+  It replaced a 503 on a false premise — GitHub does not re-send a failed
+  delivery. Bounded (1000 entries / 64 MiB), then the honest 503 returns. See
+  [docs/internals/delivery-durability.md](docs/internals/delivery-durability.md).
 - No CGO. The binary is `go build -o webhook-runner ./cmd/webhook-runner`
   with `CGO_ENABLED=0`.
 - Run history persists: completed runs (metadata + captured output) are
