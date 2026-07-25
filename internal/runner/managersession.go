@@ -216,7 +216,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		"-e", "HOOK_KV_URL=http://localhost:9002",
 		"-e", "HOOK_KV_TOKEN=" + r.kv.Token(hook.ID, instanceID),
 	}
-	args = append(args, r.gsmArgs(hook.ID)...)
+	args = append(args, r.gsmArgs()...)
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
 	}
@@ -435,36 +435,38 @@ func (r *Runner) stopContainer(name string, graceSeconds int) {
 	}
 }
 
-// gsmArgs is the enforced-GitHub-gateway injection (inert while GSMURL is
-// unset — the default): a per-container fail-closed blackhole for
-// api.github.com plus the fleet-default GITHUB_API_URL, for every hook,
-// manager, and test container EXCEPT ids on the operator's direct-access
-// exemption list (WEBHOOK_RUNNER_GITHUB_DIRECT — CI-runner fleets whose
-// job payloads legitimately call GitHub; operator-configurable, never
-// hard-coded). The env default is injected BEFORE secrets and hook env
-// (docker keeps the last -e), so an explicit hook.json GITHUB_API_URL
-// still wins — the blackhole, not the env, is the enforcement.
-func (r *Runner) gsmArgs(id string) []string {
-	return gsmInjectArgs(r.gsm, id)
+// GSMBaseURL is the github-state-mirror every container's GitHub API
+// traffic rides. It is a CONSTANT, not a knob: routing through the mirror
+// is unconditional by operator ruling (2026-07-25) — "*Everything* must go
+// through GSM otherwise we are blowing up our API quota and github servers
+// for ZERO benefit". The former WEBHOOK_RUNNER_GSM_URL /
+// WEBHOOK_RUNNER_GITHUB_DIRECT / WEBHOOK_RUNNER_GITHUB_API_URL env knobs
+// are DELETED: the instruction was always to route through the mirror, and
+// wiring it as an opt-in service-env flip (webhook-runner#98) was never
+// requested. Do not reintroduce an off switch or a per-id carve-out.
+//
+// GSM IS A PROXY, NOT A FIREWALL (operator correction, 2026-07-25 —
+// "GSM is not a blackhole"). #98 also injected
+// `--add-host api.github.com:0.0.0.0` to make direct calls fail closed;
+// that was never asked for and is DELETED. The mirror passes through
+// whatever it does not model, so pointing GITHUB_API_URL at it is the
+// whole mechanism — severing api.github.com DNS would only break the
+// callers that cannot honor GITHUB_API_URL (tenant CI job steps: gh CLI,
+// octokit, actions/github-script), which is breakage, not routing. Never
+// reintroduce a blackhole here.
+const GSMBaseURL = "https://github-state-mirror.pazer.io"
+
+// gsmArgs points a container's GitHub API traffic at the mirror. Applied to
+// EVERY hook, manager, and test container, no exemptions. Injected BEFORE
+// secrets and hook env (docker keeps the last -e), so a hook.json that
+// declares its own GITHUB_API_URL still wins — today pr-minder and
+// required-builds declare exactly this same mirror base, so the injection
+// makes their per-hook lines redundant rather than conflicting, and every
+// other container gains the routing it never had.
+func (r *Runner) gsmArgs() []string {
+	return gsmInjectArgs()
 }
 
-// GSMConfig is the enforced-GitHub-gateway knob pair, shared by the live
-// runner and the `webhook-runner test` path (run/test parity, the dind
-// rule).
-type GSMConfig struct {
-	// URL: the gateway base (WEBHOOK_RUNNER_GSM_URL). "" = enforcement off,
-	// zero behavior change — the shipped default.
-	URL string
-	// Direct: ids exempt from enforcement (WEBHOOK_RUNNER_GITHUB_DIRECT).
-	Direct map[string]bool
-}
-
-func gsmInjectArgs(cfg GSMConfig, id string) []string {
-	if cfg.URL == "" || cfg.Direct[id] {
-		return nil
-	}
-	return []string{
-		"--add-host", "api.github.com:0.0.0.0",
-		"-e", "GITHUB_API_URL=" + cfg.URL,
-	}
+func gsmInjectArgs() []string {
+	return []string{"-e", "GITHUB_API_URL=" + GSMBaseURL}
 }

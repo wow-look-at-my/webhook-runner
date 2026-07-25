@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
-	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 )
 
 type serveOptions struct {
@@ -51,24 +49,6 @@ type serveOptions struct {
 	// stomp an explicit 0 back to the default.
 	reloadPollInterval time.Duration
 	reloadPollSet      bool
-
-	// gsmURL is the enforced-GitHub-gateway knob (WEBHOOK_RUNNER_GSM_URL).
-	// Unset (the shipped default) = enforcement OFF, zero behavior change.
-	// Set = every hook/manager/test container except the exemption list
-	// gets the api.github.com blackhole + the GITHUB_API_URL default, and
-	// the runner's own GitHub client (commit statuses, the reload-gate
-	// poll) follows it unless githubAPIURL overrides.
-	gsmURL string
-	// githubDirect (WEBHOOK_RUNNER_GITHUB_DIRECT) is the operator's
-	// comma-separated exemption list: ids whose containers keep DIRECT
-	// GitHub access under enforcement (the CI-runner fleets whose job
-	// payloads legitimately call api.github.com). Operator-configurable,
-	// never hard-coded.
-	githubDirect string
-	// githubAPIURL (WEBHOOK_RUNNER_GITHUB_API_URL) overrides the base URL
-	// of the runner's OWN GitHub client. Empty = follow gsmURL when set,
-	// else api.github.com.
-	githubAPIURL string
 }
 
 func applyServeEnv(o *serveOptions) error {
@@ -137,15 +117,6 @@ func applyServeEnv(o *serveOptions) error {
 	if o.hookBaseURL == "" {
 		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
 	}
-	if o.gsmURL == "" {
-		o.gsmURL = os.Getenv("WEBHOOK_RUNNER_GSM_URL")
-	}
-	if o.githubDirect == "" {
-		o.githubDirect = os.Getenv("WEBHOOK_RUNNER_GITHUB_DIRECT")
-	}
-	if o.githubAPIURL == "" {
-		o.githubAPIURL = os.Getenv("WEBHOOK_RUNNER_GITHUB_API_URL")
-	}
 	if !o.gateContextSet {
 		// LookupEnv, not Getenv: set-to-EMPTY deliberately disables the
 		// reload CI gate (legacy behavior), while unset means the default
@@ -186,26 +157,4 @@ func firstNonEmpty(parts ...string) string {
 		}
 	}
 	return ""
-}
-
-// parseGithubDirect splits the WEBHOOK_RUNNER_GITHUB_DIRECT comma list
-// into the exemption set (empty entries dropped, whitespace trimmed).
-func parseGithubDirect(raw string) map[string]bool {
-	out := map[string]bool{}
-	for _, id := range strings.Split(raw, ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			out[id] = true
-		}
-	}
-	return out
-}
-
-// gsmFromEnv builds the enforced-GitHub-gateway config straight from the
-// environment — the `test` command's path (serve builds it from its parsed
-// options instead, same values).
-func gsmFromEnv() runner.GSMConfig {
-	return runner.GSMConfig{
-		URL:    os.Getenv("WEBHOOK_RUNNER_GSM_URL"),
-		Direct: parseGithubDirect(os.Getenv("WEBHOOK_RUNNER_GITHUB_DIRECT")),
-	}
 }
