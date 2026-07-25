@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
@@ -76,6 +77,12 @@ type Server struct {
 	// stream fans run lifecycle updates out to GET /runs/stream clients;
 	// fed by the tracker's OnChange seam (wired in New). Never nil.
 	stream *streamHub
+
+	// The docker-updater pre-check (restartready.go): how long a busy
+	// fleet may hold off an update, and the continuously-blocked clock
+	// that bounds it.
+	restartMaxDefer time.Duration
+	restart         restartGate
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -187,6 +194,12 @@ type Options struct {
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
 	Version VersionInfo
+
+	// RestartMaxDefer bounds how long GET /restart-ready (the
+	// docker-updater pre-check) may keep answering 503 because runs are in
+	// flight. Zero uses DefaultRestartMaxDefer; negative disables the force
+	// so the check blocks for as long as the fleet stays busy.
+	RestartMaxDefer time.Duration
 }
 
 // New constructs a Server, registering routes on both muxes.
@@ -220,10 +233,16 @@ func New(opts Options) *Server {
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
-		stream:       newStreamHub(),
-		hookMux:      http.NewServeMux(),
-		adminMux:     http.NewServeMux(),
-		stateMux:     http.NewServeMux(),
+		restartMaxDefer: func() time.Duration {
+			if opts.RestartMaxDefer == 0 {
+				return DefaultRestartMaxDefer
+			}
+			return opts.RestartMaxDefer
+		}(),
+		stream:   newStreamHub(),
+		hookMux:  http.NewServeMux(),
+		adminMux: http.NewServeMux(),
+		stateMux: http.NewServeMux(),
 
 		reloadRepo:    opts.ReloadRepo,
 		reloadControl: opts.ReloadControl,
@@ -312,6 +331,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /restart-ready", s.handleRestartReady)
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)

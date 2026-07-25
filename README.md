@@ -1110,6 +1110,7 @@ dats test dats
 | `WEBHOOK_RUNNER_HOOKS_REPO_SECRET`| (none)                       | HMAC-SHA256 secret for `POST /_reload` on the hook port.     |
 | `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT`| `all-builds`                | Commit-status context gating hooks-repo reloads (see [CI-gated reloads](#ci-gated-reloads)). Unset = `all-builds`; set to an **empty string** = gate disabled (legacy reload-on-any-signed-POST); anything else = that context. |
 | `WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL`| `1h`                      | Reload-gate reconciliation poll cadence (see [CI-gated reloads](#ci-gated-reloads)) — the fallback that keeps a missed status webhook from freezing deploys. Go duration; `0` disables the poll (gate goes back to purely event-driven); an unparseable or negative value **fails startup**. Gated mode only. |
+| `WEBHOOK_RUNNER_RESTART_MAX_DEFER`  | `6h`                      | How long `GET /restart-ready` (the docker-updater pre-check) may keep answering 503 because runs are in flight. After this much **continuous** blocking it answers 200 anyway and records `restart.deferred_force` — docker-updater retries forever with no max-defer of its own, so a permanently busy fleet would otherwise pin the binary at its current version. Any idle moment resets the clock. Go duration; a **negative** value never forces; `0` is rejected as ambiguous; unparseable **fails startup**. |
 | `WEBHOOK_RUNNER_HOOK_BASE_URL`    | (none)                       | Public base URL of the hook port (e.g. `https://hooks.example.com`). Shown in the dashboard setup instructions. |
 | `WEBHOOK_RUNNER_ADDR`             | `:9000`                      | Hook port listen address.                                    |
 | `WEBHOOK_RUNNER_ADMIN_ADDR`       | `:9001`                      | Admin port listen address.                                   |
@@ -1444,6 +1445,38 @@ ships.
 - The image defines a `HEALTHCHECK` that probes `GET /health` on the hook
   port (derived from `WEBHOOK_RUNNER_ADDR`), so `docker ps` reports health
   and deploy tooling like docker-updater can gate updates on it.
+- **Gate updates on `GET /restart-ready`** (admin port), and do NOT deploy
+  this container as a docker-updater *rolling* update:
+
+  ```
+  docker-updater.pre-check.url=:9001/restart-ready
+  ```
+
+  It answers 200 when no runs are in flight and 503 when any are, so
+  docker-updater skips that cycle and retries on the next. `/health` cannot
+  serve this purpose — it answers "is the process up", which is always yes.
+
+  Shutdown already drains correctly on SIGTERM (new deliveries get a
+  retryable 503, then `rn.Wait()` blocks unbounded for in-flight runs before
+  the runstore flock releases). What it cannot survive is the SIGKILL after
+  the stop grace period, which docker-updater hardcodes at 30s for a normal
+  update and 300s for a rolling one — both far shorter than a CI job. Past
+  that kill the runs are orphaned, and the successor's boot-time
+  `SweepOrphanContainers` removes every labeled leftover, so a bounce during
+  a build reaps the `gha-runner` container serving it. The pre-check is what
+  keeps the stop from being issued at all; once it passes, 30s is ample.
+
+  Rolling is the wrong mode here for two reasons: docker-updater skips the
+  pre-check entirely for rolling updates, and its longer 300s grace still
+  loses any job that runs more than five minutes.
+
+  A busy fleet cannot defer forever: after `WEBHOOK_RUNNER_RESTART_MAX_DEFER`
+  (default 6h) of *continuous* blocking the check answers 200 anyway and says
+  so loudly (`restart.deferred_force`), because docker-updater retries
+  indefinitely with no max-defer of its own — a permanently busy fleet would
+  otherwise pin the binary at its current version, a silent freeze that looks
+  exactly like a working gate. Any idle moment resets the clock; a negative
+  value never forces.
 - No CGO. The binary is `go build -o webhook-runner ./cmd/webhook-runner`
   with `CGO_ENABLED=0`.
 - Run history persists: completed runs (metadata + captured output) are

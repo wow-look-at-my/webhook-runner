@@ -7,7 +7,28 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
 
 - **Admin port** (`:9001`): dashboard, `/version` (build identity +
   `hooks_tree` state, same as the hook port's; the dashboard footer shows
-  the build string), `/hooks`, `/hooks/{id}` (one hook's
+  the build string), `/restart-ready` (the docker-updater PRE-CHECK —
+  `internal/server/restartready.go`: 200 when no runs are in flight, 503
+  when any are, so the label
+  `docker-updater.pre-check.url=:9001/restart-ready` makes an update skip
+  that cycle and retry the next. `/health` cannot serve this — it answers
+  "is the process up", always yes. Shutdown ALREADY drains correctly
+  (BeginShutdown 503s new deliveries, then an unbounded `rn.Wait()` before
+  the runstore flock releases); what it cannot survive is the SIGKILL after
+  docker-updater's hardcoded stop grace — 30s normal, 300s rolling, both
+  shorter than a CI job — after which the runs are orphaned and the
+  successor's `SweepOrphanContainers` reaps the very `gha-runner` container
+  serving a live build. The pre-check keeps the stop from being issued at
+  all. Do NOT deploy this container as a *rolling* update: docker-updater
+  skips the pre-check entirely when `Rolling` is set (`updater.go:75`).
+  LIVENESS: docker-updater retries forever with no max-defer of its own, so
+  after `WEBHOOK_RUNNER_RESTART_MAX_DEFER` (default 6h) of CONTINUOUS
+  blocking the check answers 200 anyway, loudly (`restart.deferred_force`)
+  — a permanently busy fleet would otherwise pin the binary at its current
+  version, a silent freeze indistinguishable from a working gate. Any idle
+  moment resets the clock; a negative value never forces. Manager instances
+  deliberately do not block: a flat restart is their declared contract, and
+  gating on them would mean never updating), `/hooks`, `/hooks/{id}` (one hook's
   drill-down: value-free config summary — api_key as a boolean, env var
   names only, never any api_key/env/secret value, `skip_conditions` as a
   count — plus image state, KV namespace stats, and run stats over the live
