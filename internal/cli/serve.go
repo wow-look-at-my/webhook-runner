@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
+	"github.com/wow-look-at-my/webhook-runner/internal/spool"
 )
 
 func runServe(ctx context.Context, o *serveOptions) error {
@@ -150,6 +152,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 	}()
 	tracker.SetOnFinish(server.RunFinishCallback(kvStore, runStore.Record, rec, logger))
+
+	// The shutdown delivery spool: deliveries that arrive while this process
+	// is draining are parked here and run by the NEXT one. Without it a
+	// deploy window answers 503 and the delivery is gone — GitHub does not
+	// re-send a failed one (see internal/spool).
+	spoolStore, err := spool.Open(filepath.Join(dataDir, "spool"), logger)
+	if err != nil {
+		return fmt.Errorf("delivery spool: %w", err)
+	}
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
@@ -304,26 +315,28 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	vcsRev, vcsTime := buildVCS()
 
 	srvOpts := server.Options{
-		Registry:     registry,
-		Runner:       rn,
-		Tracker:      tracker,
-		GitHub:       gh,
-		Secrets:      secrets,
-		Concurrency:  concurrencyMgr,
-		GlobalCap:    globalCap,
-		Events:       rec,
-		Attention:    agg,
-		Logger:       logger,
-		ReloadSecret: o.hooksRepoSecret,
-		OnReload:     onReload,
-		HooksRepo:    o.hooksRepo,
-		HooksBranch:  o.hooksBranch,
-		HookBaseURL:  o.hookBaseURL,
-		KV:           kvStore,
-		RunStore:     runStore,
-		Overrides:    ovStore,
-		Managers:     sup,
-		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
+		Registry:        registry,
+		Runner:          rn,
+		Tracker:         tracker,
+		GitHub:          gh,
+		Secrets:         secrets,
+		Concurrency:     concurrencyMgr,
+		GlobalCap:       globalCap,
+		Events:          rec,
+		Attention:       agg,
+		Logger:          logger,
+		ReloadSecret:    o.hooksRepoSecret,
+		OnReload:        onReload,
+		HooksRepo:       o.hooksRepo,
+		HooksBranch:     o.hooksBranch,
+		HookBaseURL:     o.hookBaseURL,
+		KV:              kvStore,
+		RunStore:        runStore,
+		Overrides:       ovStore,
+		Managers:        sup,
+		Version:         server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
+		RestartMaxDefer: o.restartMaxDefer,
+		Spool:           spoolStore,
 	}
 	if repo != nil {
 		// The admin reload panel's read surface over the clone (status /
@@ -349,8 +362,19 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watchErr := make(chan error, 1)
+	// Replay parked deliveries exactly once, on the FIRST load that
+	// populates the registry — event-driven off the watcher's initial scan
+	// rather than polling for readiness, and necessarily after it, since a
+	// replay needs its hook to exist.
+	var replayOnce sync.Once
+	loadThenReplay := func() {
+		loadAndApply()
+		replayOnce.Do(func() {
+			replaySpooledDeliveries(spoolStore, registry, rn, rec, logger)
+		})
+	}
 	go func() {
-		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadAndApply, logger)
+		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadThenReplay, logger)
 	}()
 
 	// Scheduler loop runs for the lifetime of the server too; it does nothing
@@ -472,8 +496,9 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	logger.Info("shutting down")
 	// Refuse NEW runs immediately: a run launched by this dying process
 	// races the state-socket handover (its shim would dial a socket the
-	// next server replaces) — deliveries get a retryable 503 instead, and
-	// GitHub redelivers webhooks. In-flight runs drain via rn.Wait below.
+	// next server replaces). Deliveries are not rejected though — they are
+	// PARKED (internal/spool) and answered 202, because GitHub does not
+	// re-send a failed delivery. In-flight runs drain via rn.Wait below.
 	rn.BeginShutdown()
 	// Stop manager instances gracefully (docker stop; SIGTERM + grace)
 	// BEFORE anything else winds down: the lease releases only when this
@@ -484,19 +509,35 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// in-flight handlers, and a stream handler holds its response open
 	// until its subscription closes (or its client goes away).
 	srv.CloseStreams()
+	adminCtx, cancelAdmin := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelAdmin()
+	// The admin port has no dependents — it can go now.
+	if err := adminSrv.Shutdown(adminCtx); err != nil {
+		logger.Warn("admin server shutdown", "err", err)
+	}
+	// ORDER IS THE POINT. The hook listener and the state socket stay UP
+	// across the drain:
+	//   - the hook port, because rn.Wait can take as long as the longest
+	//     run (a CI job is minutes). Stopping it first left the process
+	//     alive with nothing listening for that entire stretch, and every
+	//     delivery arriving in it got connection-refused — silently lost,
+	//     since GitHub does not retry. Now they spool and answer 202.
+	//   - the state socket, because DRAINING RUNS ARE STILL USING IT: locks,
+	//     /wait, /title all ride it. Closing it before rn.Wait pulled the
+	//     floor out from under the very runs being drained.
+	rn.Wait()
+	// Their grace window starts HERE, not before the drain — a deadline
+	// armed pre-Wait would already be blown and turn a graceful close into
+	// an abrupt one.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hookSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("hook server shutdown", "err", err)
 	}
-	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("admin server shutdown", "err", err)
-	}
 	if err := stateSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("state server shutdown", "err", err)
 	}
 	cancelWatch()
-	rn.Wait()
 	return nil
 }
 

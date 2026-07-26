@@ -207,11 +207,32 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A draining server must not LOSE the delivery. GitHub does not re-send
+	// a failed one — the hooks repo's delivery-gap replay SDK exists exactly
+	// because deliveries are consumed-and-lost during downtime — so the 503
+	// the drain gate used to answer was an error AND a dropped webhook. Park
+	// it instead and let the next process run it. Checked BEFORE Start so a
+	// parked delivery leaves no errored run record: it did not fail, it is
+	// waiting. By here it has passed auth and skip_if, so the spool never
+	// holds an unauthenticated body.
+	if s.runner.Draining() {
+		if id, ok := s.spoolDelivery(hook.ID, title, r.Header, body); ok {
+			writeJSON(w, http.StatusAccepted, map[string]string{
+				"spooled":  id,
+				"status":   "spooled",
+				"detail":   "server is restarting; this delivery is parked and will run on the next start",
+				"hook":     hook.ID,
+				"received": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		// No spool, or the spool is full: fall through to Start, whose drain
+		// refusal gives the honest 503 + error run rather than pretending
+		// the delivery is safe.
+	}
+
 	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header, title)
 	if err != nil {
-		// A draining server is a RETRYABLE condition, not a hook failure:
-		// answer 503 so the sender (GitHub redelivers webhooks) tries the
-		// restarted server instead of recording a permanent failure.
 		code := http.StatusInternalServerError
 		if errors.Is(err, runner.ErrDraining) {
 			code = http.StatusServiceUnavailable

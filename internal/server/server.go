@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
@@ -20,6 +21,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
+	"github.com/wow-look-at-my/webhook-runner/internal/spool"
 )
 
 // VersionInfo identifies the running build. Version is the same string the
@@ -76,6 +78,17 @@ type Server struct {
 	// stream fans run lifecycle updates out to GET /runs/stream clients;
 	// fed by the tracker's OnChange seam (wired in New). Never nil.
 	stream *streamHub
+
+	// The docker-updater pre-check (restartready.go): how long a busy
+	// fleet may hold off an update, and the continuously-blocked clock
+	// that bounds it.
+	restartMaxDefer time.Duration
+	restart         restartGate
+
+	// spool parks deliveries that arrive while the runner is draining, so a
+	// deploy window costs a webhook its latency instead of its existence
+	// (spooldelivery.go). nil keeps the old 503-and-lose behavior.
+	spool *spool.Store
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -187,6 +200,17 @@ type Options struct {
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
 	Version VersionInfo
+
+	// Spool parks deliveries that arrive during shutdown drain for the next
+	// process to run. nil means a draining server answers 503 and the
+	// delivery is lost — GitHub does not re-send it.
+	Spool *spool.Store
+
+	// RestartMaxDefer bounds how long GET /restart-ready (the
+	// docker-updater pre-check) may keep answering 503 because runs are in
+	// flight. Zero uses DefaultRestartMaxDefer; negative disables the force
+	// so the check blocks for as long as the fleet stays busy.
+	RestartMaxDefer time.Duration
 }
 
 // New constructs a Server, registering routes on both muxes.
@@ -220,10 +244,17 @@ func New(opts Options) *Server {
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
-		stream:       newStreamHub(),
-		hookMux:      http.NewServeMux(),
-		adminMux:     http.NewServeMux(),
-		stateMux:     http.NewServeMux(),
+		spool:        opts.Spool,
+		restartMaxDefer: func() time.Duration {
+			if opts.RestartMaxDefer == 0 {
+				return DefaultRestartMaxDefer
+			}
+			return opts.RestartMaxDefer
+		}(),
+		stream:   newStreamHub(),
+		hookMux:  http.NewServeMux(),
+		adminMux: http.NewServeMux(),
+		stateMux: http.NewServeMux(),
 
 		reloadRepo:    opts.ReloadRepo,
 		reloadControl: opts.ReloadControl,
@@ -312,6 +343,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /restart-ready", s.handleRestartReady)
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)

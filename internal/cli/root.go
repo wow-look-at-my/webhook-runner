@@ -45,6 +45,7 @@ Configuration via environment:
   WEBHOOK_RUNNER_HOOKS_REPO_SECRET    HMAC-SHA256 secret for POST /_reload
   WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT   commit-status context gating reloads (unset: all-builds; empty: gate disabled)
   WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL reload-gate reconciliation poll cadence, Go duration (default 1h; 0 disables)
+  WEBHOOK_RUNNER_RESTART_MAX_DEFER    how long GET /restart-ready may refuse an update while runs are in flight, Go duration (default 6h; negative never forces)
   WEBHOOK_RUNNER_ADDR                 hook port (default :9000)
   WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
