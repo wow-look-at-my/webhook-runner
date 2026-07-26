@@ -11,6 +11,12 @@ permissions:
   # go-toolchain@v1's embedded no-all-builds-job guard scans the head
   # commit's check runs and fails closed without this grant.
   checks: read
+  # go-toolchain@v1's publish step registers each release: a GitHub Deployment,
+  # and a record on the org's linked artifacts page. Both were warnings until
+  # recently and are now hard failures ("Resource not accessible by
+  # integration" / HTTP 404), so a build cannot finish without these.
+  deployments: write
+  artifact-metadata: write
 
 jobs:
   # Every CLAUDE.md is inlined into an agent's context VERBATIM the moment it
