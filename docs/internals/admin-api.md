@@ -222,6 +222,25 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   pin both halves.
   waiting_on/waiters and unknown statuses are feature-detected, so the
   timeline works against servers with or without first-class waits.
+  GITHUB SLUGS ARE CLICKABLE WHEREVER THE DASHBOARD RENDERS TEXT
+  (`linkifyGH` in dashboard.js): run titles, raw + conversation log
+  output, the activity feed, needs-attention messages, wait reasons, hook
+  descriptions, image build errors, manager output/title/last-error, KV
+  values and reload-panel commit subjects. `owner/repo#41` links to
+  `https://github.com/owner/repo/issues/41` — the ISSUES form on purpose,
+  since GitHub redirects it to `/pull/41` when the number is a PR — and
+  opens in a new tab. A BARE `owner/repo` links only in title-ish fields
+  (`linkifyTitle`: run titles, the manager drill-down's Title), never in
+  free-form text, where `true/false` and `hooks/gha-runner` are
+  indistinguishable from a repo slug; a slug that is part of a longer
+  path, word or URL (`src/hooks/pr-minder`, `.../pull/41`) never links,
+  and neither does a digits-only pair (`24/7`). Rendering stays TEXT
+  NODES plus `<a>` elements — never innerHTML — so no payload can inject
+  markup, and each link stops click propagation so a slug inside a run
+  row opens GitHub WITHOUT also opening the run modal. The manager
+  roster's name cell is deliberately NOT linkified (it is already the
+  link to the manager page). The testjs linkify harness pins the
+  contract, false positives included.
   Dashboard assets are content-addressed (`internal/server/
   dashboard` rewrites index.html to `/dashboard.<hash>.css|.js` +
   `/timeline.<hash>.js`, served
