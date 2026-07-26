@@ -4,28 +4,27 @@ on:
   push:
 
 jobs:
-  probe:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+  matrix:
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
-      - name: What can this runner container do
+      - name: Which container flags let bwrap run on this host kernel
         run: |
-          echo "== identity =="
-          id; echo "virt: $(systemd-detect-virt 2>/dev/null || echo n/a)"
-          echo "== userns =="
-          echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo absent)"
-          echo "unprivileged_userns_clone: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo absent)"
-          echo "apparmor_restrict_unprivileged_userns: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
-          echo "== confinement =="
-          grep -iE 'Seccomp|CapEff|CapBnd' /proc/self/status
-          echo "apparmor label: $(cat /proc/self/attr/current 2>/dev/null || echo none)"
-          echo "== raw userns test =="
-          unshare -U true && echo "USERNS: ok" || echo "USERNS: blocked"
-          unshare -Umr true && echo "USERNS+MAP: ok" || echo "USERNS+MAP: blocked"
-          echo "== bubblewrap =="
+          echo "== this (privileged dind) container =="
+          grep -iE 'Seccomp|CapEff' /proc/self/status
+          unshare -U true && echo "USERNS here: ok" || echo "USERNS here: blocked"
           sudo apt-get update -qq >/dev/null 2>&1 || true
           sudo apt-get install -y -qq bubblewrap >/dev/null 2>&1 || echo "install failed"
-          bwrap --version || echo "no bwrap"
           bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-pid --die-with-parent true \
-            && echo "BWRAP: works" || echo "BWRAP: failed"
-          echo "== docker present? =="
-          command -v docker || echo "no docker client (expected on slim)"
+            && echo "BWRAP here: works" || echo "BWRAP here: failed"
+
+          echo "== nested-daemon matrix (same host kernel) =="
+          docker build -q -t bwrap-probe - <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          RUN apt-get update -qq && apt-get install -y -qq bubblewrap && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
+          for opts in "" "--security-opt seccomp=unconfined" "--cap-add SYS_ADMIN" "--security-opt seccomp=unconfined --cap-add SYS_ADMIN" "--privileged"; do
+            printf 'opts [%s]: ' "${opts:-default}"
+            docker run --rm $opts bwrap-probe \
+              bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-pid --die-with-parent true \
+              && echo "WORKS" || echo "FAILED"
+          done
