@@ -98,6 +98,18 @@ function makeElement(id) {
 	});
 }
 
+// Depth-first text extraction over the recorded child tree (createTextNode
+// children are {text}; element children carry .children). The output <pre>
+// renders linkified TEXT NODES — GitHub slugs in an instance's log are
+// clickable — so its content is read off the tree, not .textContent.
+function textOf(node) {
+	if (!node) return '';
+	if (typeof node.text === 'string') return node.text;
+	let out = typeof node.textContent === 'string' ? node.textContent : '';
+	for (const c of node.children || []) out += textOf(c);
+	return out;
+}
+
 // -- The sandbox ------------------------------------------------------------
 
 function makeSandbox() {
@@ -290,7 +302,7 @@ test('the drill-down renders what the refetch returned', async () => {
 
 	assert.equal(h.elements.get('manager-detail').hidden, false, 'the open drill-down must be visible');
 	assert.match(
-		h.elements.get('manager-detail-output').textContent,
+		textOf(h.elements.get('manager-detail-output')),
 		/hello\n.*world/,
 		'the log tail renders the refetched lines',
 	);

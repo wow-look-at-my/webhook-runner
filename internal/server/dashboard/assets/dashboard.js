@@ -46,6 +46,85 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
+// --- GitHub slugs: clickable wherever they are shown -----------------------
+//
+// Run titles, log lines, event messages, wait reasons, KV values and commit
+// subjects are full of GitHub refs like "wow-look-at-my/go-s3-server#41", and
+// every one of them is a PR/issue an operator may want to open. linkifyGH()
+// splits a plain string into text nodes plus <a> links (new tab) and returns a
+// DocumentFragment — callers keep rendering TEXT, so nothing is ever parsed as
+// HTML and no payload can inject markup.
+//
+// The "#N" form is unambiguous, so it links EVERYWHERE, raw log output
+// included. A BARE "owner/repo" links only where the text is known to be
+// GitHub-derived (run titles, manager titles): in a log line "true/false" and
+// "and/or" are indistinguishable from a repo slug, and "src/hooks/pr-minder"
+// is a path — hence the edge tests below, which reject a slug that is part of
+// a longer path, word, URL or ref.
+//
+// The link target is the ISSUES url on purpose: GitHub redirects
+// /issues/{n} to /pull/{n} when the number is a pull request, so one form
+// covers both without the dashboard having to know which it is.
+const GH_SEG = "[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?";
+const GH_SLUG_RE = new RegExp(`(${GH_SEG})/(${GH_SEG})(?:#(\\d{1,9}))?`, "g");
+const GH_EDGE_BEFORE = /[A-Za-z0-9_./@#:+-]/;
+const GH_EDGE_AFTER = /[A-Za-z0-9_/@#-]/;
+
+function ghSlugHref(owner, repo, num) {
+  const base = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  return num ? `${base}/issues/${num}` : base;
+}
+
+function ghSlugLink(label, href) {
+  const a = el("a", {
+    href,
+    class: "gh-slug",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    title: `open ${label} on GitHub`,
+  }, label);
+  // Table rows are click targets themselves (a run row opens the modal, a KV
+  // row expands): a slug click must open the link ONLY, never also fire the
+  // row behind it.
+  a.addEventListener("click", (e) => e.stopPropagation());
+  return a;
+}
+
+function linkifyGH(text, opts) {
+  const bareRepo = !!(opts && opts.bareRepo);
+  const s = text == null ? "" : String(text);
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  GH_SLUG_RE.lastIndex = 0;
+  for (let m; (m = GH_SLUG_RE.exec(s)) !== null; ) {
+    const [match, owner, repo, num] = m;
+    if (!num && !bareRepo) continue;
+    // Both halves must contain a letter: "24/7" and "07/2026" are not repos.
+    if (!/[A-Za-z]/.test(owner) || !/[A-Za-z]/.test(repo)) continue;
+    const before = m.index > 0 ? s[m.index - 1] : "";
+    const after = s[m.index + match.length] || "";
+    if (before && GH_EDGE_BEFORE.test(before)) continue;
+    if (after && GH_EDGE_AFTER.test(after)) continue;
+    if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
+    frag.appendChild(ghSlugLink(match, ghSlugHref(owner, repo, num)));
+    last = m.index + match.length;
+  }
+  if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+  return frag;
+}
+
+// linkifyGH for a title-ish field: bare "owner/repo" links too (run_title
+// templates render GitHub payload fields, not shell paths).
+function linkifyTitle(text) {
+  return linkifyGH(text, { bareRepo: true });
+}
+
+// Replace a node's text content with the linkified form (the textContent
+// assignment's stand-in wherever slugs can appear).
+function setLinkifiedText(node, text, opts) {
+  if (node) node.replaceChildren(linkifyGH(text, opts));
+}
+
 function fmtTime(s) {
   if (!s) return "";
   const d = new Date(s);
@@ -147,10 +226,10 @@ function waitNote(r) {
     const left = new Date(w.until) - Date.now();
     const t = left > 0 ? fmtDuration(left) : "0s";
     return el("span", { class: "wait-note" },
-      `waiting ${t}${w.reason ? ": " + w.reason : ""}`);
+      linkifyGH(`waiting ${t}${w.reason ? ": " + w.reason : ""}`));
   }
   return el("span", { class: "wait-note" },
-    `waiting${w.reason ? ": " + w.reason : w.kind ? " (" + w.kind + ")" : ""}`);
+    linkifyGH(`waiting${w.reason ? ": " + w.reason : w.kind ? " (" + w.kind + ")" : ""}`));
 }
 
 // The modal's "Waiting" row: the same facts as waitNote but with the
@@ -441,7 +520,7 @@ function renderRunOutput(view) {
             t.label && t.label !== t.role ? el("span", { class: "turn-label" }, t.label) : null,
             clock ? el("span", { class: "turn-time" }, clock) : null,
           ),
-          el("pre", { class: "turn-body" }, body || "(empty)"),
+          el("pre", { class: "turn-body" }, linkifyGH(body || "(empty)")),
         )
       );
     }
@@ -452,7 +531,7 @@ function renderRunOutput(view) {
       log.appendChild(
         el("div", { class: "log-row" },
           el("span", { class: "log-time" }, fmtClock(currentRunTimes[i])),
-          el("span", { class: "log-text" }, currentRunLines[i]),
+          el("span", { class: "log-text" }, linkifyGH(currentRunLines[i])),
         )
       );
     }
@@ -758,7 +837,7 @@ function renderHooks(hooks) {
         el("td", null,
           el("a", { href: hookHref(h.id), class: "hook-link" },
             el("code", null, h.id))),
-        el("td", null, h.description || ""),
+        el("td", null, linkifyGH(h.description || "")),
         el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
         el("td", { class: "row-actions" }, hookSwitch(h.id, h.disabled)),
         el("td", null, ...triggerPath(h.id)),
@@ -858,6 +937,9 @@ function renderManagers(list) {
   for (const m of list) {
     const tr = el("tr", null,
       el("td", null,
+        // Deliberately NOT linkified: this cell's whole job is the link to
+        // the manager's page (an <a> can't nest another). The drill-down's
+        // Title row carries the same text with its slugs clickable.
         el("a", { href: managerHref(m.id), class: "hook-link" },
           el("code", null, m.title || m.id))),
       el("td", { class: "row-actions" }, managerSwitch(m.id, m.disabled)),
@@ -961,8 +1043,8 @@ function renderManagerDetail(d) {
     meta.appendChild(el("dt", null, k));
     meta.appendChild(el("dd", null, v));
   };
-  row("Description", d.description);
-  row("Title", d.title);
+  row("Description", d.description ? linkifyGH(d.description) : "");
+  row("Title", d.title ? linkifyTitle(d.title) : "");
   row("Instance", d.instance_id ? el("code", null, d.instance_id) : "none");
   if (tsPresent(d.instance_started)) {
     // Tagged so the local uptime ticker can advance it between refetches —
@@ -973,7 +1055,7 @@ function renderManagerDetail(d) {
   }
   row("Restarts since boot", String(d.restarts));
   if (d.consecutive_failures) row("Consecutive failures", String(d.consecutive_failures));
-  row("Last error", d.last_error);
+  row("Last error", d.last_error ? linkifyGH(d.last_error) : "");
   row("Last stop reason", d.last_stop_reason);
   row("Inbox depth", String(d.inbox_depth));
   if (tsPresent(d.last_delivered)) row("Last delivery", fmtTime(d.last_delivered));
@@ -988,7 +1070,9 @@ function renderManagerDetail(d) {
   // refetches on every pushed output line, and yanking a scrolled-back
   // reader to the bottom once a second would make history unreadable.
   const stick = managerOutputAtBottom(out);
-  out.textContent = managerOutputText(managerDetailOutputLines);
+  // Rendered as linkified TEXT, not innerHTML — the copy button still
+  // assembles its text from the data, so what is copied is unchanged.
+  setLinkifiedText(out, managerOutputText(managerDetailOutputLines));
   if (stick) out.scrollTop = out.scrollHeight;
 }
 
@@ -1056,7 +1140,7 @@ function renderAttention(data) {
   tbody.innerHTML = "";
   for (const e of entries) {
     const tr = el("tr", { class: e.hook ? "attention-hook-row" : "" },
-      el("td", { class: "attention-msg" }, e.message),
+      el("td", { class: "attention-msg" }, linkifyGH(e.message)),
       el("td", null, e.hook
         ? el("a", { href: hookHref(e.hook), class: "hook-link" }, el("code", null, e.hook))
         : "—"),
@@ -1271,7 +1355,7 @@ function groupDetailRow(g) {
     runLink(r.run_id),
     " ",
     r.hook_id ? el("code", null, r.hook_id) : null,
-    r.title ? el("span", { class: "group-run-title" }, " " + r.title) : null,
+    r.title ? el("span", { class: "group-run-title" }, linkifyTitle(" " + r.title)) : null,
     r.status ? el("span", { class: "status " + r.status, style: "margin-left: 0.4rem" }, r.status) : null,
     el("span", { class: "group-run-since" }, note),
   );
@@ -1305,7 +1389,7 @@ function runCell(r) {
   const code = el("code", null, r.id);
   if (!r.title) return el("td", null, code);
   return el("td", null,
-    el("div", { class: "run-title" }, r.title),
+    el("div", { class: "run-title" }, linkifyTitle(r.title)),
     el("div", { class: "run-id-sub" }, code),
   );
 }
@@ -1333,7 +1417,7 @@ function renderImages(images) {
   document.getElementById("images-empty").hidden = images.length > 0;
   for (const im of images) {
     let state;
-    if (im.error) state = el("span", { class: "badge bad" }, "error: " + im.error);
+    if (im.error) state = el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
     else if (im.built) state = el("span", { class: "badge ok" }, "built");
     else state = el("span", { class: "badge warn" }, "will build on next run");
     const others = (im.images || [])
@@ -1362,7 +1446,7 @@ function renderEventRows(tableId, emptyId, events) {
       el("tr", null,
         el("td", { class: "event-time" }, fmtTime(ev.time)),
         el("td", null, el("span", { class: "kind " + ev.kind.replace(/\./g, "-") }, ev.kind)),
-        el("td", null, ev.msg),
+        el("td", null, linkifyGH(ev.msg)),
       )
     );
   }
@@ -1493,7 +1577,7 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-body").hidden = false;
   setAppOrphanMode(false);
   document.getElementById("app-title").textContent = info.id;
-  document.getElementById("app-desc").textContent = info.description || "";
+  setLinkifiedText(document.getElementById("app-desc"), info.description || "");
 
   // Operator kill switch for this hook: the same single switch as the
   // overview's Status column, next to the title.
@@ -1558,7 +1642,7 @@ function renderApp(detail, runs, events) {
 
   const im = detail.image;
   let state;
-  if (im.error) state = el("span", { class: "badge bad" }, "error: " + im.error);
+  if (im.error) state = el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
   else if (im.built) state = el("span", { class: "badge ok" }, "built");
   else state = el("span", { class: "badge warn" }, "will build on next run");
   const others = (im.images || [])
@@ -1779,7 +1863,8 @@ async function kvValueRow(hookId, key) {
       meta.push("binary (shown base64)");
     }
     td.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
-    td.appendChild(el("pre", { class: "kv-value" }, body === "" ? "(empty value)" : body));
+    td.appendChild(el("pre", { class: "kv-value" },
+      body === "" ? "(empty value)" : linkifyGH(body)));
   } catch (err) {
     td.appendChild(el("div", { class: "kv-value-meta kv-value-error" },
       `failed to load value: ${err.message}`));
@@ -1903,7 +1988,7 @@ function renderRunDetail(r, openDialog) {
   // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
   // generic "Run" word otherwise; the full id always sits beside it in
   // the (small, muted) code chip.
-  document.getElementById("run-detail-name").textContent = r.title || "Run";
+  setLinkifiedText(document.getElementById("run-detail-name"), r.title || "Run", { bareRepo: true });
   document.getElementById("run-detail-id").textContent = r.id;
   const dl = document.getElementById("run-detail-meta");
   dl.innerHTML = "";
@@ -1930,7 +2015,7 @@ function renderRunDetail(r, openDialog) {
   // holds, each waiter a clickable run link.
   const wds = waitersDetail(r);
   if (wds) rows.push(["Held up by this run", wds]);
-  if (r.error) rows.push(["Error", r.error]);
+  if (r.error) rows.push(["Error", linkifyGH(r.error)]);
   for (const [k, v] of rows) {
     dl.appendChild(el("dt", null, k));
     dl.appendChild(el("dd", null, v));
@@ -2233,14 +2318,14 @@ function renderReloadStatus(data) {
   ));
   if (live.subject) {
     box.appendChild(el("div", { class: "reload-subject" },
-      live.subject + (live.date ? " · " + fmtTime(live.date) : "")));
+      linkifyGH(live.subject + (live.date ? " · " + fmtTime(live.date) : ""))));
   }
   if (data.pending) {
     const p = data.pending;
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
-      p.subject ? el("span", { class: "reload-subject-inline" }, p.subject) : null,
+      p.subject ? el("span", { class: "reload-subject-inline" }, linkifyGH(p.subject)) : null,
       el("span", { class: "wait-note" }, p.why || "awaiting CI"),
       reloadCIBadge(p.ci_state),
       reloadSrcBadge(!!p.has_src),
@@ -2275,7 +2360,7 @@ function renderReloadCommits(data) {
     }
     tbody.appendChild(el("tr", { class: c.is_live ? "reload-live-commit" : "" },
       el("td", null, el("code", { title: c.sha }, c.short)),
-      el("td", { class: "reload-commit-subject" }, c.subject || ""),
+      el("td", { class: "reload-commit-subject" }, linkifyGH(c.subject || "")),
       el("td", null, fmtTime(c.date)),
       el("td", null, reloadCIBadge(c.ci_state)),
       el("td", null, reloadSrcBadge(!!c.has_src)),

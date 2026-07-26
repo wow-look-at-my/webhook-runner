@@ -392,6 +392,13 @@ a.hook-link code { color: var(--accent); }
 a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
 a.run-link { text-decoration: none; }
 a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+/* GitHub slugs found in rendered text (run titles, log lines, event
+   messages, KV values, commit subjects) -- "wow-look-at-my/webhooks#41"
+   opens the PR/issue in a new tab. Underlined only on hover so a log line
+   full of slugs stays readable, and inheriting the surrounding font so a
+   slug inside a <pre> stays monospaced and in-line. */
+a.gh-slug { color: var(--accent); text-decoration: none; font: inherit; }
+a.gh-slug:hover { text-decoration: underline; }
 /* Plain-text jump link (the Info card's State (KV) summary): no <code>
    child, so it carries the link color itself. */
 a.kv-jump { color: var(--accent); text-decoration: none; }

@@ -56,7 +56,18 @@ function makeElement(id) {
 					return () => makeElement();
 				case 'closest':
 					return () => null;
+				// Children are RECORDED: text the page renders through
+				// nodes (linkified slugs, fragments) is only observable as a
+				// child tree — see textOf below.
 				case 'appendChild':
+					return (x) => {
+						t.children.push(x);
+						return x;
+					};
+				case 'replaceChildren':
+					return (...xs) => {
+						t.children = xs;
+					};
 				case 'before':
 				case 'after':
 					return (x) => x;
@@ -69,10 +80,21 @@ function makeElement(id) {
 			}
 		},
 		set(t, prop, v) {
+			if (prop === 'innerHTML' && v === '') t.children = [];
 			t[prop] = v;
 			return true;
 		},
 	});
+}
+
+// Depth-first text extraction over the recorded child tree (createTextNode
+// children are {text}; element children carry .children).
+function textOf(node) {
+	if (!node) return '';
+	if (typeof node.text === 'string') return node.text;
+	let out = typeof node.textContent === 'string' ? node.textContent : '';
+	for (const c of node.children || []) out += textOf(c);
+	return out;
 }
 
 // -- The sandbox ------------------------------------------------------------------
@@ -183,6 +205,11 @@ function makeSandbox() {
 							return () => makeElement();
 						case 'createTextNode':
 							return (s) => ({ text: s });
+						// The page builds fragments (linkified text, wait
+						// details); an element stub is close enough here —
+						// this harness asserts on fetches, not markup.
+						case 'createDocumentFragment':
+							return () => makeElement();
 						case 'querySelectorAll':
 							return () => [];
 						case 'querySelector':
@@ -438,5 +465,7 @@ test('manager output copy: the clipboard text assembles from the DATA, exactly a
 		output: ['line 1', '', 'line 3'],
 	});
 	const pre = h.sandbox.document.getElementById('manager-detail-output');
-	assert.equal(pre.textContent, text(['line 1', '', 'line 3']), 'the <pre> and the copy payload share one assembly');
+	// The <pre> renders the assembly as linkified TEXT NODES (GitHub slugs in
+	// the log are clickable), so parity is read off the rendered tree.
+	assert.equal(textOf(pre), text(['line 1', '', 'line 3']), 'the <pre> and the copy payload share one assembly');
 });
