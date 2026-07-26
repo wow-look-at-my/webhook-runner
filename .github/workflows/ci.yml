@@ -52,8 +52,21 @@ jobs:
               );
             }
 
+  # wow-dind, not wow-linux: go-toolchain runs a .dats phase (it bootstraps
+  # dats and executes dats/*.dats as part of this job -- "Running dats
+  # suites" in the log), and dats SANDBOXES TEST COMMANDS BY DEFAULT, failing
+  # a run outright when no backend is usable. The slim fleet can provide
+  # neither backend: docker is deleted from that image by design, and
+  # bubblewrap needs an unprivileged user namespace a stock container is
+  # refused (measured inside a real wow-linux runner: unshare -U blocked,
+  # Seccomp: 2, CapEff: 0). Making it work there would cost
+  # seccomp=unconfined + CAP_SYS_ADMIN -- most of --privileged, on the image
+  # whose whole point is being locked down -- so the operator's ruling
+  # (2026-07-26) is that dats jobs come here instead, where bubblewrap is
+  # installed and measured working. See the webhooks repo,
+  # src/hooks/gha-runner/CLAUDE.md.
   test:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       # The dashboard's committed assets/timeline.js is authoritative and
@@ -119,8 +132,10 @@ jobs:
   # Black-box CLI-contract tests (dats/*.dats, run by the org's dats test
   # runner) against the real built binary — docker-free, offline, no
   # secrets; see CLAUDE.md "CLI contract tests".
+  # wow-dind for the same reason as the test job above: dats sandboxes by
+  # default and the slim fleet can supply no backend.
   dats:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     needs: test
     steps:
       - uses: actions/checkout@v4
