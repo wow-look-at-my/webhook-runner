@@ -287,6 +287,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
+	// The lock sweeper's liveness oracle. An expired lock may only be reaped
+	// once its holder is CERTAINLY gone — expiry alone never frees a mutex
+	// (internal/kv/lock.go) — and a holder is either a tracked run or a
+	// manager's live instance, so both are asked. Without this the store
+	// reaps nothing, which is the safe direction.
+	kvStore.SetRunLiveness(func(id string) bool {
+		if r := tracker.Get(id); r != nil && !r.Status().Terminal() {
+			return true
+		}
+		return sup.AnyCurrentInstance(id)
+	})
+
 	// Scheduler: fires hooks declaring a "schedule" interval on a timer,
 	// through the very same run pipeline (so a scheduled run is tracked,
 	// concurrency-gated, KV-enabled, and shown on the dashboard like any
