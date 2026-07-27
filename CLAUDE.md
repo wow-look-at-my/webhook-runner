@@ -74,6 +74,19 @@ paths, and version/help/argument/flag errors — the authoritative case list
 is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
 dashboard need Docker/network and stay in `e2e/`.
 
+**The suites are docker-free; dats itself is not runner-free.** dats
+SANDBOXES the commands it runs BY DEFAULT (bubblewrap, falling back to
+docker) and fails a run outright when neither backend is usable. The slim
+`wow-linux` fleet can supply neither — docker is deleted from that image by
+design, and bubblewrap needs an unprivileged user namespace a stock container
+is refused — so **both jobs that run dats (`dats`, and `test` via
+go-toolchain's dats phase) use `vars.CI_RUNNER_DIND`**, where bubblewrap is
+installed and measured working. Operator ruling 2026-07-26; the measurements,
+and the alternative that was rejected (granting the slim fleet
+`seccomp=unconfined` + `CAP_SYS_ADMIN`), are in the webhooks repo's
+`src/hooks/gha-runner/CLAUDE.md`. Moving either job back to `CI_RUNNER` fails
+it at the dats phase, not in the suite.
+
 Every suite command execs the binary as
 `"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare
 PATH lookup. go-toolchain itself runs these suites as its **dats phase**
