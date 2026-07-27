@@ -11,6 +11,16 @@
 # "$(dirname "{inputs.<hook>/hook.json}")/.." (dats has no directory
 # placeholder). How to run + assertion semantics: CLAUDE.md "CLI contract tests".
 
+# SANDBOX: OFF, deliberately. dats v51 sandboxes commands by default (bwrap on
+# Linux), and a bwrap sandbox gives the commands a PRIVATE /tmp. These suites
+# exec the freshly built binary at "$GO_TOOLCHAIN_DATS_BUILD_DIR/webhook-runner"
+# — go-toolchain stages that copy in a temp dir, which the sandbox's tmpfs hides,
+# so every case died with exit 127 ("command not found") the moment bubblewrap
+# reached the runner fleet (webhooks#204, 2026-07-27). These cases are already
+# docker-free, offline, and secret-free: they run OUR binary against fixtures in
+# a per-test temp dir, which is what the sandbox was going to provide anyway.
+sandbox: false
+
 tests:
   - desc: valid legacy tree (JSONC comments allowed) validates with exit 0
     cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
