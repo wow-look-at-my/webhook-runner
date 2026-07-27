@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
+	"github.com/wow-look-at-my/webhook-runner/internal/queue"
 	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -62,6 +63,7 @@ type Server struct {
 	hooksBranch  string
 	hookBaseURL  string
 	kv           *kv.Store
+	queues       *queue.Store
 	runstore     *runstore.Store
 	overrides    *overrides.Store
 	managers     ManagerControl
@@ -178,6 +180,10 @@ type Options struct {
 	// admin /kv view. nil disables both (the routes report no namespaces).
 	KV *kv.Store
 
+	// Queues is the durable work-queue store backing the state port's
+	// /queue routes (internal/queue). Nil disables them (503), like KV.
+	Queues *queue.Store
+
 	// RunStore is the persisted completed-run history. When set, /runs,
 	// /runs/{id}, and /hooks/{id} serve the live tracker merged with it
 	// (deduped by run ID, newest-first); nil keeps the old memory-only
@@ -241,6 +247,7 @@ func New(opts Options) *Server {
 		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
+		queues:       opts.Queues,
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
@@ -431,6 +438,15 @@ func (s *Server) registerRoutes() {
 	// dispatch, skip_if deliberately bypassed like scheduled fires (see
 	// spawn.go).
 	s.stateMux.HandleFunc("POST /spawn", s.withNamespace(s.handleSpawn))
+	// Durable work queues: the runner's answer to "work I did not get to".
+	// A hook run is a container that lives for one delivery, so a backlog
+	// cannot live inside it — and every hook that tried built a cursor out
+	// of KV strings and stranded its tail (internal/queue's package
+	// comment). Push is a set union that keeps order; take REMOVES.
+	s.stateMux.HandleFunc("POST /queue/{name}/push", s.withNamespace(s.handleQueuePush))
+	s.stateMux.HandleFunc("POST /queue/{name}/take", s.withNamespace(s.handleQueueTake))
+	s.stateMux.HandleFunc("GET /queue/{name}", s.withNamespace(s.handleQueueStat))
+	s.stateMux.HandleFunc("GET /queues", s.withNamespace(s.handleQueueList))
 }
 
 // runRequestContext returns a background context derived from the server
