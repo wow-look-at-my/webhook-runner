@@ -117,9 +117,10 @@ func TestPinReleasedByRunFinishSeam(t *testing.T) {
 	require.False(t, info.Pinned)
 }
 
-// The TTL backstop ignores the pin: a pinned lock whose holder leaked past
-// the backstop expires like any other (pin protects against STEAL only,
-// never against expiry).
+// The TTL backstop ignores the pin: a pinned lock past its backstop is
+// STEALABLE like any other (pin protects against steal only while the hold
+// is within budget). A plain acquire still does not take it — expiry frees
+// nothing on its own — it reports the expiry so the server can enforce it.
 func TestPinDoesNotOutliveTTLBackstop(t *testing.T) {
 	s := newStore(t)
 
@@ -127,10 +128,15 @@ func TestPinDoesNotOutliveTTLBackstop(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	info, err := s.AcquireLock("ns", "l", "run-b", 0)
-	require.NoError(t, err)
+	held, err := s.AcquireLock("ns", "l", "run-b", 0)
+	require.ErrorIs(t, err, ErrLockExpired, "expiry is enforced, never assumed")
+	require.Equal(t, "run-a", held.RunID)
+
+	info, displaced, err := s.StealLock("ns", "l", "run-b", 0)
+	require.NoError(t, err, "the pin does not survive the backstop")
 	require.Equal(t, "run-b", info.RunID)
 	require.False(t, info.Pinned)
+	require.Equal(t, "run-a", displaced.RunID)
 }
 
 // A steal-with-pin request against a FREE lock is a plain take-and-pin (a

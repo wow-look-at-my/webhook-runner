@@ -67,6 +67,25 @@ func (s *Supervisor) IsCurrentInstance(id, instanceID string) bool {
 	return mg != nil && mg.instanceID != "" && mg.instanceID == instanceID
 }
 
+// AnyCurrentInstance reports whether instanceID is the live instance of ANY
+// manager — the id-only liveness question, for callers holding an identity
+// without knowing which manager it belongs to (the KV lock sweeper, deciding
+// whether an expired lock's holder is certainly gone; a live instance's lock
+// must never be reaped out from under it).
+func (s *Supervisor) AnyCurrentInstance(instanceID string) bool {
+	if instanceID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, mg := range s.states {
+		if mg != nil && mg.instanceID == instanceID {
+			return true
+		}
+	}
+	return false
+}
+
 // TouchInstance credits activity to a manager's live instance (the /wait
 // hold's watchdog feed). false = not the current instance.
 func (s *Supervisor) TouchInstance(id, instanceID string) bool {
