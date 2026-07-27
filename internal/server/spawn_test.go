@@ -58,10 +58,11 @@ type spawnFixture struct {
 	rn      *runner.Runner
 	rec     *events.Recorder
 	ov      *overrides.Store
+	fm      *fakeManagers
 	dir     string
 }
 
-func newSpawnFixture(t *testing.T, allow SpawnAllowlist) *spawnFixture {
+func newSpawnFixture(t *testing.T) *spawnFixture {
 	t.Helper()
 	dir := t.TempDir()
 	docker := writeSpawnMockDocker(t, dir)
@@ -75,11 +76,24 @@ func newSpawnFixture(t *testing.T, allow SpawnAllowlist) *spawnFixture {
 	require.NoError(t, err)
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker, Events: rec})
 	t.Cleanup(rn.Wait)
+	fm := newFakeManagers("parent")
 	s := New(Options{
 		Registry: reg, Runner: rn, Tracker: tr, Logger: logger,
-		KV: store, Events: rec, Overrides: ov, SpawnAllow: allow,
+		KV: store, Events: rec, Overrides: ov, Managers: fm,
 	})
-	return &spawnFixture{s: s, store: store, reg: reg, tracker: tr, rn: rn, rec: rec, ov: ov, dir: dir}
+	return &spawnFixture{s: s, store: store, reg: reg, tracker: tr, rn: rn, rec: rec, ov: ov, fm: fm, dir: dir}
+}
+
+// managerParent registers a MANAGER "parent" whose manifest declares the
+// given spawn targets, binds a live instance, and mints its state token —
+// the caller identity of the manifest-authorized spawn tests.
+func (f *spawnFixture) managerParent(t *testing.T, targets ...string) (string, string) {
+	t.Helper()
+	m := &hooks.Manager{Hook: &hooks.Hook{ID: "parent", Command: []string{"x"}, State: true}, SpawnTargets: targets}
+	f.reg.ReplaceManagers(map[string]*hooks.Manager{"parent": m})
+	const inst = "inst-1"
+	f.fm.bind("parent", inst)
+	return inst, f.store.Token("parent", inst)
 }
 
 // liveParent registers a live (running) run of the "parent" hook and mints
@@ -118,7 +132,7 @@ func (f *spawnFixture) deniedEvents(max int) []events.Event {
 }
 
 func TestSpawnAuth(t *testing.T) {
-	f := newSpawnFixture(t, nil)
+	f := newSpawnFixture(t)
 	body := spawnBody("t", 1)
 	// Absent and garbage tokens: the same 401s as every state route.
 	require.Equal(t, 401, stateReq(t, f.s, "POST", "/spawn", "", strings.NewReader(body)).Code)
@@ -139,8 +153,8 @@ func TestSpawnWithoutRunnerConfigured(t *testing.T) {
 }
 
 func TestSpawnValidation(t *testing.T) {
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"t": true}})
-	_, tok := f.liveParent(t)
+	f := newSpawnFixture(t)
+	_, tok := f.managerParent(t, "t")
 
 	for _, body := range []string{
 		`not json`,
@@ -175,7 +189,7 @@ func TestSpawnValidation(t *testing.T) {
 }
 
 func TestSpawnParentRunGuards(t *testing.T) {
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"t": true}})
+	f := newSpawnFixture(t)
 	body := spawnBody("t", 1)
 
 	// Unknown run, another hook's run, and a finished run all 409 — the
@@ -194,8 +208,8 @@ func TestSpawnParentRunGuards(t *testing.T) {
 }
 
 func TestSpawnUnknownTarget(t *testing.T) {
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"ghost": true}})
-	_, tok := f.liveParent(t)
+	f := newSpawnFixture(t)
+	_, tok := f.managerParent(t, "ghost")
 	rr := stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(spawnBody("ghost", 1)))
 	require.Equal(t, 404, rr.Code)
 	denied := f.deniedEvents(20)
@@ -205,10 +219,11 @@ func TestSpawnUnknownTarget(t *testing.T) {
 	assert.Equal(t, "ghost", denied[0].Fields["target"])
 }
 
-func TestSpawnDenyByDefault(t *testing.T) {
-	// NO allowlist at all: even an existing target is refused.
-	f := newSpawnFixture(t, nil)
-	_, tok := f.liveParent(t)
+func TestSpawnManifestDenyByDefault(t *testing.T) {
+	// A manager with NO spawn_targets spawns nothing: the manifest is the
+	// allowlist and absent/empty means deny.
+	f := newSpawnFixture(t)
+	_, tok := f.managerParent(t)
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
 	rr := stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(spawnBody("worker", 1)))
 	require.Equal(t, 403, rr.Code)
@@ -217,19 +232,32 @@ func TestSpawnDenyByDefault(t *testing.T) {
 	assert.Empty(t, f.tracker.ListByHook("worker", 0), "a denied spawn must start nothing")
 }
 
-func TestSpawnAllowlistPairMissing(t *testing.T) {
-	// An allowlist that names the parent — but for a DIFFERENT target —
-	// still denies: pairs are explicit, never per-parent wildcards.
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"other-target": true}})
+func TestSpawnHookCallerDenied(t *testing.T) {
+	// Hook-run callers carry no manifest field (the published hook schema
+	// is frozen) — a live hook run is denied even for an existing target.
+	f := newSpawnFixture(t)
 	_, tok := f.liveParent(t)
+	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
+	rr := stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(spawnBody("worker", 1)))
+	require.Equal(t, 403, rr.Code)
+	assert.Contains(t, rr.Body.String(), "only managers")
+	require.NotEmpty(t, f.deniedEvents(20))
+	assert.Empty(t, f.tracker.ListByHook("worker", 0))
+}
+
+func TestSpawnManifestTargetMissing(t *testing.T) {
+	// A manifest that grants a DIFFERENT target still denies: entries are
+	// explicit ids, never wildcards.
+	f := newSpawnFixture(t)
+	_, tok := f.managerParent(t, "other-target")
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
 	require.Equal(t, 403,
 		stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(spawnBody("worker", 1))).Code)
 }
 
 func TestSpawnDisabledTarget(t *testing.T) {
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"worker": true, "born-off": true}})
-	_, tok := f.liveParent(t)
+	f := newSpawnFixture(t)
+	_, tok := f.managerParent(t, "worker", "born-off")
 
 	// Operator kill switch: same effective-disabled state as handleTrigger
 	// and buildScheduleFire.
@@ -258,8 +286,8 @@ func TestSpawnDisabledTarget(t *testing.T) {
 // target's run_title template, with the payload and the synthetic headers —
 // X-GitHub-Event included — visible inside the container.
 func TestSpawnSuccess(t *testing.T) {
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"worker": true}})
-	parentRun, tok := f.liveParent(t)
+	f := newSpawnFixture(t)
+	parentInst, tok := f.managerParent(t, "worker")
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"go"}, RunTitle: "job {{job.name}}"})
 
 	body := `{"hook":"worker","count":3,"payload":{"job":{"name":"build-42"}},"event":"workflow_job"}`
@@ -277,7 +305,7 @@ func TestSpawnSuccess(t *testing.T) {
 		assert.Equal(t, "worker", run.HookID())
 		sb := run.SpawnedBy()
 		require.NotNil(t, sb, "spawned runs must carry parent attribution")
-		assert.Equal(t, parentRun.ID(), sb.RunID)
+		assert.Equal(t, parentInst, sb.RunID)
 		assert.Equal(t, "parent", sb.HookID)
 		assert.Equal(t, "job build-42", run.Title(),
 			"run_title must render from the target's template against the spawned payload")
@@ -295,7 +323,7 @@ func TestSpawnSuccess(t *testing.T) {
 		assert.Contains(t, joined, "X-Github-Event")
 		assert.Contains(t, joined, "workflow_job")
 		assert.Contains(t, joined, "X-Webhook-Runner-Spawned-By")
-		assert.Contains(t, joined, parentRun.ID())
+		assert.Contains(t, joined, parentInst)
 	}
 
 	// run.started events name the parent inline (the runRef convention).
@@ -303,7 +331,7 @@ func TestSpawnSuccess(t *testing.T) {
 	for _, ev := range f.rec.ListByHook("worker", 50) {
 		if ev.Kind == "run.started" {
 			started++
-			assert.Contains(t, ev.Msg, ", spawned by parent run "+parentRun.ID())
+			assert.Contains(t, ev.Msg, ", spawned by parent run "+parentInst)
 		}
 	}
 	assert.Equal(t, 3, started)
@@ -313,14 +341,14 @@ func TestSpawnSuccess(t *testing.T) {
 	admin(f.s).ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/runs/"+res.RunIDs[0], nil))
 	require.Equal(t, 200, detail.Code)
 	assert.Contains(t, detail.Body.String(), `"spawned_by"`)
-	assert.Contains(t, detail.Body.String(), parentRun.ID())
+	assert.Contains(t, detail.Body.String(), parentInst)
 }
 
 // skip_if is BYPASSED for spawns, exactly like scheduled fires: the same
 // payload/headers that WOULD match the target's skip conditions still runs.
 func TestSpawnBypassesSkipIf(t *testing.T) {
-	f := newSpawnFixture(t, SpawnAllowlist{"parent": {"skippy": true}})
-	parentRun, tok := f.liveParent(t)
+	f := newSpawnFixture(t)
+	parentInst, tok := f.managerParent(t, "skippy")
 	target := f.targetHook(t, &hooks.Hook{
 		ID: "skippy", Command: []string{"x"},
 		SkipIf: hooks.SkipConditions{
@@ -331,7 +359,7 @@ func TestSpawnBypassesSkipIf(t *testing.T) {
 	// Control: these exact inputs DO match the skip condition — a delivery
 	// carrying them would be skipped.
 	payload := []byte(`{"a":1}`)
-	_, skip := target.EvaluateSkip(payload, spawnHeaders("parent", parentRun.ID(), "workflow_job"))
+	_, skip := target.EvaluateSkip(payload, spawnHeaders("parent", parentInst, "workflow_job"))
 	require.True(t, skip, "test setup: the condition must match the spawn inputs")
 
 	rr := stateReq(t, f.s, "POST", "/spawn", tok,
@@ -372,10 +400,10 @@ exit 0
 	})
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker, Groups: mgr})
 	t.Cleanup(rn.Wait)
+	fm := newFakeManagers("parent")
 	s := New(Options{
 		Registry: reg, Runner: rn, Tracker: tr, Logger: logger,
-		KV: store, Concurrency: mgr,
-		SpawnAllow: SpawnAllowlist{"parent": {"gated": true}},
+		KV: store, Concurrency: mgr, Managers: fm,
 	})
 
 	hookDir := filepath.Join(dir, "gated")
@@ -384,10 +412,11 @@ exit 0
 		ID: "gated", Command: []string{"x"}, ConcurrencyGroup: "g",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
 	})
-
-	parentRun := tr.New("parent")
-	parentRun.SetRunning()
-	tok := store.Token("parent", parentRun.ID())
+	reg.ReplaceManagers(map[string]*hooks.Manager{"parent": {
+		Hook: &hooks.Hook{ID: "parent", Command: []string{"x"}, State: true}, SpawnTargets: []string{"gated"},
+	}})
+	fm.bind("parent", "inst-1")
+	tok := store.Token("parent", "inst-1")
 
 	begin := time.Now()
 	rr := stateReq(t, s, "POST", "/spawn", tok, strings.NewReader(spawnBody("gated", 2)))
@@ -421,39 +450,5 @@ exit 0
 	rn.Wait()
 	for _, id := range res.RunIDs {
 		assert.Equal(t, runs.StatusSuccess, tr.Get(id).Status())
-	}
-}
-
-func TestParseSpawnAllow(t *testing.T) {
-	// Empty means deny-by-default: a valid, empty allowlist.
-	empty, err := ParseSpawnAllow("")
-	require.NoError(t, err)
-	assert.False(t, empty.Allowed("a", "b"))
-
-	// A nil allowlist denies everything too (the unwired-server shape).
-	var nilAllow SpawnAllowlist
-	assert.False(t, nilAllow.Allowed("a", "b"))
-
-	one, err := ParseSpawnAllow("gha-coordinator=gha-runner")
-	require.NoError(t, err)
-	assert.True(t, one.Allowed("gha-coordinator", "gha-runner"))
-	assert.False(t, one.Allowed("gha-runner", "gha-coordinator"), "pairs are directional")
-	assert.False(t, one.Allowed("gha-coordinator", "other"))
-
-	// Whitespace tolerated, multiple entries, multiple targets, empty
-	// entries ignored, duplicate parents merged.
-	multi, err := ParseSpawnAllow("  a = b , c ;; d=e ; a=f ; ")
-	require.NoError(t, err)
-	for _, target := range []string{"b", "c", "f"} {
-		assert.Truef(t, multi.Allowed("a", target), "a should spawn %s", target)
-	}
-	assert.True(t, multi.Allowed("d", "e"))
-	assert.False(t, multi.Allowed("a", "e"))
-
-	// Malformed values error out — startup must fail, never silently
-	// disable spawning.
-	for _, bad := range []string{"just-a-parent", "=target", "p=", "p= ,x", "p=x,,y"} {
-		_, err := ParseSpawnAllow(bad)
-		require.Errorf(t, err, "%q must be rejected", bad)
 	}
 }

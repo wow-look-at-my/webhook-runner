@@ -130,6 +130,38 @@ func TestStreamSectionSignalsOnKillSwitch(t *testing.T) {
 	waitChangedCovering(t, evs, "hooks", "events")
 }
 
+// The manager seam over the real stream: instance output, inbox depth and
+// supervision state transitions record NO activity event, so this signal
+// is the only thing that keeps the Managers panel and the #manager=<id>
+// drill-down live — without it the operator's only refresh was F5.
+func TestStreamSectionSignalsOnManagerSurface(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	f := newFakeManagers("coord")
+	rec := events.NewRecorder(64)
+	s := New(Options{
+		Registry: hooks.NewRegistry(), Tracker: runs.NewTracker(),
+		Events: rec, Managers: f, Logger: logger, Version: testVersion,
+	})
+
+	srv := httptest.NewServer(admin(s))
+	defer srv.Close()
+	evs, resp, cancel := openStream(t, srv.URL)
+	defer cancel()
+	defer resp.Body.Close()
+	nextEvent(t, evs, "retry")
+	nextEvent(t, evs, "snapshot")
+
+	// A supervision-side mutation: an output line or a state transition.
+	f.changed()
+	waitChangedCovering(t, evs, "managers")
+	assert.Empty(t, rec.List(0), "the manager surface must signal without recording an event")
+
+	// The inbox's own seam: a delivery moves depth and the last-delivered
+	// stamp, both on the roster row.
+	require.NotNil(t, f.Deliver("coord", http.Header{}, []byte(`{"x":1}`)))
+	waitChangedCovering(t, evs, "managers")
+}
+
 // Signals can never overflow, drop, or block: a storm with NO reader
 // coalesces into one pending wake over a bounded dirty set. Only run
 // deltas may drop a slow client (TestRunsStreamSlowClientDropped).
@@ -178,10 +210,23 @@ func TestSectionsForEvent(t *testing.T) {
 		// enable default), and a kill-switch flip changes which hook-scoped
 		// entries GET /attention's read-time filter hides — both dirty
 		// "attention" so the banner count tracks the toggle.
-		"hooks.reloaded":               {"events", "hooks", "images", "concurrency", "reload", "attention"},
-		"hook.load_error":              {"events", "hooks"},
-		"hook.disabled":                {"events", "hooks", "attention"},
-		"hook.enabled":                 {"events", "hooks", "attention"},
+		"hooks.reloaded":  {"events", "hooks", "managers", "images", "concurrency", "reload", "attention"},
+		"hook.load_error": {"events", "hooks", "managers"},
+		"hook.disabled":   {"events", "hooks", "attention"},
+		"hook.enabled":    {"events", "hooks", "attention"},
+		// Manager lifecycle moves the Managers panel; the manager kill
+		// switch also changes which attention entries the read-time
+		// disabled filter hides.
+		"manager.disabled":             {"events", "managers", "attention"},
+		"manager.enabled":              {"events", "managers", "attention"},
+		"manager.started":              {"events", "managers"},
+		"manager.exited":               {"events", "managers"},
+		"manager.leased":               {"events", "managers"},
+		"manager.inbox_dropped":        {"events", "managers"},
+		"manager.skipped":              {"events", "managers"},
+		"manager.wait":                 {"events", "managers"},
+		"manager.lease_waiting":        {"events", "managers"},
+		"manager.restart_requested":    {"events", "managers"},
 		"image.built":                  {"events", "images"},
 		"image.build_failed":           {"events", "images"},
 		"image.inspect_failed":         {"events", "images"},

@@ -93,12 +93,15 @@ func TestListRunsMergesPersistedHistory(t *testing.T) {
 		assert.Empty(t, r.Output, "list view must not ship output")
 	}
 
-	// max caps the merged result, newest-first.
+	// max caps the TERMINAL rows of the merged result, newest-first; the
+	// active run always rides above the cap (see mergedRuns — a live window
+	// must never hide work that is happening right now).
 	rec = httptest.NewRecorder()
-	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?max=2", nil))
+	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?max=1", nil))
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Len(t, got, 2)
+	require.Len(t, got, 2, "1 uncapped active + 1 capped terminal")
 	assert.Equal(t, act.ID(), got[0].ID)
+	assert.Equal(t, fin.ID(), got[1].ID, "the cap keeps the NEWEST terminal row")
 }
 
 func TestListRunsHookFilterSpansBothSources(t *testing.T) {

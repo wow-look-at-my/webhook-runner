@@ -92,7 +92,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	mgr := concurrency.NewManager(nil)
 	seedManager(t, mgr, ov)
 	rec := events.NewRecorder(200)
-	loadAndApply := buildLoadAndApply(root, reg, mgr, nil, ov, nil, nil, testLogger(), rec)
+	loadAndApply := buildLoadAndApply(root, reg, mgr, nil, nil, ov, nil, nil, testLogger(), rec)
 
 	// Initial load: the hook is registered (disabling never unloads it) and
 	// the limit override is effective on top of the declared config.
@@ -173,7 +173,7 @@ func TestOverridesSurviveRestart(t *testing.T) {
 	mgr := concurrency.NewManager(nil)
 	seedManager(t, mgr, ov2)
 	rec := events.NewRecorder(50)
-	buildLoadAndApply(root, reg, mgr, nil, ov2, nil, nil, testLogger(), rec)()
+	buildLoadAndApply(root, reg, mgr, nil, nil, ov2, nil, nil, testLogger(), rec)()
 
 	assert.True(t, ov2.HookDisabled("h1", true), "the kill switch must survive a restart")
 	st := groupStatus(t, mgr, "g")
@@ -227,4 +227,35 @@ func TestScheduleFireSkipsDisabledHook(t *testing.T) {
 	require.NoError(t, err)
 	fire("d")
 	assert.Equal(t, 2, countEvents(rec, "schedule.fired"), "the explicit enable must win over enable:false")
+}
+
+// The global run cap's restart-survival at the serve wiring level: a fresh
+// process rebuilds the cap from the env/built-in default and applies the
+// persisted dashboard override on top, in runServe's order.
+func TestGlobalCapOverrideSurvivesRestart(t *testing.T) {
+	ovPath := filepath.Join(t.TempDir(), "overrides.json")
+
+	// "First process": the operator overrides the cap on the dashboard.
+	ov1, err := overrides.Open(ovPath)
+	require.NoError(t, err)
+	_, err = ov1.SetGlobalRunLimit(8)
+	require.NoError(t, err)
+
+	// "Restart": open store, build the cap at its default, seed the
+	// persisted override — exactly runServe's sequence.
+	ov2, err := overrides.Open(ovPath)
+	require.NoError(t, err)
+	g := concurrency.NewGlobal(concurrency.DefaultGlobalLimit)
+	limit, ok := ov2.GlobalRunLimit()
+	require.True(t, ok)
+	require.NoError(t, g.SetLimitOverride(limit))
+
+	st := g.Status()
+	assert.Equal(t, 8, st.Limit, "the persisted cap override must be effective at boot")
+	assert.True(t, st.Overridden)
+	assert.Equal(t, concurrency.DefaultGlobalLimit, st.Default)
+
+	// Clearing reverts to the default — what DELETE /concurrency-global/limit does.
+	g.ClearLimitOverride()
+	assert.Equal(t, concurrency.DefaultGlobalLimit, g.Status().Limit)
 }

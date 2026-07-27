@@ -184,6 +184,59 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 	}
 }
 
+// The hb heartbeat carries the live truth: {"active":[...]} with every
+// non-terminal run id, sorted — and the empty-but-real [] once nothing is
+// active. This is the client's reconcile beat (drop local runs absent from
+// the set, fetch unknown ones), purely additive to hb's liveness role.
+func TestRunsStreamHeartbeatCarriesActiveSet(t *testing.T) {
+	old := streamHeartbeat
+	streamHeartbeat = 100 * time.Millisecond
+	defer func() { streamHeartbeat = old }()
+
+	s, _, tr, _ := newTestServer(t)
+	act := tr.New("h")
+	fin := tr.New("h")
+	fin.Finish(runs.StatusSuccess, 0, "")
+
+	srv := httptest.NewServer(admin(s))
+	defer srv.Close()
+	events, resp, cancel := openStream(t, srv.URL)
+	defer cancel()
+	defer resp.Body.Close()
+	nextEvent(t, events, "retry")
+	nextEvent(t, events, "snapshot")
+
+	nextActiveSet := func(what string) []string {
+		t.Helper()
+		for {
+			ev := nextEvent(t, events, what)
+			if ev.name != "hb" {
+				continue // run deltas / changed signals legitimately interleave
+			}
+			var payload struct {
+				Active []string `json:"active"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(ev.data), &payload), "hb payload %q", ev.data)
+			require.NotNil(t, payload.Active, "hb must always carry the active array — [] when idle, never null/absent")
+			return payload.Active
+		}
+	}
+
+	assert.Equal(t, []string{act.ID()}, nextActiveSet("hb with the active run"))
+
+	// The set tracks lifecycle: once the run finishes, beats converge on [].
+	act.Finish(runs.StatusFailure, 1, "boom")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		set := nextActiveSet("hb after finish")
+		if len(set) == 0 {
+			return // converged on the empty verdict
+		}
+		require.False(t, time.Now().After(deadline))
+
+	}
+}
+
 // The snapshot and /runs must be the same marshaling of the same read path.
 func TestRunsStreamSnapshotMatchesRunsEndpoint(t *testing.T) {
 	s, _, tr, _ := newTestServer(t)

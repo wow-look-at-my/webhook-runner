@@ -41,6 +41,13 @@ type Store struct {
 	path       string
 	hookEnable map[string]bool // hook ID -> explicit override (true=enabled, false=disabled); absent = no override
 	limits     map[string]int  // concurrency group -> operator limit override
+
+	// globalLimit is the operator override for the GLOBAL run cap (the
+	// server-wide ceiling on simultaneously running hook containers);
+	// globalSet marks it present. Absent = the configured default applies
+	// (WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS, else the built-in default).
+	globalLimit int
+	globalSet   bool
 }
 
 // fileFormat is the on-disk JSON shape.
@@ -57,6 +64,10 @@ type fileFormat struct {
 	// hook has no override and its default applies.
 	HookEnable        map[string]bool `json:"hook_enable,omitempty"`
 	ConcurrencyLimits map[string]int  `json:"concurrency_limits,omitempty"`
+	// GlobalRunLimit is the operator override for the global run cap.
+	// A pointer so absent (no override) and a stored value stay distinct;
+	// old binaries ignore the unknown field on read (downgrade-safe).
+	GlobalRunLimit *int `json:"global_run_limit,omitempty"`
 }
 
 // Open loads the overrides file at path, creating the parent directory if
@@ -99,6 +110,9 @@ func Open(path string) (*Store, error) {
 	}
 	for g, n := range f.ConcurrencyLimits {
 		s.limits[g] = n
+	}
+	if f.GlobalRunLimit != nil {
+		s.globalLimit, s.globalSet = *f.GlobalRunLimit, true
 	}
 	return s, nil
 }
@@ -270,6 +284,63 @@ func (s *Store) ClearConcurrencyLimit(group string) (changed bool, err error) {
 	return true, nil
 }
 
+// GlobalRunLimit returns the operator's override for the global run cap,
+// if one is set.
+func (s *Store) GlobalRunLimit() (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.globalLimit, s.globalSet
+}
+
+// SetGlobalRunLimit records an override for the global run cap and persists
+// immediately. limit must be >= 1 — a 0 cap would block every run forever.
+// Idempotent (changed=false when the same override was already set); a
+// persist failure rolls the mutation back and returns the error.
+func (s *Store) SetGlobalRunLimit(limit int) (changed bool, err error) {
+	if s == nil {
+		return false, errors.New("overrides: store not configured")
+	}
+	if limit < 1 {
+		return false, fmt.Errorf("overrides: global run limit must be >= 1, got %d", limit)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, had := s.globalLimit, s.globalSet
+	if had && prev == limit {
+		return false, nil
+	}
+	s.globalLimit, s.globalSet = limit, true
+	if err := s.persistLocked(); err != nil {
+		s.globalLimit, s.globalSet = prev, had
+		return false, err
+	}
+	return true, nil
+}
+
+// ClearGlobalRunLimit removes the global run cap override and persists
+// immediately (the configured default takes effect again). Idempotent; a
+// persist failure rolls the removal back and returns the error.
+func (s *Store) ClearGlobalRunLimit() (changed bool, err error) {
+	if s == nil {
+		return false, errors.New("overrides: store not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.globalSet {
+		return false, nil
+	}
+	prev := s.globalLimit
+	s.globalLimit, s.globalSet = 0, false
+	if err := s.persistLocked(); err != nil {
+		s.globalLimit, s.globalSet = prev, true
+		return false, err
+	}
+	return true, nil
+}
+
 // persistLocked atomically rewrites the overrides file via temp+rename
 // (same discipline as internal/kv). Callers hold s.mu. Both hook fields are
 // written: hook_enable (the authoritative tri-state) and disabled_hooks
@@ -279,6 +350,10 @@ func (s *Store) persistLocked() error {
 	f := fileFormat{ConcurrencyLimits: s.limits}
 	if len(s.hookEnable) > 0 {
 		f.HookEnable = s.hookEnable
+	}
+	if s.globalSet {
+		limit := s.globalLimit
+		f.GlobalRunLimit = &limit
 	}
 	f.DisabledHooks = s.disabledLocked()
 	data, err := json.MarshalIndent(f, "", "  ")

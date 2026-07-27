@@ -45,6 +45,7 @@ Configuration via environment:
   WEBHOOK_RUNNER_HOOKS_REPO_SECRET    HMAC-SHA256 secret for POST /_reload
   WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT   commit-status context gating reloads (unset: all-builds; empty: gate disabled)
   WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL reload-gate reconciliation poll cadence, Go duration (default 1h; 0 disables)
+  WEBHOOK_RUNNER_RESTART_MAX_DEFER    how long GET /restart-ready may refuse an update while runs are in flight, Go duration (default 6h; negative never forces)
   WEBHOOK_RUNNER_ADDR                 hook port (default :9000)
   WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
@@ -52,6 +53,8 @@ Configuration via environment:
   WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
   WEBHOOK_RUNNER_RUN_RETENTION        persisted run-history retention, Go duration (default 48h)
   WEBHOOK_RUNNER_RUN_RETENTION_MAX    persisted runs kept per hook, disk safety net (default 200000)
+  WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS  global cap on simultaneously running hook containers (default 64;
+                                      the dashboard's persisted override wins over it; excess runs queue)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
   WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),

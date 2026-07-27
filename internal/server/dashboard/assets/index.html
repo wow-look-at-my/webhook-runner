@@ -22,17 +22,58 @@
      hazard, a recognized event-derived problem) this banner pins itself
      above BOTH views (it sits outside <main>, position: sticky) until the
      underlying state resolves — entries self-clear, no acknowledgement.
-     "View" jumps to the Needs attention panel on the overview. -->
+     "View" opens the dedicated Attention page. -->
 <div id="attention-banner" class="attention-banner" hidden>
   <span class="attention-banner-icon" aria-hidden="true">&#9888;</span>
   <span id="attention-banner-text"></span>
   <a href="#" id="attention-banner-link">view</a>
 </div>
 
+<!-- The persistent sidebar: every top-level section is its own page
+     (#page=<name> fragments; the plain # hash is the chart-first overview),
+     with per-hook and manager drill-downs below. dashboard.js routes on
+     hashchange and highlights the active link; the dynamic hook/manager
+     sub-lists are filled from the same data the tables render. -->
+<div class="layout">
+<nav id="sidebar" aria-label="Sections">
+  <a href="#" data-page="overview" class="nav-link">Overview</a>
+  <a href="#page=hooks" data-page="hooks" class="nav-link">Hooks</a>
+  <div id="nav-hooks" class="nav-sub"></div>
+  <a href="#page=managers" data-page="managers" class="nav-link">Managers</a>
+  <div id="nav-managers" class="nav-sub"></div>
+  <a href="#page=runs" data-page="runs" class="nav-link">Runs</a>
+  <a href="#page=events" data-page="events" class="nav-link">Activity</a>
+  <a href="#page=kv" data-page="kv" class="nav-link">State (KV)</a>
+  <a href="#page=concurrency" data-page="concurrency" class="nav-link">Concurrency</a>
+  <a href="#page=images" data-page="images" class="nav-link">Images</a>
+  <a href="#page=attention" data-page="attention" class="nav-link">Attention</a>
+  <a href="#page=reload" data-page="reload" class="nav-link">Hooks repo</a>
+</nav>
+<div class="content">
 <!-- Two views share the page: the global overview, and a per-app drill-down
      (an "app" is one hook, for now) selected by the #hook=<id> fragment.
      dashboard.js toggles between them on hashchange — no server routing. -->
 <main id="overview-view">
+  <section id="timeline-section">
+    <!-- The primary runs view: a realtime swimlane timeline, one lane per
+         hook (stable hue per hook). A bar runs queued→finished with the
+         queue wait as a dim lead-in; hatching = a declared wait or a
+         blocked lock, emphasis = failure, hollow + dashed border =
+         cancelled (the kill tail marked as a terminal cut), diamond pips =
+         instant runs (overlapping pips cluster into ×N markers that split
+         apart on zoom). Wheel/drag pans,
+         ctrl/cmd+wheel zooms, and dragging into the past pages history via
+         /runs?before= until retention runs out. Clicking a bar opens the
+         run modal; clicking a lane label opens that hook's page. Rendered
+         by timeline.js (generated from ts/ — see dashboard.go). The old
+         runs table below stays reachable via the toggle. -->
+    <div class="section-head">
+      <h2>Runs</h2>
+      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
+    </div>
+    <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
   <!-- Hidden while healthy (the banner above is the alert); every row is
        one active problem with what's wrong, which hook (linked), where the
        entry derives from, and how long it has been active. Rows disappear
@@ -103,6 +144,30 @@
     <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
   </section>
 
+  <!-- First-class MANAGERS: persistent, single-instance watchers the
+       runner supervises as one long-lived container each. NOT runs — they
+       never appear in the runs list or the timeline; this panel (and the
+       #manager=<id> drill-down) is their surface: state, live instance,
+       restarts, inbox depth, last event/tick, the kill switch, and a
+       bounce button. -->
+  <section id="managers-section">
+    <h2>Managers</h2>
+    <table id="managers-table">
+      <thead><tr><th>Manager</th><th>Status</th><th>State</th><th>Instance</th><th>Restarts</th><th>Inbox</th><th>Last event</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="managers-empty" class="empty" hidden>No managers declared.</p>
+    <div id="manager-detail" hidden>
+      <h3 id="manager-detail-title"></h3>
+      <dl id="manager-detail-meta"></dl>
+      <div class="section-head">
+        <h3>Instance output</h3>
+        <button id="manager-output-copy" class="table-toggle" type="button" title="Copy the full retained output to the clipboard">Copy log</button>
+      </div>
+      <pre id="manager-detail-output" class="manager-output"></pre>
+    </div>
+  </section>
+
   <section id="images-section">
     <h2>Images</h2>
     <table id="images-table">
@@ -113,8 +178,29 @@
   </section>
 
   <section id="concurrency-section">
-    <h2>Concurrency groups</h2>
-    <p class="window-note">Click a group to see which runs hold its slots and which are queued.</p>
+    <h2>Concurrency</h2>
+    <!-- The GLOBAL run cap: the server-wide ceiling on simultaneously
+         running hook containers (each holds a Docker bridge-network IP).
+         It is a CEILING over everything, not a replacement for group
+         limits: the groups below keep gating independently under it.
+         Override… PUTs /concurrency-global/limit; Revert DELETEs it
+         (back to the WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS / built-in
+         default). Hidden when the server predates the cap. -->
+    <div id="concurrency-global-cap" hidden>
+      <h3>Global run cap</h3>
+      <p class="window-note">Ceiling on how many hook containers run at once across ALL hooks
+        (each running container holds a Docker bridge-network IP; excess runs queue and start as
+        slots free). Per-group limits below are separate and keep applying under this ceiling —
+        raising the cap never lifts a group's own limit. Click the row for holders and queue.</p>
+      <table id="concurrency-global-table">
+        <thead><tr><th></th><th>Default</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h3>Groups</h3>
+    <p class="window-note">Declared in the hooks repo's concurrency.json; each gates its own hooks
+      independently, under the global cap. Click a group to see which runs hold its slots and
+      which are queued.</p>
     <!-- Declared = the limit in concurrency.json; Effective = what gates
          runs right now (an operator override wins and survives reloads
          and restarts). Override… PUTs /concurrency/{group}/limit; Revert
@@ -127,25 +213,6 @@
     <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
   </section>
 
-  <section id="timeline-section">
-    <!-- The primary runs view: a realtime swimlane timeline, one lane per
-         hook (stable hue per hook). A bar runs queued→finished with the
-         queue wait as a dim lead-in; hatching = a declared wait or a
-         blocked lock, emphasis = failure, hollow + dashed border =
-         cancelled (the kill tail marked as a terminal cut), diamond pips =
-         instant runs (overlapping pips cluster into ×N markers that split
-         apart on zoom). Wheel/drag pans,
-         ctrl/cmd+wheel zooms, and dragging into the past pages history via
-         /runs?before= until retention runs out. Clicking a bar opens the
-         run modal; clicking a lane label opens that hook's page. Rendered
-         by timeline.js (generated from ts/ — see dashboard.go). The old
-         runs table below stays reachable via the toggle. -->
-    <div class="section-head">
-      <h2>Runs</h2>
-      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
-    </div>
-    <timeline-view id="runs-timeline"></timeline-view>
-  </section>
 
   <section id="runs-section" hidden>
     <h2>Recent runs (list)</h2>
@@ -218,6 +285,13 @@
 
     <section id="app-runs-section">
       <h2>Recent runs</h2>
+      <!-- Status filter: chips toggle each status in/out of the table
+           (filtering the DATA fed to the renderer, not CSS). Skipped runs
+           are hidden BY DEFAULT — during a flood they drown the rows that
+           matter — with the chip carrying the hidden count so the table
+           never silently disagrees with the stats. The choice persists
+           (localStorage) like the runs-table toggle. -->
+      <div id="app-runs-filter" class="runs-filter"></div>
       <!-- Waited = queue time (accepted → container launch, live for pending
            runs); Duration = processing time only. Kept separate so a run
            stuck behind a concurrency group never reads as a slow run. -->
@@ -252,6 +326,8 @@
     </section>
   </div>
 </main>
+</div><!-- /.content -->
+</div><!-- /.layout -->
 
 <!-- Run detail opens as a modal so output is visible immediately, without
      scrolling past the hooks/images/runs/activity tables to the page bottom. -->

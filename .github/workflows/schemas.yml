@@ -34,6 +34,8 @@ on:
 permissions:
   id-token: write # buildhost OIDC auth
   contents: read
+  actions: read
+  checks: read
 
 concurrency:
   group: schemas

@@ -34,3 +34,11 @@ go.work.sum
 
 # ts0 fetched by the dashboard go:generate script (see internal/server/dashboard/generate-timeline.sh)
 /internal/server/dashboard/.cache/
+
+# Generated JS: we author and commit TypeScript, never generated .mjs/.js.
+# The dashboard client-harness tests (internal/server/dashboard/testjs) are
+# .ts run directly via `node --test` (native type-stripping); the dashboard
+# adapter compiles to the committed assets/*.js (the ONE deliberate exception,
+# force-added). Any other generated .mjs is a build artifact — never commit it.
+# A genuinely hand-authored edge-case .mjs can be committed with `git add -f`.
+*.mjs

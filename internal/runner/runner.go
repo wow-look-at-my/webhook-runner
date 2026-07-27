@@ -17,7 +17,6 @@ package runner
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,6 +79,15 @@ type Runner struct {
 	events   *events.Recorder
 	groups   *concurrency.Manager
 
+	// globalCap is the server-wide ceiling on simultaneously RUNNING hook
+	// containers (all hooks together) — the Docker-bridge IPv4 guard. nil
+	// applies no cap. Acquired in execute strictly AFTER the hook's
+	// concurrency-group slot (group-then-global everywhere: no ordering
+	// cycles, and global slots are never consumed by runs still parked on
+	// a group queue), released when the run finishes. Manager instances
+	// and image builds deliberately sit outside the cap.
+	globalCap *concurrency.Global
+
 	// kv, kvSocket, and kvShim inject state-store access into containers whose
 	// hook sets state: true. kv == nil (or an empty socket/shim path) disables
 	// injection. kvSocket is the host path of the KV API's Unix socket and
@@ -115,6 +122,11 @@ type Options struct {
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
 
+	// GlobalCap bounds how many hook executions run containers at once,
+	// across ALL hooks (excess runs queue as pending). nil = no cap. See
+	// concurrency.Global; serve always wires one (default 64).
+	GlobalCap *concurrency.Global
+
 	// KV mints per-hook state tokens; KVSocket is the host path of the KV
 	// API's Unix socket and KVShim is the host path of webhook-runner's own
 	// binary (the in-container proxy entrypoint), both bind-mounted into
@@ -144,38 +156,12 @@ func New(opts Options) *Runner {
 		secrets:   opts.Secrets,
 		events:    opts.Events,
 		groups:    opts.Groups,
+		globalCap: opts.GlobalCap,
 		kv:        opts.KV,
 		kvSocket:  opts.KVSocket,
 		kvShim:    opts.KVShim,
 		dockerBin: opts.Docker,
 	}
-}
-
-// imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
-// CMD, or ENTRYPOINT plus hookCommand when the hook overrides the command — via
-// docker inspect. State hooks set the KV shim as the container entrypoint, so
-// the shim must be handed the original command to exec after starting the proxy.
-func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
-	out, err := exec.Command(dockerBin, "inspect", image,
-		"--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}").Output()
-	if err != nil {
-		return nil, err
-	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
-	var entrypoint, cmd []string
-	_ = json.Unmarshal([]byte(parts[0]), &entrypoint)
-	if len(parts) > 1 {
-		_ = json.Unmarshal([]byte(parts[1]), &cmd)
-	}
-	tail := hookCommand
-	if len(tail) == 0 {
-		tail = cmd
-	}
-	argv := append(append([]string{}, entrypoint...), tail...)
-	if len(argv) == 0 {
-		return nil, errors.New("image declares no entrypoint or cmd and the hook sets no command")
-	}
-	return argv, nil
 }
 
 // Wait blocks until all in-flight runs have finished. Useful for tests
@@ -373,11 +359,32 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	clearQueued()
 	defer release()
 
+	// The GLOBAL run cap: after the group slot (group-then-global ordering
+	// everywhere — no lock-order cycles, and the global slots can never
+	// fill up with runs still parked on tiny group queues), before the
+	// container starts. Same queue semantics as a group: the run stays
+	// pending, the watchdog stays unarmed, waiting_on mirrors its place in
+	// line, and cancellation is honored while queued.
+	gRelease, gAcquired, gClearQueued := r.acquireGlobalSlot(hook, run)
+	if !gAcquired {
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	gClearQueued()
+	defer gRelease()
+
 	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
+		// The orphan-sweep marker (see orphans.go): lets the next serve
+		// boot find and reap containers whose owning server process died
+		// before their run finished.
+		"--label", RunContainerLabel + "=" + runContainerLabelValue,
 		"-v", payloadPath + ":" + mountedPayload + ":ro",
 		"-v", headersPath + ":" + mountedHeaders + ":ro",
 		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
@@ -404,6 +411,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
 		)
 	}
+	// github-state-mirror routing (unconditional — see GSMBaseURL): the
+	// GITHUB_API_URL fleet default, injected BEFORE secrets/hook env so an
+	// explicit hook.json value still wins.
+	args = append(args, r.gsmArgs()...)
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
 	}
@@ -694,37 +705,4 @@ func (r *Runner) killContainer(name string) {
 		r.log.Debug("docker kill",
 			"name", name, "err", err, "out", strings.TrimSpace(string(out)))
 	}
-}
-
-// writeTempFiles materializes the payload and headers in a temp dir
-// dedicated to this run. The returned cleanup removes the directory.
-func (r *Runner) writeTempFiles(runID string, payload []byte, headers http.Header) (payloadPath, headersPath string, cleanup func(), err error) {
-	dir, err := os.MkdirTemp(r.tmpDir, "wh-"+runID+"-")
-	if err != nil {
-		return "", "", func() {}, err
-	}
-	cleanup = func() { _ = os.RemoveAll(dir) }
-
-	payloadPath = filepath.Join(dir, "payload")
-	if err := os.WriteFile(payloadPath, payload, 0o600); err != nil {
-		cleanup()
-		return "", "", func() {}, err
-	}
-	headersPath = filepath.Join(dir, "headers.json")
-	hb, err := json.MarshalIndent(headers, "", "  ")
-	if err != nil {
-		cleanup()
-		return "", "", func() {}, err
-	}
-	if err := os.WriteFile(headersPath, hb, 0o600); err != nil {
-		cleanup()
-		return "", "", func() {}, err
-	}
-	// Loosen perms so the in-container user can read the files even if
-	// the container runs as a non-root user that doesn't share UID with
-	// the host process.
-	_ = os.Chmod(dir, 0o755)
-	_ = os.Chmod(payloadPath, 0o644)
-	_ = os.Chmod(headersPath, 0o644)
-	return payloadPath, headersPath, cleanup, nil
 }

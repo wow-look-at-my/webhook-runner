@@ -1,8 +1,11 @@
 package runner
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,56 @@ import (
 
 // imageRepoPrefix namespaces the locally built hook images.
 const imageRepoPrefix = "whr-hook/"
+
+// buildTailLines is how much build output a failed build carries back in its
+// error. A build failure used to surface as a bare "exit status 1" with the
+// real docker error only in the server's own log — invisible on the dashboard,
+// which is where the operator looks.
+const buildTailLines = 40
+
+// tailWriter keeps the last N lines written to it and nothing else, so a
+// failure path can quote what a subprocess actually printed without buffering
+// an entire build log.
+type tailWriter struct {
+	max   int
+	lines []string
+	buf   []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := strings.IndexByte(string(w.buf), '\n')
+		if i < 0 {
+			break
+		}
+		w.add(strings.TrimRight(string(w.buf[:i]), "\r"))
+		w.buf = w.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) add(line string) {
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	w.lines = append(w.lines, line)
+	if len(w.lines) > w.max {
+		w.lines = w.lines[len(w.lines)-w.max:]
+	}
+}
+
+// String returns the retained tail, including any unterminated final line.
+func (w *tailWriter) String() string {
+	lines := w.lines
+	if rest := strings.TrimRight(string(w.buf), "\r"); strings.TrimSpace(rest) != "" {
+		lines = append(append([]string{}, lines...), rest)
+		if len(lines) > w.max {
+			lines = lines[len(lines)-w.max:]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // ImageTag returns the local image tag for a Dockerfile hook at its
 // current content: whr-hook/<id>:<content-hash>. Hook IDs are directory
@@ -49,10 +102,21 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 	}
 	args = append(args, hook.BuildContext())
 	cmd := exec.Command(dockerBin, args...)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	// Select BuildKit explicitly. Without this the CLI falls back to the
+	// LEGACY builder whenever the buildx plugin is absent — and the legacy
+	// parser rejects `# syntax=` frontends and flags like `ADD --unpack`
+	// with "dockerfile parse error: unknown flag", no matter what the host
+	// daemon supports. Hook Dockerfiles are written against BuildKit, so
+	// this must not depend on which plugins the runtime image happens to
+	// carry.
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	// Tee the build output: `out` is the live stream, `tail` retains the
+	// last lines so the FAILURE below can carry the actual docker error.
+	tail := &tailWriter{max: buildTailLines}
+	cmd.Stdout = io.MultiWriter(out, tail)
+	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
-		return "", false, fmt.Errorf("docker build %s: %w", tag, err)
+		return "", false, fmt.Errorf("docker build %s: %w\n%s", tag, err, tail.String())
 	}
 	removeSupersededImages(dockerBin, hook.ID, tag)
 	return tag, true, nil
@@ -158,4 +222,31 @@ func (w *slogLineWriter) Write(p []byte) (int, error) {
 		w.buf = w.buf[i+1:]
 	}
 	return len(p), nil
+}
+
+// imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
+// CMD, or ENTRYPOINT plus hookCommand when the hook overrides the command — via
+// docker inspect. State hooks set the KV shim as the container entrypoint, so
+// the shim must be handed the original command to exec after starting the proxy.
+func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
+	out, err := exec.Command(dockerBin, "inspect", image,
+		"--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}").Output()
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	var entrypoint, cmd []string
+	_ = json.Unmarshal([]byte(parts[0]), &entrypoint)
+	if len(parts) > 1 {
+		_ = json.Unmarshal([]byte(parts[1]), &cmd)
+	}
+	tail := hookCommand
+	if len(tail) == 0 {
+		tail = cmd
+	}
+	argv := append(append([]string{}, entrypoint...), tail...)
+	if len(argv) == 0 {
+		return nil, errors.New("image declares no entrypoint or cmd and the hook sets no command")
+	}
+	return argv, nil
 }

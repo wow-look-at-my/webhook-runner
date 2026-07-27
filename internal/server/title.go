@@ -64,6 +64,13 @@ func (s *Server) handleRunTitle(w http.ResponseWriter, r *http.Request, ns, runI
 	// mirrors handleCancelRun's cross-hook guard (belt-only — the HMAC
 	// already binds the pair).
 	if run == nil || run.HookID() != ns || run.Status().Terminal() {
+		// Manager instances are not runs: /title names the INSTANCE on the
+		// Managers panel (the run_title template's mid-flight override —
+		// e.g. the coordinator titling itself with its reconcile summary).
+		if s.managerCaller(ns, runID) && s.managers.SetInstanceTitle(ns, runID, title) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeError(w, http.StatusConflict, "run is not active")
 		return
 	}

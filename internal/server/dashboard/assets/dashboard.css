@@ -392,6 +392,13 @@ a.hook-link code { color: var(--accent); }
 a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
 a.run-link { text-decoration: none; }
 a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+/* GitHub slugs found in rendered text (run titles, log lines, event
+   messages, KV values, commit subjects) -- "wow-look-at-my/webhooks#41"
+   opens the PR/issue in a new tab. Underlined only on hover so a log line
+   full of slugs stays readable, and inheriting the surrounding font so a
+   slug inside a <pre> stays monospaced and in-line. */
+a.gh-slug { color: var(--accent); text-decoration: none; font: inherit; }
+a.gh-slug:hover { text-decoration: underline; }
 /* Plain-text jump link (the Info card's State (KV) summary): no <code>
    child, so it carries the link color itself. */
 a.kv-jump { color: var(--accent); text-decoration: none; }
@@ -581,11 +588,32 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
    runs holding the group's slots and the wait queue (each a run link into
    the modal). Group rows are genuinely clickable, so they opt back IN to
    the pointer cursor (overriding the blanket opt-out above); the detail
-   row itself is not clickable. */
-#concurrency-table tbody tr { cursor: pointer; }
-#concurrency-table tr.group-open td { border-bottom: 0; }
-#concurrency-table tr.group-detail-row { cursor: default; }
-#concurrency-table tr.group-detail-row:hover { background: transparent; }
+   row itself is not clickable. The global-cap table mirrors the group
+   table's behavior exactly (same columns, same drill-down). */
+#concurrency-table tbody tr, #concurrency-global-table tbody tr { cursor: pointer; }
+#concurrency-table tr.group-open td, #concurrency-global-table tr.group-open td { border-bottom: 0; }
+#concurrency-table tr.group-detail-row, #concurrency-global-table tr.group-detail-row { cursor: default; }
+#concurrency-table tr.group-detail-row:hover,
+#concurrency-global-table tr.group-detail-row:hover { background: transparent; }
+#concurrency-global-cap { margin-bottom: 1.1rem; }
+#concurrency-section h3 { font-size: 0.95rem; margin: 0.6rem 0 0.35rem; }
+
+/* App runs table status filter: one chip per status. An active chip shows
+   its runs; a dimmed (filter-off) chip is hiding them — the count stays on
+   the chip either way, so hidden rows are never silently unaccounted for. */
+.runs-filter { margin: 0 0 0.5rem; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.filter-chip {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.filter-chip.filter-off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
 .group-detail-head {
   color: var(--muted);
   font-size: 0.7rem;
@@ -690,3 +718,94 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
   min-width: 22rem;
   max-width: 100%;
 }
+
+/* --- Layout: persistent sidebar + paged sections ------------------------ */
+/* The long single scroll became pages: the sidebar is the map, #page=<x>
+   fragments pick one section (the bare # hash is the chart-first
+   overview). .page-off is the ROUTER's visibility switch — a class, never
+   the `hidden` attribute, so it composes with every section's own
+   data-driven hidden logic (attention hides when healthy, the runs table
+   behind its toggle, setup only with a repo configured). */
+.layout {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 0 1.25rem;
+  align-items: start;
+}
+#sidebar {
+  position: sticky;
+  top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.5rem 0.4rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  font-size: 0.92rem;
+}
+#sidebar .nav-link {
+  display: block;
+  padding: 0.32rem 0.55rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+#sidebar .nav-link:hover { background: rgba(128, 128, 128, 0.12); }
+#sidebar .nav-link.active {
+  background: rgba(88, 132, 255, 0.16);
+  font-weight: 600;
+}
+#sidebar .nav-sub { display: flex; flex-direction: column; }
+#sidebar .nav-sub a {
+  display: block;
+  padding: 0.16rem 0.55rem 0.16rem 1.4rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.85;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sidebar .nav-sub a:hover { background: rgba(128, 128, 128, 0.12); }
+#sidebar .nav-sub a.active { background: rgba(88, 132, 255, 0.16); }
+.page-off { display: none !important; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  #sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+  }
+  #sidebar .nav-sub { display: none; }
+}
+
+/* --- Managers panel ----------------------------------------------------- */
+#manager-detail {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #2a2f3a);
+  padding-top: 0.75rem;
+}
+.manager-output {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.6rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.state-chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border, #2a2f3a);
+}
+.state-chip.running { color: #3fb950; border-color: #3fb950; }
+.state-chip.disabled { opacity: 0.6; }
+.state-chip.restart-wait, .state-chip.starting { color: #d29922; border-color: #d29922; }
+.state-chip.waiting-lease { color: #58a6ff; border-color: #58a6ff; }
