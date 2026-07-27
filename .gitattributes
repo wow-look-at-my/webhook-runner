@@ -1,0 +1,15 @@
+# CLAUDE.md uses git's DEFAULT text merge -- deliberately NOT merge=union.
+#
+# union was here because CLAUDE.md only ever grew: two branches each appending
+# a bullet merged without a conflict. That stops being true the moment a change
+# RESTRUCTURES the file, because union never deletes. It resolves delete-vs-edit
+# by keeping BOTH sides, silently, with no conflict markers -- so a branch that
+# moves a section out to docs/ has that section resurrected by any merge from a
+# branch that also touched the file, leaving two copies and no signal.
+#
+# Not hypothetical: an auto-resolve merge did exactly that to the companion
+# repo's extraction, doubling a list back to 48k characters while reporting a
+# clean merge. This file is now an index with pointers into docs/, so the same
+# delete-heavy merges will happen here.
+#
+# With the default driver those merges conflict, loudly, and a human resolves.

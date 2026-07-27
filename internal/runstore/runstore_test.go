@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
@@ -34,6 +35,35 @@ func state(id, hook string, status runs.Status, started time.Time) runs.RunState
 		Started:  started,
 		Finished: started.Add(3 * time.Second),
 	}
+}
+
+// A skipped run is terminal, so it persists like any other — full metadata,
+// the reason line as output, and a "skipped" token in the per-hook summary
+// index (the "<status> <finished> <startedat>" value handles the new status
+// string as an opaque token; StartedAt stays zero: nothing ever launched).
+func TestRecordSkippedRunRoundtrip(t *testing.T) {
+	s := newStore(t, Config{})
+	st := state("skipskipskipskipskipskipsk", "h", runs.StatusSkipped, time.Now().UTC().Add(-time.Minute))
+	st.Finished = st.Started.Add(time.Millisecond) // near-zero, no container
+	st.Output = []string{`skipped: skip_if[0]: header x-github-event == "workflow_run"`}
+	st.OutputTimes = []time.Time{st.Started}
+	require.NoError(t, s.Record(st))
+
+	got, ok := s.Get(st.ID)
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusSkipped, got.Status)
+	assert.Equal(t, st.Output, got.Output)
+	assert.True(t, got.StartedAt.IsZero())
+
+	sums := s.SummariesByHook("h")
+	require.Len(t, sums, 1)
+	assert.Equal(t, runs.StatusSkipped, sums[0].Status)
+	assert.True(t, sums[0].StartedAt.IsZero())
+	assert.True(t, sums[0].Finished.Equal(st.Finished))
+
+	list := s.ListByHook("h", 0)
+	require.Len(t, list, 1)
+	assert.Equal(t, runs.StatusSkipped, list[0].Status)
 }
 
 func TestRecordGetRoundtrip(t *testing.T) {
@@ -121,6 +151,108 @@ func TestListsNewestFirstFilteredAndCapped(t *testing.T) {
 	assert.Equal(t, "run4", a[0].ID)
 	assert.Equal(t, "run0", a[2].ID)
 	assert.Empty(t, s.ListByHook("nope", 0))
+}
+
+func idsOf(states []runs.RunState) []string {
+	out := make([]string, 0, len(states))
+	for _, st := range states {
+		out = append(out, st.ID)
+	}
+	return out
+}
+
+// The Before variants page into the past: runs whose Started is STRICTLY
+// before the cursor, newest-first, sharing ListAll/ListByHook's walk. The
+// seek must be right at every position: between two keys, exactly on a key
+// (excluded), past both ends, and inside one hook's bucket.
+func TestListBeforeSeekPositions(t *testing.T) {
+	s := newStore(t, Config{})
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 5; i++ {
+		hook := "a"
+		if i%2 == 1 {
+			hook = "b"
+		}
+		require.NoError(t, s.Record(state(fmt.Sprintf("run%d", i), hook, runs.StatusSuccess, base.Add(time.Duration(i)*time.Minute))))
+	}
+
+	// Between two keys: everything strictly older, newest-first.
+	assert.Equal(t, []string{"run2", "run1", "run0"},
+		idsOf(s.ListAllBefore(base.Add(2*time.Minute+30*time.Second), 0)))
+
+	// Exactly on a key: that run is excluded — strictly before.
+	assert.Equal(t, []string{"run1", "run0"},
+		idsOf(s.ListAllBefore(base.Add(2*time.Minute), 0)))
+
+	// Newer than everything: the full newest-first list, same as ListAll.
+	assert.Equal(t, idsOf(s.ListAll(0)),
+		idsOf(s.ListAllBefore(base.Add(time.Hour), 0)))
+
+	// Older than everything — and exactly on the oldest key: empty.
+	assert.Empty(t, s.ListAllBefore(base.Add(-time.Minute), 0))
+	assert.Empty(t, s.ListAllBefore(base, 0))
+
+	// max caps the page from the seek position down.
+	assert.Equal(t, []string{"run2", "run1"},
+		idsOf(s.ListAllBefore(base.Add(2*time.Minute+30*time.Second), 2)))
+
+	// Per-hook variant: the same strictness inside one hook's bucket.
+	assert.Equal(t, []string{"run2", "run0"},
+		idsOf(s.ListByHookBefore("a", base.Add(3*time.Minute), 0)))
+	assert.Equal(t, []string{"run1"},
+		idsOf(s.ListByHookBefore("b", base.Add(3*time.Minute), 0)))
+	assert.Empty(t, s.ListByHookBefore("nope", base.Add(time.Hour), 0))
+
+	// A zero before means no bound — the ListAll/ListByHook delegation.
+	assert.Equal(t, idsOf(s.ListAll(0)), idsOf(s.ListAllBefore(time.Time{}, 0)))
+}
+
+// Consecutive pages cut by before=<oldest Started of the previous page>
+// tile exactly: no gap, no overlap, and the walk ends with an empty page.
+func TestListBeforePaginationTiles(t *testing.T) {
+	s := newStore(t, Config{})
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 6; i++ {
+		require.NoError(t, s.Record(state(fmt.Sprintf("page%d", i), "h", runs.StatusSuccess, base.Add(time.Duration(i)*time.Second))))
+	}
+
+	page1 := s.ListAll(3)
+	require.Len(t, page1, 3)
+	page2 := s.ListAllBefore(page1[len(page1)-1].Started, 3)
+	require.Len(t, page2, 3)
+	assert.Equal(t, []string{"page5", "page4", "page3"}, idsOf(page1))
+	assert.Equal(t, []string{"page2", "page1", "page0"}, idsOf(page2))
+	assert.Empty(t, s.ListAllBefore(page2[len(page2)-1].Started, 3))
+
+	// The per-hook walk tiles identically.
+	hp1 := s.ListByHook("h", 4)
+	require.Len(t, hp1, 4)
+	hp2 := s.ListByHookBefore("h", hp1[len(hp1)-1].Started, 4)
+	assert.Equal(t, []string{"page1", "page0"}, idsOf(hp2))
+}
+
+// The retention break applies to Before walks exactly like ListAll: the
+// first expired key still ends the walk, and a cursor pointing past every
+// retained run yields nothing rather than surfacing expired history.
+func TestListBeforeRetentionBreak(t *testing.T) {
+	s := newStore(t, Config{Retention: time.Hour})
+	now := time.Now().UTC()
+	expired := state("xxxxxxxxxxxxxxxxxxxxxxxxxx", "h", runs.StatusSuccess, now.Add(-2*time.Hour))
+	older := state("yyyyyyyyyyyyyyyyyyyyyyyyyy", "h", runs.StatusSuccess, now.Add(-30*time.Minute))
+	newer := state("zzzzzzzzzzzzzzzzzzzzzzzzzz", "h", runs.StatusSuccess, now.Add(-10*time.Minute))
+	for _, st := range []runs.RunState{expired, older, newer} {
+		require.NoError(t, s.Record(st))
+	}
+
+	// A cursor between the retained runs pages to the older retained one and
+	// stops at the expired key.
+	assert.Equal(t, []string{older.ID}, idsOf(s.ListAllBefore(now.Add(-20*time.Minute), 0)))
+	assert.Equal(t, []string{older.ID}, idsOf(s.ListByHookBefore("h", now.Add(-20*time.Minute), 0)))
+
+	// A cursor older than every retained run: the first key the walk sees is
+	// already expired, so the page is empty.
+	assert.Empty(t, s.ListAllBefore(now.Add(-90*time.Minute), 0))
+	assert.Empty(t, s.ListByHookBefore("h", now.Add(-90*time.Minute), 0))
 }
 
 // The retention boundary is lazy on reads: a run just past the window
@@ -217,6 +349,99 @@ func TestSweepEnforcesPerHookCap(t *testing.T) {
 	}
 	assert.Len(t, s.ListAll(0), 4)
 	assert.Len(t, s.ListByHook("small", 0), 1)
+}
+
+// StartedAt round-trips through both the metadata blob and the summary
+// index — for a run that started, and for one that never did (zero value).
+func TestRecordRoundTripsStartedAt(t *testing.T) {
+	s := newStore(t, Config{})
+	base := time.Now().UTC().Add(-10 * time.Minute)
+
+	started := state("aaaaaaaaaaaaaaaaaaaaaaaaas", "h", runs.StatusSuccess, base)
+	started.StartedAt = base.Add(90 * time.Second) // queued 90s, then launched
+	require.NoError(t, s.Record(started))
+
+	// Cancelled while queued: terminal with a zero StartedAt.
+	never := state("bbbbbbbbbbbbbbbbbbbbbbbbbn", "h", runs.StatusCancelled, base.Add(time.Minute))
+	require.NoError(t, s.Record(never))
+
+	got, ok := s.Get(started.ID)
+	require.True(t, ok)
+	assert.True(t, got.StartedAt.Equal(started.StartedAt))
+	got, ok = s.Get(never.ID)
+	require.True(t, ok)
+	assert.True(t, got.StartedAt.IsZero(), "a never-started run must read back with a zero StartedAt")
+
+	// The summary index carries the same split without touching metadata,
+	// and the list read path (the /runs merge) exposes it too.
+	for name, states := range map[string][]runs.RunState{
+		"summaries": s.SummariesByHook("h"),
+		"list":      s.ListByHook("h", 0),
+	} {
+		require.Len(t, states, 2, name)
+		byID := map[string]runs.RunState{states[0].ID: states[0], states[1].ID: states[1]}
+		assert.True(t, byID[started.ID].StartedAt.Equal(started.StartedAt), name)
+		assert.True(t, byID[never.ID].StartedAt.IsZero(), name)
+	}
+}
+
+// splitSummary accepts both index-value generations: the current three-field
+// form (third field 0 = never started) and the legacy two-field form written
+// before the queue-wait/processing split.
+func TestSplitSummaryLegacyAndNew(t *testing.T) {
+	now := time.Now().UTC().Truncate(0)
+	launch := now.Add(-time.Minute)
+
+	// New form, started.
+	st, fin, startedAt, ok := splitSummary(summaryValue(runs.StatusSuccess, now, launch))
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusSuccess, st)
+	assert.True(t, fin.Equal(now))
+	assert.True(t, startedAt.Equal(launch))
+
+	// New form, never started: the third field is written as 0.
+	st, fin, startedAt, ok = splitSummary(summaryValue(runs.StatusCancelled, now, time.Time{}))
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusCancelled, st)
+	assert.True(t, fin.Equal(now))
+	assert.True(t, startedAt.IsZero())
+
+	// Legacy two-field form (pre-upgrade rows): still parses; StartedAt is
+	// zero, so its duration falls back to Finished−Started downstream and it
+	// is excluded from wait stats.
+	st, fin, startedAt, ok = splitSummary(fmt.Appendf(nil, "timeout %d", now.UnixNano()))
+	require.True(t, ok)
+	assert.Equal(t, runs.StatusTimeout, st)
+	assert.True(t, fin.Equal(now))
+	assert.True(t, startedAt.IsZero())
+
+	// Garbage is rejected.
+	for _, v := range []string{"", "success", "success notanumber", "success 123 notanumber"} {
+		_, _, _, ok := splitSummary([]byte(v))
+		assert.False(t, ok, "value %q must not parse", v)
+	}
+}
+
+// A pre-upgrade database row (legacy two-field index value) still surfaces
+// through SummariesByHook — with StartedAt zero — rather than being dropped.
+func TestSummariesTolerateLegacyIndexValues(t *testing.T) {
+	s := newStore(t, Config{})
+	st := state("cccccccccccccccccccccccccl", "h", runs.StatusSuccess, time.Now().UTC().Add(-time.Minute))
+	require.NoError(t, s.Record(st))
+
+	// Rewrite the index value in place to the legacy two-field form.
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		hb := tx.Bucket(bucketByHook).Bucket([]byte("h"))
+		k, _ := hb.Cursor().First()
+		return hb.Put(append([]byte(nil), k...), fmt.Appendf(nil, "%s %d", st.Status, st.Finished.UnixNano()))
+	}))
+
+	sums := s.SummariesByHook("h")
+	require.Len(t, sums, 1)
+	assert.Equal(t, st.ID, sums[0].ID)
+	assert.Equal(t, runs.StatusSuccess, sums[0].Status)
+	assert.True(t, sums[0].Finished.Equal(st.Finished))
+	assert.True(t, sums[0].StartedAt.IsZero())
 }
 
 // Summaries come from the index alone but must agree with the metadata on

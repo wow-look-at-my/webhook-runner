@@ -12,101 +12,35 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/managers"
+	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
+	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
+	"github.com/wow-look-at-my/webhook-runner/internal/spool"
 )
-
-type serveOptions struct {
-	addr            string
-	adminAddr       string
-	hooksDir        string
-	dataDir         string
-	logFormat       string
-	ghToken         string
-	hooksRepo       string
-	hooksBranch     string
-	hooksRepoSecret string
-	hookBaseURL     string
-	stateSocket     string
-	stateSecret     string
-	kvMaxKeys       int
-	runRetention    time.Duration
-	runRetentionMax int
-}
-
-func applyServeEnv(o *serveOptions) {
-	if o.addr == "" {
-		o.addr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADDR"), ":9000")
-	}
-	if o.adminAddr == "" {
-		o.adminAddr = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_ADMIN_ADDR"), ":9001")
-	}
-	if o.hooksDir == "" {
-		o.hooksDir = os.Getenv("WEBHOOK_RUNNER_HOOKS_DIR")
-	}
-	if o.dataDir == "" {
-		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
-	}
-	if o.stateSocket == "" {
-		o.stateSocket = os.Getenv("WEBHOOK_RUNNER_STATE_SOCKET")
-	}
-	if o.stateSecret == "" {
-		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
-	}
-	if o.kvMaxKeys <= 0 {
-		// Positive integers only; unset or unparseable falls back to the
-		// store's built-in default.
-		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_KV_MAX_KEYS")); err == nil && n > 0 {
-			o.kvMaxKeys = n
-		}
-	}
-	if o.runRetention <= 0 {
-		// Go duration (e.g. "72h"); unset or unparseable falls back to the
-		// run store's built-in 48h default.
-		if d, err := time.ParseDuration(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION")); err == nil && d > 0 {
-			o.runRetention = d
-		}
-	}
-	if o.runRetentionMax <= 0 {
-		if n, err := strconv.Atoi(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION_MAX")); err == nil && n > 0 {
-			o.runRetentionMax = n
-		}
-	}
-	if o.logFormat == "" {
-		o.logFormat = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_LOG_FORMAT"), "text")
-	}
-	o.ghToken = os.Getenv("WEBHOOK_RUNNER_GITHUB_TOKEN")
-	if o.hooksRepo == "" {
-		o.hooksRepo = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO")
-	}
-	if o.hooksBranch == "" {
-		o.hooksBranch = os.Getenv("WEBHOOK_RUNNER_HOOKS_BRANCH")
-	}
-	if o.hooksRepoSecret == "" {
-		o.hooksRepoSecret = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO_SECRET")
-	}
-	if o.hookBaseURL == "" {
-		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
-	}
-}
 
 func runServe(ctx context.Context, o *serveOptions) error {
 	logger := newLogger(o.logFormat)
 	slog.SetDefault(logger)
 
-	// If a hooks repo is configured, clone/pull it.
+	// If a hooks repo is configured, clone (or open) it. Gate mode never
+	// pulls-to-tip on boot: the reload gate restores the persisted
+	// last-good commit itself (gate.Startup below); an empty gate context
+	// keeps the exact legacy clone-or-pull behavior.
 	var repo *hooks.Repo
 	if o.hooksRepo != "" {
 		if o.hooksDir == "" {
@@ -116,7 +50,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		if err != nil {
 			return fmt.Errorf("hooks repo ssh key: %w", err)
 		}
-		repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
+		if o.gateContext != "" {
+			repo, err = hooks.OpenRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
+		} else {
+			repo, err = hooks.CloneRepo(o.hooksRepo, o.hooksBranch, o.hooksDir, sshKeyPath, logger)
+		}
 		if err != nil {
 			return fmt.Errorf("hooks repo: %w", err)
 		}
@@ -129,16 +67,36 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
 	gh := githubstatus.New(o.ghToken, logger)
+	// The runner's OWN GitHub client (commit statuses; the reload-gate
+	// poll's status reads) rides the mirror like every container does —
+	// unconditional, no knob (see runner.GSMBaseURL).
+	gh.SetAPIURL(runner.GSMBaseURL)
+	logger.Info("github api base", "base", runner.GSMBaseURL)
 	// Activity feed for the admin dashboard (in-memory, bounded — same
 	// persistence model as run history).
 	rec := events.NewRecorder(500)
 	rec.Record("server.started", "webhook-runner started", map[string]string{
 		"hook_addr": o.addr, "admin_addr": o.adminAddr, "hooks_dir": o.hooksDir,
 	})
+	// The aggregated "needs attention" problem set behind GET /attention
+	// and the dashboard's red banner: the persistent, self-clearing view
+	// of ACTIVE misconfigurations (vs the feed's scroll-away events).
+	// State-derived sources re-derive inside every loadAndApply below;
+	// the standard rules subscribe the recognized event-derived classes.
+	agg := attention.New()
+	attention.RegisterStandardEventRules(agg)
 	// A containerized server whose temp dir isn't host-shared breaks every
 	// hook run (payload mounts resolve on the docker HOST) — detect the
 	// topology at startup and say so loudly. See runner.WarnIfContainerized.
-	runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv")
+	// The verdict is boot-scoped attention state: a running process's env
+	// can't change, so the entry stands until a restart with TMPDIR set.
+	if runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv") {
+		agg.Report(attention.Entry{
+			Source:  attention.SourceServer,
+			Key:     attention.KeyTmpDir,
+			Message: runner.TmpDirHazardMessage,
+		})
+	}
 	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
 	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
 	// key material (e.g. SOPS_AGE_KEY_FILE) is plain sops configuration on
@@ -150,8 +108,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// survives restarts; hooks opt in with "state": true. The secret signs
 	// per-hook namespace tokens — supply WEBHOOK_RUNNER_STATE_SECRET to share
 	// one across replicas, else it's generated and persisted.
-	// WEBHOOK_RUNNER_KV_MAX_KEYS overrides the per-namespace key cap (zero
-	// here means kv.New applies its built-in default).
 	dataDir := o.dataDir
 	if dataDir == "" {
 		dataDir = filepath.Dir(o.hooksDir)
@@ -164,7 +120,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 		stateSecret = s
 	}
-	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv"), MaxKeysPerNS: o.kvMaxKeys}, stateSecret, logger)
+	kvStore, err := kv.New(kv.Config{Dir: filepath.Join(dataDir, "kv")}, stateSecret, logger)
 	if err != nil {
 		return fmt.Errorf("state store: %w", err)
 	}
@@ -195,11 +151,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			logger.Warn("run store close", "err", err)
 		}
 	}()
-	tracker.SetOnFinish(func(st runs.RunState) {
-		if err := runStore.Record(st); err != nil {
-			logger.Error("persist finished run", "hook", st.HookID, "run", st.ID, "err", err)
-		}
-	})
+	tracker.SetOnFinish(server.RunFinishCallback(kvStore, runStore.Record, rec, logger))
+
+	// The shutdown delivery spool: deliveries that arrive while this process
+	// is draining are parked here and run by the NEXT one. Without it a
+	// deploy window answers 503 and the delivery is gone — GitHub does not
+	// re-send a failed one (see internal/spool).
+	spoolStore, err := spool.Open(filepath.Join(dataDir, "spool"), logger)
+	if err != nil {
+		return fmt.Errorf("delivery spool: %w", err)
+	}
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
@@ -221,22 +182,64 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		return fmt.Errorf("kv proxy shim: %w", err)
 	}
 
+	// Operator overrides — the kill switch: per-hook disable switches and
+	// concurrency limit overrides, flipped from the admin dashboard.
+	// Operational state, not hooks-repo config: persisted under the data
+	// dir (like kv and run history) and loaded BEFORE the first hooks load,
+	// so the effective state after boot already reflects them. A corrupt
+	// file fails startup rather than booting with kill switches silently
+	// dropped.
+	ovStore, err := overrides.Open(filepath.Join(dataDir, "overrides.json"))
+	if err != nil {
+		return fmt.Errorf("overrides store: %w", err)
+	}
+
 	// Concurrency groups (concurrency.json at the hooks root) gate how many
 	// runs of a hook — or of several hooks sharing a group — execute at
 	// once; the rest queue. The manager starts empty and is populated by
-	// the initial load below.
+	// the initial load below — seeded first with the persisted operator
+	// limit overrides so that very first Update already applies them (the
+	// manager re-applies its overrides inside every Update, which is what
+	// makes a hooks reload unable to silently revert one).
 	concurrencyMgr := concurrency.NewManager(nil)
+	for group, limit := range ovStore.ConcurrencyLimits() {
+		if err := concurrencyMgr.SetLimitOverride(group, limit); err != nil {
+			// A hand-edited overrides file can hold an invalid limit; say
+			// so loudly and continue without it (never a silent drop).
+			logger.Error("ignoring invalid persisted concurrency override", "group", group, "limit", limit, "err", err)
+			rec.Record("override.invalid",
+				fmt.Sprintf("ignoring persisted concurrency override for group %q: %v", group, err),
+				map[string]string{"group": group})
+		}
+	}
+
+	// The GLOBAL run cap: a server-wide ceiling on simultaneously running
+	// hook containers (every container holds a Docker bridge-network IPv4
+	// address; an unbounded flood exhausts the pool). Group caps still
+	// apply first — the cap is the ceiling over ALL of them, never a
+	// replacement. Precedence: the dashboard's persisted override
+	// (overrides.json, seeded here like the group overrides) >
+	// WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS > the built-in default 64.
+	globalCap := concurrency.NewGlobal(o.maxConcurrentRuns)
+	if limit, ok := ovStore.GlobalRunLimit(); ok {
+		if err := globalCap.SetLimitOverride(limit); err != nil {
+			logger.Error("ignoring invalid persisted global run cap override", "limit", limit, "err", err)
+			rec.Record("override.invalid",
+				fmt.Sprintf("ignoring persisted global run cap override: %v", err), nil)
+		}
+	}
 
 	rn := runner.New(runner.Options{
-		Tracker:  tracker,
-		Logger:   logger,
-		TmpDir:   tmpDir,
-		Secrets:  secrets,
-		Events:   rec,
-		Groups:   concurrencyMgr,
-		KV:       kvStore,
-		KVSocket: socketPath,
-		KVShim:   shimPath,
+		Tracker:   tracker,
+		Logger:    logger,
+		TmpDir:    tmpDir,
+		Secrets:   secrets,
+		Events:    rec,
+		Groups:    concurrencyMgr,
+		GlobalCap: globalCap,
+		KV:        kvStore,
+		KVSocket:  socketPath,
+		KVShim:    shimPath,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -245,81 +248,169 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
-	// Scheduler: fires hooks declaring a "schedule" interval on a timer,
-	// through the very same run pipeline (so a scheduled run is tracked,
-	// concurrency-gated, KV-enabled, and shown on the dashboard like any
-	// other). Fire looks the hook up fresh each tick (it may have been
-	// reloaded/removed), applies skip-if-already-running overlap protection
-	// via the tracker, and dispatches with context.Background() like other
-	// async runs (so shutting down the scheduler never kills a live run).
-	sched := scheduler.New(scheduler.Options{
-		Fire: func(hookID string) {
-			h, ok := registry.Get(hookID)
-			if !ok {
-				return // schedule removed between the tick and now
+	// Reap hook containers orphaned by a previous server process (a
+	// SIGKILL mid-drain, a crash): each one holds a bridge-network IP
+	// forever with no owner. Safe here and only here — the run store's
+	// bbolt flock above proves no concurrent serve process is live, and
+	// this process has started no runs yet. See runner.SweepOrphanContainers.
+	rn.SweepOrphanContainers()
+
+	// The manager supervisor: one long-lived instance per declared manager,
+	// exactly-one-fleet-wide behind the kernel-flock lease in the data dir.
+	// Managers are FIRST-CLASS (never runs): instance lock release rides
+	// OnInstanceEnd — the finish-seam analog — and their problems surface
+	// through the aggregator's manager source.
+	sup := managers.New(managers.Options{
+		Runner:    rn,
+		LeasePath: filepath.Join(dataDir, "managers.lock"),
+		Disabled:  ovStore.HookDisabled,
+		Events:    rec,
+		Logger:    logger,
+		OnAttention: func(entries []managers.AttentionEntry) {
+			ents := make([]attention.Entry, 0, len(entries))
+			for _, e := range entries {
+				ents = append(ents, attention.Entry{
+					Source:  attention.SourceManager,
+					Hook:    e.ID,
+					Key:     "instance",
+					Message: e.Message,
+				})
 			}
-			if tracker.HasActive(hookID) {
-				logger.Info("scheduled run skipped; previous run still active", "hook", hookID)
-				rec.Record("schedule.skipped",
-					fmt.Sprintf("%s: previous scheduled run still in flight; skipping this tick", hookID),
-					map[string]string{"hook": hookID})
-				return
-			}
-			logger.Info("scheduled run firing", "hook", hookID, "schedule", h.Schedule)
-			rec.Record("schedule.fired",
-				fmt.Sprintf("%s: scheduled run starting (every %s)", hookID, h.Schedule),
-				map[string]string{"hook": hookID, "schedule": h.Schedule})
-			if _, err := rn.Start(context.Background(), h, schedulePayload(hookID), scheduleHeaders(hookID)); err != nil {
-				logger.Error("scheduled run failed to start", "hook", hookID, "err", err)
+			agg.ReplaceSource(attention.SourceManager, ents)
+		},
+		OnInstanceEnd: func(instanceID string) {
+			if n := kvStore.ReleaseRunLocks(instanceID); n > 0 {
+				rec.Record("lock.released_on_finish",
+					fmt.Sprintf("released %d lock(s) still held by manager instance %s at instance end", n, instanceID),
+					nil)
 			}
 		},
 	})
 
-	// loadAndApply reloads hooks, concurrency groups, and schedules together
-	// so the registry, the manager, and the scheduler never drift: a hook
-	// referencing an undeclared group is rejected (not registered) rather
-	// than allowed to run unbounded. Both the filesystem watcher and the
-	// admin/webhook reload path go through this one function.
-	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, logger, rec)
+	// Scheduler: fires hooks declaring a "schedule" interval on a timer,
+	// through the very same run pipeline (so a scheduled run is tracked,
+	// concurrency-gated, KV-enabled, and shown on the dashboard like any
+	// other). See buildScheduleFire for the per-tick dispatch rules.
+	sched := scheduler.New(scheduler.Options{
+		Fire: buildScheduleFire(registry, tracker, ovStore, rn, logger, rec),
+	})
 
-	onReload := buildReloadFunc(repo, loadAndApply, rec)
+	// loadAndApply reloads hooks, MANAGERS, concurrency groups, and
+	// schedules together so the registry, the concurrency manager, the
+	// scheduler, and the supervisor never drift: a hook referencing an
+	// undeclared group is rejected (not registered) rather than allowed to
+	// run unbounded, and a manager id colliding with a hook is dropped
+	// loudly. Both the filesystem watcher and the admin/webhook reload path
+	// go through this one function.
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, sup, ovStore, agg, secrets, logger, rec)
+
+	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, gh, rec, agg, logger)
+	if err != nil {
+		return err
+	}
 
 	// The build identity served by /health, /version, and the dashboard —
 	// the same string the `version` command prints, so every surface
 	// reports one consistent answer to "which build is deployed?".
 	vcsRev, vcsTime := buildVCS()
 
-	srv := server.New(server.Options{
-		Registry:     registry,
-		Runner:       rn,
-		Tracker:      tracker,
-		GitHub:       gh,
-		Secrets:      secrets,
-		Concurrency:  concurrencyMgr,
-		Events:       rec,
-		Logger:       logger,
-		ReloadSecret: o.hooksRepoSecret,
-		OnReload:     onReload,
-		HooksRepo:    o.hooksRepo,
-		HookBaseURL:  o.hookBaseURL,
-		KV:           kvStore,
-		RunStore:     runStore,
-		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
-	})
+	srvOpts := server.Options{
+		Registry:        registry,
+		Runner:          rn,
+		Tracker:         tracker,
+		GitHub:          gh,
+		Secrets:         secrets,
+		Concurrency:     concurrencyMgr,
+		GlobalCap:       globalCap,
+		Events:          rec,
+		Attention:       agg,
+		Logger:          logger,
+		ReloadSecret:    o.hooksRepoSecret,
+		OnReload:        onReload,
+		HooksRepo:       o.hooksRepo,
+		HooksBranch:     o.hooksBranch,
+		HookBaseURL:     o.hookBaseURL,
+		KV:              kvStore,
+		RunStore:        runStore,
+		Overrides:       ovStore,
+		Managers:        sup,
+		Version:         server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
+		RestartMaxDefer: o.restartMaxDefer,
+		Spool:           spoolStore,
+	}
+	if repo != nil {
+		// The admin reload panel's read surface over the clone (status /
+		// recent-commits views). Assigned only when non-nil so the
+		// interface field stays truly nil for local-directory serving.
+		srvOpts.ReloadRepo = repo
+	}
+	if gate != nil {
+		// Assigned only when non-nil so the interface fields stay truly
+		// nil (legacy flow) rather than wrapping a nil pointer. TreeState
+		// rides the same nil check: /version reports the gate's hooks-tree
+		// state only when a gate actually tracks the tree.
+		srvOpts.Gate = gate
+		srvOpts.TreeState = gate.TreeState
+		// The panel's manual-control surface: gate snapshot, on-demand
+		// reconcile, and the informed-override commit switch.
+		srvOpts.ReloadControl = gate
+	}
+	srv := server.New(srvOpts)
 
 	// Watcher runs for the lifetime of the server; its initial scan is what
 	// first populates the registry, concurrency manager, and scheduler.
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watchErr := make(chan error, 1)
+	// Replay parked deliveries exactly once, on the FIRST load that
+	// populates the registry — event-driven off the watcher's initial scan
+	// rather than polling for readiness, and necessarily after it, since a
+	// replay needs its hook to exist.
+	var replayOnce sync.Once
+	loadThenReplay := func() {
+		loadAndApply()
+		replayOnce.Do(func() {
+			replaySpooledDeliveries(spoolStore, registry, rn, rec, logger)
+		})
+	}
 	go func() {
-		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadAndApply, logger)
+		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadThenReplay, logger)
 	}()
 
 	// Scheduler loop runs for the lifetime of the server too; it does nothing
 	// until the watcher's initial scan populates its schedule set, then fires
 	// due hooks each tick.
 	go sched.Run(watchCtx)
+
+	// The manager supervisor: acquires the single-instance lease (flat
+	// poll — during a rolling deploy the old process holds it until its
+	// instances are down), then runs one loop per declared manager. Its
+	// desired set arrives via loadAndApply above.
+	go sup.Run(watchCtx)
+
+	// Reload-gate reconciliation poll — the fallback that keeps a missed
+	// status webhook from freezing deploys: one immediate pass at startup
+	// (catching a green missed while down), then one per interval. Each
+	// pass fetches the remote tip and, only when it differs from what is
+	// serving, reads the gating context's commit status — switching solely
+	// on an affirmative green through the gate's normal ordering-checked
+	// path, holding loudly on anything else. Gated mode only: the legacy
+	// (gate-disabled) flow keeps its exact reload-on-signed-POST semantics
+	// with no timer.
+	if o.hooksRepo != "" && o.reloadPollInterval > 0 {
+		if gate == nil {
+			logger.Info("reload poll not started: CI gate is disabled (legacy any-signed-POST reload mode)")
+		} else {
+			poller := reloadgate.NewPoller(reloadgate.PollerOptions{
+				Interval: o.reloadPollInterval,
+				Fire:     func() { gate.Reconcile(context.Background()) },
+			})
+			logger.Info("reload poll started", "interval", o.reloadPollInterval)
+			go poller.Run(watchCtx)
+		}
+	} else if gate != nil {
+		logger.Info("reload poll disabled (WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL=0); the gate is event-driven only")
+	}
 
 	hookSrv := &http.Server{
 		Addr:              o.addr,
@@ -384,7 +475,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		"github_status", gh.Enabled(),
 	}
 	if o.hooksRepo != "" {
-		attrs = append(attrs, "hooks_repo", o.hooksRepo)
+		gateLabel := "disabled"
+		if o.gateContext != "" {
+			gateLabel = o.gateContext
+		}
+		attrs = append(attrs, "hooks_repo", o.hooksRepo, "reload_gate", gateLabel)
 	}
 	logger.Info("webhook-runner started", attrs...)
 
@@ -399,95 +494,93 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	logger.Info("shutting down")
+	// Refuse NEW runs immediately: a run launched by this dying process
+	// races the state-socket handover (its shim would dial a socket the
+	// next server replaces). Deliveries are not rejected though — they are
+	// PARKED (internal/spool) and answered 202, because GitHub does not
+	// re-send a failed delivery. In-flight runs drain via rn.Wait below.
+	rn.BeginShutdown()
+	// Stop manager instances gracefully (docker stop; SIGTERM + grace)
+	// BEFORE anything else winds down: the lease releases only when this
+	// process exits, so the successor process's supervisor cannot start
+	// replacement instances until ours are provably gone.
+	sup.Shutdown()
+	// Disconnect /runs/stream clients FIRST: adminSrv.Shutdown waits for
+	// in-flight handlers, and a stream handler holds its response open
+	// until its subscription closes (or its client goes away).
+	srv.CloseStreams()
+	adminCtx, cancelAdmin := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelAdmin()
+	// The admin port has no dependents — it can go now.
+	if err := adminSrv.Shutdown(adminCtx); err != nil {
+		logger.Warn("admin server shutdown", "err", err)
+	}
+	// ORDER IS THE POINT. The hook listener and the state socket stay UP
+	// across the drain:
+	//   - the hook port, because rn.Wait can take as long as the longest
+	//     run (a CI job is minutes). Stopping it first left the process
+	//     alive with nothing listening for that entire stretch, and every
+	//     delivery arriving in it got connection-refused — silently lost,
+	//     since GitHub does not retry. Now they spool and answer 202.
+	//   - the state socket, because DRAINING RUNS ARE STILL USING IT: locks,
+	//     /wait, /title all ride it. Closing it before rn.Wait pulled the
+	//     floor out from under the very runs being drained.
+	rn.Wait()
+	// Their grace window starts HERE, not before the drain — a deadline
+	// armed pre-Wait would already be blown and turn a graceful close into
+	// an abrupt one.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hookSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("hook server shutdown", "err", err)
 	}
-	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("admin server shutdown", "err", err)
-	}
 	if err := stateSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("state server shutdown", "err", err)
 	}
 	cancelWatch()
-	rn.Wait()
 	return nil
 }
 
-// buildLoadAndApply returns the single reload routine shared by the
-// filesystem watcher and the admin/webhook reload path. It loads the hooks
-// and the concurrency-group config from disk, rejects hooks that reference
-// an undeclared group, then atomically updates the concurrency manager, the
-// scheduler, and the registry. Folding the scheduler in here (rather than a
-// second reload path) keeps the registry and the set of scheduled hooks from
-// ever drifting apart.
-func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, logger *slog.Logger, rec *events.Recorder) func() {
-	return func() {
-		loaded, errs := hooks.LoadDir(hooksDir)
-
-		cfg, cerr := concurrency.Load(hooksDir)
-		if cerr != nil {
-			// An unparseable concurrency.json means we can't trust any
-			// group reference; treat the set as empty so referencing hooks
-			// fail closed below rather than running unbounded.
-			errs = append(errs, cerr)
-			cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
+// buildScheduleFire returns the scheduler's Fire callback: look the hook up
+// fresh each tick (it may have been reloaded/removed), honor the operator
+// kill switch, apply skip-if-already-running overlap protection via the
+// tracker, and dispatch with context.Background() like other async runs
+// (so shutting down the scheduler never kills a live run).
+func buildScheduleFire(registry *hooks.Registry, tracker *runs.Tracker, ov *overrides.Store, rn *runner.Runner, logger *slog.Logger, rec *events.Recorder) func(string) {
+	return func(hookID string) {
+		h, ok := registry.Get(hookID)
+		if !ok {
+			return // schedule removed between the tick and now
 		}
-
-		// A hook naming an undeclared group is a misconfiguration: drop it
-		// so it can't be triggered (and can't run without its intended
-		// backpressure).
-		refs := make(map[string]string, len(loaded))
-		for id, h := range loaded {
-			refs[id] = h.ConcurrencyGroup
+		if ov.HookDisabled(hookID, h.EnabledByDefault()) {
+			// The kill switch gates dispatch everywhere: HTTP deliveries
+			// 503 and scheduled runs are skipped — loudly, on the feed.
+			// Effective state: explicit operator override first, else the
+			// hook.json `enable` default (false = born disabled).
+			logger.Info("scheduled run skipped; hook disabled by operator", "hook", hookID)
+			rec.Record("schedule.skipped",
+				fmt.Sprintf("%s: hook is disabled by operator; skipping scheduled run", hookID),
+				map[string]string{"hook": hookID, "reason": "disabled by operator"})
+			return
 		}
-		for _, re := range concurrency.CheckRefs(cfg, refs) {
-			errs = append(errs, re)
-			delete(loaded, re.HookID)
+		if tracker.HasActive(hookID) {
+			logger.Info("scheduled run skipped; previous run still active", "hook", hookID)
+			rec.Record("schedule.skipped",
+				fmt.Sprintf("%s: previous scheduled run still in flight; skipping this tick", hookID),
+				map[string]string{"hook": hookID})
+			return
 		}
-
-		for _, e := range errs {
-			logger.Error("hook reload error", "err", e)
-			rec.Record("hook.load_error", e.Error(), nil)
+		logger.Info("scheduled run firing", "hook", hookID, "schedule", h.Schedule)
+		rec.Record("schedule.fired",
+			fmt.Sprintf("%s: scheduled run starting (every %s)", hookID, h.Schedule),
+			map[string]string{"hook": hookID, "schedule": h.Schedule})
+		// The friendly title resolves against the synthetic payload/headers a
+		// tick actually delivers; ScheduleRunTitle falls back to "schedule"
+		// when that yields nothing, so a tick chip is never gibberish.
+		payload, headers := schedulePayload(hookID), scheduleHeaders(hookID)
+		if _, err := rn.Start(context.Background(), h, payload, headers, h.ScheduleRunTitle(payload, headers)); err != nil {
+			logger.Error("scheduled run failed to start", "hook", hookID, "err", err)
 		}
-
-		// Extract the per-hook schedules from the (post-rejection) set so a
-		// dropped hook is never scheduled.
-		schedules := make(map[string]time.Duration, len(loaded))
-		for id, h := range loaded {
-			if iv := h.ScheduleInterval(); iv > 0 {
-				schedules[id] = iv
-			}
-		}
-
-		mgr.Update(cfg)
-		if sched != nil {
-			sched.Update(schedules)
-		}
-		registry.Replace(loaded)
-		logger.Info("hooks reloaded", "count", len(loaded), "concurrency_groups", len(cfg.Groups), "scheduled", len(schedules))
-		rec.Record("hooks.reloaded",
-			fmt.Sprintf("%d hook(s) loaded, %d concurrency group(s), %d scheduled, %d error(s)", len(loaded), len(cfg.Groups), len(schedules), len(errs)),
-			nil)
-	}
-}
-
-func buildReloadFunc(repo *hooks.Repo, loadAndApply func(), rec *events.Recorder) func() error {
-	if repo != nil {
-		return func() error {
-			if err := repo.Pull(); err != nil {
-				rec.Record("git.pull_failed", "hooks repo pull failed: "+err.Error(), nil)
-				return err
-			}
-			rec.Record("git.pulled", "hooks repo pulled", nil)
-			loadAndApply()
-			return nil
-		}
-	}
-	return func() error {
-		loadAndApply()
-		return nil
 	}
 }
 
@@ -520,15 +613,6 @@ func scheduleHeaders(hookID string) http.Header {
 		"Content-Type":              []string{"application/json"},
 		"X-Webhook-Runner-Schedule": []string{hookID},
 	}
-}
-
-func firstNonEmpty(parts ...string) string {
-	for _, p := range parts {
-		if p != "" {
-			return p
-		}
-	}
-	return ""
 }
 
 // copyExecutable copies the running binary to dst (0755) via temp+rename, so

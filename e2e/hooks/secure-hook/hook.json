@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "command": ["echo", "secure-output"],
   "secret": "e2e-secret-key",
   "timeout": "60s"

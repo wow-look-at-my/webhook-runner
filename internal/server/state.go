@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,13 +15,26 @@ import (
 // maxIncrBody caps the tiny JSON body of an increment request.
 const maxIncrBody = 512
 
+// maxLockBody caps the tiny JSON body of a lock acquire request.
+const maxLockBody = 512
+
+// Explicit lock TTL bounds (whole seconds). The TTL is a SECONDARY backstop
+// — run-finish release is the primary mechanism — so the range only keeps
+// callers from disabling the belt entirely (0/negative) or arming one so far
+// out it stops being a backstop.
+const (
+	minLockTTLSeconds = 1
+	maxLockTTLSeconds = 3600
+)
+
 // nsHandler is a state-port handler that has already had its caller's
-// namespace resolved from the bearer token.
-type nsHandler func(w http.ResponseWriter, r *http.Request, ns string)
+// namespace and run identity resolved from the bearer token.
+type nsHandler func(w http.ResponseWriter, r *http.Request, ns, runID string)
 
 // withNamespace authenticates a state-port request by its bearer token and
-// resolves the namespace from it — never from the URL — so a hook can only
-// ever touch its own data. Every state route goes through this.
+// resolves the namespace — and the calling run's identity — from it, never
+// from the URL: a hook can only ever touch its own data, and the lock verbs
+// know which run is asking without any client-managed owner tokens.
 func (s *Server) withNamespace(next nsHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.kv == nil {
@@ -34,12 +46,12 @@ func (s *Server) withNamespace(next nsHandler) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		ns, ok := s.kv.VerifyToken(tok)
+		ns, runID, ok := s.kv.VerifyToken(tok)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next(w, r, ns)
+		next(w, r, ns, runID)
 	}
 }
 
@@ -52,7 +64,7 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	v, ok := s.kv.Get(ns, r.PathValue("key"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "key not found")
@@ -63,7 +75,7 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, ns string) 
 	_, _ = w.Write(v)
 }
 
-func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(s.kv.MaxValueBytes())+1))
 	if err != nil {
 		var maxErr *http.MaxBytesError
@@ -80,25 +92,25 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, ns string) 
 		return
 	}
 	if err := s.kv.Set(ns, r.PathValue("key"), body, ttl); err != nil {
-		writeKVError(w, err)
+		s.writeKVError(w, ns, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	if err := s.kv.Delete(ns, r.PathValue("key")); err != nil {
-		writeKVError(w, err)
+		s.writeKVError(w, ns, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleKVList(w http.ResponseWriter, _ *http.Request, ns string) {
+func (s *Server) handleKVList(w http.ResponseWriter, _ *http.Request, ns, _ string) {
 	writeJSON(w, http.StatusOK, map[string][]string{"keys": s.kv.List(ns)})
 }
 
-func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns string) {
+func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxIncrBody))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
@@ -124,45 +136,56 @@ func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns string)
 	}
 	n, err := s.kv.Incr(ns, r.PathValue("key"), delta, ttl)
 	if err != nil {
-		writeKVError(w, err)
+		s.writeKVError(w, ns, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"value": n})
 }
 
-// parseTTL reads the optional TTL from the X-KV-TTL header or the ?ttl= query
-// parameter, in whole seconds. Absent means no expiry (0). Negative or
-// non-numeric is a client error.
-func parseTTL(r *http.Request) (time.Duration, error) {
-	raw := r.Header.Get("X-KV-TTL")
-	if raw == "" {
-		raw = r.URL.Query().Get("ttl")
-	}
-	if raw == "" {
-		return 0, nil
-	}
-	secs, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, errors.New("invalid ttl: must be whole seconds")
-	}
-	if secs < 0 {
-		return 0, errors.New("invalid ttl: must not be negative")
-	}
-	return time.Duration(secs) * time.Second, nil
+// lockRetryInterval is the poll cadence of a blocking acquire. Fairness is
+// deliberately best-effort (no FIFO queue): blocked contenders — and any
+// fresh caller — race on each poll, which keeps the lock table free of
+// waiter state and lets a steal trivially beat every waiter. The cadence
+// bounds handoff latency at ~250ms, plenty for lock-guarded hook work.
+const lockRetryInterval = 250 * time.Millisecond
+
+// lockConflict is the 409 body for a contended acquire (immediate or after
+// a blocking acquire gave up): the error plus WHO holds the lock, so
+// contention is actionable — display it, keep waiting, or steal.
+type lockConflict struct {
+	Error  string       `json:"error"`
+	HeldBy *kv.LockInfo `json:"held_by,omitempty"`
 }
 
-// writeKVError maps the store's typed errors onto HTTP status codes.
-func writeKVError(w http.ResponseWriter, err error) {
+// writeKVError maps the store's typed errors onto HTTP status codes. The
+// typed errors are the caller's fault; anything else is an internal store
+// failure — in practice a failed disk persist, after which the store has
+// already rolled the in-memory mutation back. Those must be loud end-to-end:
+// the hook gets a 5xx carrying the reason (its write did NOT happen), the
+// server log gets the error, and the activity feed gets a kv.write_failed
+// event so the dashboard can answer "are state writes failing?".
+func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 	switch {
 	case errors.Is(err, kv.ErrValueTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
-	case errors.Is(err, kv.ErrTooManyKeys), errors.Is(err, kv.ErrTooManyNS):
+	case errors.Is(err, kv.ErrTooManyNS):
 		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, kv.ErrNotInteger):
 		writeError(w, http.StatusConflict, err.Error())
+	// Lock contention/ownership outcomes are normal control flow for the
+	// caller (409/404), never write failures — no log, no event.
+	case errors.Is(err, kv.ErrLockHeld):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, kv.ErrLockPinned):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, kv.ErrLockNotHeld):
+		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, kv.ErrBadNamespace):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, "state store error")
+		s.log.Error("kv: state write failed", "ns", ns, "err", err)
+		s.events.Record("kv.write_failed", ns+": state write failed (rolled back): "+err.Error(),
+			map[string]string{"hook": ns})
+		writeError(w, http.StatusInternalServerError, "state store error: "+err.Error())
 	}
 }

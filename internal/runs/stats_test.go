@@ -30,6 +30,37 @@ func backdate(r *Run, started time.Time, dur time.Duration) {
 	}
 }
 
+// Skipped runs land in their own bucket: counted (Tracked, ByStatus,
+// Skipped) but excluded from Completed and every rate/duration/wait figure
+// — a skip did no work, so it must not read as a fast success or a failure.
+func TestStatsSkippedBucket(t *testing.T) {
+	tr := NewTracker()
+
+	ok := tr.New("h")
+	ok.SetRunning()
+	ok.Finish(StatusSuccess, 0, "")
+
+	bad := tr.New("h")
+	bad.SetRunning()
+	bad.Finish(StatusFailure, 1, "")
+
+	for range 3 {
+		sk := tr.New("h")
+		sk.AppendOutput(`skipped: skip_if[0]: header x-github-event == "workflow_run"`)
+		sk.Finish(StatusSkipped, 0, "")
+	}
+
+	got := tr.StatsByHook("h")
+	assert.Equal(t, 5, got.Tracked)
+	assert.Equal(t, 2, got.Completed, "skips are not completions")
+	assert.Equal(t, 3, got.Skipped)
+	assert.Equal(t, 0.5, got.SuccessRate, "the rate covers real work only")
+	assert.Equal(t, 3, got.ByStatus[StatusSkipped])
+	assert.Equal(t, 2, got.WaitSampled, "skips contribute no wait samples")
+	require.NotNil(t, got.LastRun)
+	assert.Equal(t, StatusSkipped, got.LastRun.Status, "a skip is still the latest run")
+}
+
 func TestStatsByHookAggregates(t *testing.T) {
 	tr := NewTracker()
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -69,6 +100,48 @@ func TestStatsByHookAggregates(t *testing.T) {
 	assert.Equal(t, active.ID(), got.LastRun.ID)
 	assert.Equal(t, StatusRunning, got.LastRun.Status)
 	assert.True(t, got.LastRun.Finished.IsZero())
+}
+
+// The queue-wait/processing split: duration covers only StartedAt→Finished,
+// wait covers Started→StartedAt, legacy rows (no StartedAt) fall back to the
+// old queued-inclusive duration and are excluded from wait, and never-started
+// runs contribute to neither.
+func TestComputeStatsSplitsWaitFromProcessing(t *testing.T) {
+	base := time.Date(2026, 7, 9, 3, 36, 11, 0, time.UTC)
+	states := []RunState{
+		// The incident shape: accepted, queued 26m09s behind a busy
+		// concurrency group, processed for 23s. Duration must read 23s —
+		// not the 26m32s the queued-inclusive span used to show.
+		{ID: "incident", HookID: "h", Status: StatusSuccess,
+			Started:   base,
+			StartedAt: base.Add(26*time.Minute + 9*time.Second),
+			Finished:  base.Add(26*time.Minute + 32*time.Second)},
+		// Barely queued: launched after 1s, ran 3s.
+		{ID: "quick", HookID: "h", Status: StatusFailure,
+			Started:   base.Add(time.Minute),
+			StartedAt: base.Add(time.Minute + time.Second),
+			Finished:  base.Add(time.Minute + 4*time.Second)},
+		// Legacy pre-upgrade row: terminal success with no StartedAt —
+		// duration falls back to the queued-inclusive span (10s), and the
+		// row is excluded from the wait figures.
+		{ID: "legacy", HookID: "h", Status: StatusSuccess,
+			Started:  base.Add(2 * time.Minute),
+			Finished: base.Add(2*time.Minute + 10*time.Second)},
+		// Never started: cancelled while queued. Its 20m in the queue is
+		// not processing time — it must not pollute the duration figures.
+		{ID: "neverstarted", HookID: "h", Status: StatusCancelled,
+			Started:  base.Add(3 * time.Minute),
+			Finished: base.Add(23 * time.Minute)},
+	}
+	got := ComputeStats(states)
+	assert.Equal(t, 4, got.Completed)
+	// Durations: 23s + 3s + 10s (legacy fallback) over 3 samples.
+	assert.Equal(t, int64(12000), got.AvgDurationMS)
+	assert.Equal(t, int64(23000), got.MaxDurationMS)
+	// Waits: 26m09s + 1s over the 2 runs that recorded a StartedAt.
+	assert.Equal(t, 2, got.WaitSampled)
+	assert.Equal(t, int64(785000), got.AvgWaitMS) // (1569s+1s)/2
+	assert.Equal(t, int64(1569000), got.MaxWaitMS)
 }
 
 func TestStatsByHookAllActive(t *testing.T) {

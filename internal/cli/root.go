@@ -30,14 +30,22 @@ runner injects.
 
 Hooks can be loaded from a local directory or cloned from a Git repository.
 When WEBHOOK_RUNNER_HOOKS_REPO is set, the server clones the repo on startup
-and exposes POST /_reload on the hook port to accept a GitHub push webhook
-(authenticated with WEBHOOK_RUNNER_HOOKS_REPO_SECRET via HMAC-SHA256).
+and exposes POST /_reload on the hook port to accept the repo's GitHub
+webhook — push AND status events (authenticated with
+WEBHOOK_RUNNER_HOOKS_REPO_SECRET via HMAC-SHA256). Reloads are CI-gated by
+default: a push only records the new tip, and the tree switches when GitHub
+reports a successful gating commit status (context "all-builds") for it;
+set WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT to another context, or to an empty
+string to disable the gate (legacy reload-on-any-signed-POST).
 
 Configuration via environment:
   WEBHOOK_RUNNER_HOOKS_DIR            hooks directory (or positional arg)
   WEBHOOK_RUNNER_HOOKS_REPO           Git URL to clone hooks from (SSH recommended)
   WEBHOOK_RUNNER_HOOKS_BRANCH         branch to track (default: repo default)
   WEBHOOK_RUNNER_HOOKS_REPO_SECRET    HMAC-SHA256 secret for POST /_reload
+  WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT   commit-status context gating reloads (unset: all-builds; empty: gate disabled)
+  WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL reload-gate reconciliation poll cadence, Go duration (default 1h; 0 disables)
+  WEBHOOK_RUNNER_RESTART_MAX_DEFER    how long GET /restart-ready may refuse an update while runs are in flight, Go duration (default 6h; negative never forces)
   WEBHOOK_RUNNER_ADDR                 hook port (default :9000)
   WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
@@ -46,11 +54,18 @@ Configuration via environment:
   WEBHOOK_RUNNER_KV_MAX_KEYS          max keys per hook KV namespace (default 5000)
   WEBHOOK_RUNNER_RUN_RETENTION        persisted run-history retention, Go duration (default 48h)
   WEBHOOK_RUNNER_RUN_RETENTION_MAX    persisted runs kept per hook, disk safety net (default 200000)
+  WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS  global cap on simultaneously running hook containers (default 64;
+                                      the dashboard's persisted override wins over it; excess runs queue)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
   WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		applyServeEnv(serveOptsRoot)
+		// An explicitly passed --hooks-gate-context wins over the env var;
+		// the distinction matters because an EMPTY value disables the gate.
+		serveOptsRoot.gateContextSet = cmd.Flags().Changed("hooks-gate-context")
+		if err := applyServeEnv(serveOptsRoot); err != nil {
+			return err
+		}
 		if len(args) == 1 {
 			serveOptsRoot.hooksDir = args[0]
 		}
@@ -69,6 +84,7 @@ func init() {
 	rootCmd.Flags().StringVar(&serveOptsRoot.logFormat, "log-format", "", "log format: text or json (env WEBHOOK_RUNNER_LOG_FORMAT)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.hooksRepo, "hooks-repo", "", "Git URL to clone hooks from (env WEBHOOK_RUNNER_HOOKS_REPO)")
 	rootCmd.Flags().StringVar(&serveOptsRoot.hooksBranch, "hooks-branch", "", "branch to track (env WEBHOOK_RUNNER_HOOKS_BRANCH)")
+	rootCmd.Flags().StringVar(&serveOptsRoot.gateContext, "hooks-gate-context", "all-builds", "commit-status context gating hooks-repo reloads; empty disables the gate (env WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT)")
 }
 
 // Execute runs the CLI. It is the only entry point main.go needs.

@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
+	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -32,27 +32,127 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleVersion identifies the running build (same string the `version`
-// command prints, plus the VCS revision/time when the build has them).
-// Registered on both ports so the deployed build is checkable from either
-// side of the tunnel.
+// command prints, plus the VCS revision/time when the build has them) AND
+// which hooks tree it is serving: the reload gate's state rides along as
+// hooks_tree, so "which hooks commit is deployed?" is answerable without
+// probing hook 404s. Registered on both ports so the deployed build is
+// checkable from either side of the tunnel — which deliberately exposes
+// the served hooks-tree commit sha on the public hook port (an explicit
+// operator request; the hooks repo itself stays private).
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.version)
+	writeJSON(w, http.StatusOK, struct {
+		VersionInfo
+		HooksTree hooksTreeState `json:"hooks_tree"`
+	}{VersionInfo: s.version, HooksTree: s.hooksTreeState()})
+}
+
+// hooksTreeState is /version's hooks_tree object: which hooks tree this
+// runner is serving, per the reload gate. state discriminates:
+//
+//   - "serving": the tree is at serving_sha; nothing newer is held.
+//   - "held": pending_sha is fetched but not switched to — pending_state
+//     carries the gating context's last known CI state for it, and reason
+//     spells the hold out ("awaiting all-builds" / "all-builds failure").
+//   - "unknown": a gate is tracking but has no serving commit recorded
+//     (the boot HEAD read failed and nothing has settled since).
+//   - "untracked": no gate tracks the tree — mode names why (no hooks
+//     repo, or the CI-gate-disabled legacy reload flow).
+//
+// serving_sha is omitted rather than sent as an ambiguous empty string
+// when it is unknown; verified is present exactly when a gate is
+// tracking (states other than "untracked").
+type hooksTreeState struct {
+	State        string `json:"state"`
+	ServingSHA   string `json:"serving_sha,omitempty"`
+	Verified     *bool  `json:"verified,omitempty"`
+	PendingSHA   string `json:"pending_sha,omitempty"`
+	PendingState string `json:"pending_state,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+}
+
+// hooksTreeState renders the reload gate's snapshot (a pure in-memory
+// read — no git, no GitHub) into the /version hooks_tree shape.
+func (s *Server) hooksTreeState() hooksTreeState {
+	if s.treeState == nil {
+		mode := "local hooks dir (no hooks repo)"
+		if s.hooksRepo != "" {
+			mode = "ci gate disabled (legacy reload)"
+		}
+		return hooksTreeState{State: "untracked", Mode: mode}
+	}
+	ts := s.treeState()
+	out := hooksTreeState{ServingSHA: ts.ServingSHA, Verified: &ts.Verified}
+	switch {
+	case ts.PendingSHA != "":
+		out.State = "held"
+		out.PendingSHA = ts.PendingSHA
+		out.PendingState = ts.PendingState
+		if ts.PendingState == "failure" || ts.PendingState == "error" {
+			out.Reason = ts.Context + " " + ts.PendingState
+		} else {
+			out.Reason = "awaiting " + ts.Context
+		}
+	case ts.ServingSHA == "":
+		out.State = "unknown"
+	default:
+		out.State = "serving"
+	}
+	return out
+}
+
+// hookListEntry is one row of GET /hooks: the registry summary plus the
+// EFFECTIVE kill-switch state — the operator's persisted override when one
+// exists, else the hook.json `enable` default (disabled hooks stay loaded
+// and listed — only their dispatch is gated).
+type hookListEntry struct {
+	hooks.Summary
+	Disabled bool `json:"disabled"`
 }
 
 func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.registry.List())
+	list := s.registry.List()
+	out := make([]hookListEntry, 0, len(list))
+	for _, sum := range list {
+		out = append(out, hookListEntry{Summary: sum, Disabled: s.effectiveDisabled(sum.ID)})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
 	if !ok {
+		// Managers share the endpoint (and the id namespace): a delivery
+		// for a manager id lands in its inbox instead of booting a
+		// container — same auth, same skip_if, same kill switch. See
+		// managers.go.
+		if mgr, isManager := s.registry.GetManager(id); isManager {
+			s.handleManagerTrigger(w, r, mgr)
+			return
+		}
 		// Rejected requests are activity too: a caller hitting a wrong URL or
 		// a stale key is exactly the misconfiguration the dashboard must be
 		// able to answer "did you receive anything?" about.
 		s.events.Record("hook.unknown", "trigger for unknown hook "+id+" from "+r.RemoteAddr,
 			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
+		return
+	}
+
+	// The operator kill switch gates DISPATCH only: the hook stays loaded
+	// (image state, config, runs all intact) but no new run starts — not
+	// even from the admin port (re-enable it to run it). Effective state:
+	// explicit override first, else the hook.json `enable` default — so a
+	// hook shipping `"enable": false` is born gated. Checked before the
+	// body/auth so a runaway caller is cut off at minimal cost, and
+	// answered with a deliberately distinct, loud 503 (a 404/401 would read
+	// as a routing or key problem).
+	if s.effectiveDisabled(id) {
+		s.events.Record("hook.disabled_rejected",
+			hook.ID+": delivery rejected — hook is disabled by operator (from "+r.RemoteAddr+")",
+			map[string]string{"hook": hook.ID})
+		writeError(w, http.StatusServiceUnavailable, "hook disabled by operator")
 		return
 	}
 
@@ -77,17 +177,69 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Friendly run title — resolved exactly ONCE per delivery, here, BEFORE
+	// skip evaluation, so whichever pipeline the delivery takes (skip or
+	// run) carries the same title: a skipped run should still say which PR
+	// it was about. Resolution is total and never fails ("" = untitled, the
+	// dashboard falls back to the run id), so it cannot reject a delivery.
+	title := hook.RenderRunTitle(body, r.Header)
+
+	// Declarative skip conditions — evaluated strictly AFTER authentication
+	// (an unauthenticated caller must never probe the conditions; it gets
+	// the 401 above with nothing recorded) and BEFORE any work: no image
+	// build, no container, no concurrency slot. A match answers the request
+	// immediately — sync hooks included, there is nothing to hold for — and
+	// records a real, terminal `skipped` run naming the matched condition,
+	// so "no work was done" is first-class on the runs table.
+	if reason, skip := hook.EvaluateSkip(body, r.Header); skip {
+		run := s.runner.Skip(hook, reason, title)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"run_id": run.ID(),
+			"status": string(runs.StatusSkipped),
+			"reason": reason,
+		})
+		return
+	}
+
 	wantSync, syncTimeout, err := parseWaitParams(r, hook)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header)
+	// A draining server must not LOSE the delivery. GitHub does not re-send
+	// a failed one — the hooks repo's delivery-gap replay SDK exists exactly
+	// because deliveries are consumed-and-lost during downtime — so the 503
+	// the drain gate used to answer was an error AND a dropped webhook. Park
+	// it instead and let the next process run it. Checked BEFORE Start so a
+	// parked delivery leaves no errored run record: it did not fail, it is
+	// waiting. By here it has passed auth and skip_if, so the spool never
+	// holds an unauthenticated body.
+	if s.runner.Draining() {
+		if id, ok := s.spoolDelivery(hook.ID, title, r.Header, body); ok {
+			writeJSON(w, http.StatusAccepted, map[string]string{
+				"spooled":  id,
+				"status":   "spooled",
+				"detail":   "server is restarting; this delivery is parked and will run on the next start",
+				"hook":     hook.ID,
+				"received": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		// No spool, or the spool is full: fall through to Start, whose drain
+		// refusal gives the honest 503 + error run rather than pretending
+		// the delivery is safe.
+	}
+
+	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header, title)
 	if err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, runner.ErrDraining) {
+			code = http.StatusServiceUnavailable
+		}
 		// The runner has already recorded the failure; return the run
 		// ID anyway so the client can fetch details.
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
+		writeJSON(w, code, map[string]string{
 			"run_id": run.ID(),
 			"error":  err.Error(),
 		})
@@ -99,7 +251,12 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Synchronous: hold the connection until done or sync timeout.
+	// Synchronous: hold the connection until done or sync timeout. The hold
+	// is a RESPONSE bound (wall-clock), not a run bound: the run's own
+	// `timeout` is activity-based, so a run that keeps producing output can
+	// legitimately outlive the syncTimeout value — when that happens the
+	// response degrades to the async 202 below and the run continues
+	// untouched in the background.
 	select {
 	case <-run.Done():
 	case <-time.After(syncTimeout):
@@ -128,7 +285,9 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 // hook (for api_key hooks the body is irrelevant; for signature hooks the
 // signature covers whatever body the caller sent). The response is 202 —
 // cancellation is a request: the run reaches "cancelled" once the runner
-// has actually killed the container.
+// has actually killed the container. Deliberately NOT gated by the
+// operator kill switch: cancelling a disabled hook's in-flight runs is
+// stopping work, which is what disabling is for.
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
@@ -190,101 +349,15 @@ func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
 	})
 }
 
-func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	tail := -1
-	if t := r.URL.Query().Get("tail"); t != "" {
-		if n, err := strconv.Atoi(t); err == nil {
-			tail = n
-		}
-	}
-	if run := s.tracker.Get(id); run != nil {
-		writeJSON(w, http.StatusOK, run.Snapshot(tail))
-		return
-	}
-	// The tracker window is bounded; fall back to the persisted history for
-	// runs it has evicted (or that finished before a restart).
-	if s.runstore != nil {
-		if snap, ok := s.runstore.Get(id); ok {
-			tailOutput(&snap, tail)
-			writeJSON(w, http.StatusOK, snap)
-			return
-		}
-	}
-	writeError(w, http.StatusNotFound, "no such run")
-}
-
-// tailOutput trims a persisted state's output to the requested tail length
-// (negative = full), the same contract as Run.Snapshot.
-func tailOutput(st *runs.RunState, tail int) {
-	if tail < 0 || tail >= len(st.Output) {
-		return
-	}
-	st.Output = st.Output[len(st.Output)-tail:]
-	if tail < len(st.OutputTimes) {
-		st.OutputTimes = st.OutputTimes[len(st.OutputTimes)-tail:]
-	}
-}
-
-func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	max := 100
-	if m := r.URL.Query().Get("max"); m != "" {
-		if n, err := strconv.Atoi(m); err == nil && n > 0 {
-			max = n
-		}
-	}
-	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), max))
-}
-
-// mergedRuns is the /runs read path: live tracker runs (active + recent)
-// merged with the persisted completed history, deduped by run ID (the live
-// copy wins — for the same run it can never be older than the persisted
-// one), newest-first, capped at max. Output is never shipped in the list
-// view; clients fetch /runs/{id} for that.
-func (s *Server) mergedRuns(hookID string, max int) []runs.RunState {
-	var live []*runs.Run
-	if hookID != "" {
-		live = s.tracker.ListByHook(hookID, max)
-	} else {
-		live = s.tracker.ListAll(max)
-	}
-	out := make([]runs.RunState, 0, len(live))
-	seen := make(map[string]struct{}, len(live))
-	for _, r := range live {
-		snap := r.Snapshot(0)
-		snap.Output = nil
-		snap.OutputTimes = nil
-		out = append(out, snap)
-		seen[snap.ID] = struct{}{}
-	}
-	if s.runstore != nil {
-		var persisted []runs.RunState
-		if hookID != "" {
-			persisted = s.runstore.ListByHook(hookID, max)
-		} else {
-			persisted = s.runstore.ListAll(max)
-		}
-		for _, st := range persisted {
-			if _, dup := seen[st.ID]; dup {
-				continue
-			}
-			out = append(out, st)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Started.After(out[j].Started)
-	})
-	if max > 0 && len(out) > max {
-		out = out[:max]
-	}
-	return out
-}
-
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>
 // query parameters and merges them with the hook's Synchronous setting.
 //
 // Returns the desired sync mode and the maximum time we'll hold the HTTP
-// response open before degrading to a background-running 202.
+// response open before degrading to a background-running 202. The default
+// hold is the hook's Timeout() value, but reinterpreted as WALL CLOCK: a
+// held response can't wait on "activity", so while the run's timeout bounds
+// inactivity, the hold bounds the response itself — a chatty run may outlive
+// it, in which case the caller gets the 202 and polls /runs/{id}.
 func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout time.Duration, err error) {
 	q := r.URL.Query()
 	sync = hook.Synchronous
@@ -312,15 +385,20 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 }
 
 // handleReload triggers a reload on the admin port (no auth — the admin
-// port is behind zero trust).
+// port is behind zero trust). With a reload gate configured, OnReload is
+// wired to the gate's Force: admin /reload DELIBERATELY bypasses the CI
+// gate (jump to the remote tip, recorded verified — the operator vouched).
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 	s.events.Record("reload.requested", "reload requested via admin port", map[string]string{"source": "admin"})
 	s.runReload(w)
 }
 
-// handleReloadWebhook triggers a reload on the hook port, authenticated
-// with the HMAC-SHA256 secret in WEBHOOK_RUNNER_HOOKS_REPO_SECRET. This
-// is the endpoint a GitHub push webhook should target.
+// handleReloadWebhook accepts the hooks repo's GitHub webhook on the hook
+// port, authenticated with the HMAC-SHA256 secret in
+// WEBHOOK_RUNNER_HOOKS_REPO_SECRET. With a reload gate configured the flow
+// is event-aware: a push only records the pending tip, and a green gating
+// commit status is what switches the tree (internal/reloadgate). Without a
+// gate, any verified POST pulls + reloads (legacy behavior).
 func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
@@ -336,8 +414,27 @@ func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
-	s.runReload(w)
+	if s.gate == nil {
+		s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
+		s.runReload(w)
+		return
+	}
+
+	event := r.Header.Get("X-GitHub-Event")
+	if event == "push" {
+		// Feed continuity: pushes stay announced exactly as before. The
+		// gate records its own held/red/switched events; the server only
+		// maps its verdict onto HTTP.
+		s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
+	}
+	status, err := s.gate.HandleEvent(event, body)
+	if err != nil {
+		s.log.Error("reload failed", "err", err)
+		s.events.Record("reload.failed", "reload failed: "+err.Error(), nil)
+		writeError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
 // runReload executes the configured reload and reports the outcome.
@@ -411,74 +508,16 @@ func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.runner.ImageStatus(s.registry.All()))
 }
 
-// handleConcurrency reports the live state of every declared concurrency
-// group — its limit, how many runs are active, and how many are queued
-// behind it (admin port).
-func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.concurrency.Status())
-}
-
 // handleKVStats reports per-namespace key counts and byte totals for the
-// state store (admin port). It never exposes stored values.
+// state store (admin port). This level stays value-free (and its shape is
+// stable for existing consumers); keys and values are inspectable one level
+// down via /kv/{namespace} and /kv/{namespace}/{key} (see kvadmin.go).
 func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
 	if s.kv == nil {
 		writeJSON(w, http.StatusOK, []kv.NamespaceStat{})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.kv.Stats())
-}
-
-// handleKVKeys lists one namespace's keys with value-free metadata (admin
-// port): name, size, and expiry per live key, plus totals. Unknown
-// namespace is a 404. Note the exposure line here: the admin port never
-// serves CONFIG secrets (api_key/env values stay value-free everywhere),
-// but a hook's runtime KV DATA is the operator's to inspect — this listing
-// stays value-free, and /kv/{namespace}/{key} serves the stored value.
-func (s *Server) handleKVKeys(w http.ResponseWriter, r *http.Request) {
-	ns := r.PathValue("namespace")
-	if s.kv == nil {
-		writeError(w, http.StatusNotFound, "no such namespace")
-		return
-	}
-	keys, ok := s.kv.Keys(ns)
-	if !ok {
-		writeError(w, http.StatusNotFound, "no such namespace")
-		return
-	}
-	total := 0
-	for _, k := range keys {
-		total += k.Bytes
-	}
-	writeJSON(w, http.StatusOK, struct {
-		Namespace  string       `json:"namespace"`
-		Keys       []kv.KeyStat `json:"keys"`
-		TotalKeys  int          `json:"total_keys"`
-		TotalBytes int          `json:"total_bytes"`
-	}{Namespace: ns, Keys: keys, TotalKeys: len(keys), TotalBytes: total})
-}
-
-// handleKVValue serves one stored value verbatim (admin port) — runtime KV
-// data, deliberately readable by the operator (unlike config secrets, which
-// no admin endpoint ever exposes). Content-Type is application/json when
-// the bytes parse as JSON, else text/plain. Missing or expired keys are a
-// 404 (same lazy-expiry rule as the state API's GET).
-func (s *Server) handleKVValue(w http.ResponseWriter, r *http.Request) {
-	if s.kv == nil {
-		writeError(w, http.StatusNotFound, "key not found")
-		return
-	}
-	v, ok := s.kv.Get(r.PathValue("namespace"), r.PathValue("key"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "key not found")
-		return
-	}
-	ct := "text/plain; charset=utf-8"
-	if json.Valid(v) {
-		ct = "application/json"
-	}
-	w.Header().Set("Content-Type", ct)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(v)
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
@@ -491,6 +530,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.reloadSecret != "" {
 		cfg["reload_secret"] = s.reloadSecret
+	}
+	// The persisted-history window, compacted like stats.retention ("48h") —
+	// how far back /runs?before= paging can ever reach, so a client can mark
+	// "history ends here". Absent when no run store is configured.
+	if s.runstore != nil {
+		cfg["run_retention"] = compactDuration(s.runstore.Retention())
 	}
 	writeJSON(w, http.StatusOK, cfg)
 }

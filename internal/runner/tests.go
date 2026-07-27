@@ -22,6 +22,12 @@ type TestOptions struct {
 	Docker  string        // docker binary; "" = "docker"
 	Timeout time.Duration // per-command cap; <= 0 = DefaultTestTimeout
 	Out     io.Writer     // combined progress + container output; nil = io.Discard
+
+	// The enforced-GitHub-gateway injection is UNCONDITIONAL (see
+	// GSMBaseURL) and applies to test containers too — run/test parity,
+	// the dind rule — so there is nothing to configure here: a test that
+	// calls api.github.com directly fails loudly instead of depending on
+	// production GitHub. Tests are hermetic by contract.
 }
 
 // RunHookTests executes the hook's declared test commands (hook.json
@@ -83,6 +89,17 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 		"run", "--rm",
 		"--name", name,
 		"-e", "HOOK_ID=" + hook.ID,
+	}
+	// Mirror routing, run/test parity (unconditional): a test's GitHub
+	// reads ride the mirror exactly as a live run's do.
+	args = append(args, gsmInjectArgs()...)
+	// A dind hook gets the same --privileged + anonymous /var/lib/docker
+	// volume here as on the live-run path (execute()), so its declared tests
+	// can start a nested container daemon; without this parity a dind hook's
+	// smoke test could never run under `webhook-runner test`. --rm above
+	// auto-removes the volume when the test container exits.
+	if hook.Dind {
+		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
 	}
 	args = append(args, image)
 	args = append(args, argv...)

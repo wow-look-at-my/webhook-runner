@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -92,12 +93,15 @@ func TestListRunsMergesPersistedHistory(t *testing.T) {
 		assert.Empty(t, r.Output, "list view must not ship output")
 	}
 
-	// max caps the merged result, newest-first.
+	// max caps the TERMINAL rows of the merged result, newest-first; the
+	// active run always rides above the cap (see mergedRuns — a live window
+	// must never hide work that is happening right now).
 	rec = httptest.NewRecorder()
-	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?max=2", nil))
+	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?max=1", nil))
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Len(t, got, 2)
+	require.Len(t, got, 2, "1 uncapped active + 1 capped terminal")
 	assert.Equal(t, act.ID(), got[0].ID)
+	assert.Equal(t, fin.ID(), got[1].ID, "the cap keeps the NEWEST terminal row")
 }
 
 func TestListRunsHookFilterSpansBothSources(t *testing.T) {
@@ -114,6 +118,55 @@ func TestListRunsHookFilterSpansBothSources(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, liveA.ID(), got[0].ID)
 	assert.Equal(t, oldA.ID, got[1].ID)
+}
+
+// A ?before= cursor pages the MERGED view: live runs at-or-after it drop
+// out, persisted history seeks from strictly before it, a run present in
+// both sources still appears exactly once (live wins), and the cursor
+// composes with ?hook= and ?max=.
+func TestListRunsBeforePagesMergedSources(t *testing.T) {
+	s, _, tr, st := newTestServerWithStore(t)
+
+	old := persistOld(t, st, "oldoldoldoldoldoldoldoldol", "h", runs.StatusSuccess, 2*time.Hour)
+	other := persistOld(t, st, "otherotherotherotherothero", "x", runs.StatusSuccess, 90*time.Minute)
+	mid := persistOld(t, st, "midmidmidmidmidmidmidmidmi", "h", runs.StatusFailure, time.Hour)
+
+	// Finished live run: in the tracker AND (via OnFinish) in the store.
+	fin := tr.New("h")
+	fin.Finish(runs.StatusFailure, 1, "")
+	// Active run: tracker only, newest.
+	act := tr.New("h")
+
+	get := func(query string) []string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?"+query, nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+		var got []runs.RunState
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		ids := make([]string, 0, len(got))
+		for _, r := range got {
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}
+	cursor := func(at time.Time) string {
+		return "before=" + url.QueryEscape(at.Format(time.RFC3339Nano))
+	}
+
+	// Cursor at the active run's queued instant: it drops out (strictly
+	// before); the finished run — in BOTH sources — appears exactly once,
+	// ahead of the store-only history, newest-first.
+	atAct := cursor(act.Snapshot(0).Started)
+	assert.Equal(t, []string{fin.ID(), mid.ID, other.ID, old.ID}, get(atAct))
+
+	// Paging deeper from the finished run leaves only persisted history.
+	assert.Equal(t, []string{mid.ID, other.ID, old.ID}, get(cursor(fin.Snapshot(0).Started)))
+
+	// The hook filter composes with the cursor across both sources...
+	assert.Equal(t, []string{fin.ID(), mid.ID, old.ID}, get("hook=h&"+atAct))
+	// ...and max still caps the composed page.
+	assert.Equal(t, []string{fin.ID(), mid.ID}, get("hook=h&max=2&"+atAct))
 }
 
 func TestGetRunFallsBackToStore(t *testing.T) {
