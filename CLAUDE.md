@@ -234,6 +234,7 @@ most often, plus where to read the rest.
 
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`) and kills the container by name on timeout: if Go SIGKILLs the docker CLI, the container can survive. Async runs use `context.Background()`, NOT the request context (the client disconnects right after the 202).
 - Run IDs are 16 random bytes, base32-lowercased to 26 chars — anything building container names from them must keep the `a-z2-7` alphabet in mind.
+- **A lock TTL is ENFORCED, never assumed.** An expired lock is still the holder's: the contender's acquire kills that run, waits for it to be certainly dead, and takes the lock the finish seam freed — or is refused. Expiry alone frees nothing, in the store or the sweeper.
 - **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.

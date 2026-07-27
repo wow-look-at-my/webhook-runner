@@ -117,6 +117,15 @@ type Store struct {
 	lockMu sync.Mutex
 	locks  map[string]map[string]lockEntry
 
+	// runLive answers "is this run still going?" for the lock sweeper, which
+	// may only reap an expired lock once its holder is CERTAINLY dead (a TTL
+	// never frees a live holder's mutex — see lock.go's header). Wired to the
+	// run tracker in cli/serve.go; UNSET means the sweeper reaps no expired
+	// lock at all, which is the safe default: a lock outliving its use is an
+	// operator-visible wedge, a mutex held by two runs is silent corruption.
+	// Set once at wiring time, before traffic.
+	runLive func(runID string) bool
+
 	// onMutate, when set, is invoked after every successful ENTRY mutation
 	// (Set, a Delete that deleted, Incr, a sweep that reclaimed something)
 	// — synchronously on the mutating goroutine, under the store mutex, so
@@ -136,6 +145,15 @@ func (s *Store) SetOnMutate(fn func()) {
 	s.mu.Lock()
 	s.onMutate = fn
 	s.mu.Unlock()
+}
+
+// SetRunLiveness registers the sweeper's "is this run still going?" oracle
+// (the run tracker). Without it the sweeper never reaps an expired lock —
+// see the field comment. Set once at wiring time, before traffic.
+func (s *Store) SetRunLiveness(fn func(runID string) bool) {
+	s.lockMu.Lock()
+	s.runLive = fn
+	s.lockMu.Unlock()
 }
 
 // notifyMutate fires the onMutate seam. Callers hold s.mu (read the field
