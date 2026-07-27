@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 )
 
@@ -121,6 +122,35 @@ func TestApplyServeEnvReloadPollInterval(t *testing.T) {
 	_, err = parse("-5m")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be >= 0")
+}
+
+func TestApplyServeEnvMaxConcurrentRuns(t *testing.T) {
+	parse := func(v string) (*serveOptions, error) {
+		t.Setenv("WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS", v)
+		o := &serveOptions{}
+		return o, applyServeEnv(o)
+	}
+
+	// Unset (empty) means the built-in default 64.
+	o, err := parse("")
+	require.NoError(t, err)
+	assert.Equal(t, concurrency.DefaultGlobalLimit, o.maxConcurrentRuns)
+	assert.Equal(t, 64, o.maxConcurrentRuns)
+
+	o, err = parse("128")
+	require.NoError(t, err)
+	assert.Equal(t, 128, o.maxConcurrentRuns)
+
+	// A set-but-invalid cap FAILS startup (the reload-poll rule): a typo
+	// must not silently fall back and mask a deliberately tightened limit.
+	_, err = parse("lots")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS")
+	_, err = parse("0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be >= 1")
+	_, err = parse("-2")
+	require.Error(t, err)
 }
 
 func TestValidateCommand(t *testing.T) {

@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -57,10 +58,94 @@ func TestPerHookEviction(t *testing.T) {
 	tr := NewTracker()
 	tr.maxByHook = 3
 	for i := 0; i < 10; i++ {
-		tr.New("h")
+		r := tr.New("h")
+		r.Finish(StatusSuccess, 0, "")
 	}
 	got := len(tr.ListByHook("h", 0))
 	assert.Equal(t, 3, got)
+}
+
+// The per-hook trim evicts oldest TERMINAL runs only: an active
+// (non-terminal) run is the server's current truth and must survive any
+// flood of newer runs — evicting one made GET /runs/{id} 404 while the
+// container still ran (the runstore fallback holds terminal snapshots
+// only) and cut live runs out of /runs windows.
+func TestTrackerNeverEvictsActiveRuns(t *testing.T) {
+	t.Run("oldest terminal evicted, older actives survive", func(t *testing.T) {
+		tr := NewTracker()
+		tr.maxByHook = 3
+		t1 := tr.New("h")
+		t1.Finish(StatusSuccess, 0, "")
+		a1 := tr.New("h") // stays pending — must never be evicted
+		t2 := tr.New("h")
+		t2.Finish(StatusFailure, 1, "")
+		a2 := tr.New("h")
+		a2.SetRunning() // running — must never be evicted
+		t3 := tr.New("h")
+		t3.Finish(StatusSuccess, 0, "")
+		t4 := tr.New("h")
+		t4.Finish(StatusSuccess, 0, "")
+
+		require.NotNil(t, tr.Get(a1.ID()), "active run evicted by newer runs")
+		require.NotNil(t, tr.Get(a2.ID()), "active run evicted by newer runs")
+		assert.NotNil(t, tr.Get(t4.ID()), "newest terminal run must be retained")
+		assert.Nil(t, tr.Get(t1.ID()), "oldest terminal run must be evicted")
+		assert.Nil(t, tr.Get(t2.ID()), "next-oldest terminal run must be evicted")
+		assert.Len(t, tr.ListByHook("h", 0), 3)
+	})
+
+	t.Run("all active: the list exceeds the cap rather than dropping truth", func(t *testing.T) {
+		tr := NewTracker()
+		tr.maxByHook = 2
+		var all []*Run
+		for i := 0; i < 5; i++ {
+			all = append(all, tr.New("h"))
+		}
+		assert.Len(t, tr.ListByHook("h", 0), 5, "active runs are never trimmed")
+		for _, r := range all {
+			assert.NotNil(t, tr.Get(r.ID()))
+		}
+
+		// The backlog shrinks again as runs finish: the next New trims the
+		// now-terminal oldest back down to the cap.
+		for _, r := range all[:4] {
+			r.Finish(StatusSuccess, 0, "")
+		}
+		last := tr.New("h")
+		assert.Len(t, tr.ListByHook("h", 0), 2)
+		assert.NotNil(t, tr.Get(all[4].ID()), "the still-active run survives the catch-up trim")
+		assert.NotNil(t, tr.Get(last.ID()))
+		for _, r := range all[:4] {
+			assert.Nil(t, tr.Get(r.ID()), "finished backlog must be trimmed")
+		}
+	})
+}
+
+// ActiveIDs is the hb heartbeat's live-set truth: every non-terminal run's
+// id, sorted, and never nil — an idle tracker answers the empty-but-real
+// [] verdict (clients must distinguish "nothing active" from "no data").
+func TestTrackerActiveIDs(t *testing.T) {
+	tr := NewTracker()
+	require.NotNil(t, tr.ActiveIDs())
+	assert.Empty(t, tr.ActiveIDs())
+
+	a := tr.New("h")
+	b := tr.New("h")
+	b.SetRunning()
+	skipped := tr.New("other")
+	skipped.Finish(StatusSkipped, 0, "")
+
+	want := []string{a.ID(), b.ID()}
+	sort.Strings(want)
+	assert.Equal(t, want, tr.ActiveIDs())
+
+	a.Finish(StatusSuccess, 0, "")
+	assert.Equal(t, []string{b.ID()}, tr.ActiveIDs())
+
+	b.Finish(StatusFailure, 1, "boom")
+	got := tr.ActiveIDs()
+	require.NotNil(t, got, "an idle tracker still answers [], never nil")
+	assert.Empty(t, got)
 }
 
 func TestSnapshotTail(t *testing.T) {

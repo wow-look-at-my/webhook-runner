@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
@@ -20,6 +21,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
+	"github.com/wow-look-at-my/webhook-runner/internal/spool"
 )
 
 // VersionInfo identifies the running build. Version is the same string the
@@ -48,6 +50,7 @@ type Server struct {
 	gh           *githubstatus.Client
 	secrets      *hooks.SecretsLoader
 	concurrency  *concurrency.Manager
+	globalCap    *concurrency.Global
 	events       *events.Recorder
 	attention    *attention.Aggregator
 	log          *slog.Logger
@@ -76,6 +79,17 @@ type Server struct {
 	// fed by the tracker's OnChange seam (wired in New). Never nil.
 	stream *streamHub
 
+	// The docker-updater pre-check (restartready.go): how long a busy
+	// fleet may hold off an update, and the continuously-blocked clock
+	// that bounds it.
+	restartMaxDefer time.Duration
+	restart         restartGate
+
+	// spool parks deliveries that arrive while the runner is draining, so a
+	// deploy window costs a webhook its latency instead of its existence
+	// (spooldelivery.go). nil keeps the old 503-and-lose behavior.
+	spool *spool.Store
+
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
 	stateMux *http.ServeMux
@@ -93,6 +107,11 @@ type Options struct {
 	// Concurrency exposes the live state of the named concurrency groups
 	// on the admin port. nil is fine (the endpoint reports no groups).
 	Concurrency *concurrency.Manager
+	// GlobalCap is the server-wide run cap surfaced on GET /concurrency
+	// and controlled by PUT|DELETE /concurrency-global/limit. nil is fine
+	// (the view omits it and the endpoints answer 500 "not configured");
+	// serve always wires one.
+	GlobalCap *concurrency.Global
 	// Events is the activity feed shown on the admin dashboard. nil is
 	// fine (events are dropped).
 	Events *events.Recorder
@@ -181,6 +200,17 @@ type Options struct {
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
 	Version VersionInfo
+
+	// Spool parks deliveries that arrive during shutdown drain for the next
+	// process to run. nil means a draining server answers 503 and the
+	// delivery is lost — GitHub does not re-send it.
+	Spool *spool.Store
+
+	// RestartMaxDefer bounds how long GET /restart-ready (the
+	// docker-updater pre-check) may keep answering 503 because runs are in
+	// flight. Zero uses DefaultRestartMaxDefer; negative disables the force
+	// so the check blocks for as long as the fleet stays busy.
+	RestartMaxDefer time.Duration
 }
 
 // New constructs a Server, registering routes on both muxes.
@@ -199,6 +229,7 @@ func New(opts Options) *Server {
 		managers:     opts.Managers,
 		secrets:      opts.Secrets,
 		concurrency:  opts.Concurrency,
+		globalCap:    opts.GlobalCap,
 		events:       opts.Events,
 		attention:    opts.Attention,
 		log:          opts.Logger,
@@ -213,10 +244,17 @@ func New(opts Options) *Server {
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
-		stream:       newStreamHub(),
-		hookMux:      http.NewServeMux(),
-		adminMux:     http.NewServeMux(),
-		stateMux:     http.NewServeMux(),
+		spool:        opts.Spool,
+		restartMaxDefer: func() time.Duration {
+			if opts.RestartMaxDefer == 0 {
+				return DefaultRestartMaxDefer
+			}
+			return opts.RestartMaxDefer
+		}(),
+		stream:   newStreamHub(),
+		hookMux:  http.NewServeMux(),
+		adminMux: http.NewServeMux(),
+		stateMux: http.NewServeMux(),
 
 		reloadRepo:    opts.ReloadRepo,
 		reloadControl: opts.ReloadControl,
@@ -229,7 +267,7 @@ func New(opts Options) *Server {
 	//
 	// The same connection also carries coarse "section changed → refetch
 	// once" signals for the non-run admin sections, so an idle dashboard
-	// polls NOTHING (see streamhub.go). Three seams cover every section:
+	// polls NOTHING (see streamhub.go). Four seams cover every section:
 	//   - run lifecycle (below): concurrency-group active/waiting/holder
 	//     state moves exactly with run lifecycle and waiting_on changes
 	//     (acquire = start, release = finish, queue join/position =
@@ -241,6 +279,8 @@ func New(opts Options) *Server {
 	//     records flow through the same shared Recorder.
 	//   - kv entry mutations: the store's own seam (state-API writes and
 	//     sweeper reclaims alike).
+	//   - the manager supervisor: instance output, inbox depth/stamps and
+	//     state transitions, none of which record an activity event.
 	if opts.Tracker != nil {
 		opts.Tracker.SetOnChange(func(st runs.RunState) {
 			s.stream.publish(st)
@@ -264,6 +304,16 @@ func New(opts Options) *Server {
 	if opts.KV != nil {
 		opts.KV.SetOnMutate(func() {
 			s.stream.signal("kv")
+		})
+	}
+	// The manager seam: instance OUTPUT lines, inbox depth/stamps, and
+	// supervision state transitions are all on the Managers panel and the
+	// #manager=<id> drill-down, and none of them record an activity event —
+	// so without this the panel only moved on the occasional lifecycle
+	// event (manager.started/exited) and F5 was the operator's refresh.
+	if opts.Managers != nil {
+		opts.Managers.SetOnChange(func() {
+			s.stream.signal("managers")
 		})
 	}
 	s.registerRoutes()
@@ -293,6 +343,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /restart-ready", s.handleRestartReady)
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)
@@ -309,6 +360,11 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("POST /managers/{id}/restart", s.handleManagerRestart)
 	s.adminMux.HandleFunc("PUT /concurrency/{group}/limit", s.handleConcurrencyOverrideSet)
 	s.adminMux.HandleFunc("DELETE /concurrency/{group}/limit", s.handleConcurrencyOverrideClear)
+	// The GLOBAL run cap's override pair. A dedicated literal path —
+	// deliberately NOT /concurrency/{group}/… — so it can never collide
+	// with a declared group name (group names come from the hooks repo).
+	s.adminMux.HandleFunc("PUT /concurrency-global/limit", s.handleGlobalCapOverrideSet)
+	s.adminMux.HandleFunc("DELETE /concurrency-global/limit", s.handleGlobalCapOverrideClear)
 	s.adminMux.HandleFunc("POST /hook/{id}", s.handleTrigger)
 	s.adminMux.HandleFunc("POST /hook/{id}/cancel/{run}", s.handleCancelRun)
 	s.adminMux.HandleFunc("GET /runs", s.handleListRuns)

@@ -391,6 +391,19 @@ and observability of one gateway. Its motivating evidence (the webhooks#66
 staleness class) is real, and is answered by fixing gsm at the root
 (section 9), not by bypassing it.
 
+> **SUPERSEDED (2026-07-25, operator).** Sections 8a/8b below describe the
+> shipped-inert `WEBHOOK_RUNNER_GSM_URL` design from webhook-runner#98. Both
+> the knob and the blackhole are GONE. The operator's instruction was always
+> to enforce mirror routing, never to make it optional ("I explicitly did not
+> make it optional"), and never to sever GitHub ("GSM is not a blackhole").
+> What ships now: `runner.GSMBaseURL` is a CONSTANT, every hook/manager/test
+> container gets `-e GITHUB_API_URL=<mirror>` with NO exemption list and NO
+> off switch, and `--add-host api.github.com:0.0.0.0` is deleted. The
+> "explicitly rejected: DNS-pointing api.github.com at gsm's address"
+> paragraph below REMAINS correct and is the reason a transparent redirect
+> is not on the table — the TLS/SNI cert mismatch is real. Kept below as the
+> historical record of the rejected design.
+
 ### 8a. Enforcement mechanism (concrete)
 
 One master knob on the runner service env: `WEBHOOK_RUNNER_GSM_URL`

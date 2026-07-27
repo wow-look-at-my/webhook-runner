@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --rm)
       shift ;;
-    --name|-v|-e|--network|--user|--workdir)
+    --name|-v|-e|--network|--user|--workdir|--label)
       shift; shift ;;
     --cap-add=*|-*)
       shift ;;

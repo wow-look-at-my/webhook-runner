@@ -11,10 +11,68 @@ permissions:
   # go-toolchain@v1's embedded no-all-builds-job guard scans the head
   # commit's check runs and fails closed without this grant.
   checks: read
+  # go-toolchain@v1's publish step registers each release: a GitHub Deployment,
+  # and a record on the org's linked artifacts page. Both were warnings until
+  # recently and are now hard failures ("Resource not accessible by
+  # integration" / HTTP 404), so a build cannot finish without these.
+  deployments: write
+  artifact-metadata: write
 
 jobs:
-  test:
+  # Every CLAUDE.md is inlined into an agent's context VERBATIM the moment it
+  # works in that directory, and nothing truncates it: Claude Code's only hard
+  # cap skips a file over 4 MiB outright, and the "limit" the CLI mentions is a
+  # warning threshold that changes nothing about what gets sent — and renders
+  # only in the terminal UI, so it reaches neither the web surface nor the
+  # model. An oversized CLAUDE.md is simply re-billed on every request. Keep
+  # them indexes: depth goes to docs/ VERBATIM behind a pointer.
+  claude-md-budget:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const BUDGET = 40000;
+            const found: string[] = [];
+            const walk = (dir: string): void => {
+              for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (e.name === '.git' || e.name === 'node_modules') continue;
+                const p = path.join(dir, e.name);
+                if (e.isDirectory()) walk(p);
+                else if (e.name === 'CLAUDE.md') found.push(p);
+              }
+            };
+            walk('.');
+            const over: string[] = [];
+            for (const file of found.sort()) {
+              const chars = fs.readFileSync(file, 'utf-8').length;
+              core.info(`${file}: ${chars} chars`);
+              if (chars > BUDGET) over.push(`${file}: ${chars} chars (${chars - BUDGET} over)`);
+            }
+            if (over.length) {
+              core.setFailed(
+                `Over the ${BUDGET}-char CLAUDE.md budget. Move the depth into docs/ VERBATIM ` +
+                  `and leave a one-line pointer — extraction, never summarization:\n` +
+                  over.join('\n'),
+              );
+            }
+
+  # wow-dind, not wow-linux: go-toolchain runs a .dats phase (it bootstraps
+  # dats and executes dats/*.dats as part of this job -- "Running dats
+  # suites" in the log), and dats SANDBOXES TEST COMMANDS BY DEFAULT, failing
+  # a run outright when no backend is usable. The slim fleet can provide
+  # neither backend: docker is deleted from that image by design, and
+  # bubblewrap needs an unprivileged user namespace a stock container is
+  # refused (measured inside a real wow-linux runner: unshare -U blocked,
+  # Seccomp: 2, CapEff: 0). Making it work there would cost
+  # seccomp=unconfined + CAP_SYS_ADMIN -- most of --privileged, on the image
+  # whose whole point is being locked down -- so the operator's ruling
+  # (2026-07-26) is that dats jobs come here instead, where bubblewrap is
+  # installed and measured working. See the webhooks repo,
+  # src/hooks/gha-runner/CLAUDE.md.
+  test:
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       # The dashboard's committed assets/timeline.js is authoritative and
@@ -42,11 +100,17 @@ jobs:
       - uses: actions/checkout@v4
       # Dashboard client harnesses: drive the real committed assets
       # (dashboard.js — the push-first section feed; timeline.js — the
-      # stream-vouched trailing-coverage claims) in vm sandboxes. The shell
-      # glob picks up every testjs/*.test.mjs (node's bare-directory form
-      # is not portable across 22.x). Plain `node --test`, no dependencies.
+      # stream-vouched trailing-coverage claims) in vm sandboxes. Authored in
+      # TypeScript and run DIRECTLY via node's native type-stripping — no
+      # build step, and no committed generated .mjs (see .gitignore; the repo
+      # commits .ts source only). The shell glob picks up every
+      # testjs/*.test.ts (node's bare-directory form is not portable across
+      # 22.x). setup-node pins a Node new enough to strip types.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Dashboard client harness
-        run: node --test internal/server/dashboard/testjs/*.test.mjs
+        run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
       # Restore the binary go-toolchain@v1 handed off in the test job through
       # the actions cache (its central `go-build` upload — go-toolchain uploads
       # its build/ dir as `go-build`, so the contents restore into build/ here;
@@ -70,6 +134,39 @@ jobs:
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/e2e.test.ts
+
+  # Black-box CLI-contract tests (dats/*.dats, run by the org's dats test
+  # runner) against the real built binary — docker-free, offline, no
+  # secrets; see CLAUDE.md "CLI contract tests".
+  # wow-dind for the same reason as the test job above: dats sandboxes by
+  # default and the slim fleet can supply no backend.
+  dats:
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      # Restore the binary go-toolchain@v1 handed off in the test job (the
+      # same central `go-build` upload the e2e job restores).
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      # The suites exec "${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner";
+      # that env var is unset here, so they fall back to build/. The hand-off
+      # carries the platform-suffixed build name, so stage the unsuffixed name
+      # beside it.
+      - name: Stage CLI binary
+        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
+      # dats prebuilt binary from buildhost (public download). Installed into
+      # build/ so the single PATH prepend below covers both binaries — no
+      # sudo, works on any runner.
+      - name: Install dats
+        run: |
+          curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o build/dats
+          chmod +x build/dats
+          build/dats version
+      - name: Run CLI contract tests
+        run: PATH="$PWD/build:$PATH" dats test dats
 
   # Builds the Dockerfile from the go-build hand-off (the reusable workflow
   # cache-downloads `go-build` into build/) and pushes

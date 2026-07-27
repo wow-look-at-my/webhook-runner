@@ -33,6 +33,11 @@ type ManagerControl interface {
 	OutputTail(id string) []string
 	RequestStop(id, reason string)
 	Poke(id string)
+	// SetOnChange is the manager surface's push seam: instance output,
+	// inbox depth/stamps, and state transitions move the Managers panel
+	// without recording any activity event, so the roster and the
+	// #manager=<id> drill-down go stale unless this dirties "managers".
+	SetOnChange(fn func())
 }
 
 // defaultInboxNextWait is POST /inbox/next's hold when the body names no

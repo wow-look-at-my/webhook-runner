@@ -37,6 +37,28 @@
  * honest until the stream reconnects, and every stream (re)open does ONE
  * full /runs resync then goes stream-only again.
  *
+ * -- Positively recovering: the hb truth-reconcile beat --------------------
+ *
+ * The chart must always reflect WHAT IS HAPPENING RIGHT NOW, derived from
+ * the server's live snapshot of active work — never from replaying
+ * accumulated start/end events. On a reconcile-capable server every hb
+ * heartbeat carries {"active":[run ids]} — the CURRENT non-terminal set —
+ * and reconcileActive diffs local state against it each beat: local
+ * non-terminal runs ABSENT from the set are dropped outright (no cap, no
+ * per-run probes — absence from truth IS the verdict, covering missed
+ * terminal deltas, tracker restarts, and spans that began outside every
+ * fetched window), and set members this page never saw are fetched once
+ * (/runs?live=1, or /runs/{id} for a single miss) and ingested. A missed
+ * start or end therefore costs at most ~one heartbeat of fiction —
+ * permanently self-healing, no unbounded accumulation of unclosed spans.
+ * Feature-detected: an old server's `data: {}` heartbeat has no active
+ * array and keeps today's behavior exactly (the capped reconcileMissing
+ * probes stay as its fallback). The server-side halves of the contract:
+ * the tracker never evicts active runs, and every cursorless /runs window
+ * carries ALL active runs (the max cap bounds terminal rows only), so a
+ * resync/fallback page from a capable server is itself complete active
+ * truth to diff against while the stream is down.
+ *
  * The SAME connection multiplexes `changed` events — coarse "these admin
  * sections changed, refetch each once" signals (hooks/images/concurrency/
  * kv/events) — which this module re-publishes as whr:sections-changed for
@@ -299,8 +321,20 @@ function noteOldest(r: RunState): void {
 	}
 }
 
+/** Terminal is FINAL server-side (Finish fires exactly once; run ids never
+ * reuse), so incoming data showing an already-terminal run as live again is
+ * by definition STALE — an out-of-band page or probe computed before the
+ * transition, racing the terminal delta. Keep the terminal state: without
+ * this guard such a race could regress a run to "running" with no later
+ * delta ever correcting it. */
+function staleRegression(incoming: RunState): boolean {
+	const prev = runsById.get(incoming.id);
+	return prev !== undefined && isTerminal(prev.status) && !isTerminal(incoming.status);
+}
+
 function ingestRuns(page: RunState[]): void {
 	for (const r of page) {
+		if (staleRegression(r)) continue;
 		runsById.set(r.id, r);
 		noteOldest(r);
 	}
@@ -308,13 +342,21 @@ function ingestRuns(page: RunState[]): void {
 
 // -- The live feed -------------------------------------------------------------
 
+/** One coalesced delta: the run plus the state it replaced (undefined for a
+ * brand-new run). prev drives the collapse/waiter transition logic, so a
+ * batch preserves the FIRST-seen prev per run id (see pendingDeltas). */
+type RunDelta = { run: RunState; prev: RunState | undefined };
+
 /** The chart's hooks into the feed; attached once the component loads. */
 interface FeedConsumer {
 	onPage(page: RunState[]): void;
-	/** prev = the state this delta replaced (undefined for a new run) —
-	 * needed to re-render bars the run STOPPED affecting (e.g. the former
-	 * holders' waiter badges when its wait ended). */
-	onDelta(r: RunState, prev: RunState | undefined): void;
+	/** A frame's worth of coalesced deltas (see pendingDeltas / flushDeltas),
+	 * applied in ONE mergeData. Each entry's prev = the state that delta
+	 * replaced (undefined for a new run) — needed to re-render bars the run
+	 * STOPPED affecting (e.g. the former holders' waiter badges when its wait
+	 * ended). Batched because doing a full merge PER delta froze the tab for
+	 * ~15s when a backgrounded backlog of thousands flushed at once. */
+	onDeltas(batch: RunDelta[]): void;
 	/** Rebuild from runsById outright — used after removals, which
 	 * mergeData cannot express. */
 	rebuild(): void;
@@ -369,12 +411,62 @@ function fresh(): void {
 
 /** One run delta: update the store, the chart, and anyone else listening
  * (dashboard.js's run modal refreshes in place off this event). */
+// -- Coalesced delta flush -----------------------------------------------------
+//
+// Each SSE `run` delta updates runsById synchronously (reconcile/page reads
+// depend on it), but the EXPENSIVE work — the component mergeData and the
+// whr:run-delta fan-out — is batched to ONE flush per animation frame. Doing
+// it per delta synchronously froze the main thread for ~15s with ZERO repaints
+// when a ~6k-delta backlog, buffered while the tab sat backgrounded for hours,
+// flushed all at once on wake (the 2026-07-21 incident): 6,335 `run` events at
+// ~2.4ms each, back to back, no yield. rAF is parked while a tab is
+// backgrounded, so the whole backlog now collapses into a SINGLE deduped flush
+// on foreground instead of a per-delta storm, and a merely-fast live stream
+// coalesces to at most one merge per frame.
+const pendingDeltas = new Map<string, RunDelta>();
+let deltaFlushHandle = 0;
+
+function scheduleDeltaFlush(): void {
+	if (deltaFlushHandle !== 0) return;
+	deltaFlushHandle = requestAnimationFrame(flushDeltas);
+}
+
+/** Drain the coalesced deltas on the frame: ONE chart merge for the whole
+ * batch, then the per-run whr:run-delta fan-out (dashboard.js's runs list +
+ * open-modal refresh — the event contract is unchanged, just batched in
+ * time, and deduped by id so a run that changed N times fires once).
+ *
+ * The batch is ALWAYS drained and ALWAYS fanned out, chart or no chart:
+ * the component is imported at runtime from js-snippets and that fetch can
+ * fail for a while, but the feed's other consumers (the runs table, the
+ * open run modal) are this module's contract and must not go dark with it.
+ * Only the chart merge is conditional — an attach rebuilds from runsById,
+ * which ingestDelta already updated, so nothing is lost by clearing here.
+ * Returning early instead (pre-fix) also let pendingDeltas grow without
+ * bound for as long as the component stayed unreachable. */
+function flushDeltas(): void {
+	deltaFlushHandle = 0;
+	if (pendingDeltas.size === 0) return;
+	const batch = [...pendingDeltas.values()];
+	pendingDeltas.clear();
+	chart?.onDeltas(batch);
+	for (const { run } of batch) {
+		window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: run.id, run } }));
+	}
+}
+
 function ingestDelta(r: RunState): void {
+	if (staleRegression(r)) return;
 	const prev = runsById.get(r.id);
-	runsById.set(r.id, r);
+	runsById.set(r.id, r); // model updates NOW — reconcile/page reads depend on it
 	noteOldest(r);
-	chart?.onDelta(r, prev);
-	window.dispatchEvent(new CustomEvent('whr:run-delta', { detail: { id: r.id, run: r } }));
+	// Queue the chart merge + fan-out for the next frame. Preserve the
+	// FIRST-seen prev for this run id so the batched apply sees the true
+	// pre-batch transition (a run that went pending→running→done in one batch
+	// must still restamp its lane's backlog from the pending it started at).
+	const existing = pendingDeltas.get(r.id);
+	pendingDeltas.set(r.id, { run: r, prev: existing ? existing.prev : prev });
+	scheduleDeltaFlush();
 	fresh(); // data arrived — the freshness clock advances HERE, unconditionally
 }
 
@@ -415,13 +507,81 @@ async function reconcileMissing(page: RunState[]): Promise<void> {
 	if (dropped) chart?.rebuild();
 }
 
+// -- hb truth reconcile (positively recovering) --------------------------------
+
+/** Sticky per-connection capability: the current server's heartbeats carry
+ * the active run-id set — which also means its cursorless /runs windows
+ * carry EVERY active run (the same server-side change ships both). Reset
+ * on each stream (re)open (a reconnect may reach a different server
+ * version) and re-proven by the first payload-bearing hb — the per-call
+ * detection rule every other feature here follows. */
+let serverHasActiveSet = false;
+
+/** Drop every local non-terminal run NOT in the server's active set. The
+ * set is authoritative for absence — a run the server does not consider
+ * active RIGHT NOW is either terminal (its delta was missed; the terminal
+ * row rides the next resync window if recent) or gone for good (restart) —
+ * so there is no cap and no per-run probing: one rebuild retires the whole
+ * zombie batch. */
+function dropAbsentActive(serverActive: Set<string>): void {
+	let dropped = false;
+	for (const [id, r] of runsById) {
+		if (!isTerminal(r.status) && !serverActive.has(id)) {
+			runsById.delete(id);
+			dropped = true;
+		}
+	}
+	if (dropped) chart?.rebuild();
+}
+
+/** The hb-driven diff: reconcile local state to the server's active set —
+ * every beat, both directions. Drops are synchronous and uncapped (above);
+ * adds — set members this page has never seen (missed creation deltas,
+ * spans older than every fetched window) — are fetched once, bounded and
+ * single-flight: the full /runs?live=1 truth read when several are
+ * missing, the single /runs/{id} otherwise. */
+let reconcileAddsInFlight = false;
+async function reconcileActive(active: string[]): Promise<void> {
+	serverHasActiveSet = true;
+	dropAbsentActive(new Set(active));
+	const missing = active.filter((id) => !runsById.has(id));
+	if (missing.length === 0 || reconcileAddsInFlight) return;
+	reconcileAddsInFlight = true;
+	try {
+		if (missing.length === 1) {
+			ingestDelta(await fetchJSONBounded<RunState>(`/runs/${encodeURIComponent(missing[0])}?tail=0`));
+		} else {
+			ingestPage(await fetchJSONBounded<RunState[]>('/runs?live=1'));
+		}
+	} catch (e) {
+		console.error('timeline: active-set reconcile fetch failed:', e);
+	} finally {
+		reconcileAddsInFlight = false;
+	}
+}
+
+/** Page-shaped reconcile (stream (re)open resyncs + fallback polls): on a
+ * server whose cursorless /runs windows are active-complete, the page's
+ * own non-terminal subset IS the current active set — diff against it
+ * directly, no probes, exactly the hb rule. This is what keeps zombies
+ * dying while the stream is DOWN and only the 5s poll runs (no heartbeats
+ * arrive then). Legacy servers keep the capped per-run reconcileMissing
+ * probes byte-for-byte. */
+async function reconcilePage(page: RunState[]): Promise<void> {
+	if (serverHasActiveSet) {
+		dropAbsentActive(new Set(page.filter((r) => !isTerminal(r.status)).map((r) => r.id)));
+		return;
+	}
+	await reconcileMissing(page);
+}
+
 /** ONE full resync per stream (re)open, then stream-only. */
 async function resyncOnce(): Promise<void> {
 	try {
 		const page = await fetchJSONBounded<RunState[]>(`/runs?max=${RESYNC_MAX}`);
 		ingestPage(page);
 		fresh();
-		await reconcileMissing(page);
+		await reconcilePage(page);
 	} catch (e) {
 		// Benign: the connect snapshot covers the same window; the next
 		// delta or heartbeat keeps freshness honest.
@@ -432,6 +592,11 @@ async function resyncOnce(): Promise<void> {
 function openStream(): void {
 	es = new EventSource(STREAM_PATH);
 	es.onopen = () => {
+		// Capability re-detection per connection: a reconnect may reach a
+		// different server build, so the active-set verdict resets and the
+		// first payload-bearing hb re-proves it (until then the resync uses
+		// the legacy reconcile path — conservative, never wrong).
+		serverHasActiveSet = false;
 		setStreamLive(true);
 		void resyncOnce();
 	};
@@ -459,8 +624,20 @@ function openStream(): void {
 		}
 	});
 	// Heartbeats are the idle-stream freshness signal (data may legitimately
-	// be quiet for hours; the FEED being alive is what markFresh attests).
-	es.addEventListener('hb', () => fresh());
+	// be quiet for hours; the FEED being alive is what markFresh attests) —
+	// and, on a reconcile-capable server, the TRUTH BEAT: the payload's
+	// `active` array is the current non-terminal run-id set, diffed against
+	// local state every beat (see reconcileActive). Feature-detected: an
+	// old server's `data: {}` has no array and keeps liveness-only behavior.
+	es.addEventListener('hb', (e) => {
+		fresh();
+		try {
+			const d = JSON.parse((e as MessageEvent<string>).data) as { active?: string[] };
+			if (Array.isArray(d.active)) void reconcileActive(d.active);
+		} catch {
+			/* legacy heartbeat without a JSON payload — liveness only */
+		}
+	});
 	// Coarse "section changed → refetch once" signals for the non-run admin
 	// sections (hooks/images/concurrency/kv/events), multiplexed onto this
 	// same connection. This module only re-publishes them: dashboard.js
@@ -500,7 +677,7 @@ function startFeedSupervisor(): void {
 				.then((page) => {
 					ingestPage(page);
 					fresh(); // markFresh only on SUCCESS — staleness stays honest
-					return reconcileMissing(page);
+					return reconcilePage(page);
 				})
 				.catch((e) => console.error('timeline: fallback poll failed:', e))
 				.finally(() => {
@@ -691,6 +868,131 @@ function runToInterval(r: RunState): TimelineInterval {
 // holder/waiter links (dashboard.js). The component's generic connector
 // capability is untouched upstream in js-snippets.
 
+// -- Pending-backlog collapse (the ×N queued view model) -----------------------
+//
+// A flood can queue hundreds of pending runs per hook; each one used to
+// take its own packing sub-track, growing the lane into a wall of dim
+// "not doing any work" spans (operator directive: collapse them, badge the
+// depth). The view model collapses them: per lane, ALL status=pending runs
+// (the queued backlog) render as ONE synthetic aggregate interval —
+// earliest queued start → the live edge — labeled with the "×N queued"
+// depth badge, restamped as the backlog moves. Runs actually executing
+// (running, declared waits/locks included) keep their individual spans; a
+// single pending run renders as itself (no aggregate at N=1). The DATA
+// model stays per-run — runsById and the hb truth reconcile never see the
+// aggregation, it exists only in what is FED to the component — so drops,
+// adds, clicks, and the modal all keep operating on real runs. Clicking
+// the aggregate opens the lane's hook page (a run modal cannot show N
+// runs; the hook page lists them) and its tooltip names the depth plus the
+// first few queued runs. mergeData cannot REMOVE intervals, so a lane
+// crossing the collapse boundary in either direction (a 2nd pending
+// arrives and subsumes a previously-individual span; the backlog drains
+// below 2 and the survivor re-individualizes) forces one rebuildAll — the
+// same full-replace path removals already use; within a collapsed state,
+// depth changes are plain aggregate upserts.
+
+/** Minimum backlog depth that collapses; below it real spans render. */
+const COLLAPSE_MIN = 2;
+/** Synthetic aggregate interval id namespace. ':' can never occur in a run
+ * id (26-char lowercase base32), so aggregate ids cannot collide. */
+const AGG_PREFIX = 'queued:';
+
+/** Lanes rendered collapsed as of the last full feed — the boundary
+ * detector (refreshed by buildAllIntervals). */
+let collapsedLanes = new Set<string>();
+
+/** Per-lane pending backlog over the given runs, oldest first. */
+function pendingByLane(source: Iterable<RunState>): Map<string, RunState[]> {
+	const out = new Map<string, RunState[]>();
+	for (const r of source) {
+		if (r.status !== 'pending') continue;
+		const list = out.get(r.hook_id);
+		if (list) list.push(r);
+		else out.set(r.hook_id, [r]);
+	}
+	for (const list of out.values()) {
+		list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+	}
+	return out;
+}
+
+function computeCollapsedLanes(pending: Map<string, RunState[]>): Set<string> {
+	const out = new Set<string>();
+	for (const [lane, list] of pending) {
+		if (list.length >= COLLAPSE_MIN) out.add(lane);
+	}
+	return out;
+}
+
+function sameLaneSet(a: Set<string>, b: Set<string>): boolean {
+	if (a.size !== b.size) return false;
+	for (const lane of a) if (!b.has(lane)) return false;
+	return true;
+}
+
+/** The lane's collapsed backlog as ONE synthetic interval: earliest queued
+ * start → live edge (end null), the dim queued treatment, and a count that
+ * must be UNMISTAKABLE at any width — the operator reads this row as "N
+ * waiting runners", never a cryptic bar. Explicit label tiers (fullest →
+ * most compact) spell the meaning out wide and keep the ×N count to the
+ * narrowest fit; a component without labelTiers falls back to the base
+ * label, whose 3-character clip floor is still exactly the bare ×N. */
+function aggInterval(lane: string, backlog: RunState[]): TimelineInterval {
+	const n = backlog.length;
+	return {
+		id: AGG_PREFIX + lane,
+		laneId: lane,
+		start: Date.parse(backlog[0].started), // oldest-first per pendingByLane
+		end: null,
+		label: `×${n} waiting`,
+		labelTiers: [`×${n} waiting for a slot`, `×${n} waiting`, `×${n}`],
+		category: lane, // the lane's stable hue, like every run interval
+		state: 'queued',
+		data: { count: n },
+	};
+}
+
+/** The FULL fed interval set under the collapse view model — every run
+ * except collapsed-lane pendings, plus one aggregate per collapsed lane —
+ * refreshing collapsedLanes (the boundary detector) as it goes. Every full
+ * feed (seed, page merge, rebuild, prune) builds through here. */
+function buildAllIntervals(source: RunState[]): TimelineInterval[] {
+	const pending = pendingByLane(source);
+	collapsedLanes = computeCollapsedLanes(pending);
+	const out: TimelineInterval[] = [];
+	for (const r of source) {
+		if (r.status === 'pending' && collapsedLanes.has(r.hook_id)) continue;
+		out.push(runToInterval(r));
+	}
+	for (const lane of collapsedLanes) {
+		out.push(aggInterval(lane, pending.get(lane) as RunState[]));
+	}
+	return out;
+}
+
+/** Coverage floor for a full feed: the completeness boundary the rows can
+ * vouch. Active runs are ALWAYS included regardless of age (the server's
+ * active partition), so an ancient still-running span must not drag the
+ * claim floor back over UNFETCHED terminal history — a false "known empty"
+ * that would suppress both the hatch and history paging there. The floor
+ * is therefore the oldest TERMINAL row (the capped newest-first
+ * partition's edge); an all-active set falls back to its true oldest (the
+ * legacy behavior — no terminal history is being claimed at all), and an
+ * empty one to the last minute. */
+function coverageFloorMs(rows: RunState[], now: number): number {
+	let oldestTerminal = Infinity;
+	let oldestAny = Infinity;
+	for (const r of rows) {
+		const ms = Date.parse(r.started);
+		if (!Number.isFinite(ms)) continue;
+		if (ms < oldestAny) oldestAny = ms;
+		if (isTerminal(r.status) && ms < oldestTerminal) oldestTerminal = ms;
+	}
+	if (Number.isFinite(oldestTerminal)) return oldestTerminal;
+	if (Number.isFinite(oldestAny)) return oldestAny;
+	return now - 60_000;
+}
+
 /**
  * Lane order: ALPHABETICAL by hook id — deterministic, stable, and
  * viewport-independent, full stop. (The old most-recent-activity sort
@@ -830,6 +1132,36 @@ function laneTooltip(lane: TimelineLane): Node {
 	return frag;
 }
 
+/** Tooltip for a lane's collapsed queued-backlog aggregate: a first line
+ * that reads like a sentence ("22 runs waiting for a gha-runner slot" when
+ * the whole backlog waits on one named group; generic otherwise), then the
+ * lane, the first few queued runs (oldest first), and where a click goes.
+ * Recomputed from runsById per hover, so it always reads the CURRENT
+ * backlog even between aggregate restamps. */
+function aggTooltip(lane: string): Node {
+	const backlog = pendingByLane(runsById.values()).get(lane) ?? [];
+	const n = backlog.length;
+	// Name the slot when every queued run waits on the same group; the
+	// global run cap's display key ("global") and mixed/unknown waits get
+	// the generic wording.
+	const keys = new Set(
+		backlog.map((r) => (r.waiting_on?.kind === 'group' ? r.waiting_on.key || '' : '')),
+	);
+	const only = keys.size === 1 ? [...keys][0] : '';
+	const what = only !== '' && only !== 'global' ? `a ${only} slot` : 'a slot to run';
+	const frag = document.createDocumentFragment();
+	frag.appendChild(
+		el('div', { class: 'tt-title' }, `${n} run${n === 1 ? '' : 's'} waiting for ${what}`),
+	);
+	frag.appendChild(ttRow('hook', lane));
+	for (const r of backlog.slice(0, 3)) {
+		frag.appendChild(ttRow('', `${runTitle(r) ?? shortRunId(r.id)} — queued ${fmtTime(r.started)}`));
+	}
+	if (backlog.length > 3) frag.appendChild(ttRow('', `…and ${backlog.length - 3} more`));
+	frag.appendChild(ttRow('', 'click to open this hook’s page'));
+	return frag;
+}
+
 // (The adapter-side skip pre-merge that used to live here is GONE: skipped
 // runs — zero-duration instants — now feed through as INDIVIDUAL intervals
 // at their true timestamps, each with its own label/tooltip/modal link. The
@@ -848,9 +1180,13 @@ function initTimeline(): void {
 
 	// ×N instant-cluster hits never land here: the component builds cluster
 	// summary tooltips itself and never consults tooltipFor for them — so
-	// every interval id received IS a run id.
+	// every interval id received is a run id OR a queued-backlog aggregate
+	// (the AGG_PREFIX namespace; run ids can never collide with it).
 	tl.tooltipFor = (hit: TimelineHit) => {
 		if (hit.type === 'interval') {
+			if (hit.interval.id.startsWith(AGG_PREFIX)) {
+				return aggTooltip(hit.interval.id.slice(AGG_PREFIX.length));
+			}
 			const r = runsById.get(hit.interval.id);
 			return r ? runTooltip(r) : null;
 		}
@@ -876,6 +1212,7 @@ function initTimeline(): void {
 		tl.legendEntries = [
 			{ glyph: '⧗', text: 'waiting for a concurrency-group slot (group · place in line)' },
 			{ glyph: '⏳N', text: 'holding a slot N queued runs are waiting on' },
+			{ glyph: '×N waiting', text: 'a collapsed queued backlog: N pending runs as one dim row (each executing run keeps its own colored bar; click opens the hook page)' },
 		];
 	}
 
@@ -887,6 +1224,13 @@ function initTimeline(): void {
 		// intervalclick — so this id is always a run id, and every skipped
 		// run opens ITS OWN run modal again.
 		const detail = (e as CustomEvent<{ interval: TimelineInterval }>).detail;
+		// The queued-backlog aggregate is not a run: a run modal cannot show
+		// N runs, so its click opens the lane's hook page (which lists them)
+		// — the same destination as a lane-label click.
+		if (detail.interval.id.startsWith(AGG_PREFIX)) {
+			location.hash = '#hook=' + encodeURIComponent(detail.interval.id.slice(AGG_PREFIX.length));
+			return;
+		}
 		void showRun(detail.interval.id);
 	});
 	tl.addEventListener('laneclick', (e: Event) => {
@@ -936,7 +1280,11 @@ function initTimeline(): void {
 				syncLanes(tl);
 				const oldest = rows[rows.length - 1]; // pages are newest-first
 				tl.mergeData({
-					intervals: rows.map(runToInterval),
+					// A history page can carry pending runs; a lane's collapsed
+					// backlog owns those — the live paths restamp its aggregate.
+					intervals: rows
+						.filter((r) => !(r.status === 'pending' && collapsedLanes.has(r.hook_id)))
+						.map(runToInterval),
 					coverage: { start: Date.parse(oldest.started), end: cursorMs },
 				});
 				cursor = oldest.started; // raw server string — the exact next cursor
@@ -974,14 +1322,23 @@ function initTimeline(): void {
 	// -- Feed → chart -----------------------------------------------------------
 
 	const applyPage = (page: RunState[]): void => {
+		// A full render from runsById subsumes any queued deltas (their runs
+		// are already in the map) — drop them so a trailing flush can't
+		// redundantly re-merge the same state.
+		pendingDeltas.clear();
 		const now = Date.now();
 		rebuildWaiterIndex(); // labels/tooltips read it during interval mapping
 		if (maybePrune(tl, now)) return; // prune did a full setData already
-		const pageOldestMs = page.length > 0 ? Date.parse(page[page.length - 1].started) : now - 60_000;
+		// Coverage floor: the oldest TERMINAL page row, not the raw oldest —
+		// pages now carry every active run regardless of age, and an ancient
+		// live span must not vouch unfetched terminal history (see
+		// coverageFloorMs).
+		const pageFloorMs = coverageFloorMs(page, now);
 		liveCoveredToMs = Math.max(liveCoveredToMs, now); // page claims through now
+		const prevCollapsed = collapsedLanes;
 		const data: TimelineData = {
-			intervals: [...runsById.values()].map(runToInterval),
-			coverage: { start: pageOldestMs, end: now },
+			intervals: buildAllIntervals([...runsById.values()]), // refreshes collapsedLanes
+			coverage: { start: pageFloorMs, end: now },
 		};
 		if (!seeded) {
 			seeded = true;
@@ -993,6 +1350,12 @@ function initTimeline(): void {
 			// pans/zooms and jumpToNow keep their own span from then on.
 			tl.setViewport(now - 10 * 60_000, now);
 			armBackfill(); // coverage exists now — history paging may engage
+		} else if (!sameLaneSet(collapsedLanes, prevCollapsed)) {
+			// The page moved a lane across the collapse boundary: only a
+			// full replace can retire the newly-subsumed spans or the
+			// emptied aggregate (mergeData cannot remove).
+			rebuildAll();
+			return;
 		} else {
 			// MERGE, never setData: later snapshots/resyncs must not wipe the
 			// backfilled history the component already holds.
@@ -1001,30 +1364,66 @@ function initTimeline(): void {
 		syncLanes(tl);
 	};
 
-	// Skipped runs need no special-casing: each is a zero-duration instant
-	// interval upserted like any other delta — the component's scale-aware
-	// ×N clustering absorbs redelivery bursts (one packing slot per
-	// cluster), so no adapter-side pre-merge or rebuild debounce exists.
-	const applyDelta = (r: RunState, prev: RunState | undefined): void => {
+	// One frame's worth of coalesced deltas (see ingestDelta / flushDeltas),
+	// applied in ONE mergeData — the whole batch's affected bars, one collapse
+	// check, one waiter-index rebuild. Skipped runs still need no special-
+	// casing: each is a zero-duration instant interval upserted like any other
+	// delta (the batch dedupes by id but never PRE-CLUSTERS skips — the
+	// component's own scale-aware ×N clustering absorbs redelivery bursts).
+	const applyDeltas = (batch: RunDelta[]): void => {
+		if (batch.length === 0) return;
 		if (!seeded) {
 			// No coverage yet (deltas can precede the first page when the
 			// stream connects before the seed fetch returns): render what we
-			// hold as the seed.
+			// hold as the seed. runsById already holds every batched run, so
+			// the page subsumes the batch (applyPage clears pendingDeltas).
 			applyPage([...runsById.values()]);
 			return;
 		}
-		// A delta can change OTHER bars' badges: every run this one was — or
+		// Collapse boundary first, evaluated ONCE over the batch's net state:
+		// a delta that tips a lane across the threshold (a 2nd pending
+		// arrives; a backlog drains below 2) can only be expressed as a full
+		// replace — mergeData cannot remove the newly-subsumed spans or the
+		// emptied aggregate.
+		const pending = pendingByLane(runsById.values());
+		const nowCollapsed = computeCollapsedLanes(pending);
+		if (!sameLaneSet(nowCollapsed, collapsedLanes)) {
+			rebuildAll(); // rebuilds from runsById (whole batch) + waiter index + claims coverage
+			return;
+		}
+		// A delta can change OTHER bars' badges: every run any delta was — or
 		// now is — waiting on gains/loses its ⏳ waiter count. Re-merge the
-		// union of the old and new holder sets alongside the run itself.
-		const affected = new Set<string>([r.id]);
-		for (const holder of holderIdsOf(prev)) affected.add(holder);
-		for (const holder of holderIdsOf(r)) affected.add(holder);
+		// union of every delta plus its old and new holder sets, once.
 		rebuildWaiterIndex();
-		const intervals = [...affected]
-			.map((id) => runsById.get(id))
-			.filter((x): x is RunState => x !== undefined)
-			.map(runToInterval);
-		// The delta also vouches the range since the last claim (fold the
+		const affected = new Set<string>();
+		const restampAgg = new Set<string>();
+		for (const { run, prev } of batch) {
+			affected.add(run.id);
+			for (const holder of holderIdsOf(prev)) affected.add(holder);
+			for (const holder of holderIdsOf(run)) affected.add(holder);
+			// Leaving a collapsed backlog (started running / went terminal)
+			// moves the lane's aggregate depth too — restamp it alongside.
+			if (prev && prev.status === 'pending' && nowCollapsed.has(prev.hook_id)) {
+				restampAgg.add(prev.hook_id);
+			}
+		}
+		const intervals: TimelineInterval[] = [];
+		for (const id of affected) {
+			const run = runsById.get(id);
+			if (run === undefined) continue;
+			if (run.status === 'pending' && nowCollapsed.has(run.hook_id)) {
+				// Subsumed into its lane's backlog aggregate — restamp the
+				// aggregate (depth badge) instead of feeding the span.
+				restampAgg.add(run.hook_id);
+				continue;
+			}
+			intervals.push(runToInterval(run));
+		}
+		for (const lane of restampAgg) {
+			const backlog = pending.get(lane);
+			if (backlog && backlog.length >= COLLAPSE_MIN) intervals.push(aggInterval(lane, backlog));
+		}
+		// The batch also vouches the range since the last claim (fold the
 		// trailing-coverage extension into the merge this path already does —
 		// without it nothing extends coverage on a live stream, and the
 		// component hatches [connect snapshot, now] as unknown history).
@@ -1032,29 +1431,33 @@ function initTimeline(): void {
 		syncLanes(tl);
 	};
 
-	// Full rebuild (the only way to REMOVE an interval — mergeData upserts).
-	// Coverage restarts at the held window, so deeper panning re-pages from
-	// the server; same trade maybePrune makes.
+	// Full rebuild (the only way to REMOVE an interval — mergeData upserts):
+	// truth-reconcile drops, collapse boundary crossings, and 404 retires
+	// all land here. Coverage restarts at the held window's floor, so deeper
+	// panning re-pages from the server; same trade maybePrune makes.
 	const rebuildAll = (): void => {
+		pendingDeltas.clear(); // full render from runsById subsumes any queued deltas
 		oldestStartedRaw = null;
 		oldestStartedMs = Infinity;
 		for (const r of runsById.values()) noteOldest(r);
+		rebuildWaiterIndex(); // removals/drops invalidate holder ⏳ badges too
 		laneOrderKey = '';
 		const lanes = computeLanes();
 		laneOrderKey = lanes.map((l) => l.id).join('\n');
 		const now = Date.now();
 		liveCoveredToMs = Math.max(liveCoveredToMs, now); // rebuild claims through now
+		const held = [...runsById.values()];
 		tl.setData({
 			lanes,
-			intervals: [...runsById.values()].map(runToInterval),
+			intervals: buildAllIntervals(held),
 			connectors: [], // rebuild replaces data — pin connectors to none
-			coverage: { start: Number.isFinite(oldestStartedMs) ? oldestStartedMs : now - 60_000, end: now },
+			coverage: { start: coverageFloorMs(held, now), end: now },
 		});
 	};
 
 	chart = {
 		onPage: applyPage,
-		onDelta: applyDelta,
+		onDeltas: applyDeltas,
 		rebuild: rebuildAll,
 		markFresh: () => {
 			if (typeof tl.markFresh === 'function') tl.markFresh();
@@ -1114,9 +1517,9 @@ function maybePrune(tl: TimelineViewElement, now: number): boolean {
 	liveCoveredToMs = Math.max(liveCoveredToMs, now); // prune claims through now
 	tl.setData({
 		lanes,
-		intervals: keep.map(runToInterval),
+		intervals: buildAllIntervals(keep),
 		connectors: [], // prune replaces data — pin connectors to none
-		coverage: { start: oldestStartedMs, end: now },
+		coverage: { start: coverageFloorMs(keep, now), end: now },
 	});
 	return true;
 }

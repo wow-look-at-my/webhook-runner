@@ -17,10 +17,18 @@ package server
 //	                                  ONCE; carries no payload by design)
 //	: hb                             (comment heartbeat every ~10s, PLUS an
 //	event: hb                         `hb` event in the same write — comments
-//	data: 1                           keep proxies/idle detection honest, but
+//	data: {"active":["<run-id>",…]}   keep proxies/idle detection honest, but
 //	                                  EventSource never surfaces them to JS,
 //	                                  so the client's freshness signal is the
-//	                                  event; both ride one flush)
+//	                                  event; both ride one flush. The payload
+//	                                  is the CURRENT non-terminal run-id set —
+//	                                  the live truth clients diff their local
+//	                                  state against every beat (drop what the
+//	                                  server no longer knows, fetch what they
+//	                                  never saw), so a missed delta can cost
+//	                                  at most ~one heartbeat of fiction.
+//	                                  Purely additive: pre-payload clients
+//	                                  read hb as bare liveness and ignore it)
 //
 // Fan-out MUST NEVER block the runner: publishes happen synchronously on
 // runner/state-API goroutines (the tracker's OnChange seam), so each
@@ -314,8 +322,13 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-hb.C:
-			// Comment for proxies + event for the client, one write.
-			if _, err := io.WriteString(w, ": hb\nevent: hb\ndata: {}\n\n"); err != nil {
+			// Comment for proxies + event for the client, one write. The hb
+			// payload carries the ACTIVE (non-terminal) run-id set — the
+			// reconcile beat: reading the tracker here is cheap (ids only,
+			// ~26 bytes each, bounded by genuinely concurrent work), and an
+			// EMPTY set still serializes as {"active":[]} — a real "nothing
+			// is active" verdict clients must act on, never null.
+			if err := writeSSEHeartbeat(w, s.tracker.ActiveIDs()); err != nil {
 				return
 			}
 			if rc.Flush() != nil {
@@ -333,5 +346,18 @@ func writeSSEEvent(w io.Writer, event string, v any) error {
 		return err
 	}
 	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+	return err
+}
+
+// writeSSEHeartbeat writes the combined proxy-comment + hb event in ONE
+// write (both ride one flush). The event payload is the active run-id set;
+// active is never nil (Tracker.ActiveIDs guarantees []), so the data line
+// is always {"active":[...]}.
+func writeSSEHeartbeat(w io.Writer, active []string) error {
+	b, err := json.Marshal(map[string][]string{"active": active})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, ": hb\nevent: hb\ndata: %s\n\n", b)
 	return err
 }

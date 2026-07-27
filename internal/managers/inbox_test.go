@@ -129,16 +129,36 @@ func TestInboxWatchdogArming(t *testing.T) {
 	// Coming back disarms before parking.
 	done := make(chan struct{})
 	go func() {
-		_, _, _ = ib.Next(context.Background(), "i", 300*time.Millisecond)
+		// A generous ceiling, not a race window: the push below lands the
+		// instant we observe the park, so this wait never actually elapses --
+		// it only has to outlast the hand-off.
+		_, _, _ = ib.Next(context.Background(), "i", 2*time.Second)
 		close(done)
 	}()
-	require.Eventually(t, func() bool { return disarmed.Load() == 1 }, time.Second, 5*time.Millisecond)
+	// Synchronize on the goroutine actually being PARKED, not merely on the
+	// disarm. Next disarms STRICTLY before it increments parked, so waiting on
+	// disarmed==1 leaves a window in which parked is still 0. A push in that
+	// window sees "nobody parked, nothing checked out" and fires a spurious
+	// wedge-guard arm -- and since arm() is an idempotent state re-stamp (see
+	// idleWatchdog.Arm) rather than a counted event, that extra call is
+	// harmless in production but makes the exact-count assertion below flake
+	// ("got 4"). Observing parked==1 under the same mutex push reads closes the
+	// window: the wedge guard provably cannot fire, so the delivery produces
+	// exactly one checkout arm. parked==1 also proves the disarm already ran,
+	// because Next disarms before parked++.
+	require.Eventually(t, func() bool {
+		ib.mu.Lock()
+		defer ib.mu.Unlock()
+		return ib.parked == 1
+	}, time.Second, time.Millisecond)
+	assert.Equal(t, int32(1), disarmed.Load(), "coming back disarms before parking")
 
 	// A push while PARKED delivers immediately: no wedge-guard arm, one
 	// checkout arm.
 	ib.PushDelivery(nil, []byte(`{}`))
 	<-done
 	assert.Equal(t, int32(3), armed.Load())
+	assert.Equal(t, int32(1), disarmed.Load(), "the parked delivery checks out without disarming")
 }
 
 // A long-poll Next delivers the instant a push arrives (no polling

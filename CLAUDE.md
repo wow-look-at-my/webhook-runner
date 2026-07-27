@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (authored in TypeScript, run DIRECTLY via `node --test`'s native type-stripping — no build step; CI pins Node with actions/setup-node). the convention is to author/commit `.ts` source, not generated `.mjs` (gitignored via `*.mjs`; a genuine edge-case `.mjs` can be `git add -f`'d). The one deliberately-committed generated artifact is the dashboard adapter's `assets/timeline.js` bundle — a `.js` (not caught by the `*.mjs` rule), embedded via go:embed and regenerated via ts0
 internal/hooks/            hook.json + manager.json models, loader, registry, watcher, git repo
 internal/managers/         the manager entity's runtime: bounded inbox (checkout/settle handles) + supervisor (flock lease, flat restarts, output ring, attention seam)
 internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
@@ -26,12 +26,15 @@ internal/runs/             in-memory run tracker (bounded) + the OnFinish persis
 internal/runstore/         bbolt-backed persistent completed-run history (48h retention, GC sweeper)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
 internal/attention/        aggregated ACTIVE misconfigurations (the needs-attention surface: GET /attention + the dashboard's red banner; nil-aggregator safe)
+internal/spool/            durable park for deliveries arriving during shutdown drain (replayed by the next process)
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
 e2e/                       end-to-end test (shell script, requires Docker)
+dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
 examples/hooks/            sample hook configs
+docs/                      the depth CLAUDE.md points at (internals/, design docs)
 ```
 
 ## Conventions
@@ -58,6 +61,81 @@ examples/hooks/            sample hook configs
   their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
   Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
 
+## CLI contract tests (dats/)
+
+`dats/*.dats` are black-box tests of the CLI's contract — exit codes,
+stdout/stderr, messages — run by the org's
+[dats](https://github.com/wow-look-at-my/dats) test runner against the REAL
+built binary (unlike `internal/cli/commands_test.go`, which drives cobra
+in-process). They are deliberately docker-free, offline, and secret-free so
+they pass on a bare runner: `validate`'s full gate contract (plus a drift
+gate that `validate examples/hooks` stays green), `test`'s docker-free
+paths, and version/help/argument/flag errors — the authoritative case list
+is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
+dashboard need Docker/network and stay in `e2e/`.
+
+**The suites are docker-free; dats itself is not runner-free.** dats
+SANDBOXES the commands it runs BY DEFAULT (bubblewrap, falling back to
+docker) and fails a run outright when neither backend is usable. The slim
+`wow-linux` fleet can supply neither — docker is deleted from that image by
+design, and bubblewrap needs an unprivileged user namespace a stock container
+is refused — so **both jobs that run dats (`dats`, and `test` via
+go-toolchain's dats phase) use `vars.CI_RUNNER_DIND`**, where bubblewrap is
+installed and measured working. Operator ruling 2026-07-26; the measurements,
+and the alternative that was rejected (granting the slim fleet
+`seccomp=unconfined` + `CAP_SYS_ADMIN`), are in the webhooks repo's
+`src/hooks/gha-runner/CLAUDE.md`. Moving either job back to `CI_RUNNER` fails
+it at the dats phase, not in the suite.
+
+Every suite command execs the binary as
+`"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare
+PATH lookup. go-toolchain itself runs these suites as its **dats phase**
+after every build (go-toolchain#330): it stages throwaway binary copies
+under `$GO_TOOLCHAIN_DATS_BUILD_DIR` and does NOT put them on PATH, so a
+bare `webhook-runner` in a `cmd` exits 127 there (the 2026-07-21 CI
+breakage). The `:-build` fallback keeps standalone runs working from the
+repo root. Note dats runs each `cmd` with `bash -c`, so the expansion
+needs no `sh -c` wrapper.
+
+Run locally from the repo root (a plain `go-toolchain` already runs the
+suites via its dats phase; to run them standalone, build first so
+`build/webhook-runner` exists and install dats per README's "CLI contract
+tests (dats)" section):
+
+    go-toolchain
+    dats test dats
+
+ci.yml's `dats` job runs the standalone invocation against the `test`
+job's `go-build` hand-off — local and CI are identical by design.
+
+Facts to keep in mind when adding cases (dats' own docs are authoritative
+for the general format — `docs/file-format.md` in the dats repo; the
+parser is strict and `dats syntax dats` checks without running):
+
+- Tests are SANDBOXED but not chdir'd: `inputs.files` (map of relative
+  path -> content) materialize under a per-test temp dir, the command runs
+  with cwd = the invocation cwd, and `{inputs.<path>}` in `cmd` expands to
+  a fixture's ABSOLUTE path. There is no directory placeholder, so a
+  fixture tree's root is recovered as
+  `"$(dirname "{inputs.<hook>/hook.json}")/.."` — the suite's standard
+  anchor pattern. Every case is self-contained; never share fixtures on
+  disk.
+- Stream assertions: LIST entries are substring-contains; MAP entries are
+  0-based line numbers matched as REGEXES (escape `(`/`[`; the two forms
+  really do differ — an unescaped `(s)` in a map entry silently changes
+  meaning).
+- dats runs ALL tests, by design — no filtering/skip/only mechanisms
+  exist, and none should be added or emulated.
+- NEVER write a case that invokes bare `webhook-runner <word>`: the root
+  command's `[hooks-dir]` positional means any unrecognized word STARTS
+  THE SERVER (binds :9000/:9001) instead of erroring. Tests near the
+  serve path must error before binding (and carry a `timeout:` hang
+  guard, e.g. `30s`).
+- Assert only observed behavior — run the built binary by hand first and
+  copy the exact exit code/message — and pin the minimal DISCRIMINATING
+  substring, not remediation prose or valid-value rosters (those churn
+  on compatible changes).
+
 ## Architecture: two ports + a state socket
 
 The server listens on two TCP ports plus a Unix socket:
@@ -76,130 +154,10 @@ The server listens on two TCP ports plus a Unix socket:
   GitHub calls); exposing the private hooks repo's deployed commit sha
   on this PUBLIC port is a deliberate, operator-requested trade),
   `POST /_reload`. Public-facing, exposed via Cloudflare Tunnel.
-- **Admin port** (`:9001`): dashboard, `/version` (build identity +
-  `hooks_tree` state, same as the hook port's; the dashboard footer shows
-  the build string), `/hooks`, `/hooks/{id}` (one hook's
-  drill-down: value-free config summary — api_key as a boolean, env var
-  names only, never any api_key/env/secret value, `skip_conditions` as a
-  count — plus image state, KV namespace stats, and run stats over the live
-  tracker window merged with the persisted run history; `stats.retention`
-  labels that window and `stats.skipped` is the skip bucket — see the
-  skip_if bullet under "Things easy to get wrong"),
-  `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, the
-  hooks-repo reload panel (`GET /reload/status` — mode gated/legacy/none,
-  branch, live commit with CI + src/hooks-tree verdicts, the gate's held
-  tip; `GET /reload/commits` — ~20 fetched-fresh origin commits with
-  per-commit CI/src/is_live; `POST /reload/check` — reload on demand:
-  one `Gate.Reconcile` pass in gated mode / the legacy pull+reload;
-  `POST /reload/switch` — the manual commit pick, body `{"ref","override"}`
-  — see the reload-gate bullet's manual-pick paragraph under "Things easy
-  to get wrong"), `/events`
-  (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries), `/attention` (the aggregated needs-attention problem
-  set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
-  first — the dashboard's red banner + panel; see the attention bullet
-  under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill
-  switch (`POST /hooks/{id}/disable|enable`,
-  `PUT|DELETE /concurrency/{group}/limit` — see the overrides bullet under
-  "Things easy to get wrong"), `/concurrency` (live per-group
-  effective limit/declared/overridden/active/waiting), `/kv` (read-only state-store stats:
-  per-namespace key count and bytes — shape unchanged, still value-free),
-  `/kv/{namespace}` (one namespace's keys, sorted, `?prefix=` filters:
-  name, size, and `expires_at` + remaining `ttl_seconds` when a TTL is
-  set — the entry model tracks nothing else, so no created/updated
-  stamps), and `/kv/{namespace}/{key}` (one entry **including its
-  value**: `value_base64` always, `value_utf8` when the bytes are valid
-  UTF-8; 404 on absent-or-expired via the same lazy-expiry rule as the
-  state API). Exposing values on `/kv/{namespace}/{key}` is a
-  **deliberate reversal** of the original "never values" stance, made at
-  the operator's explicit request — the admin port is operator-only
-  behind Zero Trust; the hook port and `/hooks/{id}` stay value-free
-  (`/hooks/{id}`'s KV field remains the count/bytes summary). Plus the
-  MANAGER surface: `GET /managers` (roster: state, effective disabled,
-  instance id/started, restarts, inbox depth, last delivery/tick, config
-  summary), `GET /managers/{id}` (roster row + the instance's recent
-  output lines — managers are not runs, their logs live HERE, never in
-  /runs), and the manager kill switch + bounce
-  (`POST /managers/{id}/disable|enable|restart` — disable gracefully
-  stops the instance and parks; restart bounces it). Internal,
-  behind Cloudflare Zero Trust. The dashboard's `#hook={id}` fragment
-  opens a per-hook "app" page built on those endpoints — an app is
-  exactly one hook for now; grouping several hooks into one app is
-  future work, which is why `/hooks/{id}` keeps a hook-scoped shape a
-  grouping layer could aggregate. For `state: true` hooks that app page
-  renders a "State (KV)" section: the key table (name, size, TTL
-  remaining) with click-through to the stored value (pretty-printed when
-  it parses as JSON, base64 for binary; text-node rendering, so stored
-  bytes can't inject markup). The page is organized by a PERSISTENT
-  SIDEBAR (dashboard.js's hash router): the bare `#` hash is the
-  chart-first overview (timeline front and center), and every other
-  section is its own `#page=<name>` route (hooks, managers, runs,
-  events, kv, concurrency, images, attention, reload), with dynamic
-  per-hook (`#hook=`) and per-manager (`#manager=`) drill-down links in
-  the sidebar. Routing toggles a `.page-off` CLASS only — never the
-  `hidden` attribute — so it composes with each section's own
-  data-driven visibility (attention hides when healthy, the runs table
-  behind timeline.js's toggle) and every section keeps refreshing over
-  the same SSE section feed regardless of the active page (nothing is
-  lost, only organized; the dedicated Managers page renders the roster
-  with the hook-style slider kill switch, a Restart bounce, and the
-  drill-down's live output tail). The overview's PRIMARY runs view is a
-  realtime swimlane timeline (`<timeline-view>`, canvas, one lane per
-  hook, hue per hook): queue wait as a dim lead-in segment, declared
-  waits/blocked locks/queued group acquires hatched. Wait indication is
-  ON-SPAN ONLY — the adapter deliberately feeds the component ZERO
-  connectors (operator ruling: no cross-canvas lines; the generic
-  connector capability stays upstream in js-snippets): a queued run's
-  label badge carries the group and its live place in line ("⧗
-  model-gateway · 3rd", re-stamped as the queue advances), a holder's
-  badge carries how many runs it is holding up ("⏳N" — derived
-  CLIENT-side by inverting waiting_on, because stream deltas never ship
-  the server's waiters field), and holder/waiter click-through lives in
-  the run modal's links. The adapter registers both badge glyphs as
-  consumer rows in the component's "?" legend (`legendEntries`,
-  feature-detected — an older Pages component just shows its built-in
-  rows), and run tooltips spell them out in plain language from the same
-  data ("waiting for <group> · Nth in line" / "holds the <group> slot ·
-  N waiting"). One logical wait is ONE wait_history entry:
-  internal/runs.SetWaitingOn CONTINUES the trailing open segment on a
-  same-kind+key restamp (queue position/holder churn) instead of
-  fragmenting it (pre-fix, a single 7-deep queue wait shipped 14
-  micro-segments on every SSE delta). Failures
-  emphasized; cancelled runs map to the component's first-class
-  'cancelled' state (hollow + dashed category-hue border — "stopped, not
-  failed"), with the kill tail (cancel_requested_at→finished) still a
-  separate 'outline' segment the component draws as a terminal cut that
-  never vanishes; instant runs (e.g. skips) as pips, fed INDIVIDUALLY at
-  their true timestamps — the component clusters visually-overlapping
-  instants into scale-aware ×N markers that split on zoom (the old
-  adapter-side skip pre-merge is gone; each skip keeps its own tooltip
-  and modal click-through); wheel/drag
-  pan + zoom (plus `html { overscroll-behavior-x: none }` in
-  dashboard.css so a trackpad back-swipe around the canvas never
-  triggers history navigation), and panning into the past pages
-  `/runs?before=` history
-  down to retention (`/config`'s `run_retention` labels the boundary).
-  COVERAGE'S TRAILING EDGE IS THE ADAPTER'S JOB: the component hatches
-  every uncovered range up to now as unknown history, so on a live
-  stream the adapter must keep vouching [last claim, now] — run deltas
-  fold a `coverage` claim into their merge, hb/changed keepalives make a
-  throttled coverage-only claim (`claimLiveCoverage`) — bounding the
-  trailing hatch to ~one heartbeat; a dead feed stops claiming (growing
-  hatch + stale note = the truth) and the reconnect snapshot back-fills
-  the gap. Pre-#73 this held only by accident (the skip-driven
-  rebuildAll re-registered coverage to now; deleting it hatched the
-  whole live window over live bars — the 2026-07-15 incident); the
-  testjs timeline-coverage harness pins the contract.
-  A bar click opens the run modal, a lane-label click opens `#hook={id}`,
-  and the old runs table stays behind a persisted "Show table" toggle.
-  waiting_on/waiters and unknown statuses are feature-detected, so the
-  timeline works against servers with or without first-class waits.
-  Dashboard assets are content-addressed (`internal/server/
-  dashboard` rewrites index.html to `/dashboard.<hash>.css|.js` +
-  `/timeline.<hash>.js`, served
-  immutable; `/` and the bare asset paths are no-cache, stale hashes 404)
-  so an edge cache can never pair new HTML with stale assets.
+- **Admin port** (`:9001`): the dashboard plus the operator API — hook/run/manager reads and drill-downs, the activity feed, `/attention`, `/concurrency`, the KV views, the reload panel, and the operator kill switches (disable a hook, override a concurrency limit, disable/restart a manager). `/runs/stream` is the SSE live tail that also multiplexes section-invalidation signals, so the dashboard never polls while it is up — with ONE deliberate exception: an open run modal on a non-terminal run polls `/runs/{id}` every 3s, because deltas are output-stripped and a merely-logging run emits none. Internal, behind Cloudflare Zero Trust.
+  - **A manager instance is NOT a run**: its logs live under `/managers/{id}`, never in `/runs`.
+  - `/kv/{namespace}/{key}` deliberately EXPOSES stored values (operator request; the admin port is operator-only). The hook port and `/hooks/{id}` stay value-free.
+  - [docs/internals/admin-api.md](docs/internals/admin-api.md) -- every endpoint, the per-hook app page, and the realtime swimlane timeline.
 - **State KV API** — served on a **Unix socket** (NOT a TCP port), default
   `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
   `POST /kv/{key}/incr`, the run-owned cooperative locks
@@ -1145,3 +1103,25 @@ The companion repo is `wow-look-at-my/webhooks`.
   editing ts/ and commit the regenerated bundle. A prebuilt ts0 binary
   served from buildhost, fetched by a small Go bootstrap, is landing next
   to re-automate regeneration.
+The long-form gotchas moved to `docs/internals/` -- unchanged, each
+authoritative for its area. What stays here is the short list that bites
+most often, plus where to read the rest.
+
+- `runner.execute` deliberately uses `exec.Command` (not `CommandContext`) and kills the container by name on timeout: if Go SIGKILLs the docker CLI, the container can survive. Async runs use `context.Background()`, NOT the request context (the client disconnects right after the 202).
+- Run IDs are 16 random bytes, base32-lowercased to 26 chars — anything building container names from them must keep the `a-z2-7` alphabet in mind.
+- **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
+- **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
+- Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
+- **GitHub does not re-send a failed delivery.** A draining server therefore PARKS deliveries (`internal/spool`) and answers 202 — never 503 "the sender will retry". Shutdown order is load-bearing: the hook port and state socket stay up across `rn.Wait()`.
+
+Read before changing any of these areas:
+
+- [docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md) -- the CI-gated reload, cancellation, secrets/env refs, the two tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, `dind`, `script`.
+- [docs/internals/runs-concurrency-and-overrides.md](docs/internals/runs-concurrency-and-overrides.md) -- the activity-based timeout, `skip_if`, `run_title`, concurrency groups, the global run cap, the operator kill switch, the scheduler, the run store.
+- [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, the five section-signal seams, the needs-attention surface.
+- [docs/internals/delivery-durability.md](docs/internals/delivery-durability.md) -- deploy windows: `/restart-ready`, the delivery spool and its replay, the shutdown ordering, and the port-down gap none of it covers.
+- [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
+- [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run), the push-fed admin surface, and unconditional github-state-mirror routing.
+- [docs/internals/waits-and-spawn.md](docs/internals/waits-and-spawn.md) -- declared waits and the manifest-authorized spawn primitive.
+- [docs/internals/shim-and-timeline.md](docs/internals/shim-and-timeline.md) -- the state-socket proxy shim and the dashboard timeline adapter.
+- [docs/manager-entity-design.md](docs/manager-entity-design.md) -- the manager entity design, as built.
