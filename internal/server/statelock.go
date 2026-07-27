@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,9 +83,16 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 	}
 	key := r.PathValue("key")
 
-	info, err := s.acquireLock(ns, key, runID, ttl, req.Pinned)
+	info, err := s.takeLock(r.Context(), ns, key, runID, ttl, req.Pinned)
 	if err == nil {
 		writeJSON(w, http.StatusOK, info)
+		return
+	}
+	if errors.Is(err, kv.ErrLockExpired) {
+		// TTL enforcement did not finish: the holder is still dying, or it is
+		// an entity this server cannot kill. The lock is NOT handed over —
+		// the whole point — so the caller gets a named 409 either way.
+		writeJSON(w, http.StatusConflict, lockConflict{Error: err.Error(), HeldBy: &info})
 		return
 	}
 	if !errors.Is(err, kv.ErrLockHeld) {
@@ -96,6 +104,85 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 		return
 	}
 	s.blockOnLock(w, r, ns, key, runID, ttl, req, info)
+}
+
+// lockKillTimeout bounds ONE TTL enforcement: how long an acquire waits for
+// the over-budget holder it just killed to actually reach a terminal state
+// (docker kill + the finish seam — normally well under a second). Past it
+// the acquire is refused rather than granted: a mutex is only ever handed
+// over once the previous holder is CERTAIN to be dead.
+// (a var only so tests can shorten it; nothing reassigns it in production)
+var lockKillTimeout = 30 * time.Second
+
+// takeLock is THE acquire seam — the plain compare-and-set plus TTL
+// ENFORCEMENT. Every acquire path goes through it (the immediate take and
+// both blocking retry loops), so none of them can disagree about what an
+// expired hold means.
+func (s *Server) takeLock(ctx context.Context, ns, key, runID string, ttl time.Duration, pinned bool) (kv.LockInfo, error) {
+	info, err := s.acquireLock(ns, key, runID, ttl, pinned)
+	if !errors.Is(err, kv.ErrLockExpired) {
+		return info, err
+	}
+	return s.enforceLockTTL(ctx, ns, key, runID, ttl, pinned, info)
+}
+
+// enforceLockTTL makes the TTL mean something (operator ruling — see
+// kv/lock.go's header): the store never frees an expired lock on its own,
+// because a mutex that lets go under a live holder is not a mutex. So when a
+// contender meets an over-budget hold, the runner KILLS the holder, waits
+// until that run is certainly dead, and only then takes the lock the finish
+// seam released. The sequence is the whole point — kill, confirm, then free
+// — and every branch that cannot complete it refuses the lock instead:
+//   - holder already gone (the release-path bug the backstop exists for):
+//     reap its shell and take the lock. Nothing to kill, nothing to wait for;
+//   - holder is a live run: cancel it once, then poll until terminal;
+//   - holder is a MANAGER INSTANCE: refuse. Manager instances are supervised
+//     and restart-on-exit, so "kill it" is not this endpoint's call to make;
+//   - no run tracker wired: refuse. Liveness is unknowable, and guessing
+//     "dead" is exactly the two-holders bug.
+func (s *Server) enforceLockTTL(ctx context.Context, ns, key, runID string, ttl time.Duration, pinned bool, holder kv.LockInfo) (kv.LockInfo, error) {
+	if s.managerCaller(ns, holder.RunID) {
+		return holder, fmt.Errorf("%w: held by the live manager instance %s, which this endpoint may not kill", kv.ErrLockExpired, holder.RunID)
+	}
+	if s.tracker == nil {
+		return holder, fmt.Errorf("%w: run tracking not configured, so the holder cannot be confirmed dead", kv.ErrLockExpired)
+	}
+
+	deadline := time.Now().Add(lockKillTimeout)
+	killed := false
+	for {
+		victim := s.tracker.Get(holder.RunID)
+		if victim == nil || victim.HookID() != ns || victim.Status().Terminal() {
+			// CERTAIN to be dead. Its finish seam normally freed the lock
+			// already; the reap covers the case that seam never ran (a no-op
+			// if the entry changed hands meanwhile — ReapExpiredLock refuses
+			// anything but this exact expired holder).
+			if s.kv.ReapExpiredLock(ns, key, holder.RunID) {
+				s.log.Info("expired lock reaped", "hook", ns, "key", key, "holder", holder.RunID, "taker", runID)
+				s.events.Record("lock.ttl_reaped",
+					fmt.Sprintf("%s: lock %q freed for run %s — its holder (run %s) was over its TTL and already gone", ns, key, runID, holder.RunID),
+					map[string]string{"hook": ns, "run": runID})
+			}
+			return s.acquireLock(ns, key, runID, ttl, pinned)
+		}
+		if !killed {
+			victim.RequestCancelWithReason(fmt.Sprintf("cancelled: lock %q held past its TTL (since %s) — killed so the lock can be handed to run %s",
+				key, holder.AcquiredAt.UTC().Format(time.RFC3339), runID))
+			killed = true
+			s.log.Info("killing lock holder past its TTL", "hook", ns, "key", key, "holder", holder.RunID, "taker", runID)
+			s.events.Record("lock.ttl_enforced",
+				fmt.Sprintf("%s: run %s held lock %q past its TTL — cancelling it so run %s can take the lock", ns, holder.RunID, key, runID),
+				map[string]string{"hook": ns, "run": holder.RunID})
+		}
+		if time.Now().After(deadline) {
+			return holder, fmt.Errorf("%w: holder run %s did not terminate within %s of being cancelled — the lock stays its", kv.ErrLockExpired, holder.RunID, lockKillTimeout)
+		}
+		select {
+		case <-time.After(lockRetryInterval):
+		case <-ctx.Done():
+			return holder, ctx.Err()
+		}
+	}
 }
 
 // acquireLock dispatches to the plain or the atomic take-and-pin acquire.
@@ -160,13 +247,19 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 		select {
 		case <-tick.C:
 			run.TouchActivity()
-			info, err := s.acquireLock(ns, key, runID, ttl, req.Pinned)
+			info, err := s.takeLock(r.Context(), ns, key, runID, ttl, req.Pinned)
 			if err == nil {
 				run.TouchActivity()
 				writeJSON(w, http.StatusOK, info)
 				return
 			}
-			if !errors.Is(err, kv.ErrLockHeld) {
+			if errors.Is(err, context.Canceled) {
+				return // client hung up mid-enforcement; the deferred cleanup tidies up
+			}
+			// An expired hold whose enforcement did not complete keeps this
+			// waiter waiting — the retry re-enters enforcement, and the hold
+			// is never handed over on a guess.
+			if !errors.Is(err, kv.ErrLockHeld) && !errors.Is(err, kv.ErrLockExpired) {
 				s.writeKVError(w, ns, err)
 				return
 			}
@@ -223,13 +316,16 @@ func (s *Server) managerBlockOnLock(w http.ResponseWriter, r *http.Request, ns, 
 				writeError(w, http.StatusConflict, "not the current manager instance")
 				return
 			}
-			info, err := s.acquireLock(ns, key, instanceID, ttl, req.Pinned)
+			info, err := s.takeLock(r.Context(), ns, key, instanceID, ttl, req.Pinned)
 			if err == nil {
 				s.managers.TouchInstance(ns, instanceID)
 				writeJSON(w, http.StatusOK, info)
 				return
 			}
-			if !errors.Is(err, kv.ErrLockHeld) {
+			if errors.Is(err, context.Canceled) {
+				return // client hung up mid-enforcement
+			}
+			if !errors.Is(err, kv.ErrLockHeld) && !errors.Is(err, kv.ErrLockExpired) {
 				s.writeKVError(w, ns, err)
 				return
 			}

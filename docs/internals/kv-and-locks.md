@@ -54,7 +54,9 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   15m, explicit `ttl_seconds` 1..3600) against a release-path bug — never
   the liveness story — and a CONTENDED acquire mutates nothing (in
   particular it never restamps the holder's expiry, so contenders can't
-  keep a dead lock alive). The table is **in-memory on purpose**: no run
+  keep a dead lock alive). **Expiry frees nothing by itself** — it is
+  ENFORCED against the holder; see the TTL-enforcement bullet below. The
+  table is **in-memory on purpose**: no run
   survives a server restart, so a restart correctly starts lock-free —
   don't "fix" that by persisting locks. Locks are NOT entries: they never
   appear in GET/PUT/DELETE/list, the namespace files, or the admin KV
@@ -99,6 +101,34 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   carry a derived `waiters` list ("N waiting on this run's locks") —
   computed by `server.attachWaiters` from live runs' `waiting_on` at READ
   time, never stored; don't add waiter state to the lock table.
+- **TTL enforcement — kill, confirm, THEN hand over** (operator ruling,
+  verbatim: *"never have a TTL on a mutex, that doesn't make sense. Or, if
+  you want to have a mutex TTL, you need to force kill the thing that's
+  holding it when the time is up. ONCE THAT FORCE KILL COMPLETES AND THAT
+  JOB IS CERTAIN TO BE DEAD, then the mutex would be freed automatically
+  due to the ending job, and the TTL has been enforced."*). An expired
+  lock used to read as FREE at acquire time, liveness-blind — so any hold
+  outliving its TTL silently became two holders. Now the store keeps the
+  entry (`kv.ErrLockExpired` + the holder's info, mutating nothing) and
+  `Server.enforceLockTTL` does the enforcing: cancel the holder
+  (`RequestCancelWithReason`, the same docker-kill path steal uses), poll
+  until that run is TERMINAL, and take the lock its finish seam then
+  freed. `takeLock` is the single seam every acquire path uses (immediate
+  + both blocking loops), so none of them can disagree. The refusals are
+  the point — the lock is never handed over on a guess:
+  holder still dying past `lockKillTimeout` (30s) → 409; holder is a live
+  MANAGER INSTANCE (supervised, restart-on-exit — not this endpoint's to
+  kill) → 409; no run tracker wired → 409. The one no-kill path is a
+  holder already CONFIRMED gone (the release-path bug the backstop exists
+  for): `kv.ReapExpiredLock` drops that exact expired shell — refusing if
+  the entry changed hands, is unexpired, or names a different holder — and
+  the acquire proceeds. Events: `lock.ttl_enforced` (holder cancelled),
+  `lock.ttl_reaped` (dead holder's shell reclaimed). The sweeper follows
+  the same rule via `kv.SetRunLiveness` (wired in cli/serve.go to the run
+  tracker + `managers.AnyCurrentInstance`): it reaps an expired lock only
+  when the holder is certainly dead, and reaps NOTHING when no oracle is
+  wired — an unwired store cannot tell "dead" from "slow". A steal still
+  displaces an expired holder (pinned or not): a steal IS the kill path.
 - Lock pinning (`internal/kv/lock.go` `pinned` + `internal/server/state.go`
   pin/unpin routes): a lock HOLDER can flip its lock not-stealable
   (`POST /kv/{key}/pin`) and back (`/unpin`), or take-and-pin atomically
@@ -111,8 +141,10 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   directions (409 otherwise), idempotent, `ErrLockPinned` maps to 409.
   THE INVARIANT: a pin NEVER outlives its run — the finish-seam
   `ReleaseRunLocks` and the TTL backstop apply to pinned locks unchanged
-  (pinning restricts STEALING, never releasing), and a re-acquire by the
-  same run preserves an existing pin. The single-instance manager lease
+  (pinning restricts STEALING, never releasing; past the backstop a pinned
+  lock is stealable again, and a plain acquire enforces the TTL against it
+  like any other), and a re-acquire by the same run preserves an existing
+  pin. The single-instance manager lease
   is deliberately NOT built on an always-pinned lock — it stays the
   separate kernel-flock layer (operator ruling; composition argument in
   docs/manager-entity-design.md 10b).
