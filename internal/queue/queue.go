@@ -1,364 +1,447 @@
-// Package queue is the runner's durable WORK QUEUE primitive: a named,
-// per-hook backlog of opaque item ids that survives the run that filled it.
+// Package queue is the runner's durable per-hook WORK QUEUE: a hook records
+// that it has work outstanding, and the runner starts a run to do it — now, or
+// at a time the hook names.
 //
-// WHY IT IS HERE AND NOT IN A HOOK. A hook run is a container that lives for
-// one delivery, so "work I did not get to" has nowhere to live inside it. Every
-// hook that walks a large fleet therefore reinvents the same thing on top of
-// the KV store — a cursor string, a rotation, a resume rule, and a set of
-// off-by-one bugs — and reinvents it badly: a cursor is a position in a list
-// the next run re-derives, so it silently means something different whenever
-// that list changes. pr-minder shipped exactly that and stranded 119 of 169
-// PRs behind a cap, hourly, forever. The backlog is the RUNNER's concern
-// (operator ruling: "queue should exist in webhook-runner. This is completely
-// out of scope for a webhook impl"), so it is a first-class primitive beside
-// the KV store, the locks and the waits.
+// Why this is a runner primitive and not a hook's business. A stateful hook
+// keeps records meaning "this subject needs another look" (required-builds'
+// reconcile/settle/deferral records, pr-minder's owed re-checks). Something has
+// to notice them. Every option available without this package is a bad one:
 //
-// THE CONTRACT, and why each half is shaped this way:
+//   - Do it at the tail of every delivery. Then every unrelated event pays a
+//     fleet scan — measured on required-builds: 78 pending commits turned a
+//     3-second evaluation into a 90-second run, with the org's event volume
+//     setting the rate.
+//   - Do it on a fixed schedule. Cheap, but work that is ALREADY KNOWN sits
+//     waiting out the interval — a failed publish blocking a merge gate for
+//     minutes with nothing to show for the wait.
+//   - Have the hook POST itself a trigger. Works, and required-builds shipped
+//     exactly that: an HMAC self-call, a dedup marker in its own KV, a
+//     suppression flag so a failing pass could not re-trigger itself in a loop,
+//     and a floor tick for deadlines it could not express. That is a queue,
+//     hand-rolled, per hook, non-durable — the marker and the pending work
+//     disappear on restart precisely when a deploy dropped the deliveries.
 //
-//   - PUSH IS A SET UNION, ORDER PRESERVED. Pushing an item already queued is
-//     a no-op that keeps its ORIGINAL position. That is what lets a caller
-//     re-push its whole candidate set on every tick — the natural, stateless
-//     way to describe "this is the work that exists" — without the queue
-//     growing without bound or an item at the back starving because a
-//     re-push kept moving it.
-//   - TAKE REMOVES, at-most-once, no leases or acks. Consumers of a backlog
-//     like this are idempotent reconcilers whose next tick re-derives the same
-//     work, so a run that dies mid-item loses nothing that the next push does
-//     not restore — and in exchange there is no lease to expire, no visibility
-//     timeout to tune, and no invisible in-flight state to leak.
-//   - Depth is observable, so "the backlog is not draining" is a number a
-//     hook can log and an operator can see, rather than an inference.
+// So the queue lives here. `POST /queue` on the state API takes {key, payload,
+// delay_seconds}; the runner stores the entry, and a dispatcher starts a run of
+// that hook when it comes due. The properties a hook would otherwise have to
+// build itself:
 //
-// The store is DISK-BACKED (unlike the lock table, which is deliberately
-// memory-only): a queue outliving the process is the entire point — a runner
-// restart in the middle of a fleet walk must not restart the walk.
+//	DEDUP        — an entry is identified by (namespace, key). Enqueueing an
+//	               existing key UPSERTS: the earliest due time wins (work that
+//	               needs attention sooner is never pushed later) and the newest
+//	               payload wins. A thousand enqueues are one run.
+//	SCHEDULING   — delay_seconds > 0 is a wake-at-T, the thing no primitive here
+//	               offered. A settle window or a grace period becomes an entry
+//	               due at its deadline instead of a tick that polls for it.
+//	NO SWALLOWING— the entry is deleted as its run STARTS. Work discovered while
+//	               that run is in flight re-enqueues and gets exactly one
+//	               follow-up run.
+//	NO SPAMMING  — MinInterval bounds how often one key may fire. A hook that
+//	               re-enqueues from inside its own queue run cannot hot-loop;
+//	               the re-arm is simply scheduled at last-fire + MinInterval.
+//	DURABILITY   — bbolt, like the run store. A queued wake survives the restart
+//	               that a hook-side marker would not.
+//
+// The dispatcher is a PURE timing component in the internal/scheduler mould: it
+// owns "what is due and when", and the actual run dispatch is a caller-supplied
+// Fire callback, so this package needs no dependency on the runner, registry,
+// or tracker and is testable with an injected clock.
 package queue
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
-// Config bounds the store. Zero values fall back to the defaults applied in
-// New.
-type Config struct {
-	Dir           string // directory holding one <namespace>.json per namespace
-	MaxDepth      int    // items per queue (default 10000)
-	MaxItemBytes  int    // per item (default 512)
-	MaxQueues     int    // distinct queues per namespace (default 64)
-	MaxNamespaces int    // distinct namespaces (default 256)
-}
+const (
+	// MaxKeyLen bounds a caller-supplied key. Keys are opaque to the runner
+	// but they name entries on the dashboard and in logs.
+	MaxKeyLen = 256
+	// MaxPayloadBytes bounds one entry's payload. A queue entry says WHAT
+	// needs doing, not the data to do it with — the hook's own state holds
+	// that — so this is deliberately small.
+	MaxPayloadBytes = 16 * 1024
+	// MaxPerNamespace bounds how many distinct keys one hook may have
+	// outstanding. Past it, enqueueing a NEW key is refused (existing keys
+	// still upsert, so a hook can never be locked out of updating work it
+	// already queued). A hook that needs thousands of distinct keys is
+	// enqueueing subjects, not work — that is what its own KV is for.
+	MaxPerNamespace = 1000
+	// DefaultMinInterval is the floor between two fires of the SAME key.
+	DefaultMinInterval = 5 * time.Second
+	// DefaultMaxDelay caps delay_seconds. A queue entry is pending work, not
+	// a calendar; anything wanting a longer horizon wants a schedule.
+	DefaultMaxDelay = 24 * time.Hour
+)
 
-// Typed errors the HTTP layer maps onto status codes.
 var (
-	ErrBadNamespace  = errors.New("queue: invalid namespace")
-	ErrBadName       = errors.New("queue: invalid queue name")
-	ErrItemTooLarge  = errors.New("queue: item exceeds max size")
-	ErrEmptyItem     = errors.New("queue: empty item")
-	ErrTooManyQueues = errors.New("queue: queue limit reached for this namespace")
-	ErrTooManyNS     = errors.New("queue: namespace limit reached")
+	bucketEntries = []byte("entries") // key: namespace \x00 key -> Entry JSON
+	bucketFired   = []byte("fired")   // key: namespace \x00 key -> last fire unix nanos
 )
 
-// namePattern is the queue-name alphabet: lowercase kebab-case, like hook ids
-// and KV namespaces. Names appear in URLs and in one JSON file per namespace,
-// so they stay boring on purpose.
-var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-
-func validNamespace(ns string) bool {
-	return ns != "" && len(ns) <= 128 && namePattern.MatchString(ns)
+// Entry is one unit of outstanding work: a hook has said "run me for this key",
+// optionally not before RunAt.
+type Entry struct {
+	Namespace  string    `json:"namespace"`
+	Key        string    `json:"key"`
+	RunAt      time.Time `json:"run_at"`
+	EnqueuedAt time.Time `json:"enqueued_at"`
+	// Enqueues counts how many times this entry was (re-)enqueued before it
+	// fired — the dedup made visible. 1 means one enqueue; 40 means the same
+	// work was announced 40 times and still costs one run.
+	Enqueues int             `json:"enqueues"`
+	Payload  json.RawMessage `json:"payload,omitempty"`
 }
 
-func validName(name string) bool {
-	return name != "" && len(name) <= 128 && namePattern.MatchString(name)
+// Due reports whether the entry may fire at now.
+func (e Entry) Due(now time.Time) bool { return !e.RunAt.After(now) }
+
+// Config configures a Store.
+type Config struct {
+	// Path is the bbolt file. Required.
+	Path string
+	// MinInterval is the per-key fire floor (see DefaultMinInterval).
+	MinInterval time.Duration
+	// MaxDelay caps a caller's requested delay (see DefaultMaxDelay).
+	MaxDelay time.Duration
 }
 
-// ValidName exposes the name rule to the HTTP layer, so a bad name is a 400
-// from the router rather than an error only the mutating verbs can produce.
-func ValidName(name string) bool { return validName(name) }
-
-// Stat is one queue's observable state: what it is called and how much work
-// is waiting. Never the items — a depth is an operational fact, the contents
-// are the owner's business.
-type Stat struct {
-	Name  string `json:"name"`
-	Depth int    `json:"depth"`
-}
-
-// PushResult reports what a push actually did. `Duplicates` are items already
-// queued (kept at their original position, not re-queued); `Dropped` are items
-// the depth cap refused — a full backlog means the consumer is not keeping up,
-// which the caller must be able to SEE rather than infer from a silent gap.
-type PushResult struct {
-	Queued     int `json:"queued"`
-	Duplicates int `json:"duplicates"`
-	Dropped    int `json:"dropped"`
-	Depth      int `json:"depth"`
-}
-
+// Store is the durable queue.
 type Store struct {
-	mu  sync.Mutex
-	ns  map[string]map[string][]string // namespace -> queue -> FIFO items
+	db  *bolt.DB
 	cfg Config
 	log *slog.Logger
+
+	// Notifies the dispatcher that the earliest due time may have moved
+	// closer. Buffered depth 1: a pending signal already means "re-read".
+	wake chan struct{}
+
+	mu     sync.Mutex
+	closed bool
 }
 
-// New constructs a Store, creating Dir if needed and loading every namespace
-// file already present. A corrupt namespace file is logged and skipped rather
-// than aborting startup (the same per-file tolerance kv.New and hooks.LoadDir
-// apply).
-func New(cfg Config, log *slog.Logger) (*Store, error) {
+// Open creates or opens the queue store.
+func Open(cfg Config, log *slog.Logger) (*Store, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if cfg.Dir == "" {
-		return nil, errors.New("queue: Config.Dir is required")
+	if cfg.Path == "" {
+		return nil, errors.New("queue: Config.Path is required")
 	}
-	if cfg.MaxDepth <= 0 {
-		cfg.MaxDepth = 10000
+	if cfg.MinInterval <= 0 {
+		cfg.MinInterval = DefaultMinInterval
 	}
-	if cfg.MaxItemBytes <= 0 {
-		cfg.MaxItemBytes = 512
+	if cfg.MaxDelay <= 0 {
+		cfg.MaxDelay = DefaultMaxDelay
 	}
-	if cfg.MaxQueues <= 0 {
-		cfg.MaxQueues = 64
-	}
-	if cfg.MaxNamespaces <= 0 {
-		cfg.MaxNamespaces = 256
-	}
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o700); err != nil {
 		return nil, fmt.Errorf("queue: create dir: %w", err)
 	}
-	s := &Store{ns: make(map[string]map[string][]string), cfg: cfg, log: log}
-	if err := s.load(); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (s *Store) load() error {
-	des, err := os.ReadDir(s.cfg.Dir)
+	db, err := bolt.Open(cfg.Path, 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
-		return fmt.Errorf("queue: read dir: %w", err)
+		return nil, fmt.Errorf("queue: open %s: %w", cfg.Path, err)
 	}
-	for _, de := range des {
-		if de.IsDir() || !strings.HasSuffix(de.Name(), ".json") {
-			continue
+	if err := db.Update(func(tx *bolt.Tx) error {
+		for _, b := range [][]byte{bucketEntries, bucketFired} {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return err
+			}
 		}
-		ns := strings.TrimSuffix(de.Name(), ".json")
-		if !validNamespace(ns) {
-			s.log.Warn("queue: skipping file with invalid namespace name", "file", de.Name())
-			continue
+		return nil
+	}); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("queue: init buckets: %w", err)
+	}
+	return &Store{db: db, cfg: cfg, log: log, wake: make(chan struct{}, 1)}, nil
+}
+
+// Close releases the bbolt file.
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return s.db.Close()
+}
+
+// MinInterval reports the configured per-key fire floor.
+func (s *Store) MinInterval() time.Duration { return s.cfg.MinInterval }
+
+// MaxDelay reports the configured delay ceiling.
+func (s *Store) MaxDelay() time.Duration { return s.cfg.MaxDelay }
+
+func entryKey(namespace, key string) []byte {
+	return []byte(namespace + "\x00" + key)
+}
+
+func splitEntryKey(b []byte) (namespace, key string, ok bool) {
+	ns, k, found := strings.Cut(string(b), "\x00")
+	return ns, k, found
+}
+
+// ErrTooManyKeys is returned when a namespace is at MaxPerNamespace and the
+// enqueue would add a NEW key.
+var ErrTooManyKeys = errors.New("queue: too many outstanding keys for this namespace")
+
+// Enqueue records outstanding work, returning the stored entry.
+//
+// UPSERT semantics, which are the whole point: re-enqueueing a key that is
+// already outstanding does not add a second entry. The stored RunAt becomes the
+// EARLIER of the two (work does not get postponed by a later announcement), the
+// payload is replaced by the newest one, and the enqueue counter increments so
+// the dashboard can show how much announcing one run absorbed.
+//
+// The MinInterval floor applies here rather than at fire time, so what is
+// stored is the truth: an entry whose key fired moments ago is stored at
+// lastFire+MinInterval, and the dashboard shows exactly when it will run.
+func (s *Store) Enqueue(namespace, key string, delay time.Duration, payload json.RawMessage, now time.Time) (Entry, error) {
+	if namespace == "" {
+		return Entry{}, errors.New("queue: namespace is required")
+	}
+	if key == "" || len(key) > MaxKeyLen {
+		return Entry{}, fmt.Errorf("queue: key must be 1..%d bytes", MaxKeyLen)
+	}
+	if strings.Contains(key, "\x00") {
+		return Entry{}, errors.New("queue: key must not contain NUL")
+	}
+	if len(payload) > MaxPayloadBytes {
+		return Entry{}, fmt.Errorf("queue: payload exceeds %d bytes", MaxPayloadBytes)
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > s.cfg.MaxDelay {
+		return Entry{}, fmt.Errorf("queue: delay exceeds the %s maximum", s.cfg.MaxDelay)
+	}
+
+	want := now.Add(delay)
+	var out Entry
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		entries := tx.Bucket(bucketEntries)
+		ek := entryKey(namespace, key)
+		existing := entries.Get(ek)
+
+		// The anti-hot-loop floor: never schedule a key sooner than
+		// MinInterval after its own last fire. A hook that re-enqueues from
+		// inside the run its enqueue caused gets a run — just not instantly,
+		// forever.
+		if last, ok := lastFire(tx, ek); ok {
+			if earliest := last.Add(s.cfg.MinInterval); want.Before(earliest) {
+				want = earliest
+			}
 		}
-		data, err := os.ReadFile(filepath.Join(s.cfg.Dir, de.Name()))
+
+		var e Entry
+		if existing != nil {
+			if err := json.Unmarshal(existing, &e); err != nil {
+				// A corrupt record must not wedge the queue: replace it.
+				e = Entry{}
+			}
+		} else if entries.Stats().KeyN >= MaxPerNamespace && namespaceCount(tx, namespace) >= MaxPerNamespace {
+			return ErrTooManyKeys
+		}
+
+		e.Namespace, e.Key = namespace, key
+		if e.EnqueuedAt.IsZero() {
+			e.EnqueuedAt = now
+		}
+		e.Enqueues++
+		if payload != nil {
+			e.Payload = payload
+		}
+		// Earliest-wins: an outstanding entry due sooner keeps its time.
+		if existing == nil || e.RunAt.IsZero() || want.Before(e.RunAt) {
+			e.RunAt = want
+		}
+		out = e
+		blob, err := json.Marshal(e)
 		if err != nil {
-			s.log.Error("queue: read namespace file", "file", de.Name(), "err", err)
-			continue
+			return err
 		}
-		var m map[string][]string
-		if err := json.Unmarshal(data, &m); err != nil {
-			s.log.Error("queue: parse namespace file (skipping)", "file", de.Name(), "err", err)
-			continue
-		}
-		s.ns[ns] = m
+		return entries.Put(ek, blob)
+	})
+	if err != nil {
+		return Entry{}, err
 	}
-	return nil
+	s.signal()
+	return out, nil
 }
 
-// Push appends items that are not already queued, in the given order, and
-// returns what it did. Duplicates keep their original position (see the
-// package comment): re-pushing the same backlog every tick is the intended
-// usage, not an accident to defend against.
-func (s *Store) Push(ns, name string, items []string) (PushResult, error) {
-	if !validNamespace(ns) {
-		return PushResult{}, ErrBadNamespace
+func namespaceCount(tx *bolt.Tx, namespace string) int {
+	n := 0
+	prefix := []byte(namespace + "\x00")
+	c := tx.Bucket(bucketEntries).Cursor()
+	for k, _ := c.Seek(prefix); k != nil && strings.HasPrefix(string(k), string(prefix)); k, _ = c.Next() {
+		n++
 	}
-	if !validName(name) {
-		return PushResult{}, ErrBadName
-	}
-	for _, it := range items {
-		if it == "" {
-			return PushResult{}, ErrEmptyItem
-		}
-		if len(it) > s.cfg.MaxItemBytes {
-			return PushResult{}, ErrItemTooLarge
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	qs, nsExisted := s.ns[ns]
-	if !nsExisted {
-		if len(s.ns) >= s.cfg.MaxNamespaces {
-			return PushResult{}, ErrTooManyNS
-		}
-		qs = make(map[string][]string)
-		s.ns[ns] = qs
-	}
-	q, qExisted := qs[name]
-	if !qExisted && len(qs) >= s.cfg.MaxQueues {
-		if !nsExisted {
-			delete(s.ns, ns)
-		}
-		return PushResult{}, ErrTooManyQueues
-	}
-
-	present := make(map[string]struct{}, len(q))
-	for _, it := range q {
-		present[it] = struct{}{}
-	}
-	res := PushResult{}
-	for _, it := range items {
-		if _, dup := present[it]; dup {
-			res.Duplicates++
-			continue
-		}
-		if len(q) >= s.cfg.MaxDepth {
-			res.Dropped++
-			continue
-		}
-		q = append(q, it)
-		present[it] = struct{}{}
-		res.Queued++
-	}
-	qs[name] = q
-	res.Depth = len(q)
-
-	if err := s.persist(ns); err != nil {
-		// Roll back to what is on disk: an in-memory queue the file does not
-		// know about would silently un-queue itself on the next restart.
-		s.rollback(ns, name, q[:len(q)-res.Queued], qExisted, nsExisted)
-		return PushResult{}, err
-	}
-	if res.Dropped > 0 {
-		s.log.Warn("queue: depth cap reached, items dropped", "ns", ns, "queue", name, "dropped", res.Dropped, "depth", res.Depth)
-	}
-	return res, nil
+	return n
 }
 
-// Take removes and returns up to count items from the head. A missing queue is
-// not an error — it is an empty one, which is what a caller draining a backlog
-// means by "nothing to do".
-func (s *Store) Take(ns, name string, count int) ([]string, int, error) {
-	if !validNamespace(ns) {
-		return nil, 0, ErrBadNamespace
+func lastFire(tx *bolt.Tx, ek []byte) (time.Time, bool) {
+	v := tx.Bucket(bucketFired).Get(ek)
+	if len(v) != 8 {
+		return time.Time{}, false
 	}
-	if !validName(name) {
-		return nil, 0, ErrBadName
-	}
-	if count <= 0 {
-		return []string{}, s.Depth(ns, name), nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	qs := s.ns[ns]
-	if qs == nil {
-		return []string{}, 0, nil
-	}
-	q := qs[name]
-	if len(q) == 0 {
-		return []string{}, 0, nil
-	}
-	if count > len(q) {
-		count = len(q)
-	}
-	taken := append([]string(nil), q[:count]...)
-	rest := append([]string(nil), q[count:]...)
-	qs[name] = rest
-
-	if err := s.persist(ns); err != nil {
-		qs[name] = q // the take never happened
-		return nil, 0, err
-	}
-	if len(rest) == 0 {
-		delete(qs, name)
-		if len(qs) == 0 {
-			delete(s.ns, ns)
-		}
-		// Best-effort tidy: the file now describes an empty namespace. A
-		// failure here costs nothing (the next push rewrites it), so it is
-		// logged rather than surfaced — the take itself already succeeded.
-		if err := s.persist(ns); err != nil {
-			s.log.Error("queue: persist after drain", "ns", ns, "err", err)
-		}
-	}
-	return taken, len(rest), nil
+	return time.Unix(0, int64(binary.BigEndian.Uint64(v))), true
 }
 
-// Depth reports how much work is waiting on one queue.
-func (s *Store) Depth(ns, name string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.ns[ns][name])
+// Delete drops an entry (a hook cancelling work it queued). Missing is fine.
+func (s *Store) Delete(namespace, key string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketEntries).Delete(entryKey(namespace, key))
+	})
 }
 
-// List reports every non-empty queue in a namespace, name-sorted. Depths only:
-// the items belong to the hook, and the listing is for operators.
-func (s *Store) List(ns string) []Stat {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Stat, 0, len(s.ns[ns]))
-	for name, q := range s.ns[ns] {
-		out = append(out, Stat{Name: name, Depth: len(q)})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+// List returns a namespace's outstanding entries, soonest first. An empty
+// namespace lists everything (the admin view).
+func (s *Store) List(namespace string) []Entry {
+	var out []Entry
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketEntries).ForEach(func(k, v []byte) error {
+			ns, _, ok := splitEntryKey(k)
+			if !ok || (namespace != "" && ns != namespace) {
+				return nil
+			}
+			var e Entry
+			if err := json.Unmarshal(v, &e); err == nil {
+				out = append(out, e)
+			}
+			return nil
+		})
+	})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RunAt.Equal(out[j].RunAt) {
+			return out[i].Namespace+out[i].Key < out[j].Namespace+out[j].Key
+		}
+		return out[i].RunAt.Before(out[j].RunAt)
+	})
 	return out
 }
 
-// rollback restores a queue (and a freshly created namespace) after a failed
-// persist, keeping memory identical to disk.
-func (s *Store) rollback(ns, name string, prev []string, qExisted, nsExisted bool) {
-	qs := s.ns[ns]
-	if qs == nil {
-		return
-	}
-	if qExisted {
-		qs[name] = prev
-	} else {
-		delete(qs, name)
-	}
-	if !nsExisted {
-		delete(s.ns, ns)
-	}
+// Get returns one entry.
+func (s *Store) Get(namespace, key string) (Entry, bool) {
+	var e Entry
+	found := false
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketEntries).Get(entryKey(namespace, key))
+		if v == nil {
+			return nil
+		}
+		found = json.Unmarshal(v, &e) == nil
+		return nil
+	})
+	return e, found
 }
 
-// persist atomically rewrites one namespace's file via temp+rename. Callers
-// hold the mutex. A rename is atomic on the same filesystem, so a crash
-// mid-write never leaves a torn file.
-func (s *Store) persist(ns string) error {
-	data, err := json.MarshalIndent(s.ns[ns], "", "  ")
+// Claim removes and returns every entry due at now, stamping each key's fire
+// time. Removal happens as the run STARTS (this call is what precedes the
+// dispatch), so work discovered while that run is in flight re-enqueues cleanly
+// and earns exactly one follow-up run instead of being swallowed.
+func (s *Store) Claim(now time.Time) []Entry {
+	var claimed []Entry
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		entries := tx.Bucket(bucketEntries)
+		fired := tx.Bucket(bucketFired)
+		var keys [][]byte
+		if err := entries.ForEach(func(k, v []byte) error {
+			var e Entry
+			if err := json.Unmarshal(v, &e); err != nil {
+				keys = append(keys, append([]byte(nil), k...)) // drop the corrupt record
+				return nil
+			}
+			if e.Due(now) {
+				claimed = append(claimed, e)
+				keys = append(keys, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		var stamp [8]byte
+		binary.BigEndian.PutUint64(stamp[:], uint64(now.UnixNano()))
+		for _, k := range keys {
+			if err := entries.Delete(k); err != nil {
+				return err
+			}
+			if err := fired.Put(k, stamp[:]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("queue: marshal namespace %q: %w", ns, err)
+		s.log.Error("queue: claiming due entries failed", "err", err)
+		return nil
 	}
-	tmp, err := os.CreateTemp(s.cfg.Dir, "."+ns+".json.tmp-*")
-	if err != nil {
-		return fmt.Errorf("queue: temp file: %w", err)
+	sort.Slice(claimed, func(i, j int) bool { return claimed[i].RunAt.Before(claimed[j].RunAt) })
+	return claimed
+}
+
+// NextDue reports when the soonest entry becomes due.
+func (s *Store) NextDue() (time.Time, bool) {
+	var next time.Time
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketEntries).ForEach(func(_, v []byte) error {
+			var e Entry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return nil
+			}
+			if next.IsZero() || e.RunAt.Before(next) {
+				next = e.RunAt
+			}
+			return nil
+		})
+	})
+	return next, !next.IsZero()
+}
+
+// PruneNamespaces drops entries (and fire stamps) for namespaces that no longer
+// exist — a hook removed or renamed. Called on reload with the live hook ids;
+// a nil/empty set is ignored rather than treated as "delete everything", so a
+// failed load can never wipe the queue.
+func (s *Store) PruneNamespaces(live map[string]bool) int {
+	if len(live) == 0 {
+		return 0
 	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("queue: write temp: %w", err)
+	dropped := 0
+	_ = s.db.Update(func(tx *bolt.Tx) error {
+		for _, bucket := range [][]byte{bucketEntries, bucketFired} {
+			b := tx.Bucket(bucket)
+			var keys [][]byte
+			_ = b.ForEach(func(k, _ []byte) error {
+				if ns, _, ok := splitEntryKey(k); ok && !live[ns] {
+					keys = append(keys, append([]byte(nil), k...))
+				}
+				return nil
+			})
+			for _, k := range keys {
+				if err := b.Delete(k); err == nil && bucket[0] == 'e' {
+					dropped++
+				}
+			}
+		}
+		return nil
+	})
+	return dropped
+}
+
+// signal nudges the dispatcher without blocking.
+func (s *Store) signal() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("queue: sync temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("queue: close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, filepath.Join(s.cfg.Dir, ns+".json")); err != nil {
-		return fmt.Errorf("queue: rename: %w", err)
-	}
-	return nil
 }

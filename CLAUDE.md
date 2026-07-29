@@ -28,7 +28,7 @@ internal/events/           in-memory activity feed (bounded ring; nil-recorder s
 internal/attention/        aggregated ACTIVE misconfigurations (the needs-attention surface: GET /attention + the dashboard's red banner; nil-aggregator safe)
 internal/spool/            durable park for deliveries arriving during shutdown drain (replayed by the next process)
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
-internal/queue/            durable per-hook work queues (the backlog primitive behind /queue)
+internal/backlog/          durable per-hook batch backlogs (drain-a-slice; behind /backlog)
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
 schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
@@ -191,13 +191,13 @@ The server listens on two TCP ports plus a Unix socket:
   `"event"` — a MANAGER starts runs of ANOTHER hook through the
   runner itself, authorized deny-by-default by its own manager.json
   `spawn_targets` manifest; see the spawn bullet under "Things easy to get
-  wrong"), the durable WORK QUEUES `POST /queue/{name}/push` (a set union
-  that keeps order — re-push the whole candidate set every tick) / `POST
-  /queue/{name}/take` (`{"count":1..1000}`; REMOVES, at-most-once, no leases)
-  / `GET /queue/{name}` / `GET /queues` (depths only) — the runner's answer
-  to "work I did not get to", because a hook run is one container and a
-  cursor built out of KV strings strands its own tail (see
-  docs/internals/work-queues.md), and — for MANAGERS only — the inbox long-poll
+  wrong"), the durable BATCH BACKLOGS `POST /backlog/{name}/push` (a set
+  union that keeps order — re-push the whole candidate set every tick) /
+  `POST /backlog/{name}/take` (`{"count":1..1000}`; REMOVES a slice,
+  at-most-once, no leases) / `GET /backlog/{name}` / `GET /backlogs` (depths
+  only) — WHAT IS LEFT for a run that can only afford part of the work, the
+  sibling of internal/queue's WHEN-to-run scheduler (see
+  docs/internals/backlogs.md), and — for MANAGERS only — the inbox long-poll
   `POST /inbox/next` (`{"wait_seconds":1..600}`; 200 = one event, 204 =
   none in time, 409 = superseded instance; calling again settles the
   previous event as processed — see the managers bullet under "Things
@@ -264,7 +264,7 @@ most often, plus where to read the rest.
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`) and kills the container by name on timeout: if Go SIGKILLs the docker CLI, the container can survive. Async runs use `context.Background()`, NOT the request context (the client disconnects right after the 202).
 - Run IDs are 16 random bytes, base32-lowercased to 26 chars — anything building container names from them must keep the `a-z2-7` alphabet in mind.
 - **A lock TTL is ENFORCED, never assumed.** An expired lock is still the holder's: the contender's acquire kills that run, waits for it to be certainly dead, and takes the lock the finish seam freed — or is refused. Expiry alone frees nothing, in the store or the sweeper.
-- **A backlog belongs in a QUEUE, never in a hook-side cursor.** A hook run is one container, so "work I did not get to" has to outlive it. `internal/queue` is the primitive — push is a set union, take removes, depth is observable.
+- **A backlog belongs in the runner, never in a hook-side cursor.** A hook run is one container, so "work I did not get to" has to outlive it. Two primitives, two questions: `internal/queue` decides WHEN to start a run; `internal/backlog` holds WHAT IS LEFT for a run that already exists (push is a set union, take removes a slice, depth is observable).
 - **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
@@ -277,7 +277,7 @@ Read before changing any of these areas:
 - [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, the five section-signal seams, the needs-attention surface.
 - [docs/internals/delivery-durability.md](docs/internals/delivery-durability.md) -- deploy windows: `/restart-ready`, the delivery spool and its replay, the shutdown ordering, and the port-down gap none of it covers.
 - [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
-- [docs/internals/work-queues.md](docs/internals/work-queues.md) -- the durable backlog primitive: push-as-set-union, take-removes, depths, and why a hook must never build a cursor instead.
+- [docs/internals/backlogs.md](docs/internals/backlogs.md) -- the batch-backlog primitive: push-as-set-union, take-removes, depths, how it differs from internal/queue, and why a hook must never build a cursor instead.
 - [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run), the push-fed admin surface, and unconditional github-state-mirror routing.
 - [docs/internals/waits-and-spawn.md](docs/internals/waits-and-spawn.md) -- declared waits and the manifest-authorized spawn primitive.
 - [docs/internals/shim-and-timeline.md](docs/internals/shim-and-timeline.md) -- the state-socket proxy shim and the dashboard timeline adapter.

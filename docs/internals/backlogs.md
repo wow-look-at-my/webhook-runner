@@ -1,7 +1,20 @@
-# Durable work queues (the backlog primitive)
+# Durable batch backlogs
 
-`internal/queue` + the state port's `/queue` routes: a named, per-hook backlog
-of opaque item ids that outlives the run that filled it.
+`internal/backlog` + the state port's `/backlog` routes: a named, per-hook list
+of opaque item ids that one run fills and later runs drain a slice at a time.
+
+## Not internal/queue — the two halves
+
+`internal/queue` answers **WHEN to run**: enqueue a key, and its dispatcher
+starts a run of that hook when the entry comes due (deduped by key, schedulable
+with a delay, anti-spammed by MinInterval). That is the right primitive for
+"this subject needs another look soon".
+
+`internal/backlog` answers **WHAT IS LEFT** for a run that already exists and
+can only afford part of the work. The two are not interchangeable: pr-minder's
+hourly reconcile has ~250 open PRs to re-check, and one container per PR is not
+a reconcile, it is a stampede — that walk wants one run draining a slice, with
+the remainder surviving until the next tick.
 
 ## Why it exists here
 
@@ -28,10 +41,10 @@ KV store, the locks, the waits and the spawn verb.
 
 | Verb | Route (state socket) | Body | Answers |
 |---|---|---|---|
-| Push | `POST /queue/{name}/push` | `{"items":["o/r#1", ...]}` | `{queued, duplicates, dropped, depth}` |
-| Take | `POST /queue/{name}/take` | `{"count":1..1000}` (default 1) | `{items, depth}` |
-| Stat | `GET /queue/{name}` | — | `{name, depth}` |
-| List | `GET /queues` | — | `[{name, depth}, ...]` |
+| Push | `POST /backlog/{name}/push` | `{"items":["o/r#1", ...]}` | `{queued, duplicates, dropped, depth}` |
+| Take | `POST /backlog/{name}/take` | `{"count":1..1000}` (default 1) | `{items, depth}` |
+| Stat | `GET /backlog/{name}` | — | `{name, depth}` |
+| List | `GET /backlogs` | — | `[{name, depth}, ...]` |
 
 - **Push is a SET UNION that preserves order.** An item already queued is
   reported as a duplicate and keeps its ORIGINAL position. That is what makes
@@ -48,7 +61,7 @@ KV store, the locks, the waits and the spawn verb.
   draining" is a number a hook logs and an operator reads, not an inference.
 - **The namespace is the hook**, derived from the bearer token exactly like the
   KV routes — never from the URL.
-- **Disk-backed**, one `<data-dir>/queues/<namespace>.json` per namespace,
+- **Disk-backed**, one `<data-dir>/backlogs/<namespace>.json` per namespace,
   written temp+rename on every mutation (the KV store's persistence shape). A
   queue outliving its process is the entire point: a restart mid-fleet-walk
   must not restart the walk. Unlike KV entries there are no TTLs — take is what
@@ -57,7 +70,7 @@ KV store, the locks, the waits and the spawn verb.
 ## Bounds
 
 Depth 10000 items/queue, 512 bytes/item, 64 queues/namespace, 256 namespaces
-(all `queue.Config` defaults). Overflow is **counted and reported** as
+(all `backlog.Config` defaults). Overflow is **counted and reported** as
 `dropped`, never silently swallowed, and logged server-side — a full backlog
 means the consumer is not keeping up, which is exactly the thing the caller
 must be able to see. A rejected push (bad name, oversized item) mutates
@@ -68,15 +81,15 @@ nothing, not even the namespace it would have created.
 Push what exists, take what you can afford this run, log the depth:
 
 ```ts
-await fetch(`${HOOK_KV_URL}/queue/backlog/push`, {
+await fetch(`${HOOK_KV_URL}/backlog/reconcile/push`, {
   method: 'POST',
   headers: { authorization: `Bearer ${HOOK_KV_TOKEN}`, 'content-type': 'application/json' },
   body: JSON.stringify({ items: candidates }),
 });
-const r = await fetch(`${HOOK_KV_URL}/queue/backlog/take`, { /* ... */ body: JSON.stringify({ count: 25 }) });
+const r = await fetch(`${HOOK_KV_URL}/backlog/reconcile/take`, { /* ... */ body: JSON.stringify({ count: 25 }) });
 const { items, depth } = await r.json();
 ```
 
-Deploy-first, like every state-API addition: a hook that calls `/queue` needs a
+Deploy-first, like every state-API addition: a hook that calls `/backlog` needs a
 runner with these routes. An older runner 404s them, and a hook should treat
 404/405 as "primitive unavailable" and degrade loudly rather than wedge.

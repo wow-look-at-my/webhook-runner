@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
+	"github.com/wow-look-at-my/webhook-runner/internal/backlog"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
@@ -24,7 +25,6 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/managers"
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
-	"github.com/wow-look-at-my/webhook-runner/internal/queue"
 	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -128,13 +128,13 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	kvStore.StartSweeper()
 	defer kvStore.Close()
 
-	// Durable per-hook work queues (internal/queue): the backlog primitive
-	// behind the state port's /queue routes. Disk-backed beside the KV
-	// namespaces, because a queue outliving the run — and the process — that
-	// filled it is the whole point.
-	queueStore, err := queue.New(queue.Config{Dir: filepath.Join(dataDir, "queues")}, logger)
+	// Durable per-hook batch backlogs (internal/backlog): what a run could not
+	// get to, behind the state port's /backlog routes. Disk-backed beside the
+	// KV namespaces, because outliving the run — and the process — that filled
+	// it is the whole point.
+	backlogStore, err := backlog.New(backlog.Config{Dir: filepath.Join(dataDir, "backlogs")}, logger)
 	if err != nil {
-		return fmt.Errorf("queue store: %w", err)
+		return fmt.Errorf("backlog store: %w", err)
 	}
 
 	// Persistent run history: every run is written to a single bbolt file
@@ -353,7 +353,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HooksBranch:     o.hooksBranch,
 		HookBaseURL:     o.hookBaseURL,
 		KV:              kvStore,
-		Queues:          queueStore,
+		Backlogs:        backlogStore,
 		RunStore:        runStore,
 		Overrides:       ovStore,
 		Managers:        sup,
