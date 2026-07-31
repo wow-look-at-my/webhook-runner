@@ -403,8 +403,8 @@ td { overflow-wrap: anywhere; }
    shrinks below its widest unbreakable content, so the id column just
    claims its width and the prose columns (Description, event messages,
    on-disk lists) absorb the squeeze by wrapping instead. Timestamps in
-   the runs tables get the same pin the activity feed's .event-time
-   already has -- a date broken mid-number reads just as badly. */
+   the runs tables get the same pin the activity feed gives its own time
+   column -- a date broken mid-number reads just as badly. */
 td code { white-space: nowrap; }
 #runs-table td:first-child, #app-runs-table td:first-child { white-space: nowrap; }
 .window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
@@ -436,24 +436,14 @@ a.kv-jump:hover { text-decoration: underline; }
    port/hostname, not this admin page's origin. */
 .port-note { color: var(--muted); font-size: 0.8em; }
 
-.kind {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-family: monospace;
-  background: rgba(255,255,255,0.06);
-  color: var(--muted);
-  white-space: nowrap;
-}
-.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started, .kind.hook-enabled, .kind.concurrency-override_cleared { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed, .kind.hook-disabled_rejected, .kind.override-write_failed, .kind.override-invalid { background: rgba(248,81,73,0.15); color: var(--failure); }
-.kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
-/* Operator kill-switch activity: amber — deliberate operator state, not
-   an error, but worth spotting in the feed. */
-.kind.hook-disabled, .kind.concurrency-overridden, .kind.override-orphaned { background: rgba(210,153,34,0.15); color: var(--running); }
-.kind.run-skipped { background: rgba(163,113,247,0.15); color: var(--skipped); }
-.event-time { white-space: nowrap; color: var(--muted); }
+/* The kind badge, the feed table and the filter chips are the <activity-feed>
+   component's SHADOW DOM (js-snippets/ui/activity-feed.js) — styled there,
+   themed from here. The component reads --activity-* first and falls back to
+   the generic --fg/--muted/--border/--panel/--accent + --failure/--running/
+   --success/--skipped this file already defines, so the feeds inherit this
+   palette with no configuration. What used to live here — a .kind rule per
+   known event kind — is exactly the drift the component's derived severity/
+   family classes removed; do not reintroduce it. */
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
 
 /* STATE (KV) drill-in: a namespace row toggles an inset key list; a key row
@@ -464,8 +454,8 @@ table.kv-keys-table { background: transparent; border: 1px solid var(--border); 
 table.kv-keys-table th, table.kv-keys-table td { font-size: 0.8rem; padding: 0.35rem 0.6rem; }
 .kv-keys-note { color: var(--muted); font-style: italic; font-size: 0.85rem; margin: 0.25rem 0 0; }
 .kv-expiry { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
-#app-events-table tbody tr, #concurrency-table tbody tr { cursor: default; }
+#images-table tbody tr, #hooks-table tbody tr,
+#concurrency-table tbody tr { cursor: default; }
 
 /* Compact in-table action buttons (the concurrency Override.../Revert
    controls). */

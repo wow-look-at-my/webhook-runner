@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
@@ -58,9 +59,21 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	// truth fetch for clients reconciling against the stream's hb active-id
 	// payload. No cap, no cursor (the active set IS the answer); ?hook=
 	// still narrows. Additive: absent/false keeps the merged view below.
+	//
+	// ?exclude=<csv of statuses> drops those runs from the answer BEFORE max
+	// applies — parsed first because both views honor it. The dashboard's
+	// status-filter chips send it: filtering AFTER the limit meant a hook
+	// whose newest 50 runs were all skips rendered an empty table ("All 50
+	// recent run(s) are hidden by the status filter above") while its real
+	// runs sat just past the window.
+	exclude, err := excludedStatuses(r.URL.Query().Get("exclude"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if v := r.URL.Query().Get("live"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil && b {
-			writeJSON(w, http.StatusOK, s.liveRuns(r.URL.Query().Get("hook")))
+			writeJSON(w, http.StatusOK, s.liveRuns(r.URL.Query().Get("hook"), exclude))
 			return
 		}
 	}
@@ -82,14 +95,48 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		before = t
 	}
-	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), before, max))
+	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), before, max, exclude))
+}
+
+// excludedStatuses parses ?exclude= into a set. Empty/absent yields nil (no
+// filtering). An unrecognized status is a 400, matching ?before=: a filter
+// silently matching nothing would look exactly like "this hook has no runs",
+// which is the failure mode this whole parameter exists to remove.
+func excludedStatuses(raw string) (map[runs.Status]bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	out := map[runs.Status]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		st := runs.Status(strings.TrimSpace(part))
+		if st == "" {
+			continue
+		}
+		if !runs.KnownStatus(st) {
+			return nil, fmt.Errorf("invalid exclude=%q: %q is not a run status", raw, st)
+		}
+		out[st] = true
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// keeper turns the exclusion set into the predicate the run store's walk
+// takes (nil for "keep everything", which skips the filtering entirely).
+func keeper(exclude map[runs.Status]bool) func(runs.Status) bool {
+	if len(exclude) == 0 {
+		return nil
+	}
+	return func(st runs.Status) bool { return !exclude[st] }
 }
 
 // liveRuns is GET /runs?live=1: every non-terminal tracked run, output
 // stripped, newest-first, waiters attached — the same row shape as /runs.
 // Always non-nil so an idle server answers [] (a real "nothing is active"
 // verdict), never null.
-func (s *Server) liveRuns(hookID string) []runs.RunState {
+func (s *Server) liveRuns(hookID string, exclude map[runs.Status]bool) []runs.RunState {
 	var live []*runs.Run
 	if hookID != "" {
 		live = s.tracker.ListByHook(hookID, 0)
@@ -99,7 +146,7 @@ func (s *Server) liveRuns(hookID string) []runs.RunState {
 	out := make([]runs.RunState, 0, len(live))
 	for _, r := range live {
 		snap := r.Snapshot(0)
-		if snap.Status.Terminal() {
+		if snap.Status.Terminal() || exclude[snap.Status] {
 			continue
 		}
 		snap.Output = nil
@@ -124,7 +171,10 @@ func (s *Server) liveRuns(hookID string) []runs.RunState {
 // oldest row — the paging walk advances its cursor from it, and an
 // uncapped ancient active row would make the walk skip terminal history.
 // Output is never shipped in the list view; clients fetch /runs/{id}.
-func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.RunState {
+// A non-empty exclude drops those statuses from BOTH partitions before the
+// cap is applied. It is an explicit operator request, so it also overrides
+// the always-include-active rule above: hiding "running" hides running runs.
+func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude map[runs.Status]bool) []runs.RunState {
 	// List the tracker uncapped: the active partition must be COMPLETE
 	// (a newest-max pre-cut could hide older active runs behind newer
 	// terminal ones), and with a cursor the newest-max live window may sit
@@ -145,6 +195,9 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.Run
 		if paged && !snap.Started.Before(before) {
 			continue
 		}
+		if exclude[snap.Status] {
+			continue
+		}
 		snap.Output = nil
 		snap.OutputTimes = nil
 		seen[snap.ID] = struct{}{}
@@ -159,9 +212,9 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.Run
 		// terminal status), so it always lands in the capped partition.
 		var persisted []runs.RunState
 		if hookID != "" {
-			persisted = s.runstore.ListByHookBefore(hookID, before, max)
+			persisted = s.runstore.ListByHookBeforeFiltered(hookID, before, max, keeper(exclude))
 		} else {
-			persisted = s.runstore.ListAllBefore(before, max)
+			persisted = s.runstore.ListAllBeforeFiltered(before, max, keeper(exclude))
 		}
 		for _, st := range persisted {
 			if _, dup := seen[st.ID]; dup {
