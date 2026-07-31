@@ -30,6 +30,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dashboardSrc = readFileSync(path.join(here, '..', 'assets', 'dashboard.js'), 'utf8');
 const indexHtml = readFileSync(path.join(here, '..', 'assets', 'index.html'), 'utf8');
 const dashboardCss = readFileSync(path.join(here, '..', 'assets', 'dashboard.css'), 'utf8');
+const timelineTs = readFileSync(path.join(here, '..', 'ts', 'timeline.ts'), 'utf8');
+const timelineJs = readFileSync(path.join(here, '..', 'assets', 'timeline.js'), 'utf8');
 
 // A stand-in for the not-yet-upgraded custom element: a plain object that
 // records whatever is assigned, exactly like a real HTMLElement would.
@@ -218,7 +220,7 @@ test('the old hand-rolled feed is gone from every asset', () => {
 	assert.ok(!indexHtml.includes('id="app-events-table"'), 'index.html still has the hand-rolled per-hook table');
 });
 
-test('index.html mounts both feeds and loads the component with a never-give-up retry', () => {
+test('index.html mounts both feeds; the component load lives in the ts0 bundle', () => {
 	assert.ok(indexHtml.includes('id="events-feed"'), 'the overview feed element is mounted');
 	assert.ok(indexHtml.includes('id="app-events-feed"'), 'the per-hook feed element is mounted');
 
@@ -237,13 +239,34 @@ test('index.html mounts both feeds and loads the component with a never-give-up 
 		'the two feeds must not share one persisted filter',
 	);
 
-	// The import mirrors timeline.js: js-snippets' buildhost library site,
-	// retried forever on a fixed cadence. The dead github.io origin must
-	// never reappear — downstream CI fails on any reference to it.
+	// The import belongs in the ts0-compiled bundle, NOT hand-written into
+	// the page. index.html must carry exactly ONE module script (timeline.js);
+	// an inline one would be uncompiled, un-type-checked JavaScript living
+	// outside the ts/ tree the dashboard-assets CI job gates.
+	// Strip HTML comments first: the comment above the script tag NAMES the
+	// thing it forbids ("do not add a hand-written <script type=module>"), and
+	// matching that prose would fail the test for documenting the rule.
+	const markup = indexHtml.replace(/<!--[\s\S]*?-->/g, '');
+	const moduleScripts = markup.match(/<script[^>]*type="module"[^>]*>/g) ?? [];
+	assert.equal(moduleScripts.length, 1, `expected only timeline.js as a module, got ${moduleScripts.join(' ')}`);
+	assert.match(moduleScripts[0], /src="timeline\.js"/, 'the one module script is the generated bundle');
+
+	// The retry-forever loader and the URL live in the bundle's source.
 	assert.ok(
-		indexHtml.includes('https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js'),
-		'the component is imported from the buildhost library site',
+		timelineTs.includes("const ACTIVITY_FEED_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js'"),
+		'ts/timeline.ts declares the buildhost component URL',
 	);
-	assert.ok(!indexHtml.includes('github.io/js-snippets'), 'the unpublished GitHub Pages origin must not be referenced');
-	assert.match(indexHtml, /retry=\$\{attempt\}/, 'the retry busts the module cache per attempt');
+	assert.ok(timelineTs.includes('loadActivityFeedForever'), 'ts/timeline.ts owns the never-give-up loader');
+	assert.ok(
+		timelineTs.includes('void loadActivityFeedForever()'),
+		'the feed load is fired, not awaited — a failing feed component must not block the chart',
+	);
+	assert.ok(!timelineTs.includes('github.io/js-snippets'), 'the unpublished GitHub Pages origin must not be referenced');
+
+	// And the committed bundle actually carries it (the generated artifact is
+	// what ships; a stale bundle is exactly what dashboard-assets guards).
+	assert.ok(
+		timelineJs.includes('https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js'),
+		'the committed assets/timeline.js is a build of the current ts/ source',
+	);
 });

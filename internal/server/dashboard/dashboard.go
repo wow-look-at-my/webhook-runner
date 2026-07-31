@@ -24,13 +24,18 @@
 // assets/timeline.js is GENERATED — never edit it. Its TypeScript source
 // lives in ts/ (the runs-timeline ADAPTER only — the <timeline-view>
 // component itself is imported at runtime as described above) and is
-// compiled by ts0 (type-check + bundle, config in ts0.json; the component
-// URL passes through unbundled). The committed bundle is authoritative and
-// embedded as-is: the npx //go:generate directive that rebuilt it was
-// removed (the build must not need node/npm/npx), so regeneration is
-// temporarily a manual step — run ts0 yourself after editing ts/ and commit
-// the regenerated bundle. A prebuilt ts0 binary served from buildhost,
-// fetched by a small Go bootstrap, is landing next to re-automate this.
+// compiled by ts0 (type-check + bundle, config in ts0.json; both component
+// URLs pass through unbundled). The committed bundle stays authoritative and
+// embedded as-is — the Go build must not need node/npm/npx — so after
+// editing ts/ you regenerate it yourself and commit the result:
+//
+//	curl -fSL 'https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64' -o /tmp/ts0.cjs
+//	(cd internal/server/dashboard && node /tmp/ts0.cjs build)
+//
+// That is stock Node and nothing else (no npm, no node_modules). Forgetting
+// it is no longer silent: ci.yml's dashboard-assets job runs the same two
+// commands and fails when the committed bytes differ from a fresh build of
+// ts/.
 package dashboard
 
 import (

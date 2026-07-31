@@ -209,6 +209,10 @@ interface HookSummary {
 }
 
 const COMPONENT_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
+// The dashboard's second js-snippets component: <activity-feed>, behind both
+// Activity feeds. Loaded here (see loadActivityFeedForever) so every module
+// script the dashboard runs is compiled from ts/ by ts0.
+const ACTIVITY_FEED_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js';
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const STREAM_PATH = '/runs/stream';
 // One supervisor/fallback tick: FIXED cadence, forever. Handles both the
@@ -1601,6 +1605,36 @@ async function loadComponentForever(): Promise<void> {
 	}
 }
 
+/**
+ * Load <activity-feed> — the OTHER js-snippets component this dashboard
+ * imports at runtime. It backs both Activity feeds (the overview page and
+ * the per-hook section); dashboard.js owns their data and sets `.entries`
+ * on elements that have usually not upgraded yet, which the component's
+ * connectedCallback replays.
+ *
+ * It lives in this bundle because this bundle IS the dashboard's ES-module
+ * entry point, and the alternative was worse: a hand-written <script
+ * type="module"> in index.html, i.e. uncompiled, un-type-checked JavaScript
+ * sitting outside the ts/ source tree that every other line of module code
+ * lives in. Nothing here touches the chart, and the two loads are
+ * independent — a failing feed component must never keep the timeline from
+ * booting, so this is fired and not awaited.
+ *
+ * Same never-give-up retry as the chart's: the import is cross-origin, and
+ * giving up would leave the feeds permanently on their "loading" line.
+ */
+async function loadActivityFeedForever(): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await import(attempt === 0 ? ACTIVITY_FEED_URL : `${ACTIVITY_FEED_URL}?retry=${attempt}`);
+			return;
+		} catch (e) {
+			console.error(`activity-feed: component load failed (retry in ${COMPONENT_RETRY_MS}ms):`, e);
+			await new Promise((r) => setTimeout(r, COMPONENT_RETRY_MS));
+		}
+	}
+}
+
 async function boot(): Promise<void> {
 	// The table toggle must work even while (or if) the chart is loading —
 	// the runs table is the fallback view and depends only on this module.
@@ -1616,6 +1650,9 @@ async function boot(): Promise<void> {
 	})();
 	openStream();
 	startFeedSupervisor();
+	// Fired, never awaited: the feeds and the chart are independent, and the
+	// chart must not wait on a component it does not use.
+	void loadActivityFeedForever();
 	await loadComponentForever();
 	document.getElementById('timeline-loading')?.remove();
 	initTimeline();
