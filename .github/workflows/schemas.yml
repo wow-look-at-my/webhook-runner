@@ -34,6 +34,7 @@ on:
 permissions:
   id-token: write # buildhost OIDC auth
   deployments: write # buildhost-publish-site registers a GitHub Deployment first, and fails closed without this
+  artifact-metadata: write # and records the publish on the org's linked-artifacts page, also fail-closed
   contents: read
   actions: read
   checks: read
