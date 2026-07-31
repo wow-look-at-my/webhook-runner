@@ -403,8 +403,8 @@ td { overflow-wrap: anywhere; }
    shrinks below its widest unbreakable content, so the id column just
    claims its width and the prose columns (Description, event messages,
    on-disk lists) absorb the squeeze by wrapping instead. Timestamps in
-   the runs tables get the same pin the activity feed's .event-time
-   already has -- a date broken mid-number reads just as badly. */
+   the runs tables get the same pin the activity feed gives its own time
+   column -- a date broken mid-number reads just as badly. */
 td code { white-space: nowrap; }
 #runs-table td:first-child, #app-runs-table td:first-child { white-space: nowrap; }
 .window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
@@ -436,61 +436,14 @@ a.kv-jump:hover { text-decoration: underline; }
    port/hostname, not this admin page's origin. */
 .port-note { color: var(--muted); font-size: 0.8em; }
 
-.kind {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-family: monospace;
-  background: rgba(255,255,255,0.06);
-  color: var(--muted);
-  white-space: nowrap;
-}
-/* SEVERITY (the pill tint) and FAMILY (the leading dot) are both derived
-   from the kind string by eventKindClass() in dashboard.js — see the block
-   comment there. This replaced a hand-listed set of 26 kinds against a
-   recorder that emits 77: the other 51 rendered on the default grey below,
-   which is why the feed read as three colors no matter what happened. */
-.kind.sev-good { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.sev-bad { background: rgba(248,81,73,0.15); color: var(--failure); }
-/* Amber: deliberate operator state, degraded-but-working, and contention —
-   not an error, but worth spotting in the feed. */
-.kind.sev-warn { background: rgba(210,153,34,0.15); color: var(--running); }
-.kind.sev-skip { background: rgba(163,113,247,0.15); color: var(--skipped); }
-.kind.sev-info { background: rgba(47,129,247,0.13); color: var(--accent); }
-
-/* The family dot. --fam defaults muted, so a family with no hue yet (a new
-   Record() namespace) still renders a well-formed badge — the fallback is
-   the whole reason this map is allowed to be incomplete. */
-.kind::before {
-  content: "";
-  display: inline-block;
-  width: 0.45em;
-  height: 0.45em;
-  margin-right: 0.4em;
-  border-radius: 50%;
-  vertical-align: 0.08em;
-  background: var(--fam, var(--pending));
-}
-.kind.fam-run { --fam: #58a6ff; }
-.kind.fam-manager { --fam: #d2a8ff; }
-.kind.fam-hook { --fam: #7ee787; }
-.kind.fam-image { --fam: #ffa657; }
-.kind.fam-reload { --fam: #79c0ff; }
-.kind.fam-git { --fam: #f0883e; }
-.kind.fam-github { --fam: #e3b341; }
-.kind.fam-lock { --fam: #ff7b72; }
-.kind.fam-concurrency { --fam: #56d4dd; }
-.kind.fam-override { --fam: #db6d28; }
-.kind.fam-kv { --fam: #a5d6ff; }
-.kind.fam-backlog { --fam: #bc8cff; }
-.kind.fam-spool { --fam: #ffc680; }
-.kind.fam-spawn { --fam: #39d353; }
-.kind.fam-schedule { --fam: #8ddb8c; }
-.kind.fam-server { --fam: #c9d1d9; }
-.kind.fam-env { --fam: #6cb6ff; }
-.kind.fam-restart { --fam: #f78166; }
-.event-time { white-space: nowrap; color: var(--muted); }
+/* The kind badge, the feed table and the filter chips are the <activity-feed>
+   component's SHADOW DOM (js-snippets/ui/activity-feed.js) — styled there,
+   themed from here. The component reads --activity-* first and falls back to
+   the generic --fg/--muted/--border/--panel/--accent + --failure/--running/
+   --success/--skipped this file already defines, so the feeds inherit this
+   palette with no configuration. What used to live here — a .kind rule per
+   known event kind — is exactly the drift the component's derived severity/
+   family classes removed; do not reintroduce it. */
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
 
 /* STATE (KV) drill-in: a namespace row toggles an inset key list; a key row
@@ -501,8 +454,8 @@ table.kv-keys-table { background: transparent; border: 1px solid var(--border); 
 table.kv-keys-table th, table.kv-keys-table td { font-size: 0.8rem; padding: 0.35rem 0.6rem; }
 .kv-keys-note { color: var(--muted); font-style: italic; font-size: 0.85rem; margin: 0.25rem 0 0; }
 .kv-expiry { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
-#app-events-table tbody tr, #concurrency-table tbody tr { cursor: default; }
+#images-table tbody tr, #hooks-table tbody tr,
+#concurrency-table tbody tr { cursor: default; }
 
 /* Compact in-table action buttons (the concurrency Override.../Revert
    controls). */

@@ -54,7 +54,12 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   — see the reload-gate bullet's manual-pick paragraph under "Things easy
   to get wrong"), `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries), `/attention` (the aggregated needs-attention problem
+  event carries. BOTH dashboard feeds — the overview Activity page and the
+  per-hook section — render it with js-snippets' `<activity-feed>`
+  component, imported at runtime; it owns the table, the derived kind
+  badges and the built-in filtering (free-text + severity/family chips,
+  persisted per feed), so this endpoint stays a plain newest-first list
+  and does no filtering of its own), `/attention` (the aggregated needs-attention problem
   set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
   first — the dashboard's red banner + panel; see the attention bullet
   under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill

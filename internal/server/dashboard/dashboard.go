@@ -10,10 +10,20 @@
 // headers) can pair a new index.html with stale assets after a deploy —
 // which is exactly the incident that motivated this.
 //
+// TWO js-snippets components are imported by the BROWSER at runtime and are
+// never shipped here: <timeline-view> (the runs chart) and <activity-feed>
+// (both Activity feeds — the overview page and the per-hook section). Their
+// import URLs point at js-snippets' buildhost library site, live at that
+// repo's master head, so component fixes reach this dashboard with no runner
+// change; fix component bugs upstream in js-snippets. <activity-feed> is
+// loaded by a small inline module at the bottom of index.html (it needs
+// nothing but the import, so it stays out of the ts0 bundle) and is fed by
+// dashboard.js, which sets .entries on elements that have usually not
+// upgraded yet — the component's connectedCallback replays them.
+//
 // assets/timeline.js is GENERATED — never edit it. Its TypeScript source
 // lives in ts/ (the runs-timeline ADAPTER only — the <timeline-view>
-// component itself is imported by the browser at runtime from
-// wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
+// component itself is imported at runtime as described above) and is
 // compiled by ts0 (type-check + bundle, config in ts0.json; the component
 // URL passes through unbundled). The committed bundle is authoritative and
 // embedded as-is: the npx //go:generate directive that rebuilt it was

@@ -1435,78 +1435,44 @@ function renderImages(images) {
 }
 
 // ---------------------------------------------------------------------------
-// EVENT KIND BADGES — DERIVED from the kind string, never an allowlist.
+// THE ACTIVITY FEEDS — js-snippets' <activity-feed> component.
 //
-// The badge used to color a hand-listed set of kinds in the stylesheet and
-// leave everything else on the default grey pill. The recorder emits 77
-// kinds and that list covered 26, so the feed read as a wall of grey: every
-// manager.*, lock.*, spool.*, spawn.* and run.* event looked exactly like
-// its neighbours, and a failure like manager.inbox_dropped was
-// indistinguishable from routine chatter. An allowlist that must be edited
-// in a second repo-language every time a Record() call is added will always
-// drift; deriving the classes means a new kind is styled the moment it first
-// appears in the feed.
+// Both feeds (the overview Activity page and the per-hook one) are the SAME
+// control, imported at runtime from js-snippets by the module script at the
+// bottom of index.html. It owns the table, the kind badges and the filter
+// bar; this file only hands it entries and the two host-specific hooks
+// below. Fix rendering/filtering bugs upstream in js-snippets, never here.
 //
-// Two independent axes, so the feed is scannable both ways:
-//   sev-*  severity, read off the ACTION half (after the first dot) — the
-//          pill's tint. Ordered rules, FIRST match wins: the order is what
-//          keeps hook.disabled_rejected bad (not warn on "disabled") and
-//          reload.unverified warn (not good on "verified").
-//   fam-*  family, the NAMESPACE half — a small colored dot naming the
-//          subsystem. Unknown families fall back to a muted dot, so adding a
-//          family is optional maintenance, never a regression.
+// What moved out with it: a local render function plus a stylesheet that
+// enumerated the kinds it knew how to color. That list covered 26 of the 77
+// kinds the recorder emits, so two thirds of every feed rendered on one grey
+// pill and a real failure was indistinguishable from routine chatter. The
+// component derives severity from a kind's action half and a family hue from
+// its namespace half, so there is no list left to drift.
+//
+// Setting properties here is safe BEFORE the component module resolves: it
+// performs the standard custom-element property upgrade on connect, so an
+// element that has not upgraded yet keeps the values and renders them the
+// moment it does.
 // ---------------------------------------------------------------------------
-const EVENT_SEVERITY_RULES = [
-  ["bad", /(failed|error|denied|refused|dropped|unresolved|misconfigured|invalid|unknown|rejected|blind|_red$)/],
-  // Skips are their own state everywhere else in this UI (the purple run
-  // status); the feed matches so run.skipped reads the same in both places.
-  ["skip", /skipped$/],
-  ["warn", /(held|waiting|deferred|orphaned|unverified|ignored|stale|exited|disabled|overridden|stolen|ttl_|parked)/],
-  ["good", /(built|reloaded|pulled|enabled|switched|verified|restored|replayed|leased|cleared|released)/],
-];
 
-// eventSeverity classifies one kind's action half. Anything no rule claims
-// is "info": ordinary lifecycle chatter (run.queued, schedule.fired,
-// reload.requested), which is most of the feed and should stay quiet.
-function eventSeverity(kind) {
-  const action = String(kind).split(".").slice(1).join(".");
-  for (const [sev, re] of EVENT_SEVERITY_RULES) {
-    if (re.test(action)) return sev;
-  }
-  return "info";
-}
-
-// eventFamily is the namespace half, with the one spelling collision the Go
-// side has folded away ("hooks.reloaded" is the hook family).
-function eventFamily(kind) {
-  const fam = String(kind).split(".")[0];
-  return fam === "hooks" ? "hook" : fam;
-}
-
-function eventKindClass(kind) {
-  return `kind fam-${eventFamily(kind)} sev-${eventSeverity(kind)}`;
-}
-
-// Fills an events table body; shared by the overview feed and the per-app
-// slice (same columns, different tables). events may be null (nil recorder).
-function renderEventRows(tableId, emptyId, events) {
-  const tbody = document.querySelector(`#${tableId} tbody`);
-  tbody.innerHTML = "";
-  events = events || [];
-  document.getElementById(emptyId).hidden = events.length > 0;
-  for (const ev of events) {
-    tbody.appendChild(
-      el("tr", null,
-        el("td", { class: "event-time" }, fmtTime(ev.time)),
-        el("td", null, el("span", { class: eventKindClass(ev.kind) }, ev.kind)),
-        el("td", null, linkifyGH(ev.msg)),
-      )
-    );
-  }
+// Feeds the component. `events` may be null (nil recorder) — the element
+// treats that as empty. The two hooks make it match the rest of this
+// dashboard: GitHub slugs in messages stay clickable, and timestamps use the
+// same fmtTime as every other table.
+function renderEventsInto(elementId, events) {
+  const feed = document.getElementById(elementId);
+  if (!feed) return;
+  feed.messageRenderer = (msg) => linkifyGH(msg);
+  feed.timeFormatter = (t) => fmtTime(t);
+  // The Go side records both "hooks.reloaded" and "hook.enabled"; they are
+  // one subsystem, so they get one family (and one dot color).
+  feed.familyAliases = { hooks: "hook" };
+  feed.entries = events || [];
 }
 
 function renderEvents(events) {
-  renderEventRows("events-table", "events-empty", events);
+  renderEventsInto("events-feed", events);
 }
 
 function fmtBytes(n) {
@@ -1719,7 +1685,7 @@ function renderApp(detail, runs, events) {
   // the chips can count statuses the server just filtered out.
   renderAppRunsTable(runs, st.by_status);
 
-  renderEventRows("app-events-table", "app-events-empty", events);
+  renderEventsInto("app-events-feed", events);
 }
 
 // --- App runs table status filter ------------------------------------------
