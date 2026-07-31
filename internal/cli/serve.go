@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
+	"github.com/wow-look-at-my/webhook-runner/internal/backlog"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
@@ -126,6 +127,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	kvStore.StartSweeper()
 	defer kvStore.Close()
+
+	// Durable per-hook batch backlogs (internal/backlog): what a run could not
+	// get to, behind the state port's /backlog routes. Disk-backed beside the
+	// KV namespaces, because outliving the run — and the process — that filled
+	// it is the whole point.
+	backlogStore, err := backlog.New(backlog.Config{Dir: filepath.Join(dataDir, "backlogs")}, logger)
+	if err != nil {
+		return fmt.Errorf("backlog store: %w", err)
+	}
 
 	// Persistent run history: every run is written to a single bbolt file
 	// under the data dir the moment it reaches a terminal status (the
@@ -343,6 +353,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HooksBranch:     o.hooksBranch,
 		HookBaseURL:     o.hookBaseURL,
 		KV:              kvStore,
+		Backlogs:        backlogStore,
 		RunStore:        runStore,
 		Overrides:       ovStore,
 		Managers:        sup,
