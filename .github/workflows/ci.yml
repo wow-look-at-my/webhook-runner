@@ -87,10 +87,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # Saved as .cjs deliberately: the bundle is CommonJS, and a .js file
+      # would be mis-parsed as ESM if it landed in a "type": "module" package.
+      # No smoke-test step here — ts0 has no `version` subcommand (it prints
+      # "Unknown command" and exits 0, so such a step proves nothing); the
+      # build below is the check that it runs.
       - name: Install ts0 (prebuilt, from buildhost)
-        run: |
-          curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
-          node /tmp/ts0.cjs version || true
+        run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
       # Type-checks ts/ (testjs/ is excluded — it is run by node's
       # type-stripping runner, which never type-checks, so it has never been
       # under a checker) and rebuilds assets/timeline.js in place.
