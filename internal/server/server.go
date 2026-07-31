@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
+	"github.com/wow-look-at-my/webhook-runner/internal/backlog"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
@@ -62,6 +63,7 @@ type Server struct {
 	hooksBranch  string
 	hookBaseURL  string
 	kv           *kv.Store
+	backlogs     *backlog.Store
 	runstore     *runstore.Store
 	overrides    *overrides.Store
 	managers     ManagerControl
@@ -178,6 +180,11 @@ type Options struct {
 	// admin /kv view. nil disables both (the routes report no namespaces).
 	KV *kv.Store
 
+	// Backlogs is the durable batch-backlog store behind the state port's
+	// /backlog routes (internal/backlog — the drain-a-slice sibling of
+	// internal/queue's run scheduler). Nil disables them (503), like KV.
+	Backlogs *backlog.Store
+
 	// RunStore is the persisted completed-run history. When set, /runs,
 	// /runs/{id}, and /hooks/{id} serve the live tracker merged with it
 	// (deduped by run ID, newest-first); nil keeps the old memory-only
@@ -241,6 +248,7 @@ func New(opts Options) *Server {
 		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
+		backlogs:     opts.Backlogs,
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
@@ -431,6 +439,16 @@ func (s *Server) registerRoutes() {
 	// dispatch, skip_if deliberately bypassed like scheduled fires (see
 	// spawn.go).
 	s.stateMux.HandleFunc("POST /spawn", s.withNamespace(s.handleSpawn))
+	// Durable batch backlogs: what is LEFT for a run that already exists and
+	// can only afford part of the work (internal/backlog — distinct from
+	// internal/queue, which decides WHEN to start a run). A hook run is a
+	// container that lives for one delivery, so a backlog cannot live inside
+	// it; every hook that tried built a cursor out of KV strings and stranded
+	// its tail. Push is a set union that keeps order; take REMOVES a slice.
+	s.stateMux.HandleFunc("POST /backlog/{name}/push", s.withNamespace(s.handleBacklogPush))
+	s.stateMux.HandleFunc("POST /backlog/{name}/take", s.withNamespace(s.handleBacklogTake))
+	s.stateMux.HandleFunc("GET /backlog/{name}", s.withNamespace(s.handleBacklogStat))
+	s.stateMux.HandleFunc("GET /backlogs", s.withNamespace(s.handleBacklogList))
 }
 
 // runRequestContext returns a background context derived from the server
