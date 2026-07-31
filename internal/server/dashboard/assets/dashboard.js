@@ -1434,6 +1434,59 @@ function renderImages(images) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// EVENT KIND BADGES — DERIVED from the kind string, never an allowlist.
+//
+// The badge used to color a hand-listed set of kinds in the stylesheet and
+// leave everything else on the default grey pill. The recorder emits 77
+// kinds and that list covered 26, so the feed read as a wall of grey: every
+// manager.*, lock.*, spool.*, spawn.* and run.* event looked exactly like
+// its neighbours, and a failure like manager.inbox_dropped was
+// indistinguishable from routine chatter. An allowlist that must be edited
+// in a second repo-language every time a Record() call is added will always
+// drift; deriving the classes means a new kind is styled the moment it first
+// appears in the feed.
+//
+// Two independent axes, so the feed is scannable both ways:
+//   sev-*  severity, read off the ACTION half (after the first dot) — the
+//          pill's tint. Ordered rules, FIRST match wins: the order is what
+//          keeps hook.disabled_rejected bad (not warn on "disabled") and
+//          reload.unverified warn (not good on "verified").
+//   fam-*  family, the NAMESPACE half — a small colored dot naming the
+//          subsystem. Unknown families fall back to a muted dot, so adding a
+//          family is optional maintenance, never a regression.
+// ---------------------------------------------------------------------------
+const EVENT_SEVERITY_RULES = [
+  ["bad", /(failed|error|denied|refused|dropped|unresolved|misconfigured|invalid|unknown|rejected|blind|_red$)/],
+  // Skips are their own state everywhere else in this UI (the purple run
+  // status); the feed matches so run.skipped reads the same in both places.
+  ["skip", /skipped$/],
+  ["warn", /(held|waiting|deferred|orphaned|unverified|ignored|stale|exited|disabled|overridden|stolen|ttl_|parked)/],
+  ["good", /(built|reloaded|pulled|enabled|switched|verified|restored|replayed|leased|cleared|released)/],
+];
+
+// eventSeverity classifies one kind's action half. Anything no rule claims
+// is "info": ordinary lifecycle chatter (run.queued, schedule.fired,
+// reload.requested), which is most of the feed and should stay quiet.
+function eventSeverity(kind) {
+  const action = String(kind).split(".").slice(1).join(".");
+  for (const [sev, re] of EVENT_SEVERITY_RULES) {
+    if (re.test(action)) return sev;
+  }
+  return "info";
+}
+
+// eventFamily is the namespace half, with the one spelling collision the Go
+// side has folded away ("hooks.reloaded" is the hook family).
+function eventFamily(kind) {
+  const fam = String(kind).split(".")[0];
+  return fam === "hooks" ? "hook" : fam;
+}
+
+function eventKindClass(kind) {
+  return `kind fam-${eventFamily(kind)} sev-${eventSeverity(kind)}`;
+}
+
 // Fills an events table body; shared by the overview feed and the per-app
 // slice (same columns, different tables). events may be null (nil recorder).
 function renderEventRows(tableId, emptyId, events) {
@@ -1445,7 +1498,7 @@ function renderEventRows(tableId, emptyId, events) {
     tbody.appendChild(
       el("tr", null,
         el("td", { class: "event-time" }, fmtTime(ev.time)),
-        el("td", null, el("span", { class: "kind " + ev.kind.replace(/\./g, "-") }, ev.kind)),
+        el("td", null, el("span", { class: eventKindClass(ev.kind) }, ev.kind)),
         el("td", null, linkifyGH(ev.msg)),
       )
     );

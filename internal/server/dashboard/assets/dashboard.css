@@ -446,13 +446,50 @@ a.kv-jump:hover { text-decoration: underline; }
   color: var(--muted);
   white-space: nowrap;
 }
-.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started, .kind.hook-enabled, .kind.concurrency-override_cleared { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed, .kind.hook-disabled_rejected, .kind.override-write_failed, .kind.override-invalid { background: rgba(248,81,73,0.15); color: var(--failure); }
-.kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
-/* Operator kill-switch activity: amber — deliberate operator state, not
-   an error, but worth spotting in the feed. */
-.kind.hook-disabled, .kind.concurrency-overridden, .kind.override-orphaned { background: rgba(210,153,34,0.15); color: var(--running); }
-.kind.run-skipped { background: rgba(163,113,247,0.15); color: var(--skipped); }
+/* SEVERITY (the pill tint) and FAMILY (the leading dot) are both derived
+   from the kind string by eventKindClass() in dashboard.js — see the block
+   comment there. This replaced a hand-listed set of 26 kinds against a
+   recorder that emits 77: the other 51 rendered on the default grey below,
+   which is why the feed read as three colors no matter what happened. */
+.kind.sev-good { background: rgba(63,185,80,0.15); color: var(--success); }
+.kind.sev-bad { background: rgba(248,81,73,0.15); color: var(--failure); }
+/* Amber: deliberate operator state, degraded-but-working, and contention —
+   not an error, but worth spotting in the feed. */
+.kind.sev-warn { background: rgba(210,153,34,0.15); color: var(--running); }
+.kind.sev-skip { background: rgba(163,113,247,0.15); color: var(--skipped); }
+.kind.sev-info { background: rgba(47,129,247,0.13); color: var(--accent); }
+
+/* The family dot. --fam defaults muted, so a family with no hue yet (a new
+   Record() namespace) still renders a well-formed badge — the fallback is
+   the whole reason this map is allowed to be incomplete. */
+.kind::before {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 0.45em;
+  margin-right: 0.4em;
+  border-radius: 50%;
+  vertical-align: 0.08em;
+  background: var(--fam, var(--pending));
+}
+.kind.fam-run { --fam: #58a6ff; }
+.kind.fam-manager { --fam: #d2a8ff; }
+.kind.fam-hook { --fam: #7ee787; }
+.kind.fam-image { --fam: #ffa657; }
+.kind.fam-reload { --fam: #79c0ff; }
+.kind.fam-git { --fam: #f0883e; }
+.kind.fam-github { --fam: #e3b341; }
+.kind.fam-lock { --fam: #ff7b72; }
+.kind.fam-concurrency { --fam: #56d4dd; }
+.kind.fam-override { --fam: #db6d28; }
+.kind.fam-kv { --fam: #a5d6ff; }
+.kind.fam-backlog { --fam: #bc8cff; }
+.kind.fam-spool { --fam: #ffc680; }
+.kind.fam-spawn { --fam: #39d353; }
+.kind.fam-schedule { --fam: #8ddb8c; }
+.kind.fam-server { --fam: #c9d1d9; }
+.kind.fam-env { --fam: #6cb6ff; }
+.kind.fam-restart { --fam: #f78166; }
 .event-time { white-space: nowrap; color: var(--muted); }
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
 
