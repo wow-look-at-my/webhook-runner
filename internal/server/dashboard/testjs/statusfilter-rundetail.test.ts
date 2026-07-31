@@ -45,6 +45,9 @@ function makeElement(id) {
 		style: {},
 		children: [],
 		showModalCalls: 0,
+		// Recorded handlers, so a test can fire a click the way the operator
+		// does (chip.listeners.click()) instead of reaching into the renderer.
+		listeners: {},
 		classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
 	};
 	return new Proxy(target, {
@@ -60,6 +63,10 @@ function makeElement(id) {
 				case 'replaceChildren':
 					return (...xs) => {
 						t.children = xs;
+					};
+				case 'addEventListener':
+					return (ev, fn) => {
+						t.listeners[ev] = fn;
 					};
 				case 'showModal':
 					return () => {
@@ -110,11 +117,25 @@ function makeSandbox() {
 	const winTarget = new EventTarget();
 	const docTarget = new EventTarget();
 	const stored = new Map(); // localStorage backing
+	const requests = []; // every fetch URL, in order
 
 	// Canned routes; per-URL status so /runs/{id} can 404.
 	const routes = (url) => {
 		if (url.startsWith('/health')) return { status: 200, body: { status: 'ok' } };
 		if (url.startsWith('/attention')) return { status: 200, body: { count: 0, entries: [] } };
+		// One hook's app-page detail. by_status is the RETENTION-WINDOW count
+		// the filter chips read — deliberately much larger than any page.
+		if (url.startsWith('/hooks/a')) {
+			return {
+				status: 200,
+				body: {
+					info: { id: 'a', timeout: '5m', state: false },
+					disabled: false,
+					stats: { tracked: 4213, by_status: { skipped: 4200, success: 11, failure: 2 }, retention: '48h' },
+					image: { built: true },
+				},
+			};
+		}
 		if (url.startsWith('/hooks')) return { status: 200, body: [{ id: 'a' }] };
 		if (url.startsWith('/runs/live1')) {
 			return {
@@ -158,6 +179,7 @@ function makeSandbox() {
 		setInterval: () => 0,
 		clearInterval: () => {},
 		fetch: async (url) => {
+			requests.push(String(url));
 			const { status, body } = routes(url);
 			return {
 				ok: status >= 200 && status < 300,
@@ -207,7 +229,7 @@ function makeSandbox() {
 
 	vm.createContext(sandbox);
 	vm.runInContext(dashboardSrc, sandbox, { filename: 'dashboard.js' });
-	return { sandbox, elements, stored };
+	return { sandbox, elements, stored, requests };
 }
 
 const settle = async () => {
@@ -300,4 +322,87 @@ test('renderConcurrency accepts the {global, groups} document and the legacy arr
 	assert.equal(elements.get('concurrency-global-cap').hidden, true);
 	sandbox.renderConcurrency([]);
 	assert.equal(elements.get('concurrency-global-cap').hidden, true);
+});
+
+// -- 4. Filter first, then limit --------------------------------------------
+//
+// The status filter is applied SERVER-SIDE now. The bug: the page fetched
+// the newest 50 runs and hid statuses locally, so a hook whose recent
+// history is all skips showed an empty table ("All 50 recent run(s) are
+// hidden by the status filter above") with its real runs just past the
+// window, unreachable at any limit.
+
+const appRunsFetches = (requests) => requests.filter((u) => u.startsWith('/runs?hook='));
+
+test('the app page sends the hidden statuses as ?exclude= so the limit counts visible runs', async () => {
+	const { sandbox, requests } = makeSandbox();
+	await settle();
+
+	// Default hidden set is {skipped}: it must reach the SERVER, not just
+	// the renderer.
+	await sandbox.refreshApp('a');
+	await settle();
+	const first = appRunsFetches(requests);
+	assert.equal(first.length, 1, 'one runs fetch per app refresh');
+	assert.match(first[0], /[?&]max=50(&|$)/);
+	assert.match(first[0], /[?&]exclude=skipped(&|$)/, 'the filter must be pushed to the server');
+
+	// Showing everything drops the parameter entirely — an unfiltered fetch,
+	// not exclude= with an empty value.
+	sandbox.saveAppRunsHiddenStatuses(new Set());
+	await sandbox.refreshApp('a');
+	await settle();
+	const second = appRunsFetches(requests);
+	assert.equal(second.length, 2);
+	assert.doesNotMatch(second[1], /exclude/, 'an empty hidden set sends no exclude at all');
+
+	// Several hidden statuses travel as one csv, sorted for a stable URL.
+	sandbox.saveAppRunsHiddenStatuses(new Set(['success', 'skipped']));
+	await sandbox.refreshApp('a');
+	await settle();
+	const third = appRunsFetches(requests);
+	assert.equal(third.length, 3);
+	assert.match(third[2], /[?&]exclude=skipped%2Csuccess(&|$)/);
+});
+
+test('a chip click refetches — a different filter is a different page of runs', async () => {
+	const { sandbox, elements, requests } = makeSandbox();
+	sandbox.location.hash = '#hook=a';
+	await settle();
+
+	await sandbox.refreshApp('a');
+	await settle();
+	const before = appRunsFetches(requests).length;
+
+	// The chips are rendered into #app-runs-filter; click the "skipped" one.
+	const bar = elements.get('app-runs-filter');
+	const chip = bar.children.find((c) => textOf(c).startsWith('skipped'));
+	assert.ok(chip, 'a skipped chip is rendered even when the page holds no skipped rows');
+	chip.listeners.click();
+	await settle();
+
+	const after = appRunsFetches(requests);
+	assert.equal(after.length, before + 1, 'toggling a chip must REFETCH, not re-select the page in hand');
+	assert.doesNotMatch(after[after.length - 1], /exclude/, 'showing skipped drops the exclusion server-side');
+});
+
+test('chip counts come from the retention window, not the fetched page', async () => {
+	const { sandbox, elements } = makeSandbox();
+	await settle();
+
+	// /runs answers [] for this hook while stats.by_status reports thousands:
+	// exactly the post-filter state, where the page cannot supply the counts.
+	await sandbox.refreshApp('a');
+	await settle();
+
+	const labels = elements.get('app-runs-filter').children.map((c) => textOf(c));
+	assert.ok(labels.includes('skipped ×4200'), `window count expected, got ${JSON.stringify(labels)}`);
+	assert.ok(labels.includes('success ×11'), `window count expected, got ${JSON.stringify(labels)}`);
+
+	// And the empty table names the filter instead of counting a page that
+	// no longer contains the hidden rows.
+	const empty = elements.get('app-runs-empty');
+	assert.match(empty.textContent, /status filter/);
+	assert.match(empty.textContent, /skipped/);
+	assert.doesNotMatch(empty.textContent, /All 0 recent/);
 });

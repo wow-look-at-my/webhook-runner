@@ -39,7 +39,12 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   labels that window and `stats.skipped` is the skip bucket — see the
   skip_if bullet under "Things easy to get wrong"),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
-  newest-first), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, the
+  newest-first; `?exclude=<csv of statuses>` drops those runs BEFORE `?max=`
+  applies — FILTER FIRST, THEN LIMIT, so a hook whose newest 50 runs are all
+  skips still answers 50 non-skipped ones, and an unknown status is a 400
+  rather than a silently empty page. It honors `?live=1` too, and overrides
+  the always-include-active rule: an explicit filter is a request, not a
+  window size), `/runs/stream` (SSE live tail: `retry: 2000`, a connect `snapshot` shaped exactly like `/runs`, then one `run` event per lifecycle change + `hb` heartbeats ~10s + multiplexed `changed` section-invalidation signals (`{"sections":["hooks","kv",...]}` — the dashboard's push channel for /hooks /images /concurrency /kv /events /attention; "changed → refetch once", coalescing, drop-proof); fed by the tracker's OnChange seam through a never-blocking hub — see "Things easy to get wrong"), `/runs/{id}/cancel`, `/reload`, the
   hooks-repo reload panel (`GET /reload/status` — mode gated/legacy/none,
   branch, live commit with CI + src/hooks-tree verdicts, the gate's held
   tip; `GET /reload/commits` — ~20 fetched-fresh origin commits with
@@ -49,7 +54,12 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   — see the reload-gate bullet's manual-pick paragraph under "Things easy
   to get wrong"), `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries), `/attention` (the aggregated needs-attention problem
+  event carries. BOTH dashboard feeds — the overview Activity page and the
+  per-hook section — render it with js-snippets' `<activity-feed>`
+  component, imported at runtime; it owns the table, the derived kind
+  badges and the built-in filtering (free-text + severity/family chips,
+  persisted per feed), so this endpoint stays a plain newest-first list
+  and does no filtering of its own), `/attention` (the aggregated needs-attention problem
   set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
   first — the dashboard's red banner + panel; see the attention bullet
   under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill

@@ -282,7 +282,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 	sub := s.stream.subscribe()
 	defer s.stream.unsubscribe(sub)
 
-	if err := writeSSEEvent(w, "snapshot", s.mergedRuns("", time.Time{}, streamSnapshotMax)); err != nil {
+	if err := writeSSEEvent(w, "snapshot", s.mergedRuns("", time.Time{}, streamSnapshotMax, nil)); err != nil {
 		return
 	}
 	if rc.Flush() != nil {

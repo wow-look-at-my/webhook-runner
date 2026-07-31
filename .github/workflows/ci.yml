@@ -58,6 +58,61 @@ jobs:
               );
             }
 
+  # The dashboard's generated bundle, regenerated from source and compared to
+  # what is committed. assets/timeline.js is embedded via go:embed and is
+  # authoritative for the Go build, so it stays committed — this job exists so
+  # it can no longer silently DRIFT from ts/. Editing ts/ and forgetting to
+  # regenerate used to ship a stale dashboard with a green build; now it is a
+  # red one, with the exact command to fix it.
+  #
+  # ts0 comes from buildhost as the prebuilt platform-neutral ts0.cjs — stock
+  # Node and nothing else: no npm, no node_modules, no git (the same shape as
+  # the dats job's prebuilt download below). This is what the "landing next"
+  # note in the test job used to promise.
+  #
+  # PIN: ?v=N is an immutable release; ?branch=master moves on every ts0 merge
+  # and would make this gate flap. v=10 is the current master build — verified
+  # to regenerate the committed bundle byte-for-byte. Newer version NUMBERS
+  # exist (11, 12) but are builds of ts0 feature branches, not master, so do
+  # not bump to a number just because it is higher: resolve
+  # "https://dl.pazer.build/ts0?branch=master&os=linux&arch=amd64" and read the
+  # v= it redirects to, then re-run this job to confirm the bundle is unchanged.
+  #
+  # Slim fleet on purpose: this needs Node, curl and network — no docker, no
+  # bubblewrap, so none of the dind reasoning below applies.
+  dashboard-assets:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Saved as .cjs deliberately: the bundle is CommonJS, and a .js file
+      # would be mis-parsed as ESM if it landed in a "type": "module" package.
+      # No smoke-test step here — ts0 has no `version` subcommand (it prints
+      # "Unknown command" and exits 0, so such a step proves nothing); the
+      # build below is the check that it runs.
+      - name: Install ts0 (prebuilt, from buildhost)
+        run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
+      # Type-checks ts/ (testjs/ is excluded — it is run by node's
+      # type-stripping runner, which never type-checks, so it has never been
+      # under a checker) and rebuilds assets/timeline.js in place.
+      - name: Regenerate dashboard bundle
+        run: node /tmp/ts0.cjs build
+        working-directory: internal/server/dashboard
+      - name: Check the committed bundle is up to date
+        run: |
+          if ! git diff --quiet -- internal/server/dashboard/assets/timeline.js; then
+            echo "::error::assets/timeline.js is stale — it does not match a fresh ts0 build of ts/."
+            echo "Regenerate and commit it:"
+            echo "  curl -fSL 'https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64' -o /tmp/ts0.cjs"
+            echo "  (cd internal/server/dashboard && node /tmp/ts0.cjs build)"
+            echo "Diff:"
+            git --no-pager diff -- internal/server/dashboard/assets/timeline.js
+            exit 1
+          fi
+          echo "assets/timeline.js matches its source."
+
   # wow-dind, not wow-linux: go-toolchain runs a .dats phase (it bootstraps
   # dats and executes dats/*.dats as part of this job -- "Running dats
   # suites" in the log), and dats SANDBOXES TEST COMMANDS BY DEFAULT, failing
@@ -75,11 +130,11 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      # The dashboard's committed assets/timeline.js is authoritative and
-      # embedded as-is — the npx //go:generate directive that rebuilt it via
-      # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
-      # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
-      # driven by a small Go bootstrap is landing next.
+      # The dashboard's committed assets/timeline.js is authoritative here and
+      # embedded as-is: this job needs no node/npm/npx. Regeneration is no
+      # longer an unchecked manual step — the dashboard-assets job above
+      # rebuilds it with the prebuilt ts0 from buildhost and fails if the
+      # committed bytes drifted from ts/.
       # go-toolchain@v1 itself cache-uploads its build/ outputs under the
       # `go-build` name on EVERY run (its own composite "Hand off build outputs"
       # step, artifact-free; cache storage is free, artifact storage is billed).
