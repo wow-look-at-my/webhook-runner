@@ -36,6 +36,18 @@ const (
 	StatusSkipped Status = "skipped"
 )
 
+// KnownStatus reports whether s is a status a run can actually hold. The
+// /runs list filter validates against it so a typo'd status is a 400 rather
+// than a silently empty page.
+func KnownStatus(s Status) bool {
+	switch s {
+	case StatusPending, StatusRunning, StatusSuccess, StatusFailure,
+		StatusTimeout, StatusError, StatusCancelled, StatusSkipped:
+		return true
+	}
+	return false
+}
+
 // Terminal reports whether the status is a final state (the run's done
 // channel is closed and no further transitions happen).
 func (s Status) Terminal() bool {

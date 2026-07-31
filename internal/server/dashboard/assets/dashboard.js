@@ -1573,8 +1573,16 @@ async function refreshApp(id) {
     renderAppMissing(id);
     return;
   }
+  // FILTER FIRST, THEN LIMIT: the hidden statuses go to the server as
+  // ?exclude= so max=50 counts fifty runs the operator can actually see. It
+  // used to fetch the newest 50 and hide statuses here, which on a hook
+  // whose recent history is all skips (every gha-runner delivery that is
+  // not a queued job) rendered an empty table — "All 50 recent run(s) are
+  // hidden by the status filter above" — with the real runs just past the
+  // window and unreachable at any limit.
+  const exclude = [...appRunsHiddenStatuses()].sort().join(",");
   const [runs, events, kvKeys] = await Promise.all([
-    fetchJSON(`/runs?hook=${enc}&max=50`),
+    fetchJSON(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
     fetchJSON(`/events?hook=${enc}&max=100`),
     // The KV namespace listing exists only for state:true hooks
     // (namespace == hook ID); skip the fetch entirely otherwise.
@@ -1707,7 +1715,9 @@ function renderApp(detail, runs, events) {
     ["On disk", others || "none"],
   ]);
 
-  renderAppRunsTable(runs);
+  // by_status covers the whole retention window, not the fetched page, so
+  // the chips can count statuses the server just filtered out.
+  renderAppRunsTable(runs, st.by_status);
 
   renderEventRows("app-events-table", "app-events-empty", events);
 }
@@ -1716,12 +1726,21 @@ function renderApp(detail, runs, events) {
 //
 // Skipped runs are hidden BY DEFAULT: a flooded hook's table is otherwise
 // wall-to-wall purple "skipped" rows drowning the runs that did work. Every
-// status gets a toggle chip (click to hide/show), the choice persists in
-// localStorage (the runs-table toggle precedent), and the filtering happens
-// on the DATA fed to the renderer — a pure selection over the run list,
-// never CSS-hidden rows — so what the table shows and what it counts always
-// agree. The hidden count rides the chips ("skipped ×N" dimmed), and an
-// all-hidden table says so instead of pretending there are no runs.
+// status gets a toggle chip (click to hide/show) and the choice persists in
+// localStorage (the runs-table toggle precedent).
+//
+// The filter is applied SERVER-SIDE, before the row limit (?exclude= on
+// /runs). It used to be a pure selection over the fetched page, which
+// quietly failed on exactly the hooks it was built for: hide "skipped" on a
+// hook whose newest 50 runs are all skips and the table emptied out, saying
+// "All 50 recent run(s) are hidden" while the runs that did work sat just
+// past the window — unreachable however high the limit went, because the
+// limit was spent before the filter ran. Filter first, then limit.
+//
+// Two consequences worth keeping in mind: toggling a chip REFETCHES (a
+// different filter is a different fifty rows), and the chip counts come
+// from the hook's stats.by_status over the whole retention window, since
+// the page no longer contains the hidden statuses at all.
 
 const APP_RUNS_FILTER_KEY = "whr.appRuns.hiddenStatuses";
 const APP_RUNS_FILTER_DEFAULT = ["skipped"];
@@ -1763,20 +1782,28 @@ function filterAppRuns(runs, hidden) {
 }
 
 let lastAppRuns = [];
+let lastAppStatusCounts = null;
 
-function renderAppRunsTable(runs) {
+function renderAppRunsTable(runs, statusCounts) {
   lastAppRuns = runs || [];
+  if (statusCounts) lastAppStatusCounts = statusCounts;
   const hidden = appRunsHiddenStatuses();
-  const { shown, hiddenCounts } = filterAppRuns(lastAppRuns, hidden);
-  renderAppRunsFilter(lastAppRuns, hidden);
+  // The server already excluded these, so this is belt-and-braces: the
+  // table must never show a hidden status even if the filter did not reach
+  // the server (an in-flight request racing a chip click).
+  const { shown } = filterAppRuns(lastAppRuns, hidden);
+  renderAppRunsFilter(lastAppStatusCounts, hidden);
 
   const tbody = document.querySelector("#app-runs-table tbody");
   tbody.innerHTML = "";
   const empty = document.getElementById("app-runs-empty");
   empty.hidden = shown.length > 0;
-  const totalHidden = [...hiddenCounts.values()].reduce((a, b) => a + b, 0);
-  empty.textContent = totalHidden > 0 && lastAppRuns.length > 0
-    ? `All ${lastAppRuns.length} recent run(s) are hidden by the status filter above.`
+  // Filtering happens server-side now, so an empty table means the filter
+  // matched nothing in the WHOLE window — not that the newest page happened
+  // to be all-hidden. Say which it is rather than counting a page that no
+  // longer exists.
+  empty.textContent = hidden.size > 0
+    ? `No runs in this window with the status filter above (hiding ${[...hidden].sort().join(", ")}).`
     : "No runs yet.";
   for (const r of shown) {
     // Queued = accepted; Waited = queue time until launch (live for pending
@@ -1794,16 +1821,21 @@ function renderAppRunsTable(runs) {
   }
 }
 
-// One chip per status: every status present in the data, plus every hidden
+// One chip per status: every status in the stats window, plus every hidden
 // one (its chip must stay visible while it hides), plus the default-hidden
 // "skipped" (so the control is discoverable even with zero skips). Active
 // chips hide on click; dimmed (hidden) chips show on click.
-function renderAppRunsFilter(runs, hidden) {
+//
+// Counts come from the hook detail's stats.by_status — the WHOLE retention
+// window — not from the fetched page. Deriving them from the page stopped
+// working the moment the page became server-filtered (a hidden status is
+// simply absent from it), and window counts were the more useful number
+// anyway: "skipped ×4213" is the fact worth showing next to the toggle.
+function renderAppRunsFilter(statusCounts, hidden) {
   const bar = document.getElementById("app-runs-filter");
   if (!bar) return;
   bar.innerHTML = "";
-  const counts = new Map();
-  for (const r of runs || []) counts.set(r.status, (counts.get(r.status) || 0) + 1);
+  const counts = new Map(Object.entries(statusCounts || {}));
   const statuses = new Set([...counts.keys(), ...hidden, ...APP_RUNS_FILTER_DEFAULT]);
   for (const st of [...statuses].sort()) {
     const n = counts.get(st) || 0;
@@ -1812,7 +1844,7 @@ function renderAppRunsFilter(runs, hidden) {
       type: "button",
       class: `filter-chip status ${st}${off ? " filter-off" : ""}`,
       title: off
-        ? `${n} ${st} run(s) hidden — click to show them`
+        ? `${n} ${st} run(s) in this window are hidden — click to show them`
         : `click to hide ${st} runs from the table`,
     }, `${st} ×${n}`);
     chip.addEventListener("click", () => {
@@ -1820,7 +1852,12 @@ function renderAppRunsFilter(runs, hidden) {
       if (next.has(st)) next.delete(st);
       else next.add(st);
       saveAppRunsHiddenStatuses(next);
-      renderAppRunsTable(lastAppRuns); // re-select from the same data
+      // REFETCH, don't re-select: the filter is applied server-side before
+      // the limit, so a different filter is a different fifty rows. Falls
+      // back to re-rendering the page in hand if the app id is unknown.
+      const id = currentHookId();
+      if (id) void refreshApp(id);
+      else renderAppRunsTable(lastAppRuns);
     });
     bar.appendChild(chip);
   }
