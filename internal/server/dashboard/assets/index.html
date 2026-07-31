@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <title>webhook-runner</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- No favicon shipped: the empty data URL stops the browser requesting
+     /favicon.ico (which 404s into the console on every load). -->
+<link rel="icon" href="data:,">
 <meta name="darkreader-lock">
 <link rel="stylesheet" href="dashboard.css">
 </head>
@@ -352,6 +355,25 @@
       </div>
     </div>
     <div id="run-detail-output"></div>
+  </div>
+</dialog>
+
+<!-- KV value viewer: clicking a key inside an expanded STATE (KV) namespace
+     opens the stored value here. Same modal pattern as the run detail. -->
+<dialog id="kv-detail" aria-labelledby="kv-detail-title">
+  <div class="modal-body">
+    <div class="modal-header">
+      <h2 id="kv-detail-title">Key <code id="kv-detail-key"></code></h2>
+      <button id="kv-detail-close" class="modal-close" aria-label="Close" title="Close (Esc)">&times;</button>
+    </div>
+    <dl id="kv-detail-meta"></dl>
+    <div class="output-head">
+      <h3>Value</h3>
+      <div class="output-actions">
+        <button type="button" id="kv-detail-copy" class="copy-btn" title="Copy the raw stored value to the clipboard">Copy value</button>
+      </div>
+    </div>
+    <div id="kv-detail-output"></div>
   </div>
 </dialog>
 
