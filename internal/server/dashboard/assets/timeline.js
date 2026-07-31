@@ -2,6 +2,7 @@
 
 // ts/timeline.ts
 var COMPONENT_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js";
+var ACTIVITY_FEED_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js";
 var COMPONENT_RETRY_MS = 5e3;
 var STREAM_PATH = "/runs/stream";
 var FALLBACK_POLL_MS = 5e3;
@@ -821,6 +822,17 @@ async function loadComponentForever() {
     }
   }
 }
+async function loadActivityFeedForever() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await (attempt === 0 ? import(ACTIVITY_FEED_URL) : import(`${ACTIVITY_FEED_URL}?retry=${attempt}`));
+      return;
+    } catch (e) {
+      console.error(`activity-feed: component load failed (retry in ${COMPONENT_RETRY_MS}ms):`, e);
+      await new Promise((r) => setTimeout(r, COMPONENT_RETRY_MS));
+    }
+  }
+}
 async function boot() {
   initTableToggle();
   void (async () => {
@@ -832,6 +844,7 @@ async function boot() {
   })();
   openStream();
   startFeedSupervisor();
+  void loadActivityFeedForever();
   await loadComponentForever();
   document.getElementById("timeline-loading")?.remove();
   initTimeline();

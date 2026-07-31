@@ -208,9 +208,23 @@ func (s *Store) ListAll(max int) []runs.RunState {
 // before applies no bound — identical to ListAll. Clients page by passing
 // the oldest Started they already hold.
 func (s *Store) ListAllBefore(before time.Time, max int) []runs.RunState {
+	return s.ListAllBeforeFiltered(before, max, nil)
+}
+
+// ListAllBeforeFiltered is ListAllBefore with a status predicate applied
+// DURING the walk, so max counts only the runs keep accepts. FILTER FIRST,
+// THEN LIMIT: a caller asking for 50 non-skipped runs must get 50
+// non-skipped runs, not the newest 50 rows that then filter down to none —
+// which is exactly what a hook whose recent history is all skips produced.
+// A nil keep keeps everything (the unfiltered contract above).
+//
+// The walk is bounded by retention, not by max, so a filter that matches
+// nothing scans the hook's whole retained window once. That is the price of
+// a correct answer; the per-hook path below avoids most of the cost.
+func (s *Store) ListAllBeforeFiltered(before time.Time, max int, keep func(runs.Status) bool) []runs.RunState {
 	var out []runs.RunState
 	_ = s.db.View(func(tx *bolt.Tx) error {
-		out = s.collectBefore(tx, tx.Bucket(bucketByTime), before, max)
+		out = s.collectBefore(tx, tx.Bucket(bucketByTime), before, max, keep)
 		return nil
 	})
 	return out
@@ -226,13 +240,21 @@ func (s *Store) ListByHook(hookID string, max int) []runs.RunState {
 // exact contract: runs Started strictly before the instant, newest-first,
 // capped at max (<=0 means no cap), zero before meaning no bound.
 func (s *Store) ListByHookBefore(hookID string, before time.Time, max int) []runs.RunState {
+	return s.ListByHookBeforeFiltered(hookID, before, max, nil)
+}
+
+// ListByHookBeforeFiltered is ListByHookBefore with ListAllBeforeFiltered's
+// filter-first contract. This is the cheap path: the per-hook index's VALUE
+// carries the status, so a rejected row costs one small parse instead of a
+// metadata decode.
+func (s *Store) ListByHookBeforeFiltered(hookID string, before time.Time, max int, keep func(runs.Status) bool) []runs.RunState {
 	var out []runs.RunState
 	_ = s.db.View(func(tx *bolt.Tx) error {
 		hb := tx.Bucket(bucketByHook).Bucket([]byte(hookID))
 		if hb == nil {
 			return nil
 		}
-		out = s.collectBefore(tx, hb, before, max)
+		out = s.collectBefore(tx, hb, before, max, keep)
 		return nil
 	})
 	return out
@@ -241,13 +263,14 @@ func (s *Store) ListByHookBefore(hookID string, before time.Time, max int) []run
 // collectBefore is the shared list walk: from the position seekBefore
 // selects, it steps the chronological bucket newest-first, decoding each
 // run's metadata record, until max runs are collected (<=0 = no cap) or the
-// first retention-expired key ends the walk.
-func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max int) []runs.RunState {
+// first retention-expired key ends the walk. A non-nil keep rejects runs by
+// status BEFORE they count against max (see ListAllBeforeFiltered).
+func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max int, keep func(runs.Status) bool) []runs.RunState {
 	var out []runs.RunState
 	now := time.Now()
 	meta := tx.Bucket(bucketMeta)
 	c := b.Cursor()
-	for k := seekBefore(c, before); k != nil; k, _ = c.Prev() {
+	for k, v := seekBefore(c, before); k != nil; k, v = c.Prev() {
 		if max > 0 && len(out) >= max {
 			break
 		}
@@ -259,6 +282,15 @@ func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max
 		if s.expired(started, now) {
 			break
 		}
+		// Cheap rejection: the per-hook index's value is a summary carrying
+		// the status, so a filtered walk skips the metadata decode entirely.
+		// The by-time index's value is a bare hook ID, which never parses as
+		// a summary — that path falls through to the decode below.
+		if keep != nil {
+			if status, _, _, ok := splitSummary(v); ok && !keep(status) {
+				continue
+			}
+		}
 		raw := meta.Get([]byte(id))
 		if raw == nil {
 			continue
@@ -268,30 +300,31 @@ func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max
 			s.log.Error("runstore: corrupt run metadata", "run", id, "err", err)
 			continue
 		}
+		if keep != nil && !keep(st.Status) {
+			continue
+		}
 		out = append(out, st)
 	}
 	return out
 }
 
 // seekBefore positions the cursor at the newest key STRICTLY older than the
-// given instant and returns it (nil = nothing older); a zero before starts
-// at the newest key overall. Keys are "<zero-padded-nanos>-<id>", so the
+// given instant and returns it with its value (nil key = nothing older); a
+// zero before starts at the newest key overall. The value comes back
+// because a filtered walk reads the status out of the per-hook summary. Keys are "<zero-padded-nanos>-<id>", so the
 // bare zero-padded nanos of before sorts before every key at exactly that
 // instant (they continue with '-'): Seek lands on the first key at-or-after
 // before, and one Prev from there is the newest strictly-older key. When
 // Seek returns nil — before is newer than every key — the newest key
 // overall is the answer.
-func seekBefore(c *bolt.Cursor, before time.Time) []byte {
+func seekBefore(c *bolt.Cursor, before time.Time) ([]byte, []byte) {
 	if before.IsZero() {
-		k, _ := c.Last()
-		return k
+		return c.Last()
 	}
 	if k, _ := c.Seek(fmt.Appendf(nil, "%019d", before.UnixNano())); k == nil {
-		k, _ = c.Last()
-		return k
+		return c.Last()
 	}
-	k, _ := c.Prev()
-	return k
+	return c.Prev()
 }
 
 // SummariesByHook returns skeleton states (ID, HookID, Status, Started,
