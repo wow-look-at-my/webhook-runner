@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	secretserver "github.com/wow-look-at-my/secret-server/client"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
-	"github.com/wow-look-at-my/webhook-runner/internal/secretserver"
 )
 
 // defaultGitHubTokenSecret is the secret-server name holding this org's

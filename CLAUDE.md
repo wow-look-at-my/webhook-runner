@@ -31,7 +31,6 @@ internal/kv/               disk-backed per-hook KV store (state socket) + HMAC n
 internal/backlog/          durable per-hook batch backlogs (drain-a-slice; behind /backlog)
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client (credential resolved per call, so secret-server can supply it)
-internal/secretserver/     secret-server client: reads PRIVATE_ORG_REPO_READ with an sst_ machine token
 schema/                    JSON schemas for hook.json + manager.json + concurrency.json — published to buildhost sites (.github/workflows/schemas.yml) AND go:embed'd (embed.go) so the loader enforces the same contract at runtime. hook.schema.json + manager.schema.json are GENERATED from src/ (src/common.json holds the 24 shared property constraints ONCE; each overlay adds its own properties and the per-entity prose) — regenerate with `go test ./schema -update`; a drifted checkout fails TestGeneratedSchemasMatchSources
 e2e/                       end-to-end test (shell script, requires Docker)
 dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
@@ -42,7 +41,16 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
 ## Conventions
 
 - **Always use `go-toolchain`** from the repo root. Don't run bare `go build`,
-  `go test`, or `go mod tidy`.
+  `go test`, or `go mod tidy`. Export
+  `GOPRIVATE=github.com/wow-look-at-my/secret-server` first: that dependency
+  (the published secret-server client) is a PRIVATE module, and a checksum
+  database can never contain one, so without it every `go mod tidy` dies on
+  `verifying module: ... 404`. ci.yml sets it workflow-wide.
+- **The secret-server client is IMPORTED, never reimplemented.** Its contract
+  has edges (a 200 body is secret material; 200 `{}` is a configuration answer;
+  a failed fetch must not be cached) that this repo got to discover by writing
+  its own copy — which now lives in secret-server as
+  `github.com/wow-look-at-my/secret-server/client`.
 - **No CGO.** `CGO_ENABLED=0` is enforced by the Dockerfile build stage.
 - **No Docker SDK.** Shell out to `docker` via `os/exec`.
 - **Cobra subcommands** live one-per-file in `internal/cli/` and self-register

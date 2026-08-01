@@ -250,7 +250,9 @@ graph LR
 ## Quick start
 
 ```sh
-# Build
+# Build. GOPRIVATE is required: the secret-server client is a private module,
+# and no checksum database can contain one.
+export GOPRIVATE=github.com/wow-look-at-my/secret-server
 go-toolchain
 ./webhook-runner ./examples/hooks
 

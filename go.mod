@@ -8,6 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/wow-look-at-my/json-validator v0.0.0-20260801111049-3be1f1326433
+	github.com/wow-look-at-my/secret-server v0.0.0-20260801210236-1df6359f26c1
 	go.etcd.io/bbolt v1.5.0
 )
 
@@ -17,7 +18,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tidwall/jsonc v0.3.3 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

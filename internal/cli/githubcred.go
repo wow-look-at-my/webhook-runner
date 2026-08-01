@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	secretserver "github.com/wow-look-at-my/secret-server/client"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
-	"github.com/wow-look-at-my/webhook-runner/internal/secretserver"
 )
 
 // newGitHubStatusClient builds the runner's own GitHub client from whichever
@@ -34,6 +34,9 @@ import (
 // is deliberately NOT fatal is secret-server being unreachable right now: that
 // resolves per call, so an outage during a restart heals on the next poll
 // instead of leaving the process blind until someone restarts it again.
+//
+// Both behaviors come from secret-server's own published client
+// (secret-server/client, formerly a copy of it here). Never reimplement it.
 func newGitHubStatusClient(o *serveOptions, logger *slog.Logger) (*githubstatus.Client, error) {
 	if o.ghToken != "" {
 		if o.secretServerTok != "" {
@@ -49,11 +52,11 @@ func newGitHubStatusClient(o *serveOptions, logger *slog.Logger) (*githubstatus.
 		return githubstatus.New("", logger), nil
 	}
 
-	client, err := secretserver.New(o.secretServerURL, o.secretServerTok)
+	client, err := secretserver.NewMachineToken(o.secretServerTok, secretserver.WithBaseURL(o.secretServerURL))
 	if err != nil {
 		return nil, fmt.Errorf("WEBHOOK_RUNNER_SECRET_SERVER_TOKEN: %w", err)
 	}
-	provider := secretserver.NewProvider(client, 0)
+	provider := secretserver.NewCache(client, 0)
 	logger.Info("github credential: reading from secret-server",
 		"url", o.secretServerURL, "secret", o.ghTokenSecret)
 
