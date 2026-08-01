@@ -8,7 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/wow-look-at-my/json-validator v0.0.0-20260801111049-3be1f1326433
-	github.com/wow-look-at-my/secret-server v0.0.0-20260801210236-1df6359f26c1
+	github.com/wow-look-at-my/secret-server v0.0.0-20260801212640-b5dfe1922e8b
 	go.etcd.io/bbolt v1.5.0
 )
 
