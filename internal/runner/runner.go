@@ -328,6 +328,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		r.events.Record("image.built", fmt.Sprintf("built %s in %s", image, time.Since(buildStart).Round(time.Millisecond)),
 			map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 	}
+	run.Mark(runs.PhaseImageReady)
 	// A build can take a while; honor a cancel that arrived during it
 	// instead of starting a container nobody wants anymore.
 	select {
@@ -388,6 +389,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	gClearQueued()
 	defer gRelease()
+	// Both slots held: from here to PhaseSpawned is pure launch preparation
+	// (argv assembly, and for state hooks the imageCommand inspect), with no
+	// queueing left in it.
+	run.Mark(runs.PhaseSlotAcquired)
 
 	// The timeout clock starts now — we hold a slot and are about to launch
 	// — so it bounds only real container processing, never the time spent
@@ -501,6 +506,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			}
 			return
 		}
+		run.Mark(runs.PhaseInspected)
 		args = append(args, "kv-forward")
 		args = append(args, childArgv...)
 	} else {
@@ -563,6 +569,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// Close write ends in the parent; only the child holds them now.
 	stdoutW.Close()
 	stderrW.Close()
+	// The handoff instant: everything after this and before the container's
+	// own first instruction (PhaseContainerEntry, reported by the injected
+	// shim) is Docker's create/namespace/overlay/entrypoint cost.
+	run.Mark(runs.PhaseSpawned)
 	run.SetRunning()
 
 	timedOut := make(chan struct{})
@@ -620,6 +630,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}()
 
 	waitErr := cmd.Wait()
+	// The docker CLI has returned: the container exited AND `--rm` teardown
+	// is done. Whatever separates this from Finished is the runner's own
+	// bookkeeping, not container cost.
+	run.Mark(runs.PhaseExited)
 	close(stopWatcher)
 
 	// In the normal case the process has exited and its pipe ends

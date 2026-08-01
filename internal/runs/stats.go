@@ -53,6 +53,49 @@ type HookRunStats struct {
 	// LastRun is the newest run by start time, whatever its status — an
 	// in-flight run is deliberately included, it IS the latest.
 	LastRun *LastRun `json:"last_run,omitempty"`
+
+	// Overhead aggregates the container-startup instrumentation over the
+	// same window. nil when no run in the window carries phase marks (all
+	// pre-upgrade history, or nothing ran).
+	Overhead *OverheadStats `json:"overhead,omitempty"`
+}
+
+// OverheadStats answers "what does running this hook in a container
+// actually cost?" over a window of runs — the figure that was previously
+// only ever estimated. Every span is reported with its own sample count:
+// they come from different marks and are populated by different subsets of
+// runs, so one shared denominator would misrepresent all of them.
+type OverheadStats struct {
+	// BootAvgMS/BootMaxMS/BootSampled cover EXACT container startup:
+	// `docker run` spawned → the container's first instruction, with no
+	// hook runtime in it. Only runs carrying the in-container mark (state
+	// hooks) count, which is what makes the figure exact.
+	BootAvgMS   int64 `json:"boot_avg_ms"`
+	BootMaxMS   int64 `json:"boot_max_ms"`
+	BootSampled int   `json:"boot_sampled"`
+
+	// BoundAvgMS/BoundMaxMS/BoundSampled cover the UPPER BOUND on startup
+	// — spawned → first output — for runs with no in-container mark. It
+	// includes the hook runtime's cold start and must be labeled as a
+	// bound, never quoted as container overhead.
+	BoundAvgMS   int64 `json:"bound_avg_ms"`
+	BoundMaxMS   int64 `json:"bound_max_ms"`
+	BoundSampled int   `json:"bound_sampled"`
+
+	// RuntimeStartAvgMS is the hook runtime's own cold start (container
+	// entry → first output): the half of the naive bound that is NOT
+	// Docker's cost. Same sample set as the exact boot figures.
+	RuntimeStartAvgMS int64 `json:"runtime_start_avg_ms"`
+	RuntimeStartMaxMS int64 `json:"runtime_start_max_ms"`
+
+	// InspectAvgMS is the argv-reconstruction `docker inspect` state hooks
+	// pay before their container starts — a whole extra CLI + daemon round
+	// trip on the critical path, measured separately because it is
+	// removable (the image tag is a content hash, so its answer is
+	// cacheable) while the rest of boot is not.
+	InspectAvgMS   int64 `json:"inspect_avg_ms"`
+	InspectMaxMS   int64 `json:"inspect_max_ms"`
+	InspectSampled int   `json:"inspect_sampled"`
 }
 
 // LastRun identifies one run for HookRunStats without dragging along output.
@@ -142,7 +185,74 @@ func ComputeStats(states []RunState) HookRunStats {
 		stats.AvgWaitMS = (totalWait / time.Duration(stats.WaitSampled)).Milliseconds()
 		stats.MaxWaitMS = maxWait.Milliseconds()
 	}
+	stats.Overhead = computeOverhead(states)
 	return stats
+}
+
+// computeOverhead aggregates the phase marks across a window. Unlike the
+// duration figures above it does NOT restrict itself to completed runs: a
+// container that booted and then timed out still measured a real boot, and
+// dropping those samples would bias the figure toward whatever finishes
+// cleanly. It returns nil when nothing in the window carries marks.
+func computeOverhead(states []RunState) *OverheadStats {
+	var o OverheadStats
+	var bootTotal, bootMax, boundTotal, boundMax time.Duration
+	var rtTotal, rtMax, inspTotal, inspMax time.Duration
+	for i := range states {
+		snap := states[i]
+		if len(snap.Phases) == 0 {
+			continue
+		}
+		if d, exact, ok := snap.BootDuration(); ok {
+			if exact {
+				bootTotal += d
+				o.BootSampled++
+				if d > bootMax {
+					bootMax = d
+				}
+			} else {
+				boundTotal += d
+				o.BoundSampled++
+				if d > boundMax {
+					boundMax = d
+				}
+			}
+		}
+		if d, ok := snap.RuntimeStartDuration(); ok {
+			rtTotal += d
+			if d > rtMax {
+				rtMax = d
+			}
+		}
+		if d, ok := snap.InspectDuration(); ok {
+			inspTotal += d
+			o.InspectSampled++
+			if d > inspMax {
+				inspMax = d
+			}
+		}
+	}
+	if o.BootSampled == 0 && o.BoundSampled == 0 && o.InspectSampled == 0 {
+		return nil
+	}
+	if o.BootSampled > 0 {
+		o.BootAvgMS = (bootTotal / time.Duration(o.BootSampled)).Milliseconds()
+		o.BootMaxMS = bootMax.Milliseconds()
+		// Runtime start shares the exact-boot sample set: both need the
+		// in-container mark, and RuntimeStartDuration only returns ok when
+		// first output followed it.
+		o.RuntimeStartAvgMS = (rtTotal / time.Duration(o.BootSampled)).Milliseconds()
+		o.RuntimeStartMaxMS = rtMax.Milliseconds()
+	}
+	if o.BoundSampled > 0 {
+		o.BoundAvgMS = (boundTotal / time.Duration(o.BoundSampled)).Milliseconds()
+		o.BoundMaxMS = boundMax.Milliseconds()
+	}
+	if o.InspectSampled > 0 {
+		o.InspectAvgMS = (inspTotal / time.Duration(o.InspectSampled)).Milliseconds()
+		o.InspectMaxMS = inspMax.Milliseconds()
+	}
+	return &o
 }
 
 // StatsByHook aggregates the tracker's retained runs of one hook (the

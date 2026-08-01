@@ -160,6 +160,16 @@ type RunState struct {
 	// to the run store — is never waiting.
 	WaitingOn *WaitingOn `json:"waiting_on,omitempty"`
 
+	// Phases carries the run's lifecycle instrumentation marks (see
+	// phases.go): when the image was ready, when slots were held, when
+	// `docker run` was spawned, when the container's first instruction ran,
+	// when output first appeared, when the container was reaped. They make
+	// per-run container overhead measurable instead of estimated. Additive
+	// and feature-detected: absent for pre-upgrade history and for marks a
+	// given run never reaches; every consumer treats a missing mark as
+	// "unknown", never as zero.
+	Phases map[Phase]time.Time `json:"phases,omitempty"`
+
 	// Waiters lists the runs currently blocked on cooperative locks THIS
 	// run holds. It is DERIVED, never stored: the Run itself doesn't set
 	// it — the server computes it from live runs' WaitingOn at
@@ -369,6 +379,12 @@ func (r *Run) Snapshot(tail int) RunState {
 	cp.Output = append([]string(nil), out...)
 	cp.OutputTimes = append([]time.Time(nil), times...)
 	cp.WaitHistory = append([]WaitSegment(nil), r.state.WaitHistory...)
+	if len(r.state.Phases) > 0 {
+		cp.Phases = make(map[Phase]time.Time, len(r.state.Phases))
+		for k, v := range r.state.Phases {
+			cp.Phases[k] = v
+		}
+	}
 	if cp.WaitingOn != nil {
 		// SetWaitingOn always replaces the pointer, never mutates the
 		// pointee — but copy anyway so a snapshot can't alias live state.
@@ -393,6 +409,12 @@ func (r *Run) AppendOutput(line string) {
 	now := time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// The first line IS the first-output mark: stamped here, under the same
+	// lock and from the same instant, so the two streams racing to produce it
+	// cannot disagree and no separate call site can drift from the buffer.
+	if len(r.state.Output) == 0 {
+		r.markAtLocked(PhaseFirstOutput, now)
+	}
 	r.state.Output = append(r.state.Output, line)
 	r.state.OutputTimes = append(r.state.OutputTimes, now)
 	if len(r.state.Output) > MaxOutputLines {

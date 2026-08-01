@@ -434,6 +434,12 @@ func (s *Server) registerRoutes() {
 	// Friendly-title override: a run whose subject is only known mid-run
 	// (a fleet sweep reaching some repo) names itself (see title.go).
 	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
+	// Instrumentation: the injected shim reports the container's first
+	// instruction, the one lifecycle mark the host cannot see (see phase.go).
+	// Deliberately a single fixed route, not POST /phase/{name}: hooks must
+	// not be able to stamp arbitrary marks, or the measurement stops meaning
+	// what it says.
+	s.stateMux.HandleFunc("POST /phase/container-entry", s.withNamespace(s.handleContainerEntry))
 	// Spawn: a permitted MANAGER starts runs of ANOTHER hook through the
 	// runner itself — deny-by-default manager.json spawn_targets, normal
 	// dispatch, skip_if deliberately bypassed like scheduled fires (see
