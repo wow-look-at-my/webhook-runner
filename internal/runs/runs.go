@@ -268,6 +268,12 @@ type Run struct {
 	// nil until registered.
 	touch func()
 
+	// onTerminal is bookkeeping the RUNNER does about this run that must
+	// land before the run is observably finished — see SetOnTerminal. nil
+	// until registered. Read under the mutex: unlike onFinish/onChange it is
+	// registered mid-flight, not copied at New.
+	onTerminal func(RunState)
+
 	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from
 	// a pause that a newer one overlapped — cannot clear the newer pause's
 	// dashboard state. 0 is never a live sequence.
@@ -424,10 +430,26 @@ func (r *Run) AppendOutput(line string) {
 	}
 }
 
-// Finish records the terminal state and closes the done channel. Calling
-// Finish more than once on the same run is a no-op for the second call —
-// which is also what guarantees the tracker's OnFinish observer fires
-// exactly once per run.
+// Finish records the terminal state, settles every terminal side effect,
+// and only THEN closes the done channel. Calling Finish more than once on
+// the same run is a no-op for the second call — which is also what
+// guarantees the OnTerminal and OnFinish observers fire exactly once.
+//
+// THE ORDERING IS THE CONTRACT. Everything an observer could reach for must
+// already be in place when the channel closes, so that <-run.Done() is a
+// sufficient barrier on its own:
+//
+//	onTerminal  the runner's own bookkeeping (the run.finished activity line)
+//	onFinish    the run-store write, lock release
+//	notifyChange the /runs/stream terminal delta
+//	close(done) ← observers unblock here, with all of the above settled
+//
+// Closing first would make Done() mean only "the status field flipped",
+// and every caller would need a second, separate barrier to see the rest.
+// That is exactly the trap this ordering exists to remove: three tests
+// raced these writes before the close moved to the end. Do not hoist it
+// back up, and register new terminal work through SetOnTerminal rather
+// than running it after Finish returns.
 func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -446,8 +468,13 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	// close its wait-history segment at the same instant.
 	r.state.WaitingOn = nil
 	r.closeOpenWaitSegmentLocked(r.state.Finished)
+	// Captured under the lock: unlike onFinish/onChange, onTerminal is
+	// registered mid-flight by the runner.
+	onTerminal := r.onTerminal
 	r.mu.Unlock()
-	close(r.done)
+	if onTerminal != nil {
+		onTerminal(r.Snapshot(-1))
+	}
 	if r.onFinish != nil {
 		r.onFinish(r.Snapshot(-1))
 	}
@@ -456,6 +483,7 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	// a client reacting to the delta (e.g. fetching /runs/{id}) sees the
 	// persisted state too.
 	r.notifyChange()
+	close(r.done)
 }
 
 // SetTitle records the run's friendly display title (trimmed; the empty
@@ -522,6 +550,27 @@ func (r *Run) StartedAt() time.Time {
 func (r *Run) SetActivityTouch(fn func()) {
 	r.mu.Lock()
 	r.touch = fn
+	r.mu.Unlock()
+}
+
+// SetOnTerminal registers work that must land BEFORE the run is observably
+// finished. Finish invokes fn once the terminal state is set and BEFORE it
+// closes the done channel, so a <-run.Done() observer never sees a run
+// whose bookkeeping is still in flight.
+//
+// It exists because some terminal work belongs to the RUNNER, not the run
+// — recording the run.finished activity line needs the image name and the
+// spawn note, which RunState does not carry. Doing that work after Finish
+// returns is what put it on the far side of the close: three tests raced
+// it and had to bolt on a second barrier (Runner.Wait) to read the feed.
+// Register it here instead and Done() stays the one barrier anyone needs.
+//
+// fn runs on the finishing goroutine, outside the run mutex, and must not
+// block: it delays every Done() observer. Exactly-once is inherited from
+// Finish's own once-guard.
+func (r *Run) SetOnTerminal(fn func(RunState)) {
+	r.mu.Lock()
+	r.onTerminal = fn
 	r.mu.Unlock()
 }
 
