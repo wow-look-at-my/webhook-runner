@@ -54,12 +54,23 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   — see the reload-gate bullet's manual-pick paragraph under "Things easy
   to get wrong"), `/events`
   (activity feed; `?hook=` filters on the `hook` field every hook-scoped
-  event carries. BOTH dashboard feeds — the overview Activity page and the
-  per-hook section — render it with js-snippets' `<activity-feed>`
-  component, imported at runtime; it owns the table, the derived kind
-  badges and the built-in filtering (free-text + severity/family chips,
-  persisted per feed), so this endpoint stays a plain newest-first list
-  and does no filtering of its own), `/attention` (the aggregated needs-attention problem
+  event carries, and `?exclude=run[,image,…]` drops whole kind FAMILIES —
+  the segment before the dot, so `run` takes `run.started`/`run.finished`
+  but never `runstore.*`; a full kind is a 400, since silently matching
+  nothing reads as a broken filter. BOTH narrowings are applied by
+  `events.ListFiltered` BEFORE `max`: the cap bounds what is RETURNED,
+  never what is EXAMINED, so an excluded burst can never crowd the
+  survivors out of the page — the same filter-before-limit rule `/runs`
+  follows, and for the same reason. BOTH dashboard feeds — the overview
+  Activity page and the per-hook section — pass `exclude=run`, because run
+  lifecycle already has a richer home in the runs table (one row per run
+  with status, timings and output, instead of three log lines); what
+  remains is what has NO run to show: rejected deliveries, image builds,
+  `env.unresolved`, reload/git activity. Both render with js-snippets'
+  `<activity-feed>` component, imported at runtime; it owns the table, the
+  derived kind badges and the built-in filtering (free-text +
+  severity/family chips, persisted per feed) over whatever the endpoint
+  hands it), `/attention` (the aggregated needs-attention problem
   set: `{count, entries:[{source, hook, key, message, since}]}`, oldest
   first — the dashboard's red banner + panel; see the attention bullet
   under "Things easy to get wrong"), `/images` (per-hook image state), the operator kill

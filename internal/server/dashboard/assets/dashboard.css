@@ -618,22 +618,16 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
 #concurrency-global-cap { margin-bottom: 1.1rem; }
 #concurrency-section h3 { font-size: 0.95rem; margin: 0.6rem 0 0.35rem; }
 
-/* App runs table status filter: one chip per status. An active chip shows
-   its runs; a dimmed (filter-off) chip is hiding them — the count stays on
-   the chip either way, so hidden rows are never silently unaccounted for. */
-.runs-filter { margin: 0 0 0.5rem; display: flex; flex-wrap: wrap; gap: 0.35rem; }
-.filter-chip {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  padding: 0.15rem 0.6rem;
-  font-size: 0.75rem;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.filter-chip.filter-off {
-  opacity: 0.45;
-  text-decoration: line-through;
-}
+/* The runs tables are js-snippets' <data-table>, which renders its rows and
+   status chips inside its own shadow root — out of reach of this sheet.
+   Custom properties DO inherit through the boundary, so the component is
+   themed rather than styled: it reads --table-*, each falling back to the
+   generic --fg/--muted/--border/--panel/--accent this page already defines,
+   which is why there is nothing to set here. Cell-level styling the page
+   owns (the status pill) is passed in through the element's styleText.
+   The old hand-rolled .runs-filter/.filter-chip rules are gone with the
+   hand-rolled chips they styled. */
+data-table { display: block; margin-bottom: 0.5rem; }
 .group-detail-head {
   color: var(--muted);
   font-size: 0.7rem;
