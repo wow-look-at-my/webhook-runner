@@ -68,7 +68,7 @@ func TestGateAgainstRealRepo(t *testing.T) {
 		Branch:    "master",
 		Context:   "all-builds",
 		StatePath: filepath.Join(base, "reload-gate.json"),
-		Apply:     func() { applies++ },
+		Apply:     func() error { applies++; return nil },
 		Events:    rec,
 		Attention: agg,
 		Logger:    logger,

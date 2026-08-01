@@ -133,14 +133,14 @@ func TestParseAcceptsValidSettings(t *testing.T) {
 	assert.JSONEq(t, `{"app_id":"42"}`, string(h.SettingsJSON()))
 }
 
-// `env` is SUPERSEDED, not gone. Rejecting it outright would mean a runner
-// that cannot load the fleet still declaring it -- an unrecoverable break,
-// since the tree never changed and only the binary did. So it loads, keeps
-// working, and is reported (see deprecation_test.go for the reporting).
-func TestParseAcceptsTheSupersededEnvBlockAndFlagsIt(t *testing.T) {
+// `env` is GONE. The fleet migrated to settings (its last entity on
+// 2026-08-01), so the field that could not be dropped in one step -- a runner
+// rejecting it could not have loaded the fleet still declaring it -- now
+// REJECTS: DisallowUnknownFields makes an unmigrated manifest a load error
+// naming the field, rather than a hook that comes up with no configuration.
+func TestParseRejectsTheRemovedEnvBlock(t *testing.T) {
 	src := writeSettingsFixture(t, "")
-	h, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","env":{"A":"b"}}`))
-	require.NoError(t, err, "rejecting env would strand every manifest that still uses it")
-	assert.Equal(t, map[string]string{"A": "b"}, h.Env)
-	require.Len(t, h.Deprecations(), 1, "accepted, but never silently")
+	_, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","env":{"A":"b"}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env", "the error must name the field so the fix is obvious")
 }
