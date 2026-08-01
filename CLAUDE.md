@@ -30,7 +30,8 @@ internal/spool/            durable park for deliveries arriving during shutdown 
 internal/kv/               disk-backed per-hook KV store (state socket) + HMAC namespace tokens
 internal/backlog/          durable per-hook batch backlogs (drain-a-slice; behind /backlog)
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
-internal/githubstatus/     GitHub commit status API client
+internal/githubstatus/     GitHub commit status API client (credential resolved per call, so secret-server can supply it)
+internal/secretserver/     secret-server client: reads PRIVATE_ORG_REPO_READ with an sst_ machine token
 schema/                    JSON schemas for hook.json + manager.json + concurrency.json — published to buildhost sites (.github/workflows/schemas.yml) AND go:embed'd (embed.go) so the loader enforces the same contract at runtime. hook.schema.json + manager.schema.json are GENERATED from src/ (src/common.json holds the 24 shared property constraints ONCE; each overlay adds its own properties and the per-entity prose) — regenerate with `go test ./schema -update`; a drifted checkout fails TestGeneratedSchemasMatchSources
 e2e/                       end-to-end test (shell script, requires Docker)
 dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
@@ -252,7 +253,10 @@ any-signed-POST-pulls-and-reloads flow). An hourly reconciliation poll
 (`WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL`, default `1h`, `0` disables)
 backstops missed status webhooks: it fetches the tip and, when it
 differs from what is serving, reads its gating status from the GitHub
-API (via `WEBHOOK_RUNNER_GITHUB_TOKEN`) — switching only on green, so a
+API (credential: `WEBHOOK_RUNNER_GITHUB_TOKEN`, else
+`PRIVATE_ORG_REPO_READ` fetched from secret-server with the
+`WEBHOOK_RUNNER_SECRET_SERVER_TOKEN` machine token — hand-provisioning
+the variable is what silently did not happen) — switching only on green, so a
 missed webhook costs at most ~one interval of latency instead of
 freezing deploys. The admin port's `POST /reload`
 is the operator's deliberate gate bypass: fetch + reset to the remote tip,

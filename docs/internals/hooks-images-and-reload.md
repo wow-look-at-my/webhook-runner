@@ -25,7 +25,9 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   fetches the remote tip; tip == serving is a quiet no-op with NO API
   call; a newer tip has the gating context's state read from the combined
   commit status (`githubstatus.ContextState` — reusing the
-  `WEBHOOK_RUNNER_GITHUB_TOKEN` credential; owner/repo derived from the
+  GitHub credential (`WEBHOOK_RUNNER_GITHUB_TOKEN`, else `PRIVATE_ORG_REPO_READ`
+  read from secret-server with `WEBHOOK_RUNNER_SECRET_SERVER_TOKEN`);
+  owner/repo derived from the
   hooks-repo URL, both SSH and https forms) and switches ONLY on an
   affirmative green, through the exact same trySwitch ordering path as
   (1) — never a forked copy. Red/pending/no-status-yet hold via the same
@@ -82,7 +84,7 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   gate (exact legacy behavior everywhere, including startup); unset means
   `all-builds`. Operator setup: the hooks repo's webhook should send
   `status` events in addition to `push` (same URL/secret) for low-latency
-  switches, and `WEBHOOK_RUNNER_GITHUB_TOKEN` needs read access to the
+  switches, and that credential needs read access to the
   hooks repo's commit statuses or the poll fallback holds blind.
 - `runner.execute` deliberately uses `exec.Command` (not `CommandContext`)
   and kills the container by name on timeout. This is because if Go SIGKILLs
