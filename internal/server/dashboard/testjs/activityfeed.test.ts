@@ -143,7 +143,7 @@ function makeSandbox() {
 }
 
 const EVENTS = [
-	{ time: '2026-07-31T10:00:00Z', kind: 'manager.inbox_dropped', msg: 'gha-coordinator: inbox full', fields: { hook: 'gha-coordinator' } },
+	{ time: '2026-07-31T10:00:00Z', kind: 'manager.exited', msg: 'gha-coordinator: instance exited (code 0)', fields: { hook: 'gha-coordinator' } },
 	{ time: '2026-07-31T10:00:01Z', kind: 'run.queued', msg: 'queued run for wow-look-at-my/webhooks#41' },
 ];
 
@@ -154,7 +154,7 @@ test('both feeds are fed the entries verbatim, in order', () => {
 	const overview = elements.get('events-feed');
 	assert.ok(overview, 'the overview feed element was reached');
 	assert.equal(overview.entries.length, 2);
-	assert.equal(overview.entries.map((e) => e.kind).join(','), 'manager.inbox_dropped,run.queued',
+	assert.equal(overview.entries.map((e) => e.kind).join(','), 'manager.exited,run.queued',
 		'order is the server\'s (newest-first), never re-sorted here');
 
 	sandbox.renderEventsInto('app-events-feed', EVENTS);
@@ -203,7 +203,7 @@ test('properties are set even though the element has not upgraded yet', () => {
 	const feed = elements.get('events-feed');
 	assert.ok(Object.prototype.hasOwnProperty.call(feed, 'entries'),
 		'entries must be assigned onto the element, not stashed in module state');
-	assert.equal(feed.entries[0].kind, 'manager.inbox_dropped');
+	assert.equal(feed.entries[0].kind, 'manager.exited');
 });
 
 // -- The migration itself ----------------------------------------------------

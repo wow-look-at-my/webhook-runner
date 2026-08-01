@@ -48,7 +48,7 @@ func newFakeManagers(ids ...string) *fakeManagers {
 		titles:    map[string]string{},
 	}
 	for _, id := range ids {
-		f.inboxes[id] = managers.NewInbox(0, nil)
+		f.inboxes[id] = managers.NewInbox()
 	}
 	return f
 }

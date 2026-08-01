@@ -278,10 +278,14 @@ load-bearing sequence (internal/server/handlers.go:123-253):
   rolling-update handover puts the hook PORT on the new process before the
   old one's managers stop, so deploy-window deliveries land in the NEW
   process's inbox and are consumed when its sessions start.
-- **Overflow**: drop OLDEST, loudly (`manager.inbox_dropped` event).
-  Newest-wins matches the fleet's latest-event-wins doctrine. The delivery
-  is still 202'd -- coalescing is operating-as-designed; GitHub must not
-  see errors for it.
+- **No overflow**: the inbox is UNBOUNDED. It used to cap at 256 and drop
+  the OLDEST per push (`manager.inbox_dropped`), on the newest-wins
+  reasoning. That was wrong twice over: a healthy manager under a fan-out
+  burst fills 256 in seconds, and "reconcile covers the loss" only holds
+  for events a reconcile can re-derive -- a delivery carrying anything else
+  was simply gone. A queue that grows drains; a dropped event never comes
+  back. A manager that genuinely stops consuming is caught by the wedge
+  guard, which reaps and restarts it, rather than by discarding its work.
 - **Process crash**: the inbox is in-memory and dies with the process.
   DELIBERATE -- the reconcile loop is the correctness mechanism and events
   are a latency optimization; that is already the operating doctrine of all
@@ -915,7 +919,7 @@ function without the state socket) and `schedule` (superseded by
   `managers` stream section token dirtied by `manager.*` lifecycle events
   (the existing section-invalidation machinery, one more token).
 - **Activity feed**: `manager.started`, `manager.exited`,
-  `manager.skipped`, `manager.wait`, `manager.inbox_dropped`,
+  `manager.skipped`, `manager.wait`,
   `manager.lease_waiting`/`manager.leased`,
   `manager.disabled`/`manager.enabled`/`manager.restart_requested` (id in
   the hook field so `?hook=` filters work); delivery rejections reuse the

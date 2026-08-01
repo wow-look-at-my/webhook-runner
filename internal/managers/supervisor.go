@@ -234,7 +234,7 @@ func (s *Supervisor) Update(managers map[string]*hooks.Manager) {
 				poke:  make(chan struct{}, 1),
 				state: "waiting-lease",
 			}
-			mg.inbox = NewInbox(0, s.inboxDropReporter(id))
+			mg.inbox = NewInbox()
 			// Inbox depth and the last-delivery/last-tick stamps are part of
 			// the admin surface: route their mutations through the same seam.
 			mg.inbox.SetOnChange(s.changed)

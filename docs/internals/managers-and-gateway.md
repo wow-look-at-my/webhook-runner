@@ -17,8 +17,8 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   instanceID)`, locks (incl. pinning), /wait, /title, and /spawn reuse
   verbatim, with the supervisor's `OnInstanceEnd` as the finish-seam
   analog (lock release + `lock.released_on_finish`); spawned WORKER runs
-  stay normal tracked runs. (2) Deliveries feed a BOUNDED INBOX (256,
-  drop-oldest loudly — `manager.inbox_dropped`), never boot containers;
+  stay normal tracked runs. (2) Deliveries feed an UNBOUNDED INBOX (it
+  used to stop at 256 and drop the oldest), never boot containers;
   dispatch order is kill switch → auth → skip_if → inbox (a skip_if
   match answers 200 skipped + `manager.skipped`, no run record); the
   manager consumes via long-poll `POST /inbox/next`, and CALLING NEXT

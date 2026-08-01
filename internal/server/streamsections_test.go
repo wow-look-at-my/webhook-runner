@@ -222,7 +222,6 @@ func TestSectionsForEvent(t *testing.T) {
 		"manager.started":              {"events", "managers"},
 		"manager.exited":               {"events", "managers"},
 		"manager.leased":               {"events", "managers"},
-		"manager.inbox_dropped":        {"events", "managers"},
 		"manager.skipped":              {"events", "managers"},
 		"manager.wait":                 {"events", "managers"},
 		"manager.lease_waiting":        {"events", "managers"},
