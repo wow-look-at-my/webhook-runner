@@ -187,10 +187,9 @@
         (each running container holds a Docker bridge-network IP; excess runs queue and start as
         slots free). Per-group limits below are separate and keep applying under this ceiling —
         raising the cap never lifts a group's own limit. Click the row for holders and queue.</p>
-      <table id="concurrency-global-table">
-        <thead><tr><th></th><th>Default</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <data-table id="concurrency-global-table">
+        <p class="empty">loading…</p>
+      </data-table>
     </div>
     <h3>Groups</h3>
     <p class="window-note">Declared in the hooks repo's concurrency.json; each gates its own hooks
@@ -201,11 +200,9 @@
          and restarts). Override… PUTs /concurrency/{group}/limit; Revert
          DELETEs it. A 0 limit is rejected server-side — disable the
          group's hooks instead. -->
-    <table id="concurrency-table">
-      <thead><tr><th>Group</th><th>Declared</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
+    <data-table id="concurrency-table" empty-text="No concurrency groups declared.">
+      <p class="empty">loading groups…</p>
+    </data-table>
   </section>
 
 
@@ -312,11 +309,9 @@
     <section id="app-kv-section" hidden>
       <h2>State (KV)</h2>
       <p class="window-note">Click a key to view its stored value.</p>
-      <table id="app-kv-table">
-        <thead><tr><th>Key</th><th>Size</th><th>TTL remaining</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p id="app-kv-empty" class="empty" hidden>No state stored yet.</p>
+      <data-table id="app-kv-table" searchable placeholder="filter keys…" empty-text="No state stored yet.">
+        <p class="empty">loading keys…</p>
+      </data-table>
     </section>
 
     <!-- Same component as the overview feed, its own persisted filter, and

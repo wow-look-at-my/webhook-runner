@@ -1401,12 +1401,6 @@ async function clearLimitOverride(name, declared) {
   refresh();
 }
 
-// Which concurrency group's drill-down row is expanded (persists across the
-// poll's re-render, same pattern as appKVOpenKey).
-let concurrencyOpenGroup = null;
-// Whether the global cap's holders/queue drill-down is expanded.
-let concurrencyGlobalOpen = false;
-
 // --- The GLOBAL run cap: the ceiling over ALL runs ------------------------
 //
 // Rendered as its own labeled block ABOVE the groups so it cannot be
@@ -1453,99 +1447,120 @@ async function clearGlobalCapOverride(def) {
 }
 
 // One table row mirroring the group rows (same columns, same drill-down —
-// groupDetailRow reads holders/waiting_runs from the cap's entry too).
+// groupDetailContent reads holders/waiting_runs from the cap's entry too).
 // Hidden entirely when the server doesn't report a cap (older server).
+
+// The server-wide run cap, as a one-row <data-table>. It is a table and not
+// a definition list because it IS the same shape as a concurrency group —
+// same columns, same drill-down — and the operator reads the two together.
 function renderGlobalCap(g) {
   const wrap = document.getElementById("concurrency-global-cap");
   if (!wrap) return;
   wrap.hidden = !g;
   if (!g) return;
-  const tbody = document.querySelector("#concurrency-global-table tbody");
-  tbody.innerHTML = "";
-  const editBtn = el("button", {
-    class: "toggle-btn",
-    title: "Override the global run cap live (persists across reloads/restarts until reverted)",
-  }, "Override…");
-  editBtn.addEventListener("click", () => overrideGlobalCap(g.default, g.limit));
-  const actions = el("td", { class: "row-actions" }, editBtn);
-  if (g.overridden) {
-    const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the default cap (${g.default}) takes effect` }, "Revert");
-    revertBtn.addEventListener("click", () => clearGlobalCapOverride(g.default));
-    actions.appendChild(revertBtn);
-  }
-  const tr = el("tr", { class: concurrencyGlobalOpen ? "group-open" : "",
-    title: "click to see which runs hold global slots and which are queued" },
-    el("td", null, el("strong", null, "All runs")),
-    el("td", null, String(g.default)),
-    el("td", null,
-      String(g.limit),
-      g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-    ),
-    el("td", null, String(g.active)),
-    el("td", null, String(g.waiting)),
-    actions,
-  );
-  tr.addEventListener("click", (e) => {
-    if (e.target.closest("button")) return;
-    concurrencyGlobalOpen = !concurrencyGlobalOpen;
-    refresh();
+  const t = document.getElementById("concurrency-global-table");
+  if (!t) return;
+  t.columns = concurrencyColumns({
+    nameLabel: "Scope",
+    name: () => el("strong", null, "All runs"),
+    declaredOf: (row) => row.default,
+    onOverride: (row) => overrideGlobalCap(row.default, row.limit),
+    onRevert: (row) => clearGlobalCapOverride(row.default),
+    revertTitle: (row) => `Clear the override; the default cap (${row.default}) takes effect`,
+    overrideTitle: () => "Override the global run cap live (persists across reloads/restarts until reverted)",
   });
-  tbody.appendChild(tr);
-  if (concurrencyGlobalOpen) tbody.appendChild(groupDetailRow(g));
+  t.rowId = () => "global";
+  t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
+  t.detailFor = (row) => groupDetailContent(row);
+  t.rows = [g];
 }
 
+// The columns shared by the global cap and the named groups: the two differ
+// only in what names the row and where its declared limit comes from, so
+// they are one declaration parameterised rather than two that drift.
+function concurrencyColumns(o) {
+  return [
+    { key: "name", label: o.nameLabel, value: (row) => row.name || "All runs", render: o.name || ((row) => el("code", null, row.name)) },
+    { key: "declared", label: "Declared", align: "end", value: o.declaredOf, render: (row) => String(o.declaredOf(row)) },
+    {
+      key: "limit",
+      label: "Effective",
+      align: "end",
+      value: (row) => row.limit,
+      text: (row) => (row.overridden ? `${row.limit} overridden` : String(row.limit)),
+      render: (row) => el("span", null,
+        String(row.limit),
+        row.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
+      ),
+    },
+    { key: "active", label: "Active", align: "end", value: (row) => row.active, render: (row) => String(row.active) },
+    { key: "waiting", label: "Waiting", align: "end", value: (row) => row.waiting, render: (row) => String(row.waiting) },
+    {
+      key: "actions",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (row) => {
+        const box = el("span", { class: "row-actions" });
+        const edit = el("button", { class: "toggle-btn", title: o.overrideTitle(row) }, "Override…");
+        // Without stopPropagation the click also toggles the row's
+        // drill-down underneath the prompt.
+        edit.addEventListener("click", (e) => { e.stopPropagation(); o.onOverride(row); });
+        box.appendChild(edit);
+        if (row.overridden) {
+          const revert = el("button", { class: "toggle-btn", title: o.revertTitle(row) }, "Revert");
+          revert.addEventListener("click", (e) => { e.stopPropagation(); o.onRevert(row); });
+          box.appendChild(revert);
+        }
+        return box;
+      },
+    },
+  ];
+}
+
+
+// The named concurrency groups, as a <data-table>. Clicking a row expands
+// the same drill-down as before — but the expansion now lives in the
+// component, so opening one no longer re-renders the whole page (which is
+// what the old concurrencyOpenGroup + refresh() dance did, losing scroll
+// position and any open prompt every time).
 function renderConcurrency(data) {
   // {global, groups} from cap-aware servers; a bare array from older ones
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
   renderGlobalCap(Array.isArray(data) ? null : data && data.global);
-  const tbody = document.querySelector("#concurrency-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("concurrency-empty").hidden = groups.length > 0;
-  for (const g of groups) {
-    const editBtn = el("button", {
-      class: "toggle-btn",
-      title: `Override the limit for ${g.name} live (persists across reloads/restarts until reverted)`,
-    }, "Override…");
-    editBtn.addEventListener("click", () => overrideLimit(g.name, g.declared, g.limit));
-    const actions = el("td", { class: "row-actions" }, editBtn);
-    if (g.overridden) {
-      const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the declared limit (${g.declared}) takes effect` }, "Revert");
-      revertBtn.addEventListener("click", () => clearLimitOverride(g.name, g.declared));
-      actions.appendChild(revertBtn);
-    }
-    const open = concurrencyOpenGroup === g.name;
-    const tr = el("tr", { class: open ? "group-open" : "",
-      title: "click to see which runs hold this group's slots and which are queued" },
-      el("td", null, el("code", null, g.name)),
-      el("td", null, String(g.declared)),
-      el("td", null,
-        String(g.limit),
-        g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-      ),
-      el("td", null, String(g.active)),
-      el("td", null, String(g.waiting)),
-      actions,
-    );
-    // The whole row toggles the drill-down; the override buttons keep
-    // their own clicks.
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest("button")) return;
-      concurrencyOpenGroup = open ? null : g.name;
-      refresh();
-    });
-    tbody.appendChild(tr);
-    if (open) tbody.appendChild(groupDetailRow(g));
-  }
+  const t = document.getElementById("concurrency-table");
+  if (!t) return;
+  t.columns = concurrencyColumns({
+    nameLabel: "Group",
+    declaredOf: (row) => row.declared,
+    onOverride: (row) => overrideLimit(row.name, row.declared, row.limit),
+    onRevert: (row) => clearLimitOverride(row.name, row.declared),
+    revertTitle: (row) => `Clear the override; the declared limit (${row.declared}) takes effect`,
+    overrideTitle: (row) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
+  });
+  t.rowId = (row) => row.name;
+  t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
+  t.detailFor = (row) => groupDetailContent(row);
+  t.rows = groups;
 }
 
 // The expanded row under a group: which runs hold its slots and which are
 // queued, in order — each a run link into the run modal. This is the
 // operator's self-serve answer to "the group reads 3/3 with 4 waiting;
 // WHAT is holding the slots?".
-function groupDetailRow(g) {
-  const td = el("td", { colspan: "6" });
-  const row = el("tr", { class: "group-detail-row" }, td);
+
+// The expanded detail under a group: which runs hold its slots and which
+// are queued, in order — each a run link into the run modal. This is the
+// operator's self-serve answer to "the group reads 3/3 with 4 waiting;
+// WHAT is holding the slots?".
+//
+// Returns the CONTENT only: <data-table> owns the row and the
+// column-spanning cell it goes in, so this can never disagree with the
+// table's column count the way a hardcoded colspan did.
+function groupDetailContent(g) {
+  const box = el("div", { class: "group-detail" });
   const runLine = (r, note) => el("div", { class: "group-run" },
     runLink(r.run_id),
     " ",
@@ -1557,23 +1572,23 @@ function groupDetailRow(g) {
   const holders = g.holders || [];
   const waiting = g.waiting_runs || [];
   if (!holders.length && !waiting.length) {
-    td.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
-    return row;
+    box.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
+    return box;
   }
   if (holders.length) {
-    td.appendChild(el("div", { class: "group-detail-head" },
+    box.appendChild(el("div", { class: "group-detail-head" },
       `Holding ${holders.length === 1 ? "the slot" : holders.length + " slots"}:`));
     for (const h of holders) {
-      td.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
+      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
     }
   }
   if (waiting.length) {
-    td.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
+    box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
     waiting.forEach((r, i) => {
-      td.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
+      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
     });
   }
-  return row;
+  return box;
 }
 
 // Run cell for the tables: the friendly title (feature-detected — an
@@ -1614,6 +1629,26 @@ code { font-size: 0.9em; }
 .switch input:checked + .switch-slider::before { transform: translateX(0.9em); }
 .switch input:focus-visible + .switch-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
 .images-on-disk { color: var(--muted); font-size: 0.9em; }
+`;
+
+// The concurrency tables' drill-down and the KV value box, inside the
+// component's shadow root.
+const CONCURRENCY_TABLE_CSS = `
+.group-detail-head { color: var(--muted); font-size: 0.85em; margin: 0.3em 0 0.2em; }
+.group-run { font-size: 0.9em; padding: 0.1em 0; }
+.group-run-title { color: var(--fg); }
+.group-run-since { color: var(--muted); }
+.status { font-weight: 500; }
+.status.success { color: var(--success); }
+.status.failure, .status.error, .status.timeout { color: var(--failure); }
+.status.running { color: var(--running); }
+.status.pending { color: var(--pending); }
+.status.skipped { color: var(--skipped); }
+`;
+
+const KV_TABLE_CSS = `
+.kv-value-meta { color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
+.kv-value { margin: 0; padding: 0.5em; background: var(--bg, #0d1117); border: 1px solid var(--border); border-radius: 4px; max-height: 24em; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85em; }
 `;
 
 // Attention rows: only hook-scoped ones navigate, so only they get the
@@ -2146,7 +2181,6 @@ function bindAppRunsFilterEvents() {
 // rendered via el()'s text nodes, so arbitrary stored bytes can never
 // inject markup.
 
-let appKVOpenKey = null; // key whose value row is expanded, or null
 let appKVHook = null; // which hook the expansion belongs to
 
 function fmtTTL(seconds) {
@@ -2175,64 +2209,68 @@ async function renderAppKV(info, listing) {
   const wantScroll = pendingKVScroll;
   pendingKVScroll = false;
   if (!info.state) return;
+  const t = document.getElementById("app-kv-table");
+  if (!t) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
+    // (The component holds the expansion now, so this clears ITS set — a
+    // key id from the previous hook would otherwise re-open a same-named
+    // key here and show the wrong hook's value.)
     appKVHook = info.id;
-    appKVOpenKey = null;
+    t.expanded = [];
   }
-  const keys = (listing && listing.keys) || [];
-  const tbody = document.querySelector("#app-kv-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("app-kv-empty").hidden = keys.length > 0;
-  for (const k of keys) {
-    const open = appKVOpenKey === k.key;
-    const tr = el("tr", { class: open ? "kv-open" : "" },
-      el("td", null, el("code", null, k.key)),
-      el("td", null, fmtBytes(k.size)),
-      el("td", null, fmtTTL(k.ttl_seconds)),
-    );
-    tr.addEventListener("click", () => {
-      appKVOpenKey = open ? null : k.key;
-      refresh();
-    });
-    tbody.appendChild(tr);
-    if (open) tbody.appendChild(await kvValueRow(info.id, k.key));
-  }
+  t.columns = [
+    { key: "key", label: "Key", render: (k) => el("code", null, k.key) },
+    { key: "size", label: "Size", align: "end", value: (k) => k.size, render: (k) => fmtBytes(k.size) },
+    {
+      key: "ttl_seconds",
+      label: "TTL remaining",
+      align: "end",
+      // No TTL is not "0 seconds left": sort it past every expiring key
+      // rather than in front of them.
+      value: (k) => (k.ttl_seconds == null ? null : k.ttl_seconds),
+      text: (k) => fmtTTL(k.ttl_seconds),
+      render: (k) => fmtTTL(k.ttl_seconds),
+    },
+  ];
+  t.rowId = (k) => k.key;
+  t.styleText = SHARED_TABLE_CSS + KV_TABLE_CSS;
+  // The value is FETCHED per key, so the detail is a promise: the component
+  // shows a placeholder and paints when it resolves, and renders the error
+  // into the row if the key expired between the listing and the click.
+  t.detailFor = (k) => kvValueContent(info.id, k.key);
+  t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// The expanded row under a clicked key: metadata line + the value itself.
-// A fetch failure is rendered into the row (e.g. the key expired between
-// the listing and the click), never swallowed.
-async function kvValueRow(hookId, key) {
-  const td = el("td", { colspan: "3" });
-  const row = el("tr", { class: "kv-value-row" }, td);
-  try {
-    const e = await fetchJSON(
-      `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
-    const meta = [fmtBytes(e.size)];
-    if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
-    let body;
-    if (e.value_utf8 != null) {
-      body = e.value_utf8;
-      try {
-        body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
-        meta.push("JSON");
-      } catch {
-        meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
-      }
-    } else {
-      body = e.value_base64;
-      meta.push("binary (shown base64)");
+// The expanded detail under a clicked key: metadata line + the value
+// itself. Returns the CONTENT (the component owns the row and its
+// column-spanning cell). A fetch failure is thrown, not swallowed — the
+// component paints the message into the open row, which is what the
+// operator needs when a key expires between the listing and the click.
+async function kvValueContent(hookId, key) {
+  const box = el("div", { class: "kv-value-box" });
+  const e = await fetchJSON(
+    `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
+  const meta = [fmtBytes(e.size)];
+  if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
+  let body;
+  if (e.value_utf8 != null) {
+    body = e.value_utf8;
+    try {
+      body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
+      meta.push("JSON");
+    } catch {
+      meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
     }
-    td.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
-    td.appendChild(el("pre", { class: "kv-value" },
-      body === "" ? "(empty value)" : linkifyGH(body)));
-  } catch (err) {
-    td.appendChild(el("div", { class: "kv-value-meta kv-value-error" },
-      `failed to load value: ${err.message}`));
+  } else {
+    body = e.value_base64;
+    meta.push("binary (shown base64)");
   }
-  return row;
+  box.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
+  box.appendChild(el("pre", { class: "kv-value" },
+    body === "" ? "(empty value)" : linkifyGH(body)));
+  return box;
 }
 
 // A run ID that opens the same output modal the runs tables use.
