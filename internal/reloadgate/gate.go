@@ -91,7 +91,12 @@ type Config struct {
 	// Status reads the gating context's current commit-status state for a
 	// sha (the reconciliation poll's authority — see StatusFunc). Nil
 	// means the poll cannot determine status and fails closed, loudly.
-	Status    StatusFunc
+	Status StatusFunc
+	// RepoSlug is the hooks repo as "owner/repo", used only to build the
+	// run-details link on messages that name a held commit. Empty (a local
+	// path, an unparseable remote) simply omits the link — it is never
+	// load-bearing for gating.
+	RepoSlug  string
 	Events    *events.Recorder
 	Attention *attention.Aggregator
 	Logger    *slog.Logger
@@ -105,6 +110,7 @@ type Gate struct {
 	statePath string
 	apply     func()
 	status    StatusFunc
+	repoSlug  string
 	events    *events.Recorder
 	attention *attention.Aggregator
 	log       *slog.Logger
@@ -160,6 +166,7 @@ func New(cfg Config) (*Gate, error) {
 		statePath: cfg.StatePath,
 		apply:     cfg.Apply,
 		status:    cfg.Status,
+		repoSlug:  cfg.RepoSlug,
 		events:    cfg.Events,
 		attention: cfg.Attention,
 		log:       cfg.Logger,
@@ -220,8 +227,8 @@ func (g *Gate) Startup() {
 		g.attention.Report(attention.Entry{
 			Source: attention.SourceReload,
 			Key:    attention.KeyReloadHeld,
-			Message: fmt.Sprintf("hooks repo %s awaiting %s (last known: %s); serving %s",
-				short(g.pendingSHA), g.context, g.pendingStateLocked(), short(g.servingSHA)),
+			Message: g.withChecks(fmt.Sprintf("hooks repo %s awaiting %s (last known: %s); serving %s",
+				short(g.pendingSHA), g.context, g.pendingStateLocked(), short(g.servingSHA)), g.pendingSHA),
 		})
 	}
 }
@@ -354,7 +361,8 @@ func (g *Gate) handlePush(body []byte) (string, error) {
 func (g *Gate) recordPendingLocked(sha string) {
 	g.pendingSHA, g.pendingState = sha, "pending"
 	g.persistLocked()
-	msg := fmt.Sprintf("hooks repo %s awaiting %s; serving %s", short(sha), g.context, short(g.servingSHA))
+	msg := g.withChecks(
+		fmt.Sprintf("hooks repo %s awaiting %s; serving %s", short(sha), g.context, short(g.servingSHA)), sha)
 	g.log.Info("hooks repo reload held", "pending", sha, "serving", g.servingSHA, "context", g.context)
 	g.events.Record("reload.held", msg, nil)
 	g.attention.Report(attention.Entry{
@@ -459,7 +467,8 @@ func (g *Gate) holdRed(sha, state string) (string, error) {
 	}
 	g.pendingSHA, g.pendingState = sha, state
 	g.persistLocked()
-	msg := fmt.Sprintf("%s %s for %s; serving %s unchanged", g.context, state, short(sha), short(g.servingSHA))
+	msg := g.withChecks(
+		fmt.Sprintf("%s %s for %s; serving %s unchanged", g.context, state, short(sha), short(g.servingSHA)), sha)
 	g.log.Warn("hooks repo reload held on red ci", "sha", sha, "state", state, "serving", g.servingSHA)
 	g.events.Record("reload.held_red", msg, nil)
 	g.attention.Report(attention.Entry{
@@ -524,9 +533,10 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 	// pending held — and says so.
 	if pos := indexOf(commits, g.pendingSHA); g.pendingSHA != "" && g.pendingSHA != sha && pos != -1 && pos < posS {
 		g.attention.Report(attention.Entry{
-			Source:  attention.SourceReload,
-			Key:     attention.KeyReloadHeld,
-			Message: fmt.Sprintf("switched to %s; still awaiting %s for %s", short(sha), g.context, short(g.pendingSHA)),
+			Source: attention.SourceReload,
+			Key:    attention.KeyReloadHeld,
+			Message: g.withChecks(fmt.Sprintf("switched to %s; still awaiting %s for %s",
+				short(sha), g.context, short(g.pendingSHA)), g.pendingSHA),
 		})
 	} else {
 		g.pendingSHA, g.pendingState = "", ""

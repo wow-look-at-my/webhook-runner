@@ -48,13 +48,27 @@ func TestExecuteRecordsPhaseMarks(t *testing.T) {
 
 	// Ordering is the whole basis of the derived spans: a boot figure
 	// computed from marks that can arrive out of order measures nothing.
+	// The launch chain runs start-to-finish on the execute goroutine, so it
+	// is a strict sequence.
 	ordered := []runs.Phase{
 		runs.PhaseImageReady, runs.PhaseSlotAcquired, runs.PhaseSpawned,
-		runs.PhaseFirstOutput, runs.PhaseExited,
 	}
 	for i := 1; i < len(ordered); i++ {
 		prev, cur := snap.Phases[ordered[i-1]], snap.Phases[ordered[i]]
 		assert.False(t, cur.Before(prev), "%q must not precede %q", ordered[i], ordered[i-1])
+	}
+	// first_output and exited are NOT ordered against each other: different
+	// goroutines stamp them. first_output comes from the streamPipe reader
+	// (via AppendOutput); exited from this goroutine the moment cmd.Wait
+	// returns — which is before streamWG.Wait. A container that prints one
+	// line and exits leaves it buffered in the pipe, so cmd.Wait can return
+	// before the reader is ever scheduled. That is not a bug to assert away:
+	// first_output is defined as when output reached the SERVER, not when
+	// the container emitted it. Only their common predecessor is guaranteed,
+	// and that is the one the boot span is actually computed from.
+	for _, p := range []runs.Phase{runs.PhaseFirstOutput, runs.PhaseExited} {
+		assert.False(t, snap.Phases[p].Before(snap.Phases[runs.PhaseSpawned]),
+			"%q must not precede %q", p, runs.PhaseSpawned)
 	}
 	assert.False(t, snap.Phases[runs.PhaseSpawned].Before(snap.Started),
 		"the launch handoff cannot precede the run being accepted")
