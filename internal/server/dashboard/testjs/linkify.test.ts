@@ -7,9 +7,11 @@
 //      it to the PR when the number is one), opening in a new tab.
 //   2. The surrounding text survives byte-for-byte, as TEXT NODES — a payload
 //      can never inject markup, because nothing is ever parsed as HTML.
-//   3. Paths, URLs and prose that merely LOOK like a slug
-//      ("src/hooks/pr-minder", ".../pull/41", "true/false", "24/7") are left
-//      alone — the false positives that would make log output unreadable.
+//   3. Paths and prose that merely LOOK like a slug ("src/hooks/pr-minder",
+//      "true/false", "24/7") are left alone — the false positives that would
+//      make log output unreadable.
+//   3b. A bare http(s) URL becomes ONE link to itself, and the "owner/repo"
+//      inside it is never ALSO slug-linked (URLs are matched first).
 //   4. A bare "owner/repo" links only in title mode (run titles, manager
 //      titles), never in free-form text like a log line.
 //
@@ -266,11 +268,10 @@ test('markup in the text stays text — nothing is ever parsed as HTML', () => {
 	assert.equal(first.data, '<img src=x onerror=alert(1)> ');
 });
 
-test('paths, URLs and prose that only look like slugs are left alone', () => {
+test('paths and prose that only look like slugs are left alone', () => {
 	for (const s of [
 		'src/hooks/pr-minder/hook.json',
 		'internal/server/dashboard',
-		'https://github.com/wow-look-at-my/webhooks/pull/41',
 		'POST /repos/wow-look-at-my/webhooks/pulls',
 		'24/7',
 		'2026/07',
@@ -279,6 +280,52 @@ test('paths, URLs and prose that only look like slugs are left alone', () => {
 		assert.deepEqual(linksOf(linkifyTitle(s)), [], `must not linkify: ${s}`);
 		assert.equal(textOf(linkifyTitle(s)), s);
 	}
+});
+
+test('a bare URL becomes exactly one link to itself', () => {
+	// The inner "wow-look-at-my/webhooks" must NOT also become a slug link:
+	// URLs are matched first, so the whole URL is consumed as one unit.
+	const url = 'https://github.com/wow-look-at-my/webhooks/pull/41';
+	for (const frag of [linkifyGH(url), linkifyTitle(url)]) {
+		assert.deepEqual(linksOf(frag).map((l) => [l.label, l.href]), [[url, url]]);
+		assert.equal(textOf(frag), url, 'the URL must render verbatim');
+	}
+});
+
+test('a URL link opens in a new tab and swallows the row click', () => {
+	const a = leaves(linkifyGH('see https://github.com/o/r/commit/abc/checks')).find((n) => n.tag === 'a');
+	assert.ok(a, 'expected a link');
+	assert.equal(a.attrs.target, '_blank');
+	assert.equal(a.attrs.rel, 'noopener noreferrer');
+	assert.ok(a.listeners.includes('click'), 'the link must stop the row click from propagating');
+});
+
+test('trailing sentence punctuation stays out of the URL', () => {
+	for (const [line, want] of [
+		['see https://github.com/o/r/commit/abc/checks.', 'https://github.com/o/r/commit/abc/checks'],
+		['(https://github.com/o/r/commit/abc/checks)', 'https://github.com/o/r/commit/abc/checks'],
+		['https://github.com/o/r/commit/abc/checks, then retry', 'https://github.com/o/r/commit/abc/checks'],
+	] as Array<[string, string]>) {
+		const frag = linkifyGH(line);
+		assert.deepEqual(linksOf(frag).map((l) => l.href), [want], `bad URL boundary in: ${line}`);
+		assert.equal(textOf(frag), line, 'the surrounding text must survive verbatim');
+	}
+});
+
+test("the reload gate's held-commit message renders its run-details link", () => {
+	// The exact shape internal/reloadgate stamps via Gate.withChecks — an
+	// operator reading the red banner clicks straight through to the CI run
+	// instead of hand-assembling the URL from a 12-char abbreviation.
+	const sha = '7ba043715036c8a9f0d1e2b3a4c5d6e7f8091a2b';
+	const msg =
+		`all-builds failure for 7ba043715036; serving 2077c6b3a03f unchanged` +
+		` — https://github.com/wow-look-at-my/webhooks/commit/${sha}/checks`;
+	const frag = linkifyGH(msg);
+	assert.deepEqual(
+		linksOf(frag).map((l) => l.href),
+		[`https://github.com/wow-look-at-my/webhooks/commit/${sha}/checks`],
+	);
+	assert.equal(textOf(frag), msg, 'the message must still read exactly as stamped');
 });
 
 test('a bare owner/repo links in titles only', () => {
