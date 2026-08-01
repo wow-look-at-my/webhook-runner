@@ -3,6 +3,7 @@ package githubstatus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -65,12 +66,31 @@ func TestContextStateMissingContext(t *testing.T) {
 }
 
 func TestContextStateNoToken(t *testing.T) {
-	// No token = statuses on a private repo are unreadable: an immediate,
-	// loud error — never a guessed answer, and no HTTP call to fail slow.
+	// No credential = statuses on a private repo are unreadable: an
+	// immediate, loud error — never a guessed answer, and no HTTP call to
+	// fail slow. The message names BOTH ways to supply one, because a
+	// deployment that was never handed the environment variable is exactly
+	// how this error gets read.
 	c := New("", newSilentLogger())
 	_, err := c.ContextState(context.Background(), "o/r", "abc123", "all-builds")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitHub token configured")
+	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_GITHUB_TOKEN")
+	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_SECRET_SERVER_TOKEN")
+}
+
+func TestContextStateCredentialSourceFailure(t *testing.T) {
+	// A configured-but-failing source (secret-server down, credential not
+	// attached) must fail closed with the underlying reason, NOT with
+	// "nothing configured" — the two need different fixes, and conflating
+	// them sends the operator to the wrong one.
+	c := NewFromSource(func(context.Context) (string, error) {
+		return "", errors.New("secret-server: HTTP 401 (machine token missing, revoked or malformed)")
+	}, newSilentLogger())
+	require.True(t, c.Enabled(), "a configured source is enabled even while it fails")
+	_, err := c.ContextState(context.Background(), "o/r", "abc123", "all-builds")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving the GitHub credential")
+	assert.Contains(t, err.Error(), "401")
 }
 
 func TestContextStateHTTPError(t *testing.T) {

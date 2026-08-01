@@ -20,7 +20,6 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/backlog"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
-	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/managers"
@@ -67,7 +66,10 @@ func runServe(ctx context.Context, o *serveOptions) error {
 
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
-	gh := githubstatus.New(o.ghToken, logger)
+	gh, err := newGitHubStatusClient(o, logger)
+	if err != nil {
+		return err
+	}
 	// The runner's OWN GitHub client (commit statuses; the reload-gate
 	// poll's status reads) rides the mirror like every container does —
 	// unconditional, no knob (see runner.GSMBaseURL).

@@ -179,7 +179,15 @@ function lastCallWithIntervals(calls, kind) {
 	return of[of.length - 1];
 }
 
-const AGG = 'queued:gha-runner';
+/** The lane's aggregate: located by namespace + lane, since the id now
+ * carries the cluster's start (one lane can have several over time). */
+function aggsFor(intervals, lane = 'gha-runner') {
+	return intervals.filter((i) => i.id.startsWith('queued:') && i.laneId === lane);
+}
+function aggFor(intervals, lane = 'gha-runner') {
+	const found = aggsFor(intervals, lane);
+	return found.length === 1 ? found[0] : undefined;
+}
 const t0 = Date.now();
 const p1 = run('p1p1p1p1p1p1p1p1p1p1p1p1p1', 'gha-runner', t0 - 90_000, 'pending');
 const p2 = run('p2p2p2p2p2p2p2p2p2p2p2p2p2', 'gha-runner', t0 - 80_000, 'pending');
@@ -200,7 +208,7 @@ test('a ~170-deep pending flood feeds ONE aggregate row, not a wall of sub-track
 	const seed = lastCallWithIntervals(h.calls, 'setData');
 	const laneIntervals = seed.data.intervals.filter((i) => i.laneId === 'gha-runner');
 	assert.equal(laneIntervals.length, 2, 'the flooded lane feeds exactly [1 running span, 1 aggregate]');
-	const agg = laneIntervals.find((i) => i.id === AGG);
+	const agg = aggFor(laneIntervals);
 	assert.ok(agg, 'the backlog aggregate must exist');
 	// The badge must be UNMISTAKABLE: the count AND the word "waiting" —
 	// a regression to a cryptic bare bar fails here.
@@ -216,7 +224,7 @@ test('a pending backlog collapses into ONE ×N aggregate span', async () => {
 	const h = await bootSeeded([p1, p2, p3, exec]);
 
 	const seed = lastCallWithIntervals(h.calls, 'setData');
-	const aggs = seed.data.intervals.filter((i) => i.id === AGG);
+	const aggs = aggsFor(seed.data.intervals);
 	assert.equal(aggs.length, 1, 'exactly one aggregate per collapsed lane');
 	assert.equal(aggs[0].label, '×3 waiting', 'the badge carries the backlog depth');
 	assert.ok(/×3/.test(aggs[0].label) && /waiting/.test(aggs[0].label), 'count + the word "waiting", always');
@@ -244,35 +252,111 @@ test('leaving the backlog re-individualizes the run and restamps the badge', asy
 	const merge = lastCallWithIntervals(h.calls.slice(before), 'mergeData');
 	const ids = merge.data.intervals.map((i) => i.id);
 	assert.ok(ids.includes(p1.id), 'the now-running span appears individually');
-	const agg = merge.data.intervals.find((i) => i.id === AGG);
+	const agg = aggFor(merge.data.intervals);
 	assert.ok(agg, 'the aggregate restamps in the same merge');
 	assert.equal(agg.label, '×2 waiting', 'the badge decrements with the backlog');
 	assert.ok(/waiting/.test(agg.label), 'the restamped badge keeps the spelled-out meaning');
 });
 
-test('draining below 2 retires the aggregate and restores real spans', async () => {
-	const h = await bootSeeded([p2, p3, exec]); // depth 2: collapsed
+test('a drained queue keeps the stretch it owned — the lead-ins never come back', async () => {
+	const h = await bootSeeded([p2, p3, exec]); // p2+p3 queued, exec briefly queued
 
-	// p2 finishes while queued (e.g. cancelled → here: skipped shape): the
-	// backlog drops to 1 — a collapse-boundary crossing, so a full setData
-	// replaces the aggregate with the survivor's real span.
+	// p2 is cancelled while queued: it never launched and it is over, so it
+	// has no wait left to show and leaves the cluster. What the cluster still
+	// OWNS is the stretch where runs overlapped — retiring it there would put
+	// every historical lead-in back on its own sub-track, which is the
+	// stacking this whole model exists to stop.
 	h.sources[0].emit('run', { ...p2, status: 'cancelled', finished: new Date().toISOString() });
 	await settle();
 
 	const rebuilt = lastCallWithIntervals(h.calls, 'setData');
+	const agg = aggFor(rebuilt.data.intervals);
+	assert.ok(agg, 'the aggregate survives: it still covers an oversubscribed stretch');
+	assert.equal(agg.label, '×1 waiting', 'an open cluster counts what is waiting NOW');
+	assert.equal(agg.data.peak, 2, 'and remembers how deep it got');
 	const ids = rebuilt.data.intervals.map((i) => i.id);
-	assert.ok(!ids.includes(AGG), 'the aggregate disappears below depth 2');
-	assert.ok(ids.includes(p3.id), 'the single remaining pending run renders as itself');
 	assert.ok(ids.includes(p2.id), 'the terminal run renders as itself');
+	assert.ok(!ids.includes(p3.id), 'the still-queued run stays subsumed');
 	assert.ok(rebuilt.data.coverage, 'the boundary rebuild still claims coverage');
 	assert.ok(Math.abs(rebuilt.data.coverage.end - Date.now()) < 5_000, 'rebuild coverage ends ~now');
+});
 
-	// And to zero: the survivor going terminal is an ordinary delta now.
-	h.sources[0].emit('run', { ...p3, status: 'success', finished: new Date().toISOString() });
-	await settle();
-	const merged = lastCallWithIntervals(h.calls, 'mergeData');
+// The production failure, exactly: license-check accepted ~480 runs at once
+// against a small concurrency group. Every span carried a lead-in covering
+// the same stretch, so the packer gave each its own sub-track and the lane
+// became hundreds of rows deep, burying the rest of the page.
+test('a burst of LAUNCHED runs packs to what actually ran, not to the burst size', async () => {
+	const N = 200;
+	const LIMIT = 3; // the group only ever ran this many at once
+	const accepted = t0 - 400_000;
+	const burst = [];
+	for (let i = 0; i < N; i++) {
+		// All accepted together; launched in waves of LIMIT, each running 5s.
+		const wave = Math.floor(i / LIMIT);
+		const launched = accepted + wave * 5_000;
+		burst.push({
+			...run(`b${String(i).padStart(25, '0')}`, 'gha-runner', accepted + i, 'success', launched + 5_000),
+			started_at: new Date(launched).toISOString(),
+		});
+	}
+	const h = await bootSeeded(burst);
+
+	const seed = lastCallWithIntervals(h.calls, 'setData');
+	const lane = seed.data.intervals.filter((i) => i.laneId === 'gha-runner');
+	const aggs = aggsFor(lane);
+	assert.equal(aggs.length, 1, 'the whole oversubscribed stretch is ONE row');
+	// The first wave launched immediately and never waited, so it is not in
+	// the count -- the depth is what actually queued behind them.
+	assert.equal(aggs[0].label, `×${N - LIMIT} waiting`, 'a closed cluster reports how deep the queue got');
+
+	// The point of the whole change: no span may start before it launched,
+	// because a queued lead-in is what stacked the lane.
+	const spans = lane.filter((i) => !i.id.startsWith('queued:'));
+	assert.equal(spans.length, N, 'every run still has its own span');
+	for (const b of burst) {
+		const span = spans.find((i) => i.id === b.id);
+		const launched = Date.parse(b.started_at);
+		if (launched > Date.parse(b.started)) {
+			// It waited, so the wait belongs to the aggregate, not to this span.
+			assert.equal(span.start, launched, `${b.id} must start at LAUNCH, not when it was accepted`);
+		}
+		const leadIn = (span.segments ?? []).filter((sg) => sg.kind === 'queued');
+		assert.equal(leadIn.length, 0, `${b.id} must not carry a queued lead-in inside a collapsed cluster`);
+	}
+
+	// And the packing consequence, measured the way the component packs:
+	// the deepest overlap among the fed spans is the concurrency limit, not N.
+	const events = [];
+	for (const s of spans) {
+		events.push([s.start, 1], [s.end, -1]);
+	}
+	events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+	let depth = 0;
+	let deepest = 0;
+	for (const [, d] of events) {
+		depth += d;
+		if (depth > deepest) deepest = depth;
+	}
+	assert.ok(deepest <= LIMIT, `spans overlap ${deepest} deep, want at most the concurrency limit ${LIMIT}`);
+});
+
+test('a lane that was never oversubscribed keeps its lead-in', async () => {
+	// One run waiting alone is not oversubscription: the dim lead-in is the
+	// clearest place for that detail, and nothing is stacking.
+	const solo = {
+		...run('s1s1s1s1s1s1s1s1s1s1s1s1s1', 'pr-minder', t0 - 30_000, 'success', t0 - 10_000),
+		started_at: new Date(t0 - 25_000).toISOString(),
+	};
+	const h = await bootSeeded([solo]);
+
+	// A single-run seed arrives through the delta path (the seed page is
+	// empty), so read whatever the component was last fed.
+	const fed = h.calls.filter((c) => c.data.intervals).pop();
+	assert.equal(aggsFor(fed.data.intervals, 'pr-minder').length, 0, 'no aggregate for a lane nobody queued behind');
+	const span = fed.data.intervals.find((i) => i.id === solo.id);
+	assert.equal(span.start, Date.parse(solo.started), 'the span still starts when the run was accepted');
 	assert.ok(
-		merged.data.intervals.some((i) => i.id === p3.id),
-		'the drained lane keeps updating through plain merges',
+		(span.segments ?? []).some((sg) => sg.kind === 'queued'),
+		'and keeps its dim queued lead-in',
 	);
 });

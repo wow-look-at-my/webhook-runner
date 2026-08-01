@@ -329,14 +329,18 @@ function runLabel(r) {
   }
   return base;
 }
-function runToInterval(r) {
-  const start = Date.parse(r.started);
+function runToInterval(r, trimLeadIn = false) {
+  let start = Date.parse(r.started);
+  if (trimLeadIn && tsPresent(r.started_at)) {
+    const launched = Date.parse(r.started_at);
+    if (Number.isFinite(launched) && launched > start) start = launched;
+  }
   let end = tsPresent(r.finished) ? Date.parse(r.finished) : null;
   if (end === null && isTerminal(r.status)) {
     end = tsPresent(r.started_at) ? Date.parse(r.started_at) : start;
   }
   const segments = [];
-  if (tsPresent(r.started_at)) {
+  if (!trimLeadIn && tsPresent(r.started_at)) {
     const launched = Date.parse(r.started_at);
     if (launched > start) {
       segments.push({ start, end: launched, kind: "queued" });
@@ -386,59 +390,118 @@ function runToInterval(r) {
 }
 var COLLAPSE_MIN = 2;
 var AGG_PREFIX = "queued:";
-var collapsedLanes = /* @__PURE__ */ new Set();
-function pendingByLane(source) {
-  const out = /* @__PURE__ */ new Map();
+function queuedExtent(r) {
+  const start = Date.parse(r.started);
+  if (!Number.isFinite(start)) return null;
+  if (tsPresent(r.started_at)) {
+    const launched = Date.parse(r.started_at);
+    if (!(launched > start)) return null;
+    return { id: r.id, start, end: launched };
+  }
+  if (r.status !== "pending") return null;
+  return { id: r.id, start, end: null };
+}
+function clusterQueued(extents) {
+  if (extents.length === 0) return [];
+  const sorted = [...extents].sort((a, b) => a.start - b.start);
+  const out = [];
+  let group = [];
+  let groupEnd = -Infinity;
+  const flush = () => {
+    if (group.length >= COLLAPSE_MIN) {
+      out.push({
+        lane: "",
+        start: group[0].start,
+        end: group.some((e) => e.end === null) ? null : Math.max(...group.map((e) => e.end)),
+        peak: peakDepth(group),
+        live: group.filter((e) => e.end === null).length,
+        ids: group.map((e) => e.id)
+      });
+    }
+    group = [];
+    groupEnd = -Infinity;
+  };
+  for (const e of sorted) {
+    const endOf = e.end === null ? Infinity : e.end;
+    if (group.length > 0 && e.start > groupEnd) flush();
+    group.push(e);
+    groupEnd = Math.max(groupEnd, endOf);
+  }
+  flush();
+  return out;
+}
+function peakDepth(extents) {
+  const events = [];
+  for (const e of extents) {
+    events.push({ at: e.start, delta: 1 });
+    if (e.end !== null) events.push({ at: e.end, delta: -1 });
+  }
+  events.sort((a, b) => a.at - b.at || a.delta - b.delta);
+  let depth = 0;
+  let peak = 0;
+  for (const ev of events) {
+    depth += ev.delta;
+    if (depth > peak) peak = depth;
+  }
+  return peak;
+}
+function emptyPlan() {
+  return { subsumed: /* @__PURE__ */ new Set(), trimmed: /* @__PURE__ */ new Set(), clusters: [], key: "" };
+}
+var collapsePlan = emptyPlan();
+function computeCollapse(source) {
+  const byLane = /* @__PURE__ */ new Map();
+  const runs = /* @__PURE__ */ new Map();
   for (const r of source) {
-    if (r.status !== "pending") continue;
-    const list = out.get(r.hook_id);
-    if (list) list.push(r);
-    else out.set(r.hook_id, [r]);
+    runs.set(r.id, r);
+    const ext = queuedExtent(r);
+    if (ext === null) continue;
+    const list = byLane.get(r.hook_id);
+    if (list) list.push(ext);
+    else byLane.set(r.hook_id, [ext]);
   }
-  for (const list of out.values()) {
-    list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+  const plan = emptyPlan();
+  for (const [lane, extents] of byLane) {
+    for (const cluster of clusterQueued(extents)) {
+      cluster.lane = lane;
+      plan.clusters.push(cluster);
+      for (const id of cluster.ids) {
+        const run = runs.get(id);
+        if (run && tsPresent(run.started_at)) plan.trimmed.add(id);
+        else plan.subsumed.add(id);
+      }
+    }
   }
-  return out;
+  plan.clusters.sort((a, b) => a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : a.start - b.start);
+  plan.key = plan.clusters.map((c) => aggID(c)).join("|");
+  return plan;
 }
-function computeCollapsedLanes(pending) {
-  const out = /* @__PURE__ */ new Set();
-  for (const [lane, list] of pending) {
-    if (list.length >= COLLAPSE_MIN) out.add(lane);
-  }
-  return out;
+function aggID(c) {
+  return AGG_PREFIX + c.start + ":" + c.lane;
 }
-function sameLaneSet(a, b) {
-  if (a.size !== b.size) return false;
-  for (const lane of a) if (!b.has(lane)) return false;
-  return true;
-}
-function aggInterval(lane, backlog) {
-  const n = backlog.length;
+function aggInterval(c) {
+  const n = c.end === null ? c.live : c.peak;
   return {
-    id: AGG_PREFIX + lane,
-    laneId: lane,
-    start: Date.parse(backlog[0].started),
-    // oldest-first per pendingByLane
-    end: null,
+    id: aggID(c),
+    laneId: c.lane,
+    start: c.start,
+    end: c.end,
     label: `\xD7${n} waiting`,
     labelTiers: [`\xD7${n} waiting for a slot`, `\xD7${n} waiting`, `\xD7${n}`],
-    category: lane,
+    category: c.lane,
     // the lane's stable hue, like every run interval
     state: "queued",
-    data: { count: n }
+    data: { count: n, peak: c.peak, lane: c.lane, ids: c.ids, live: c.end === null }
   };
 }
 function buildAllIntervals(source) {
-  const pending = pendingByLane(source);
-  collapsedLanes = computeCollapsedLanes(pending);
+  collapsePlan = computeCollapse(source);
   const out = [];
   for (const r of source) {
-    if (r.status === "pending" && collapsedLanes.has(r.hook_id)) continue;
-    out.push(runToInterval(r));
+    if (collapsePlan.subsumed.has(r.id)) continue;
+    out.push(runToInterval(r, collapsePlan.trimmed.has(r.id)));
   }
-  for (const lane of collapsedLanes) {
-    out.push(aggInterval(lane, pending.get(lane)));
-  }
+  for (const c of collapsePlan.clusters) out.push(aggInterval(c));
   return out;
 }
 function coverageFloorMs(rows, now) {
@@ -597,9 +660,12 @@ function laneTooltip(lane) {
   frag.appendChild(ttRow("", "click to open this hook\u2019s page"));
   return frag;
 }
-function aggTooltip(lane) {
-  const backlog = pendingByLane(runsById.values()).get(lane) ?? [];
-  const n = backlog.length;
+function aggTooltip(interval) {
+  const data = interval.data ?? {};
+  const lane = data.lane ?? "";
+  const live = data.live === true;
+  const backlog = (data.ids ?? []).map((id) => runsById.get(id)).filter((r) => r !== void 0).sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+  const n = data.count ?? backlog.length;
   const keys = new Set(
     backlog.map((r) => r.waiting_on?.kind === "group" ? r.waiting_on.key || "" : "")
   );
@@ -607,9 +673,16 @@ function aggTooltip(lane) {
   const what = only !== "" && only !== "global" ? `a ${only} slot` : "a slot to run";
   const frag = document.createDocumentFragment();
   frag.appendChild(
-    el("div", { class: "tt-title" }, `${n} run${n === 1 ? "" : "s"} waiting for ${what}`)
+    el(
+      "div",
+      { class: "tt-title" },
+      live ? `${n} run${n === 1 ? "" : "s"} waiting for ${what}` : `${n} run${n === 1 ? "" : "s"} waited for ${what}`
+    )
   );
   frag.appendChild(ttRow("hook", lane));
+  const peak = data.peak ?? n;
+  if (live && peak > n) frag.appendChild(ttRow("peak", `${peak} at once`));
+  frag.appendChild(ttRow("", "lead-ins are folded into this row, so the spans below pack to what actually ran"));
   for (const r of backlog.slice(0, 3)) {
     frag.appendChild(ttRow("", `${runTitle(r) ?? shortRunId(r.id)} \u2014 queued ${fmtTime(r.started)}`));
   }
@@ -623,7 +696,7 @@ function initTimeline() {
   tl.tooltipFor = (hit) => {
     if (hit.type === "interval") {
       if (hit.interval.id.startsWith(AGG_PREFIX)) {
-        return aggTooltip(hit.interval.id.slice(AGG_PREFIX.length));
+        return aggTooltip(hit.interval);
       }
       const r = runsById.get(hit.interval.id);
       return r ? runTooltip(r) : null;
@@ -652,7 +725,8 @@ function initTimeline() {
   tl.addEventListener("intervalclick", (e) => {
     const detail = e.detail;
     if (detail.interval.id.startsWith(AGG_PREFIX)) {
-      location.hash = "#hook=" + encodeURIComponent(detail.interval.id.slice(AGG_PREFIX.length));
+      const lane = (detail.interval.data ?? {}).lane ?? "";
+      location.hash = "#hook=" + encodeURIComponent(lane);
       return;
     }
     void showRun(detail.interval.id);
@@ -682,9 +756,9 @@ function initTimeline() {
         syncLanes(tl);
         const oldest = rows[rows.length - 1];
         tl.mergeData({
-          // A history page can carry pending runs; a lane's collapsed
-          // backlog owns those — the live paths restamp its aggregate.
-          intervals: rows.filter((r) => !(r.status === "pending" && collapsedLanes.has(r.hook_id))).map(runToInterval),
+          // A history page can carry runs a cluster owns; the plan
+          // says which vanish and which lose their lead-in.
+          intervals: rows.filter((r) => !collapsePlan.subsumed.has(r.id)).map((r) => runToInterval(r, collapsePlan.trimmed.has(r.id))),
           coverage: { start: Date.parse(oldest.started), end: cursorMs }
         });
         cursor = oldest.started;
@@ -716,10 +790,10 @@ function initTimeline() {
     if (maybePrune(tl, now)) return;
     const pageFloorMs = coverageFloorMs(page, now);
     liveCoveredToMs = Math.max(liveCoveredToMs, now);
-    const prevCollapsed = collapsedLanes;
+    const prevCollapseKey = collapsePlan.key;
     const data = {
       intervals: buildAllIntervals([...runsById.values()]),
-      // refreshes collapsedLanes
+      // refreshes collapsePlan
       coverage: { start: pageFloorMs, end: now }
     };
     if (!seeded) {
@@ -728,7 +802,7 @@ function initTimeline() {
       tl.setData(data);
       tl.setViewport(now - 10 * 6e4, now);
       armBackfill();
-    } else if (!sameLaneSet(collapsedLanes, prevCollapsed)) {
+    } else if (collapsePlan.key !== prevCollapseKey) {
       rebuildAll();
       return;
     } else {
@@ -742,37 +816,28 @@ function initTimeline() {
       applyPage([...runsById.values()]);
       return;
     }
-    const pending = pendingByLane(runsById.values());
-    const nowCollapsed = computeCollapsedLanes(pending);
-    if (!sameLaneSet(nowCollapsed, collapsedLanes)) {
+    const prevPlan = collapsePlan;
+    const plan = computeCollapse(runsById.values());
+    if (plan.key !== prevPlan.key) {
       rebuildAll();
       return;
     }
+    collapsePlan = plan;
     rebuildWaiterIndex();
     const affected = /* @__PURE__ */ new Set();
-    const restampAgg = /* @__PURE__ */ new Set();
     for (const { run, prev } of batch) {
       affected.add(run.id);
       for (const holder of holderIdsOf(prev)) affected.add(holder);
       for (const holder of holderIdsOf(run)) affected.add(holder);
-      if (prev && prev.status === "pending" && nowCollapsed.has(prev.hook_id)) {
-        restampAgg.add(prev.hook_id);
-      }
     }
     const intervals = [];
     for (const id of affected) {
       const run = runsById.get(id);
       if (run === void 0) continue;
-      if (run.status === "pending" && nowCollapsed.has(run.hook_id)) {
-        restampAgg.add(run.hook_id);
-        continue;
-      }
-      intervals.push(runToInterval(run));
+      if (plan.subsumed.has(id)) continue;
+      intervals.push(runToInterval(run, plan.trimmed.has(id)));
     }
-    for (const lane of restampAgg) {
-      const backlog = pending.get(lane);
-      if (backlog && backlog.length >= COLLAPSE_MIN) intervals.push(aggInterval(lane, backlog));
-    }
+    for (const c of plan.clusters) intervals.push(aggInterval(c));
     tl.mergeData({ intervals, coverage: claimLiveCoverage(Date.now()) });
     syncLanes(tl);
   };

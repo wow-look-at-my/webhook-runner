@@ -18,6 +18,16 @@ permissions:
   deployments: write
   artifact-metadata: write
 
+# github.com/wow-look-at-my/secret-server (the published secret-server client)
+# is a PRIVATE module. The go-toolchain action already configures the git
+# credential that fetches it, but the org module proxy's checksum database can
+# never contain a private module, so without this every `go mod tidy` fails
+# with "verifying module: ... 404 Not Found". GOPRIVATE turns off both the
+# proxy and the sumdb for that path, leaving the direct authenticated git
+# fetch. Set it locally too when building outside CI.
+env:
+  GOPRIVATE: github.com/wow-look-at-my/secret-server
+
 jobs:
   # Every CLAUDE.md is inlined into an agent's context VERBATIM the moment it
   # works in that directory, and nothing truncates it: Claude Code's only hard
