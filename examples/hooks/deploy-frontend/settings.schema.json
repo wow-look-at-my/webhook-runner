@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "deploy-frontend settings",
+  "description": "The hook's own configuration. webhook-runner validates hook.json's `settings` against this file AT LOAD, so a missing or misspelled value drops the hook instead of surfacing as odd behavior at run time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["deploy_target"],
+  "properties": {
+    "deploy_target": {
+      "type": "string",
+      "enum": ["production", "staging"],
+      "description": "Which environment this hook deploys to."
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "notify-slack settings",
+  "description": "The hook's own configuration, validated at load. A hook whose settings do not match this file is DROPPED -- it never runs with config the schema says is wrong.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slack_webhook_url"],
+  "properties": {
+    "slack_webhook_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Incoming-webhook URL the payload is forwarded to."
+    }
+  }
+}

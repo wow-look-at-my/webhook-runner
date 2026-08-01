@@ -58,14 +58,34 @@ type Hook struct {
 	// Set by the loader, never by JSON. It selects the docker build context
 	// (src/ instead of the hook dir) and widens the content hash to include
 	// src/sdk — see BuildContext and ContentHash.
-	SrcRoot         string              `json:"-"`
-	Schema          string              `json:"$schema,omitempty"`
-	Description     string              `json:"description"`
-	Command         []string            `json:"command,omitempty"`
-	Script          *Script             `json:"script,omitempty"`
-	Tests           [][]string          `json:"tests,omitempty"`
-	Networks        []string            `json:"networks,omitempty"`
-	Volumes         []string            `json:"volumes,omitempty"`
+	SrcRoot     string     `json:"-"`
+	Schema      string     `json:"$schema,omitempty"`
+	Description string     `json:"description"`
+	Command     []string   `json:"command,omitempty"`
+	Script      *Script    `json:"script,omitempty"`
+	Tests       [][]string `json:"tests,omitempty"`
+	Networks    []string   `json:"networks,omitempty"`
+	Volumes     []string   `json:"volumes,omitempty"`
+	// Settings is the hook's OWN configuration: arbitrary JSON this runner
+	// never interprets, validated at load against the settings.schema.json
+	// shipped next to the manifest, and handed to the container as a file
+	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
+	// hook-private config into the runner's own parsed keys. See settings.go.
+	Settings json.RawMessage `json:"settings,omitempty"`
+	// Env is the SUPERSEDED config block, kept working for one release so
+	// the migration to Settings can be rolled out without a flag day.
+	//
+	// It cannot simply be deleted: a runner that rejects `env` cannot load
+	// the fleet that still declares it, and a fleet that declares `settings`
+	// cannot be served by a runner that predates it -- so removing it in one
+	// step means an instant where SOMETHING is unservable, and nothing about
+	// that is recoverable without hand-editing production. So both are
+	// accepted for one release: `env` still injects exactly as it always did
+	// (that is the point -- a deprecation that quietly stops working is worse
+	// than the flag day), while every entity using it is named loudly at
+	// load, in the log, the activity feed, and the needs-attention surface.
+	// The follow-up that deletes this field is gated by ci.yml's
+	// fleet-compat job, which cannot go green until the fleet has migrated.
 	Env             map[string]string   `json:"env,omitempty"`
 	User            string              `json:"user,omitempty"`
 	Workdir         string              `json:"workdir,omitempty"`
@@ -307,6 +327,15 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
+	// Then the PUBLISHED schema (see schemacheck.go) -- the contract a hooks
+	// repo validates against in CI, enforced here by the same implementation.
+	// It runs LAST because the checks above produce better messages for what
+	// they cover ("invalid schedule 5 minutes" beats a pattern mismatch); what
+	// it adds is everything a Go struct cannot express -- enums, patterns,
+	// formats, minimums -- which until now was checked in CI and nowhere else.
+	if err := ValidateHookJSON(sourcePath, data); err != nil {
+		return nil, err
+	}
 	return h, nil
 }
 
@@ -317,6 +346,11 @@ func (h *Hook) resolveScript() error {
 	s := h.Script
 	if s.File == "" {
 		return errors.New("script.file is required")
+	}
+	// Checked HERE, before the args are folded into Command: the author wrote
+	// script.args, so that is the key the error must name (see shellsafe.go).
+	if err := checkNoShellSubstitution("script.args", s.Args); err != nil {
+		return err
 	}
 	if s.Interpreter == "" {
 		return errors.New("script.interpreter is required")
@@ -447,7 +481,7 @@ func hashTree(digest io.Writer, base, root string, withMode bool) error {
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
 	switch k {
-	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID",
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_SETTINGS_FILE", "HOOK_ID", "HOOK_RUN_ID",
 		"HOOK_KV_URL", "HOOK_KV_TOKEN", "HOOK_KV_SOCKET":
 		return true
 	}
@@ -457,6 +491,14 @@ func ReservedEnvKey(k string) bool {
 func (h *Hook) validate() error {
 	if h.Schema == "" {
 		return errors.New("$schema is required (point it at https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json)")
+	}
+	// The hook's OWN configuration, checked against the contract it ships
+	// (settings.schema.json). Fail closed like every other load gate: a hook
+	// configured wrongly must not run at all, because the alternative is a
+	// container that starts, finds its config missing, and reports whatever it
+	// decides to report.
+	if err := h.ValidateSettings(); err != nil {
+		return err
 	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
@@ -481,10 +523,12 @@ func (h *Hook) validate() error {
 			return fmt.Errorf("schedule must be positive, got %s", d)
 		}
 	}
-	for k := range h.Env {
-		if ReservedEnvKey(k) {
-			return fmt.Errorf("env key %q is reserved", k)
-		}
+	// A manifest is not a place to write shell (see shellsafe.go): nested
+	// command/process substitution in an argv entry is a load error. script.args
+	// is checked in resolveScript, before it becomes part of Command, so each
+	// error names the key the author actually wrote.
+	if err := checkNoShellSubstitution("command", h.Command); err != nil {
+		return err
 	}
 	// Compiles every skip_if regex too, so evaluation never compiles at
 	// request time and a bad pattern can never load.

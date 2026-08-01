@@ -76,7 +76,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["echo", "hi"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["echo", "hi"]}
         h/Dockerfile: |
           FROM alpine
     exit: 0
@@ -89,7 +89,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
     exit: 1
     outputs:
       stderr:

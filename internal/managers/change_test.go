@@ -31,7 +31,7 @@ func TestSupervisorOnChangeCoversTheAdminSurface(t *testing.T) {
 	s := New(Options{Runner: fr, Events: events.NewRecorder(50)})
 	s.SetOnChange(func() { n.Add(1) })
 
-	m := testManager(t, "m1", `{"$schema":"x","enable":true,"command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":true,"command":["run"]}`)
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	assert.Positive(t, n.Load(), "Update declares the roster: the panel changed")
 

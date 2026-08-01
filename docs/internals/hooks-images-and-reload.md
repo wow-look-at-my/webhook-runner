@@ -1,6 +1,6 @@
 # Gotchas: the reload gate, hook layouts, images, and hook.json fields
 
-The CI-gated hooks-repo reload, cancellation, secrets and env refs, the two hook-tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, and the dind/script fields.
+The CI-gated hooks-repo reload, cancellation, per-hook settings, secrets and their refs, the two hook-tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, and the dind/script fields.
 
 Moved VERBATIM out of `CLAUDE.md` when that file went over the
 40,000-character instruction-file budget. Nothing here was condensed.
@@ -101,7 +101,39 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   cmd.Wait returned. A cancel that races the container launch is covered
   twice — a pre-start check in `runner.execute`, and the watcher's select
   firing immediately on the already-closed channel.
-- `${NAME}` references in hook.json (`env` values, `api_key`) are expanded
+- **Every manifest is schema-validated at load** (`internal/hooks/schemacheck.go`).
+  The loader compiles the EMBEDDED `schema/hook.schema.json` /
+  `schema/manager.schema.json` (package `schema`, `go:embed`) and validates each
+  hook.json/manager.json through **`wow-look-at-my/json-validator`** — the same
+  library the hooks repo's CI runs, so "passes CI" and "loads at runtime" are one
+  statement rather than two implementations that drift. Details that matter:
+  the schema is embedded, NEVER fetched (a reload cannot depend on the network,
+  and the binary can only honestly enforce the contract it carries — that is
+  what deploy-the-runner-first means); the gate runs AFTER the Go decode and
+  `validate()`, because their messages are the better ones where they overlap
+  ("invalid schedule 5 minutes" beats a pattern mismatch), while the schema adds
+  what a struct cannot express — enums, patterns, `format`, minimums, required
+  combinations; format assertions are ON (json-validator's deliberate deviation
+  from the 2020-12 default), so a `$schema` or `target_url` that is not a URI is
+  a load error; JSONC is handled by the same `jsonc.ToJSON` path as the CLI. A
+  failure DROPS the entity like any other load error.
+- **Per-hook settings** (`internal/hooks/settings.go`): a hook's OWN
+  configuration is one `settings` object in its manifest, an arbitrary JSON
+  shape the runner never interprets, and it MUST ship a `settings.schema.json`
+  next to the manifest describing what it accepts. The runner validates one
+  against the other AT LOAD and DROPS the hook on a mismatch — a hook is never
+  started with configuration its own schema calls wrong, and "unconfigured"
+  (a required property absent) is a load error rather than a hook that starts
+  and no-ops. Declaring `settings` with no schema is refused: config with no
+  contract is the state this replaced. The document reaches the container as a
+  read-only mount at `$HOOK_SETTINGS_FILE` (`{}` when none is declared, so a
+  hook reading its config has no missing-file branch), written PER RUN — the
+  image content hash covers the hook's source, so config baked into the image
+  could only change by rebuilding it; a settings edit takes effect on the next
+  run. This replaced hook.json's `env` block, which mixed hook-private config
+  into the runner's own parsed keys, forced every value to be a string, and was
+  validated by nobody. The admin API exposes the top-level KEY NAMES only.
+- `${NAME}` references in hook.json (`api_key`) are expanded
   at run/request time via `hooks.ExpandEnvRefs`, never at load time —
   `validate` in CI must pass without the production environment or keys.
   Resolution order: the hook's decrypted `secrets.sops.env` first, then
@@ -115,9 +147,11 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   this exec in-container; the age *identity* is mounted at runtime via
   `SOPS_AGE_KEY_FILE`, never baked in. The decrypt runs host-side in the
   server process — the hook container only ever receives the plaintext
-  values as env vars, so hook images need nothing sops-related. Decrypted entries
-  are also injected into the container env, with hook.json `env` winning
-  on conflict (it's appended after, and docker keeps the last `-e`).
+  values as env vars, so hook images need nothing sops-related. Decrypted
+  entries are injected into the container env (a secret that would shadow a
+  key the runner sets itself is skipped with a warning). Note the split: sops
+  entries are SECRETS delivered as environment; a hook's CONFIG is `settings`
+  and never an env var.
   Decrypt failures fail the run (status `error`) before the container
   starts — never run a secrets-bearing hook without its secrets. The e2e
   fixture key at `e2e/age-test-key.txt` is intentionally committed.
@@ -193,7 +227,7 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   `runner.RunHookTests`) execute in the hook's built image (built first
   if needed), so tests exercise the exact baked bytes; copy test files
   into the image and set WORKDIR so relative paths resolve. Tests get NO
-  payload, NO hook.json `env`, and NO secrets — they must be
+  payload, NO `settings`, and NO secrets — they must be
   self-contained, which is what lets a hooks repo's CI run them without
   production keys. The per-command timeout (`--timeout`, default 10m) is
   deliberately independent of the hook's run `timeout` (sized for
@@ -231,3 +265,17 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   webhooks repo's `Dockerfile.common` base ships bash/node/tsx). An
   explicit `command` wins over `script`. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule`/`concurrency_group`.
+- **A manifest may not carry a shell program.** `command` and
+  `script.args` are rejected at load when any element contains `$(`, a
+  backtick, `<(` or `>(` — command, arithmetic or process substitution
+  (`internal/hooks/shellsafe.go`, and the same rule as a `not.pattern` in
+  both published schemas, so CI and the loader agree). What a nested
+  command in JSON costs: it is escaped twice (once for JSON, once for the
+  shell) so nobody can read it; its exit status vanishes into the outer
+  string, so a failed `sed`/`curl` silently becomes an empty argument; and
+  it can never be run, linted, or tested outside the runner. Put the
+  program in a `.sh` next to the manifest, COPY it into the image, and
+  call that (`"command": ["sh", "run.sh"]`, or the `script` field) — a
+  real file gets `set -eu`, shellcheck, and a stack trace. Plain `$VAR` /
+  `${VAR}` references stay legal: `$HOOK_PAYLOAD_FILE` and friends are the
+  point, and there is nothing nested to hide in them.
