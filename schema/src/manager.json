@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json",
+  "title": "webhook-runner manager configuration",
+  "description": "Configuration for a webhook-runner MANAGER \u2014 a persistent, single-instance watcher the runner supervises as one long-lived container (restarted flat on exit, exactly one instance fleet-wide). Place this file as manager.json inside a named directory under <hooks-root>/src/managers/, next to the mandatory Dockerfile that bakes the manager's code into its image. Managers exist only under the src (SDK) hooks-tree layout. Deliveries to POST /hook/<id> are pushed into the manager's inbox instead of booting a container; the manager consumes them over the state socket via long-poll POST /inbox/next. Manager IDs share one namespace with hook IDs \u2014 a collision is a load error.",
+  "type": "object",
+  "required": [
+    "$schema"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "api_key",
+          "public_key"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "api_key",
+          "secret"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "public_key",
+          "secret"
+        ]
+      }
+    }
+  ],
+  "descriptions": {
+    "$schema": "URI of the JSON Schema this manager.json is validated against. Set it to https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json.",
+    "api_key": "Shared API key for POST /hook/<id> deliveries \u2014 the hook api_key contract, including ${NAME} secret references (fail-closed when unresolvable). At most one of api_key, public_key, or secret may be set.",
+    "api_key_header": "Header carrying the API key. Defaults to X-API-Key.",
+    "command": "Optional override of the image's CMD. Like hooks, a manager runs the image webhook-runner builds from the Dockerfile in its directory (tagged by content hash) \u2014 code is baked in; when command is omitted, the image's CMD/ENTRYPOINT runs (behind the state-socket proxy shim entrypoint).",
+    "concurrency_group": "Name of a concurrency group declared in concurrency.json at the hooks root. The manager's INSTANCE holds one slot for its entire lifetime (acquired before the container starts, released when the instance ends), counted against the same limit as hook runs sharing the group. Referencing an undeclared group is a load/validation error. Omit for no group.",
+    "description": "Human-readable description of what this manager does.",
+    "dind": "When true, run the manager's session container with the privileges to host its OWN nested container daemon: the runner adds --privileged and an anonymous volume at /var/lib/docker, exactly the hook dind contract (applied on the session and `webhook-runner test` paths alike). Note the volume lives as long as the INSTANCE \u2014 a persistent manager's nested storage persists across the events it processes and is discarded on restart. The host's docker daemon is NEVER exposed. AUDITED, host-root-equivalent capability: enable only for trusted, operator-curated managers.",
+    "enable": "The kill switch's DEFAULT position, exactly the hook contract: absent or true means ENABLED \u2014 a declared manager starts working the moment it deploys. Explicit false loads it disabled (no session container, deliveries 503) until an operator enables it. The dashboard switch is a persisted runtime override that outranks this default in both directions; it is the emergency control, never a go-live gate.",
+    "extra_docker_args": "Additional raw docker run arguments, appended before the image name.",
+    "github_status": "GitHub commit status updates with manager-shaped, PER-DELIVERY semantics: when a delivery's payload carries a repo + head SHA, the runner posts 'pending' as the event is accepted into the inbox and 'success'/'error' when the manager finishes/abandons that event. No status is posted for ticks or start events (they have no commit).",
+    "networks": "Docker networks to attach the session container to.",
+    "public_key": "Ed25519 public key (base64 or hex) for signature verification of deliveries \u2014 the hook public_key contract.",
+    "run_title": "Friendly display title for the manager's panel, rendered ONCE per instance (there is no per-delivery payload to template against, so placeholders resolve empty \u2014 in practice use a static, placeholder-free title). The instance can rename itself mid-flight via POST /title on the state API. A malformed template ({{ unterminated, empty {{}}) is a load/validation error, the hook rule.",
+    "script": "Parse-time sugar for command: run a script file from the manager directory with a named interpreter. The script is baked into the image like all code, so the interpreter must be installed in the image. An explicit command overrides the derived one.",
+    "secret": "GitHub-style HMAC-SHA256 webhook secret: deliveries must carry a valid X-Hub-Signature-256 over the raw body. The usual choice for managers fed by a GitHub App/org webhook.",
+    "settings": "The manager's OWN configuration: any JSON object shape it wants. webhook-runner never interprets it \u2014 it validates the object against the settings.schema.json shipped next to this manifest (declaring settings without that file is a load error) and hands it to the container as a read-only file at $HOOK_SETTINGS_FILE. This replaced the `env` block, which mixed manager-private config into the runner's own parsed keys, forced every value to be a string, and was validated by nobody. Settings are read per RUN, so changing them takes effect on the next run without rebuilding the image. Credentials belong here only under the same private-repo posture as the rest of the manifest; the admin API exposes the top-level KEY NAMES only.",
+    "signature_header": "Header carrying the request signature. Defaults to X-Signature-Ed25519 (ed25519) or X-Hub-Signature-256 (HMAC secret).",
+    "skip_if": "Declarative skip conditions over each DELIVERY, the exact hook skip_if contract (entries ORed; keys within a condition ANDed; payload dotted paths and header:<name> keys; bare-string equality or {eq,ne,in,exists,prefix,regex} matchers, RE2 compiled at load). A matching delivery is answered 200 {\"status\":\"skipped\"} and never enqueued \u2014 pure noise filtering in front of the inbox; no run record is created (there is no per-delivery run for a manager). Evaluated strictly after authentication.",
+    "synchronous": "When true, each delivery's HTTP response is held until the manager finishes processing THAT inbox event \u2014 i.e. until its next /inbox/next call (200 processed), or the event is dropped/abandoned (500). The hold is bounded by the manager's timeout as wall clock (the hook sync-hold rule); past it the response degrades to the async 202 while processing continues. Default: false (202 queued immediately).",
+    "tests": "Test commands, exactly the hook contract: each entry is an argv array that `webhook-runner test` runs in the manager's built image. Tests run without env, secrets, payload, or the state socket and must be self-contained.",
+    "timeout": "Go duration (default 5m) \u2014 the wedged-manager bound, with manager-shaped activity semantics: the watchdog only runs while an event is CHECKED OUT (delivered by /inbox/next and not yet followed by the manager's next /inbox/next call) or while events are queued with nobody consuming; any output byte resets it. A manager parked in its long-poll with an empty inbox is healthy and is never reaped, however long it stays silent. A fired watchdog kills the container; the supervisor restarts it after a flat delay.",
+    "user": "User to run the container as (docker --user).",
+    "volumes": "Volume mounts for the session container (docker -v syntax).",
+    "workdir": "Working directory inside the container (docker --workdir)."
+  },
+  "properties": {
+    "reconcile_interval": {
+      "type": "string",
+      "description": "Go duration (e.g. \"3m\"). When set, the runner enqueues a synthetic {\"kind\":\"tick\"} inbox event on this flat cadence (coalesced \u2014 at most one tick queued at a time) plus one at session start, so the manager reconciles against ground truth even when deliveries are lost. Omit for an event-only manager: it then receives a {\"kind\":\"start\"} event at session start and no ticks."
+    },
+    "spawn_targets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "description": "The hook ids this manager may start via the state API's POST /spawn \u2014 the manifest-sourced spawn allowlist, deny-by-default: absent or empty means this manager spawns nothing. Entries must name HOOKS declared in the same tree (managers are supervised, never spawnable); an entry naming an unknown id or a manager fails load/validation and drops this manager. Granting a spawn is a hooks-repo change deployed like any other, never host configuration."
+    }
+  },
+  "$comment": "GENERATED FILE -- do not edit. Source: schema/src/common.json (the 24 property constraints shared with the sibling schema, declared once) plus schema/src/manager.json (this entity's own properties and prose). Regenerate: go test ./schema -update"
+}

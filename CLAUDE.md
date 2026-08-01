@@ -31,7 +31,7 @@ internal/kv/               disk-backed per-hook KV store (state socket) + HMAC n
 internal/backlog/          durable per-hook batch backlogs (drain-a-slice; behind /backlog)
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + manager.json + concurrency.json — published to buildhost sites (.github/workflows/schemas.yml) AND go:embed'd (embed.go) so the loader enforces the same contract at runtime
+schema/                    JSON schemas for hook.json + manager.json + concurrency.json — published to buildhost sites (.github/workflows/schemas.yml) AND go:embed'd (embed.go) so the loader enforces the same contract at runtime. hook.schema.json + manager.schema.json are GENERATED from src/ (src/common.json holds the 24 shared property constraints ONCE; each overlay adds its own properties and the per-entity prose) — regenerate with `go test ./schema -update`; a drifted checkout fails TestGeneratedSchemasMatchSources
 e2e/                       end-to-end test (shell script, requires Docker)
 dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
 examples/hooks/            sample hook configs
@@ -60,7 +60,10 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   via the publish action's `public: true`). The legacy
   `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
   their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
-  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync
+  — editing the schema means editing `schema/src/`, never the generated
+  `*.schema.json` (see the shared-base bullet under "Things easy to get
+  wrong").
 
 ## CLI contract tests (dats/)
 
@@ -275,6 +278,7 @@ most often, plus where to read the rest.
 - **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded, `settings` that do not match the hook's own `settings.schema.json` — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
 - **The published schema is enforced at LOAD, by the CI validator itself.** `internal/hooks/schemacheck.go` compiles the EMBEDDED `schema/*.schema.json` (never a fetch — a reload must not depend on the network) and validates every manifest through `wow-look-at-my/json-validator`, the same implementation the hooks repo runs in CI. It runs AFTER the Go checks, whose messages are more actionable where they overlap; what it adds is everything a struct cannot express (enums, patterns, formats, minimums), which was previously checked in CI and nowhere else.
 - **A hook's own config is `settings`, never `env`, and never hook.json itself.** One JSON object validated at load against the `settings.schema.json` the hook ships, handed to the container as a read-only `$HOOK_SETTINGS_FILE`. `env` is GONE from both manifests: hook-private config must not live among the runner's own parsed keys. A hook reading its manifest at run time is reading the runner's surface, not its configuration.
+- **The two manifest schemas share ONE base — never hand-copy a property between them.** They declare 24 of the same properties, and when those were two hand-maintained copies they drifted: the manager's `timeout` lost the hook's duration `pattern` (so `"banana"` validated), `api_key_header` and `enable` lost their defaults. Shared CONSTRAINTS live once in `schema/src/common.json`; the prose is legitimately per-entity, so each overlay supplies its own description and a shared key with none is a generate error. `go test ./schema -update` regenerates.
 - **A manifest may not carry a shell program.** `command` and `script.args` are rejected at load (and by the published schema) when an element contains `$(`, a backtick, `<(` or `>(`. A nested command in JSON is double-escaped, throws away the inner exit status, and can never be linted or run outside the runner. Put it in a `.sh` next to the manifest and call that. Plain `$VAR` references stay legal.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
