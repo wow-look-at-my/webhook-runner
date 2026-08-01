@@ -111,7 +111,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
     exit: 1
     outputs:
       stderr:
@@ -135,7 +135,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"], "image": "alpine"}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "image": "alpine"}
         h/Dockerfile: |
           FROM alpine
     exit: 1
@@ -149,7 +149,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"], "concurrency_group": "nope"}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "concurrency_group": "nope"}
         h/Dockerfile: |
           FROM alpine
     exit: 1
@@ -162,7 +162,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"], "skip_if": [{"header:x-github-event": {"regex": "["}}]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "skip_if": [{"header:x-github-event": {"regex": "["}}]}
         h/Dockerfile: |
           FROM alpine
     exit: 1
@@ -175,7 +175,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"], "skip_if": [{"action": {"frobnicate": "x"}}]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "skip_if": [{"action": {"frobnicate": "x"}}]}
         h/Dockerfile: |
           FROM alpine
     exit: 1
@@ -188,7 +188,7 @@ tests:
     inputs:
       files:
         h/hook.json: |
-          {"$schema": "s", "command": ["x"], "run_title": "unterminated {{oops"}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "run_title": "unterminated {{oops"}
         h/Dockerfile: |
           FROM alpine
     exit: 1
@@ -201,11 +201,11 @@ tests:
     inputs:
       files:
         src/hooks/alpha/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
         src/hooks/alpha/Dockerfile: |
           FROM alpine
         leftover/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
         leftover/Dockerfile: |
           FROM alpine
     exit: 1
@@ -224,11 +224,11 @@ tests:
         cfg/concurrency.json: |
           {"groups": {}}
         src/hooks/alpha/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
         src/hooks/alpha/Dockerfile: |
           FROM alpine
         src/managers/boss/manager.json: |
-          {"$schema": "s", "command": ["x"], "spawn_targets": ["ghost"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "spawn_targets": ["ghost"]}
         src/managers/boss/Dockerfile: |
           FROM alpine
     exit: 1
@@ -243,11 +243,11 @@ tests:
         cfg/concurrency.json: |
           {"groups": {}}
         src/hooks/dup/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
         src/hooks/dup/Dockerfile: |
           FROM alpine
         src/managers/dup/manager.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
         src/managers/dup/Dockerfile: |
           FROM alpine
     exit: 1
@@ -264,7 +264,7 @@ tests:
     inputs:
       files:
         myhook/hook.json: |
-          {"$schema": "s", "command": ["x"], "settings": {"pacing_ms": "not-a-number"}}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "settings": {"pacing_ms": "not-a-number"}}
         myhook/settings.schema.json: |
           {
             "type": "object",
@@ -283,7 +283,7 @@ tests:
     inputs:
       files:
         myhook/hook.json: |
-          {"$schema": "s", "command": ["x"]}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
         myhook/settings.schema.json: |
           {"type": "object", "required": ["app_id"], "properties": {"app_id": {"type": "string"}}}
         myhook/Dockerfile: |
@@ -298,7 +298,7 @@ tests:
     inputs:
       files:
         myhook/hook.json: |
-          {"$schema": "s", "command": ["x"], "settings": {"anything": 1}}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "settings": {"anything": 1}}
         myhook/Dockerfile: |
           FROM alpine
     exit: 1
@@ -311,7 +311,7 @@ tests:
     inputs:
       files:
         myhook/hook.json: |
-          {"$schema": "s", "command": ["x"], "settings": {"app_id": "42", "pacing_ms": 1000}}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "settings": {"app_id": "42", "pacing_ms": 1000}}
         myhook/settings.schema.json: |
           {
             "type": "object",
@@ -331,10 +331,45 @@ tests:
     inputs:
       files:
         myhook/hook.json: |
-          {"$schema": "s", "command": ["x"], "env": {"TOKEN": "abc"}}
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "env": {"TOKEN": "abc"}}
         myhook/Dockerfile: |
           FROM alpine
     exit: 1
     outputs:
       stderr:
         - 'unknown field "env"'
+
+  # The PUBLISHED schema is enforced at load now, by the same implementation
+  # (wow-look-at-my/json-validator) the hooks repo runs in CI -- so "passes CI"
+  # and "loads at runtime" stop being two different questions. These cases cover
+  # what the Go model cannot express.
+  - desc: a manifest violating the published schema fails validation
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {
+            "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+            "command": ["x"],
+            "github_status": {"enabled": true, "context": "ci", "target_url": "not a url"}
+          }
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'does not match the published schema'
+        - target_url
+
+  - desc: a $schema that is not a URI is rejected at load
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "s", "command": ["x"]}
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'does not match the published schema'

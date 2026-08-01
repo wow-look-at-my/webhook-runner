@@ -33,7 +33,7 @@ func writeTestHook(t *testing.T, root, id string) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, hooks.DockerfileName), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"]}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"]}`), 0o644))
 }
 
 func writeConcurrencyJSON(t *testing.T, root, body string) {

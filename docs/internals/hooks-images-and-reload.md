@@ -101,6 +101,22 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   cmd.Wait returned. A cancel that races the container launch is covered
   twice — a pre-start check in `runner.execute`, and the watcher's select
   firing immediately on the already-closed channel.
+- **Every manifest is schema-validated at load** (`internal/hooks/schemacheck.go`).
+  The loader compiles the EMBEDDED `schema/hook.schema.json` /
+  `schema/manager.schema.json` (package `schema`, `go:embed`) and validates each
+  hook.json/manager.json through **`wow-look-at-my/json-validator`** — the same
+  library the hooks repo's CI runs, so "passes CI" and "loads at runtime" are one
+  statement rather than two implementations that drift. Details that matter:
+  the schema is embedded, NEVER fetched (a reload cannot depend on the network,
+  and the binary can only honestly enforce the contract it carries — that is
+  what deploy-the-runner-first means); the gate runs AFTER the Go decode and
+  `validate()`, because their messages are the better ones where they overlap
+  ("invalid schedule 5 minutes" beats a pattern mismatch), while the schema adds
+  what a struct cannot express — enums, patterns, `format`, minimums, required
+  combinations; format assertions are ON (json-validator's deliberate deviation
+  from the 2020-12 default), so a `$schema` or `target_url` that is not a URI is
+  a load error; JSONC is handled by the same `jsonc.ToJSON` path as the CLI. A
+  failure DROPS the entity like any other load error.
 - **Per-hook settings** (`internal/hooks/settings.go`): a hook's OWN
   configuration is one `settings` object in its manifest, an arbitrary JSON
   shape the runner never interprets, and it MUST ship a `settings.schema.json`

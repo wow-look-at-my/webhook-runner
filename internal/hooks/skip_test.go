@@ -15,7 +15,7 @@ import (
 
 func TestParseSkipIfValid(t *testing.T) {
 	h, err := parseInDir(t, `{
-		"$schema": "s",
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
 		// entries ORed; keys within an entry ANDed
 		"skip_if": [
 			{ "header:x-github-event": "workflow_run" },
@@ -39,57 +39,57 @@ func TestParseSkipIfValid(t *testing.T) {
 }
 
 func TestParseSkipIfBadRegexIsValidationError(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"x":{"regex":"("}}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"regex":"("}}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid regex")
 	assert.Contains(t, err.Error(), `skip_if[0] key "x"`)
 }
 
 func TestParseSkipIfUnknownOperator(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"x":{"contains":"y"}}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"contains":"y"}}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown operator "contains"`)
 }
 
 func TestParseSkipIfEmptyCondition(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skip_if[0]")
 	assert.Contains(t, err.Error(), "at least one")
 }
 
 func TestParseSkipIfEmptyMatcherObject(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"x":{}}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{}}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "at least one operator")
 }
 
 func TestParseSkipIfEmptyInSet(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"x":{"in":[]}}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"in":[]}}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"in" must list at least one value`)
 }
 
 func TestParseSkipIfMatcherWrongType(t *testing.T) {
 	// A number is neither the string shorthand nor an operator object.
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"x":5}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":5}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "matcher must be a string")
 }
 
 func TestParseSkipIfNullMatcher(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"x":null}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":null}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not be null")
 }
 
 func TestParseSkipIfOperatorValueWrongType(t *testing.T) {
 	for _, doc := range []string{
-		`{"$schema":"s","skip_if":[{"x":{"eq":5}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"exists":"yes"}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"in":"not-a-list"}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"in":[1,2]}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"prefix":false}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"eq":5}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"exists":"yes"}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"in":"not-a-list"}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"in":[1,2]}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"prefix":false}}]}`,
 	} {
 		_, err := parseInDir(t, doc)
 		require.Error(t, err, "doc should fail: %s", doc)
@@ -97,13 +97,13 @@ func TestParseSkipIfOperatorValueWrongType(t *testing.T) {
 }
 
 func TestParseSkipIfEmptyKey(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"":"x"}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"":"x"}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key must not be empty")
 }
 
 func TestParseSkipIfHeaderKeyWithoutName(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","skip_if":[{"header:":"x"}]}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"header:":"x"}]}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must name a header")
 }
@@ -132,7 +132,7 @@ func TestSkipMatcherMarshalRoundTrip(t *testing.T) {
 // compiled, conditions validated).
 func skipHook(t *testing.T, skipIf string) *Hook {
 	t.Helper()
-	h, err := parseInDir(t, `{"$schema":"s","skip_if":`+skipIf+`}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":`+skipIf+`}`)
 	require.NoError(t, err)
 	return h
 }
@@ -324,7 +324,7 @@ func TestEvaluateSkipHugeStringLeaf(t *testing.T) {
 }
 
 func TestEvaluateSkipNoConditions(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.NoError(t, err)
 	_, matched := h.EvaluateSkip([]byte(`{"anything":"here"}`), ghHeaders("push"))
 	assert.False(t, matched)

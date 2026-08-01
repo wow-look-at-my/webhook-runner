@@ -243,6 +243,12 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 			return nil, fmt.Errorf("reconcile_interval must be positive, got %s", d)
 		}
 	}
+	// Same gate as hooks, and last for the same reason: the published manager
+	// schema, enforced by the implementation the hooks repo's CI runs (see
+	// schemacheck.go).
+	if err := ValidateManagerJSON(sourcePath, data); err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 

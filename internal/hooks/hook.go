@@ -312,6 +312,15 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
+	// Then the PUBLISHED schema (see schemacheck.go) -- the contract a hooks
+	// repo validates against in CI, enforced here by the same implementation.
+	// It runs LAST because the checks above produce better messages for what
+	// they cover ("invalid schedule 5 minutes" beats a pattern mismatch); what
+	// it adds is everything a Go struct cannot express -- enums, patterns,
+	// formats, minimums -- which until now was checked in CI and nowhere else.
+	if err := ValidateHookJSON(sourcePath, data); err != nil {
+		return nil, err
+	}
 	return h, nil
 }
 

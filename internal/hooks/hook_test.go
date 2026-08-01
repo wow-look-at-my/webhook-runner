@@ -53,7 +53,7 @@ func TestParseValid(t *testing.T) {
 func TestParseMinimal(t *testing.T) {
 	// Command is optional: the image's CMD (from the Dockerfile) runs.
 	// $schema is the only required field.
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.Nil(t, err)
 	assert.Empty(t, h.Command)
 }
@@ -62,11 +62,11 @@ func TestParseMinimal(t *testing.T) {
 // defaults to false when omitted. (An unknown field is still rejected — see
 // the "unknown field" case in TestParseRejects.)
 func TestParseDind(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s","dind":true}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":true}`)
 	require.Nil(t, err)
 	assert.True(t, h.Dind)
 
-	h, err = parseInDir(t, `{"$schema":"s"}`)
+	h, err = parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.Nil(t, err)
 	assert.False(t, h.Dind, "dind defaults to false when omitted")
 }
@@ -76,15 +76,15 @@ func TestParseDind(t *testing.T) {
 // loads the hook disabled until an operator override — which always wins
 // over this default — enables it.
 func TestParseEnableDefault(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.Nil(t, err)
 	assert.True(t, h.EnabledByDefault(), "absent enable must mean enabled by default")
 
-	h, err = parseInDir(t, `{"$schema":"s","enable":true}`)
+	h, err = parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","enable":true}`)
 	require.Nil(t, err)
 	assert.True(t, h.EnabledByDefault())
 
-	h, err = parseInDir(t, `{"$schema":"s","enable":false}`)
+	h, err = parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","enable":false}`)
 	require.Nil(t, err)
 	assert.False(t, h.EnabledByDefault(), "enable:false must load the hook disabled by default")
 }
@@ -92,32 +92,32 @@ func TestParseEnableDefault(t *testing.T) {
 // Omitting timeout falls back to DefaultTimeout — every hook keeps hang
 // protection (5 minutes of silence) by default.
 func TestTimeoutDefaultsWhenOmitted(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.Nil(t, err)
 	assert.Equal(t, DefaultTimeout, h.Timeout())
 }
 
 func TestParseScheduleValid(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s","schedule":"5m"}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","schedule":"5m"}`)
 	require.Nil(t, err)
 	assert.Equal(t, "5m", h.Schedule)
 	assert.Equal(t, 5*time.Minute, h.ScheduleInterval())
 }
 
 func TestParseScheduleEmptyMeansUnscheduled(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.Nil(t, err)
 	assert.Equal(t, time.Duration(0), h.ScheduleInterval())
 }
 
 func TestParseScheduleInvalidDuration(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","schedule":"5 minutes"}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","schedule":"5 minutes"}`)
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error(), "invalid schedule")
 }
 
 func TestParseScheduleMustBePositive(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","schedule":"0s"}`)
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","schedule":"0s"}`)
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error(), "schedule must be positive")
 }
@@ -145,22 +145,22 @@ func TestParseRejectsBadDocs(t *testing.T) {
 		// Go validation only checks that $schema is present (non-empty);
 		// json-validator enforces it points at the published schema.
 		"missing schema":             `{"command":["x"]}`,
-		"image is not a field":       `{"$schema":"s","image":"alpine"}`,
-		"env is not a field":         `{"$schema":"s","env":{"FOO":"bar"}}`,
-		"settings must be an object": `{"$schema":"s","settings":[1,2]}`,
-		"empty test command":         `{"$schema":"s","tests":[["ok"],[]]}`,
-		"bad timeout":                `{"$schema":"s","timeout":"banana"}`,
-		"negative timeout":           `{"$schema":"s","timeout":"-1s"}`,
+		"image is not a field":       `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","image":"alpine"}`,
+		"env is not a field":         `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","env":{"FOO":"bar"}}`,
+		"settings must be an object": `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","settings":[1,2]}`,
+		"empty test command":         `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","tests":[["ok"],[]]}`,
+		"bad timeout":                `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","timeout":"banana"}`,
+		"negative timeout":           `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","timeout":"-1s"}`,
 		// idle_timeout was removed when timeout itself became activity-based;
 		// DisallowUnknownFields makes a hook.json that still sets it fail to
 		// load (acceptable: nothing merged ever set it).
-		"idle_timeout removed":    `{"$schema":"s","idle_timeout":"5m"}`,
-		"github_status nocontext": `{"$schema":"s","github_status":{"enabled":true}}`,
-		"unknown field":           `{"$schema":"s","frobnicate":true}`,
-		"api_key+secret":          `{"$schema":"s","api_key":"k","secret":"s"}`,
-		"public_key+secret":       `{"$schema":"s","public_key":"k","secret":"s"}`,
-		"api_key+public_key":      `{"$schema":"s","api_key":"k","public_key":"k"}`,
-		"bad public_key":          `{"$schema":"s","public_key":"not-a-key"}`,
+		"idle_timeout removed":    `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","idle_timeout":"5m"}`,
+		"github_status nocontext": `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","github_status":{"enabled":true}}`,
+		"unknown field":           `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","frobnicate":true}`,
+		"api_key+secret":          `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","api_key":"k","secret":"s"}`,
+		"public_key+secret":       `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","public_key":"k","secret":"s"}`,
+		"api_key+public_key":      `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","api_key":"k","public_key":"k"}`,
+		"bad public_key":          `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

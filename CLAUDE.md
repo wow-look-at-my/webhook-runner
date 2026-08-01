@@ -31,7 +31,7 @@ internal/kv/               disk-backed per-hook KV store (state socket) + HMAC n
 internal/backlog/          durable per-hook batch backlogs (drain-a-slice; behind /backlog)
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
+schema/                    JSON schemas for hook.json + manager.json + concurrency.json — published to buildhost sites (.github/workflows/schemas.yml) AND go:embed'd (embed.go) so the loader enforces the same contract at runtime
 e2e/                       end-to-end test (shell script, requires Docker)
 dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
 examples/hooks/            sample hook configs
@@ -270,6 +270,7 @@ most often, plus where to read the rest.
 - **A lock TTL is ENFORCED, never assumed.** An expired lock is still the holder's: the contender's acquire kills that run, waits for it to be certainly dead, and takes the lock the finish seam freed — or is refused. Expiry alone frees nothing, in the store or the sweeper.
 - **A backlog belongs in the runner, never in a hook-side cursor.** A hook run is one container, so "work I did not get to" has to outlive it. Two primitives, two questions: `internal/queue` decides WHEN to start a run; `internal/backlog` holds WHAT IS LEFT for a run that already exists (push is a set union, take removes a slice, depth is observable).
 - **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded, `settings` that do not match the hook's own `settings.schema.json` — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
+- **The published schema is enforced at LOAD, by the CI validator itself.** `internal/hooks/schemacheck.go` compiles the EMBEDDED `schema/*.schema.json` (never a fetch — a reload must not depend on the network) and validates every manifest through `wow-look-at-my/json-validator`, the same implementation the hooks repo runs in CI. It runs AFTER the Go checks, whose messages are more actionable where they overlap; what it adds is everything a struct cannot express (enums, patterns, formats, minimums), which was previously checked in CI and nowhere else.
 - **A hook's own config is `settings`, never `env`, and never hook.json itself.** One JSON object validated at load against the `settings.schema.json` the hook ships, handed to the container as a read-only `$HOOK_SETTINGS_FILE`. `env` is GONE from both manifests: hook-private config must not live among the runner's own parsed keys. A hook reading its manifest at run time is reading the runner's surface, not its configuration.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.

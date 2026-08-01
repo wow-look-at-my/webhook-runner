@@ -121,14 +121,14 @@ func TestSettingsSchemaMayCarryComments(t *testing.T) {
 // DROPPED, exactly like an undeclared concurrency group.
 func TestParseRejectsSettingsThatDoNotValidate(t *testing.T) {
 	src := writeSettingsFixture(t, settingsSchema)
-	_, err := Parse("h", src, []byte(`{"$schema":"s","description":"d","settings":{"pacing_ms":5}}`))
+	_, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","settings":{"pacing_ms":5}}`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "app_id")
 }
 
 func TestParseAcceptsValidSettings(t *testing.T) {
 	src := writeSettingsFixture(t, settingsSchema)
-	h, err := Parse("h", src, []byte(`{"$schema":"s","description":"d","settings":{"app_id":"42"}}`))
+	h, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","settings":{"app_id":"42"}}`))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"app_id":"42"}`, string(h.SettingsJSON()))
 }
@@ -137,7 +137,7 @@ func TestParseAcceptsValidSettings(t *testing.T) {
 // have its configuration silently ignored.
 func TestParseRejectsTheRetiredEnvBlock(t *testing.T) {
 	src := writeSettingsFixture(t, "")
-	_, err := Parse("h", src, []byte(`{"$schema":"s","description":"d","env":{"A":"b"}}`))
+	_, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","env":{"A":"b"}}`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "env")
 }
