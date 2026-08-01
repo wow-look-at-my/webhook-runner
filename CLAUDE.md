@@ -225,7 +225,10 @@ The server listens on two TCP ports plus a Unix socket:
   lifecycle, `env.unresolved` when an env reference expands to nothing)
   — memory only (run history, by contrast, persists completed runs via
   `internal/runstore`; see below). Rejections are events on purpose:
-  the dashboard must be able to answer "did you receive anything?".
+  the dashboard must be able to answer "did you receive anything?" —
+  which is also why both feeds pass `?exclude=run` and show ONLY what has
+  no run (the runs table owns run lifecycle). Every listing filters
+  BEFORE the cap.
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
@@ -272,6 +275,7 @@ most often, plus where to read the rest.
 - **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
+- **Filter BEFORE the cap, in every listing.** `max`/limit bounds what is RETURNED, never what is EXAMINED (`/runs?exclude=`, `/events?exclude=`+`?hook=`). Page-then-filter blanks a surface on exactly the busy hooks it exists for: a burst of excluded entries fills the page, the filter empties it, and the panel reports "nothing here" while the matches sit just behind them.
 - **A phase mark that is missing means UNKNOWN, never zero.** Container overhead is measured, not estimated (`internal/runs` phase marks) — but only a hook whose container reports from the inside yields an EXACT boot figure; every other hook gets an upper bound that also contains its runtime's cold start. Never let the two meet in one number.
 - **GitHub does not re-send a failed delivery.** A draining server therefore PARKS deliveries (`internal/spool`) and answers 202 — never 503 "the sender will retry". Shutdown order is load-bearing: the hook port and state socket stay up across `rn.Wait()`.
 

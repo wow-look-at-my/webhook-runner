@@ -651,7 +651,13 @@ const sectionFetchers = {
     renderRuns(await fetchJSON("/runs?max=50"));
   },
   images: async () => renderImages(await fetchJSON("/images")),
-  events: async () => renderEvents(await fetchJSON("/events?max=100")),
+  // exclude=run: run lifecycle is the runs table's job, and it does it
+  // better (one row per run with status, timings and output, instead of
+  // three log lines). The feed keeps everything that has NO run to show —
+  // rejected deliveries, image builds, unresolved env, reload/git activity
+  // — which is what makes it worth having beside the table. Excluded
+  // server-side, before max, so a run-heavy burst can never crowd those out.
+  events: async () => renderEvents(await fetchJSON("/events?max=100&exclude=run")),
   kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
   concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
   // First-class managers: the roster (+ the open detail, when a
@@ -1609,7 +1615,11 @@ async function refreshApp(id) {
   const exclude = [...appRunsHiddenStatuses()].sort().join(",");
   const [runs, events, kvKeys] = await Promise.all([
     fetchJSON(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
-    fetchJSON(`/events?hook=${enc}&max=100`),
+    // Same exclusion as the overview feed: this page already has a Recent
+    // runs table two sections up, so the feed shows only what that table
+    // cannot — deliveries that produced no run at all, image builds, and
+    // this hook's misconfigurations.
+    fetchJSON(`/events?hook=${enc}&max=100&exclude=run`),
     // The KV namespace listing exists only for state:true hooks
     // (namespace == hook ID); skip the fetch entirely otherwise.
     detail.info.state ? fetchJSON(`/kv/${enc}`) : Promise.resolve(null),
