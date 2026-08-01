@@ -823,3 +823,13 @@ data-table { display: block; margin-bottom: 0.5rem; }
 .state-chip.disabled { opacity: 0.6; }
 .state-chip.restart-wait, .state-chip.starting { color: #d29922; border-color: #d29922; }
 .state-chip.waiting-lease { color: #58a6ff; border-color: #58a6ff; }
+
+/* A runtime-imported component turned out to be older than this page and a
+   feature is missing. Styled as a WARNING, not as a quiet note: the whole
+   point is that a silently absent feature is indistinguishable from a
+   finished one. */
+.degraded-note {
+  color: var(--running);
+  border-left: 2px solid var(--running);
+  padding-left: 0.5rem;
+}

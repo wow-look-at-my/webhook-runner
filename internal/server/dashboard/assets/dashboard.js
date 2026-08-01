@@ -1471,7 +1471,9 @@ function renderGlobalCap(g) {
   });
   t.rowId = () => "global";
   t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
-  t.detailFor = (row) => groupDetailContent(row);
+  if (componentSupports(t, "detailFor", "The global cap's holders/queue drill-down")) {
+    t.detailFor = (row) => groupDetailContent(row);
+  }
   t.rows = [g];
 }
 
@@ -1542,7 +1544,9 @@ function renderConcurrency(data) {
   });
   t.rowId = (row) => row.name;
   t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
-  t.detailFor = (row) => groupDetailContent(row);
+  if (componentSupports(t, "detailFor", "The per-group holders/queue drill-down")) {
+    t.detailFor = (row) => groupDetailContent(row);
+  }
   t.rows = groups;
 }
 
@@ -1630,6 +1634,30 @@ code { font-size: 0.9em; }
 .switch input:focus-visible + .switch-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
 .images-on-disk { color: var(--muted); font-size: 0.9em; }
 `;
+
+// Feature-detect a capability on a RUNTIME-IMPORTED component, and say so
+// when it is missing.
+//
+// The components come from js-snippets' library site at master head, so this
+// page can be newer than the bundle a browser has. Assigning an unknown
+// property to a custom element does NOT fail — JS quietly creates an
+// expando — so a drill-down wired to a component that predates it would
+// simply never open: no error, no warning, a table that looks finished.
+// That is not graceful degradation, it is the page lying about what it can
+// do. Detect BEFORE assigning (assigning is what would make a later `in`
+// check pass), and put the reason on screen next to the thing that stopped
+// working.
+function componentSupports(elm, prop, what) {
+  if (prop in elm) return true;
+  const id = `${elm.id}-degraded`;
+  if (!document.getElementById(id)) {
+    elm.insertAdjacentElement("afterend", el("p", { id, class: "empty degraded-note" },
+      `${what} unavailable: the loaded <${elm.localName}> is older than this page ` +
+      `(no "${prop}"). Reload to pick up the current component; if it persists, the ` +
+      `library site is serving a stale build.`));
+  }
+  return false;
+}
 
 // The concurrency tables' drill-down and the KV value box, inside the
 // component's shadow root.
@@ -2238,7 +2266,9 @@ async function renderAppKV(info, listing) {
   // The value is FETCHED per key, so the detail is a promise: the component
   // shows a placeholder and paints when it resolves, and renders the error
   // into the row if the key expired between the listing and the click.
-  t.detailFor = (k) => kvValueContent(info.id, k.key);
+  if (componentSupports(t, "detailFor", "Stored-value inspection")) {
+    t.detailFor = (k) => kvValueContent(info.id, k.key);
+  }
   t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
