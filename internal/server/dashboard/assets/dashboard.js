@@ -943,24 +943,50 @@ function hookSwitch(id, disabled) {
   return sw;
 }
 
+
+// The hooks roster, as a <data-table>. Searchable because a fleet this size
+// is past scanning by eye, and the query covers the description too — which
+// is where a hook says what it is for. No row-click: the row carries a
+// link, a kill switch and a copyable endpoint, so "click anywhere" would
+// fight all three.
 function renderHooks(hooks) {
-  const tbody = document.querySelector("#hooks-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("hooks-empty").hidden = hooks.length > 0;
-  for (const h of hooks) {
-    tbody.appendChild(
-      el("tr", null,
-        // Each hook is an "app": its ID links to the per-hook drill-down.
-        el("td", null,
-          el("a", { href: hookHref(h.id), class: "hook-link" },
-            el("code", null, h.id))),
-        el("td", null, linkifyGH(h.description || "")),
-        el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
-        el("td", { class: "row-actions" }, hookSwitch(h.id, h.disabled)),
-        el("td", null, ...triggerPath(h.id)),
-      )
-    );
-  }
+  const t = document.getElementById("hooks-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "id",
+      label: "ID",
+      // Each hook is an "app": its ID links to the per-hook drill-down.
+      render: (h) => el("a", { href: hookHref(h.id), class: "hook-link" }, el("code", null, h.id)),
+    },
+    { key: "description", label: "Description", render: (h) => linkifyGH(h.description || "") },
+    {
+      key: "mode",
+      label: "Mode",
+      value: (h) => (h.synchronous ? "sync" : "async") + (h.schedule ? ` every ${h.schedule}` : ""),
+      render: (h) => (h.synchronous ? "sync" : "async") + (h.schedule ? ` \u00b7 every ${h.schedule}` : ""),
+    },
+    {
+      key: "disabled",
+      label: "Status",
+      className: "row-actions",
+      // Sorts and searches by STATE (so a disabled hook can be found); the
+      // cell itself is the live switch, which has no sortable text.
+      value: (h) => (h.disabled ? 1 : 0),
+      text: (h) => (h.disabled ? "disabled" : "enabled"),
+      render: (h) => hookSwitch(h.id, h.disabled),
+    },
+    {
+      key: "endpoint",
+      label: "Endpoint",
+      sortable: false,
+      text: (h) => `/hook/${h.id}`,
+      render: (h) => el("span", null, ...triggerPath(h.id)),
+    },
+  ];
+  t.rowId = (h) => h.id;
+  t.styleText = SHARED_TABLE_CSS;
+  t.rows = hooks || [];
 }
 
 // --- Managers: the first-class persistent-watcher roster --------------------
@@ -1044,42 +1070,75 @@ function renderNavManagers(list) {
   updateNav(currentPage());
 }
 
+
+// The manager roster, as a <data-table>. The whole row navigates to the
+// manager's page — the same destination its title link carries, so a click
+// landing on either is correct — while the switch and the restart button
+// stop their own clicks from reaching the row.
 function renderManagers(list) {
   list = list || [];
   renderNavManagers(list);
-  const tbody = document.querySelector("#managers-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("managers-empty").hidden = list.length > 0;
-  document.getElementById("managers-table").hidden = list.length === 0;
-  for (const m of list) {
-    const tr = el("tr", null,
-      el("td", null,
-        // Deliberately NOT linkified: this cell's whole job is the link to
-        // the manager's page (an <a> can't nest another). The drill-down's
-        // Title row carries the same text with its slugs clickable.
-        el("a", { href: managerHref(m.id), class: "hook-link" },
-          el("code", null, m.title || m.id))),
-      el("td", { class: "row-actions" }, managerSwitch(m.id, m.disabled)),
-      el("td", null, managerStateChip(m)),
-      el("td", null, m.instance_id
+  const t = document.getElementById("managers-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "id",
+      label: "Manager",
+      value: (m) => m.title || m.id,
+      // Deliberately NOT linkified: this cell's whole job is the link to
+      // the manager's page (an <a> can't nest another). The drill-down's
+      // Title row carries the same text with its slugs clickable.
+      render: (m) => el("a", { href: managerHref(m.id), class: "hook-link" },
+        el("code", null, m.title || m.id)),
+    },
+    {
+      key: "disabled",
+      label: "Status",
+      className: "row-actions",
+      value: (m) => (m.disabled ? 1 : 0),
+      text: (m) => (m.disabled ? "disabled" : "enabled"),
+      render: (m) => managerSwitch(m.id, m.disabled),
+    },
+    { key: "state", label: "State", render: (m) => managerStateChip(m) },
+    {
+      key: "instance_id",
+      label: "Instance",
+      render: (m) => (m.instance_id
         ? el("code", { title: m.instance_id }, m.instance_id.slice(0, 8))
         : "—"),
-      el("td", null, String(m.restarts)),
-      el("td", null, String(m.inbox_depth)),
-      el("td", null, managerLastEvent(m)),
-      el("td", { class: "row-actions" },
-        el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart")),
-    );
-    tr.querySelector("button").addEventListener("click", (e) => {
-      e.stopPropagation();
-      restartManager(m.id);
+    },
+    { key: "restarts", label: "Restarts", align: "end", render: (m) => String(m.restarts) },
+    { key: "inbox_depth", label: "Inbox", align: "end", render: (m) => String(m.inbox_depth) },
+    { key: "last_event", label: "Last event", render: (m) => managerLastEvent(m) },
+    {
+      key: "restart",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (m) => {
+        const b = el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart");
+        b.addEventListener("click", (e) => {
+          // Without this the click also reaches the row and navigates away
+          // from the page the operator is acting on.
+          e.stopPropagation();
+          restartManager(m.id);
+        });
+        return b;
+      },
+    },
+  ];
+  t.rowId = (m) => m.id;
+  t.styleText = SHARED_TABLE_CSS;
+  // Bound once: the element outlives every render, so re-adding per render
+  // would stack a handler per refresh.
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) location.hash = managerHref(e.detail.id);
     });
-    tr.addEventListener("click", (ev) => {
-      if (ev.target.closest("a, label, button")) return;
-      location.hash = managerHref(m.id);
-    });
-    tbody.appendChild(tr);
   }
+  t.rows = list;
   // The drill-down only renders while its fragment is open.
   if (!currentManagerId()) document.getElementById("manager-detail").hidden = true;
 }
@@ -1242,8 +1301,9 @@ function attentionSourceLabel(source) {
   }
 }
 
-function renderAttention(data) {
-  const entries = (data && data.entries) || [];
+
+function renderAttention(entries) {
+  entries = entries || [];
   const banner = document.getElementById("attention-banner");
   banner.hidden = entries.length === 0;
   document.getElementById("attention-banner-text").textContent =
@@ -1253,28 +1313,46 @@ function renderAttention(data) {
 
   const section = document.getElementById("attention-section");
   section.hidden = entries.length === 0;
-  const tbody = document.querySelector("#attention-table tbody");
-  tbody.innerHTML = "";
-  for (const e of entries) {
-    const tr = el("tr", { class: e.hook ? "attention-hook-row" : "" },
-      el("td", { class: "attention-msg" }, linkifyGH(e.message)),
-      el("td", null, e.hook
+  const t = document.getElementById("attention-table");
+  if (!t) return;
+  t.columns = [
+    { key: "message", label: "Problem", className: "attention-msg", render: (e) => linkifyGH(e.message) },
+    {
+      key: "hook",
+      label: "Hook",
+      render: (e) => (e.hook
         ? el("a", { href: hookHref(e.hook), class: "hook-link" }, el("code", null, e.hook))
         : "—"),
-      el("td", null, attentionSourceLabel(e.source)),
+    },
+    { key: "source", label: "Source", value: (e) => attentionSourceLabel(e.source) },
+    {
+      key: "since",
+      label: "Active for",
+      className: "attention-age",
       // Age since the problem FIRST became active (stable across
-      // re-derivations while it persists); tooltip = the absolute time.
-      el("td", { class: "attention-age", title: fmtTime(e.since) },
+      // re-derivations while it persists), so sorting by it puts the
+      // longest-standing problem at one end. Sorts on the instant, not the
+      // rendered duration, which would order "9m" after "10s".
+      value: (e) => Date.parse(e.since),
+      text: (e) => fmtTime(e.since),
+      render: (e) => el("span", { title: fmtTime(e.since) },
         fmtDuration(Date.now() - new Date(e.since)) || "0s"),
-    );
-    if (e.hook) {
-      tr.addEventListener("click", (ev) => {
-        if (ev.target.closest("a")) return;
-        location.hash = hookHref(e.hook);
-      });
-    }
-    tbody.appendChild(tr);
+    },
+  ];
+  // Entries without a hook are server-wide: they have nowhere to click
+  // through to, so only hook-scoped rows get the class the CSS marks as
+  // navigable.
+  t.rowClass = (e) => (e.hook ? "attention-hook-row" : "");
+  t.rowId = (e) => e.hook || "";
+  t.styleText = SHARED_TABLE_CSS + ATTENTION_TABLE_CSS;
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      // A server-wide entry has no id and no destination.
+      if (e.detail?.id) location.hash = hookHref(e.detail.id);
+    });
   }
+  t.rows = entries;
 }
 
 // The banner's "view" jump routes to the dedicated Attention page — the
@@ -1323,12 +1401,6 @@ async function clearLimitOverride(name, declared) {
   refresh();
 }
 
-// Which concurrency group's drill-down row is expanded (persists across the
-// poll's re-render, same pattern as appKVOpenKey).
-let concurrencyOpenGroup = null;
-// Whether the global cap's holders/queue drill-down is expanded.
-let concurrencyGlobalOpen = false;
-
 // --- The GLOBAL run cap: the ceiling over ALL runs ------------------------
 //
 // Rendered as its own labeled block ABOVE the groups so it cannot be
@@ -1375,99 +1447,124 @@ async function clearGlobalCapOverride(def) {
 }
 
 // One table row mirroring the group rows (same columns, same drill-down —
-// groupDetailRow reads holders/waiting_runs from the cap's entry too).
+// groupDetailContent reads holders/waiting_runs from the cap's entry too).
 // Hidden entirely when the server doesn't report a cap (older server).
+
+// The server-wide run cap, as a one-row <data-table>. It is a table and not
+// a definition list because it IS the same shape as a concurrency group —
+// same columns, same drill-down — and the operator reads the two together.
 function renderGlobalCap(g) {
   const wrap = document.getElementById("concurrency-global-cap");
   if (!wrap) return;
   wrap.hidden = !g;
   if (!g) return;
-  const tbody = document.querySelector("#concurrency-global-table tbody");
-  tbody.innerHTML = "";
-  const editBtn = el("button", {
-    class: "toggle-btn",
-    title: "Override the global run cap live (persists across reloads/restarts until reverted)",
-  }, "Override…");
-  editBtn.addEventListener("click", () => overrideGlobalCap(g.default, g.limit));
-  const actions = el("td", { class: "row-actions" }, editBtn);
-  if (g.overridden) {
-    const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the default cap (${g.default}) takes effect` }, "Revert");
-    revertBtn.addEventListener("click", () => clearGlobalCapOverride(g.default));
-    actions.appendChild(revertBtn);
-  }
-  const tr = el("tr", { class: concurrencyGlobalOpen ? "group-open" : "",
-    title: "click to see which runs hold global slots and which are queued" },
-    el("td", null, el("strong", null, "All runs")),
-    el("td", null, String(g.default)),
-    el("td", null,
-      String(g.limit),
-      g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-    ),
-    el("td", null, String(g.active)),
-    el("td", null, String(g.waiting)),
-    actions,
-  );
-  tr.addEventListener("click", (e) => {
-    if (e.target.closest("button")) return;
-    concurrencyGlobalOpen = !concurrencyGlobalOpen;
-    refresh();
+  const t = document.getElementById("concurrency-global-table");
+  if (!t) return;
+  t.columns = concurrencyColumns({
+    nameLabel: "Scope",
+    name: () => el("strong", null, "All runs"),
+    declaredOf: (row) => row.default,
+    onOverride: (row) => overrideGlobalCap(row.default, row.limit),
+    onRevert: (row) => clearGlobalCapOverride(row.default),
+    revertTitle: (row) => `Clear the override; the default cap (${row.default}) takes effect`,
+    overrideTitle: () => "Override the global run cap live (persists across reloads/restarts until reverted)",
   });
-  tbody.appendChild(tr);
-  if (concurrencyGlobalOpen) tbody.appendChild(groupDetailRow(g));
+  t.rowId = () => "global";
+  t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
+  if (componentSupports(t, "detailFor", "The global cap's holders/queue drill-down")) {
+    t.detailFor = (row) => groupDetailContent(row);
+  }
+  t.rows = [g];
 }
 
+// The columns shared by the global cap and the named groups: the two differ
+// only in what names the row and where its declared limit comes from, so
+// they are one declaration parameterised rather than two that drift.
+function concurrencyColumns(o) {
+  return [
+    { key: "name", label: o.nameLabel, value: (row) => row.name || "All runs", render: o.name || ((row) => el("code", null, row.name)) },
+    { key: "declared", label: "Declared", align: "end", value: o.declaredOf, render: (row) => String(o.declaredOf(row)) },
+    {
+      key: "limit",
+      label: "Effective",
+      align: "end",
+      value: (row) => row.limit,
+      text: (row) => (row.overridden ? `${row.limit} overridden` : String(row.limit)),
+      render: (row) => el("span", null,
+        String(row.limit),
+        row.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
+      ),
+    },
+    { key: "active", label: "Active", align: "end", value: (row) => row.active, render: (row) => String(row.active) },
+    { key: "waiting", label: "Waiting", align: "end", value: (row) => row.waiting, render: (row) => String(row.waiting) },
+    {
+      key: "actions",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (row) => {
+        const box = el("span", { class: "row-actions" });
+        const edit = el("button", { class: "toggle-btn", title: o.overrideTitle(row) }, "Override…");
+        // Without stopPropagation the click also toggles the row's
+        // drill-down underneath the prompt.
+        edit.addEventListener("click", (e) => { e.stopPropagation(); o.onOverride(row); });
+        box.appendChild(edit);
+        if (row.overridden) {
+          const revert = el("button", { class: "toggle-btn", title: o.revertTitle(row) }, "Revert");
+          revert.addEventListener("click", (e) => { e.stopPropagation(); o.onRevert(row); });
+          box.appendChild(revert);
+        }
+        return box;
+      },
+    },
+  ];
+}
+
+
+// The named concurrency groups, as a <data-table>. Clicking a row expands
+// the same drill-down as before — but the expansion now lives in the
+// component, so opening one no longer re-renders the whole page (which is
+// what the old concurrencyOpenGroup + refresh() dance did, losing scroll
+// position and any open prompt every time).
 function renderConcurrency(data) {
   // {global, groups} from cap-aware servers; a bare array from older ones
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
   renderGlobalCap(Array.isArray(data) ? null : data && data.global);
-  const tbody = document.querySelector("#concurrency-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("concurrency-empty").hidden = groups.length > 0;
-  for (const g of groups) {
-    const editBtn = el("button", {
-      class: "toggle-btn",
-      title: `Override the limit for ${g.name} live (persists across reloads/restarts until reverted)`,
-    }, "Override…");
-    editBtn.addEventListener("click", () => overrideLimit(g.name, g.declared, g.limit));
-    const actions = el("td", { class: "row-actions" }, editBtn);
-    if (g.overridden) {
-      const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the declared limit (${g.declared}) takes effect` }, "Revert");
-      revertBtn.addEventListener("click", () => clearLimitOverride(g.name, g.declared));
-      actions.appendChild(revertBtn);
-    }
-    const open = concurrencyOpenGroup === g.name;
-    const tr = el("tr", { class: open ? "group-open" : "",
-      title: "click to see which runs hold this group's slots and which are queued" },
-      el("td", null, el("code", null, g.name)),
-      el("td", null, String(g.declared)),
-      el("td", null,
-        String(g.limit),
-        g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-      ),
-      el("td", null, String(g.active)),
-      el("td", null, String(g.waiting)),
-      actions,
-    );
-    // The whole row toggles the drill-down; the override buttons keep
-    // their own clicks.
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest("button")) return;
-      concurrencyOpenGroup = open ? null : g.name;
-      refresh();
-    });
-    tbody.appendChild(tr);
-    if (open) tbody.appendChild(groupDetailRow(g));
+  const t = document.getElementById("concurrency-table");
+  if (!t) return;
+  t.columns = concurrencyColumns({
+    nameLabel: "Group",
+    declaredOf: (row) => row.declared,
+    onOverride: (row) => overrideLimit(row.name, row.declared, row.limit),
+    onRevert: (row) => clearLimitOverride(row.name, row.declared),
+    revertTitle: (row) => `Clear the override; the declared limit (${row.declared}) takes effect`,
+    overrideTitle: (row) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
+  });
+  t.rowId = (row) => row.name;
+  t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
+  if (componentSupports(t, "detailFor", "The per-group holders/queue drill-down")) {
+    t.detailFor = (row) => groupDetailContent(row);
   }
+  t.rows = groups;
 }
 
 // The expanded row under a group: which runs hold its slots and which are
 // queued, in order — each a run link into the run modal. This is the
 // operator's self-serve answer to "the group reads 3/3 with 4 waiting;
 // WHAT is holding the slots?".
-function groupDetailRow(g) {
-  const td = el("td", { colspan: "6" });
-  const row = el("tr", { class: "group-detail-row" }, td);
+
+// The expanded detail under a group: which runs hold its slots and which
+// are queued, in order — each a run link into the run modal. This is the
+// operator's self-serve answer to "the group reads 3/3 with 4 waiting;
+// WHAT is holding the slots?".
+//
+// Returns the CONTENT only: <data-table> owns the row and the
+// column-spanning cell it goes in, so this can never disagree with the
+// table's column count the way a hardcoded colspan did.
+function groupDetailContent(g) {
+  const box = el("div", { class: "group-detail" });
   const runLine = (r, note) => el("div", { class: "group-run" },
     runLink(r.run_id),
     " ",
@@ -1479,23 +1576,23 @@ function groupDetailRow(g) {
   const holders = g.holders || [];
   const waiting = g.waiting_runs || [];
   if (!holders.length && !waiting.length) {
-    td.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
-    return row;
+    box.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
+    return box;
   }
   if (holders.length) {
-    td.appendChild(el("div", { class: "group-detail-head" },
+    box.appendChild(el("div", { class: "group-detail-head" },
       `Holding ${holders.length === 1 ? "the slot" : holders.length + " slots"}:`));
     for (const h of holders) {
-      td.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
+      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
     }
   }
   if (waiting.length) {
-    td.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
+    box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
     waiting.forEach((r, i) => {
-      td.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
+      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
     });
   }
-  return row;
+  return box;
 }
 
 // Run cell for the tables: the friendly title (feature-detected — an
@@ -1510,6 +1607,91 @@ function runCell(r) {
     el("div", { class: "run-id-sub" }, code),
   );
 }
+
+// Cell styling shared by every converted <data-table>, passed INTO its
+// shadow root through the styleText hatch. These cells are built by this
+// file but live inside that root, where dashboard.css cannot reach them;
+// the COLORS still come from the page, because custom properties inherit
+// through the shadow boundary. Keep in sync with the matching rules in
+// dashboard.css — the same states, drawn in two places by necessity.
+const SHARED_TABLE_CSS = `
+code { font-size: 0.9em; }
+.hook-link { color: var(--accent); text-decoration: none; }
+.hook-link:hover { text-decoration: underline; }
+.badge { display: inline-block; padding: 0 0.4em; border-radius: 3px; font-size: 0.85em; border: 1px solid var(--border); }
+.badge.ok { color: var(--success); border-color: var(--success); }
+.badge.warn { color: var(--running); border-color: var(--running); }
+.badge.bad { color: var(--failure); border-color: var(--failure); }
+.row-actions { white-space: nowrap; }
+.toggle-btn { font: inherit; font-size: 0.85em; padding: 0.1em 0.5em; cursor: pointer; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+.toggle-btn:hover { border-color: var(--accent); }
+.switch { display: inline-flex; align-items: center; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-slider { position: relative; width: 2em; height: 1.1em; border-radius: 1em; background: var(--muted); transition: background 0.15s; }
+.switch-slider::before { content: ""; position: absolute; top: 0.15em; left: 0.15em; width: 0.8em; height: 0.8em; border-radius: 50%; background: var(--panel); transition: transform 0.15s; }
+.switch input:checked + .switch-slider { background: var(--success); }
+.switch input:checked + .switch-slider::before { transform: translateX(0.9em); }
+.switch input:focus-visible + .switch-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+.images-on-disk { color: var(--muted); font-size: 0.9em; }
+`;
+
+// Feature-detect a capability on a RUNTIME-IMPORTED component, and say so
+// when it is missing.
+//
+// The components come from js-snippets' library site at master head, so this
+// page can be newer than the bundle a browser has. Assigning an unknown
+// property to a custom element does NOT fail — JS quietly creates an
+// expando — so a drill-down wired to a component that predates it would
+// simply never open: no error, no warning, a table that looks finished.
+// That is not graceful degradation, it is the page lying about what it can
+// do. Detect BEFORE assigning (assigning is what would make a later `in`
+// check pass), and put the reason on screen next to the thing that stopped
+// working.
+function componentSupports(elm, prop, what) {
+  if (prop in elm) return true;
+  const id = `${elm.id}-degraded`;
+  if (!document.getElementById(id)) {
+    elm.insertAdjacentElement("afterend", el("p", { id, class: "empty degraded-note" },
+      `${what} unavailable: the loaded <${elm.localName}> is older than this page ` +
+      `(no "${prop}"). Reload to pick up the current component; if it persists, the ` +
+      `library site is serving a stale build.`));
+  }
+  return false;
+}
+
+// The concurrency tables' drill-down and the KV value box, inside the
+// component's shadow root.
+const CONCURRENCY_TABLE_CSS = `
+.group-detail-head { color: var(--muted); font-size: 0.85em; margin: 0.3em 0 0.2em; }
+.group-run { font-size: 0.9em; padding: 0.1em 0; }
+.group-run-title { color: var(--fg); }
+.group-run-since { color: var(--muted); }
+.status { font-weight: 500; }
+.status.success { color: var(--success); }
+.status.failure, .status.error, .status.timeout { color: var(--failure); }
+.status.running { color: var(--running); }
+.status.pending { color: var(--pending); }
+.status.skipped { color: var(--skipped); }
+`;
+
+const KV_TABLE_CSS = `
+.kv-value-meta { color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
+.kv-value { margin: 0; padding: 0.5em; background: var(--bg, #0d1117); border: 1px solid var(--border); border-radius: 4px; max-height: 24em; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85em; }
+`;
+
+// Attention rows: only hook-scoped ones navigate, so only they get the
+// pointer the click promises.
+const ATTENTION_TABLE_CSS = `
+.attention-msg { font-weight: 500; }
+.attention-age { color: var(--muted); white-space: nowrap; }
+tbody tr.attention-hook-row { cursor: pointer; }
+`;
+
+// The live commit is the one the operator is looking for; mark it.
+const RELOAD_TABLE_CSS = `
+tbody tr.reload-live-commit { background: var(--panel); }
+.reload-commit-subject { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+`;
 
 // Cell styling for the runs tables, passed INTO <data-table>'s shadow root
 // through its styleText hatch. The status pill and the wait note are
@@ -1564,27 +1746,49 @@ function renderRuns(rs) {
   t.rows = rs || [];
 }
 
+
+// Per-hook image state, as a <data-table>. Searchable: "which hook is on
+// tag abc123" and "what still needs building" are both text questions, and
+// the fleet is long enough that scrolling for them is the wrong answer.
 function renderImages(images) {
-  const tbody = document.querySelector("#images-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("images-empty").hidden = images.length > 0;
-  for (const im of images) {
-    let state;
-    if (im.error) state = el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
-    else if (im.built) state = el("span", { class: "badge ok" }, "built");
-    else state = el("span", { class: "badge warn" }, "will build on next run");
-    const others = (im.images || [])
-      .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
-      .join(", ");
-    tbody.appendChild(
-      el("tr", null,
-        el("td", null, el("code", null, im.hook_id)),
-        el("td", null, el("code", null, im.tag || "-")),
-        el("td", null, state),
-        el("td", { class: "images-on-disk" }, others || "none"),
-      )
-    );
-  }
+  const t = document.getElementById("images-table");
+  if (!t) return;
+  t.columns = [
+    { key: "hook_id", label: "Hook", render: (im) => el("code", null, im.hook_id) },
+    { key: "tag", label: "Current tag", render: (im) => el("code", null, im.tag || "-") },
+    {
+      key: "state",
+      label: "State",
+      // Sorted and searched by the STATE WORD, so "error" and "built" are
+      // findable; the cell is the badge.
+      value: (im) => (im.error ? "error" : im.built ? "built" : "will build"),
+      text: (im) => (im.error ? "error: " + im.error : im.built ? "built" : "will build on next run"),
+      render: (im) => {
+        if (im.error) return el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
+        if (im.built) return el("span", { class: "badge ok" }, "built");
+        return el("span", { class: "badge warn" }, "will build on next run");
+      },
+    },
+    {
+      key: "on_disk",
+      label: "On disk",
+      className: "images-on-disk",
+      value: (im) => imagesOnDisk(im),
+      render: (im) => imagesOnDisk(im) || "none",
+    },
+  ];
+  t.rowId = (im) => im.hook_id;
+  t.styleText = SHARED_TABLE_CSS;
+  t.rows = images || [];
+}
+
+// The other content-hash images still on disk for a hook, newest-tag-first
+// as the server sent them; "*" marks the one the current content resolves
+// to.
+function imagesOnDisk(im) {
+  return (im.images || [])
+    .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .join(", ");
 }
 
 // ---------------------------------------------------------------------------
@@ -1634,37 +1838,48 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+
+// The KV namespace roster, as a <data-table>. The whole row navigates to
+// the namespace's browser — the same destination as its link, so a click on
+// either is correct.
 function renderKV(namespaces, loadedHookIDs) {
-  const tbody = document.querySelector("#kv-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("kv-empty").hidden = namespaces.length > 0;
-  for (const ns of namespaces) {
-    // Namespace == hook ID, so each row links to that hook's app page,
-    // landed on its State (KV) key/value browser. A namespace whose hook is
-    // no longer loaded (leftover state from a removed/renamed hook) links
-    // to the SAME place: the app page detects the orphan and still renders
-    // the key/value browser — stored data must always be inspectable.
-    const orphan = !loadedHookIDs.has(ns.namespace);
-    const href = hookHref(ns.namespace, { kv: true });
-    const title = orphan
-      ? "no loaded hook with this ID — browse the namespace's stored keys and values"
-      : "browse this hook's stored keys and values";
-    const link = el("a", { href, class: "hook-link", title },
-      el("code", null, ns.namespace),
-      orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
-    );
-    const tr = el("tr", null,
-      el("td", null, link),
-      el("td", null, String(ns.keys)),
-      el("td", null, fmtBytes(ns.bytes)),
-    );
-    // The whole row is the click target (the pointer cursor promises it).
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest("a")) return; // let the real link handle itself
-      location.hash = href;
+  const t = document.getElementById("kv-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "namespace",
+      label: "Namespace (hook)",
+      // Namespace == hook ID, so each row links to that hook's app page,
+      // landed on its State (KV) key/value browser. A namespace whose hook
+      // is no longer loaded (leftover state from a removed/renamed hook)
+      // links to the SAME place: the app page detects the orphan and still
+      // renders the browser — stored data must always be inspectable.
+      render: (ns) => {
+        const orphan = !loadedHookIDs.has(ns.namespace);
+        return el("a", {
+          href: hookHref(ns.namespace, { kv: true }),
+          class: "hook-link",
+          title: orphan
+            ? "no loaded hook with this ID — browse the namespace's stored keys and values"
+            : "browse this hook's stored keys and values",
+        },
+          el("code", null, ns.namespace),
+          orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
+        );
+      },
+    },
+    { key: "keys", label: "Keys", align: "end", render: (ns) => String(ns.keys) },
+    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes, render: (ns) => fmtBytes(ns.bytes) },
+  ];
+  t.rowId = (ns) => ns.namespace;
+  t.styleText = SHARED_TABLE_CSS;
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) location.hash = hookHref(e.detail.id, { kv: true });
     });
-    tbody.appendChild(tr);
   }
+  t.rows = namespaces || [];
 }
 
 // --- Per-app view (app == one hook) ----------------------------------------
@@ -1994,7 +2209,6 @@ function bindAppRunsFilterEvents() {
 // rendered via el()'s text nodes, so arbitrary stored bytes can never
 // inject markup.
 
-let appKVOpenKey = null; // key whose value row is expanded, or null
 let appKVHook = null; // which hook the expansion belongs to
 
 function fmtTTL(seconds) {
@@ -2023,64 +2237,70 @@ async function renderAppKV(info, listing) {
   const wantScroll = pendingKVScroll;
   pendingKVScroll = false;
   if (!info.state) return;
+  const t = document.getElementById("app-kv-table");
+  if (!t) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
+    // (The component holds the expansion now, so this clears ITS set — a
+    // key id from the previous hook would otherwise re-open a same-named
+    // key here and show the wrong hook's value.)
     appKVHook = info.id;
-    appKVOpenKey = null;
+    t.expanded = [];
   }
-  const keys = (listing && listing.keys) || [];
-  const tbody = document.querySelector("#app-kv-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("app-kv-empty").hidden = keys.length > 0;
-  for (const k of keys) {
-    const open = appKVOpenKey === k.key;
-    const tr = el("tr", { class: open ? "kv-open" : "" },
-      el("td", null, el("code", null, k.key)),
-      el("td", null, fmtBytes(k.size)),
-      el("td", null, fmtTTL(k.ttl_seconds)),
-    );
-    tr.addEventListener("click", () => {
-      appKVOpenKey = open ? null : k.key;
-      refresh();
-    });
-    tbody.appendChild(tr);
-    if (open) tbody.appendChild(await kvValueRow(info.id, k.key));
+  t.columns = [
+    { key: "key", label: "Key", render: (k) => el("code", null, k.key) },
+    { key: "size", label: "Size", align: "end", value: (k) => k.size, render: (k) => fmtBytes(k.size) },
+    {
+      key: "ttl_seconds",
+      label: "TTL remaining",
+      align: "end",
+      // No TTL is not "0 seconds left": sort it past every expiring key
+      // rather than in front of them.
+      value: (k) => (k.ttl_seconds == null ? null : k.ttl_seconds),
+      text: (k) => fmtTTL(k.ttl_seconds),
+      render: (k) => fmtTTL(k.ttl_seconds),
+    },
+  ];
+  t.rowId = (k) => k.key;
+  t.styleText = SHARED_TABLE_CSS + KV_TABLE_CSS;
+  // The value is FETCHED per key, so the detail is a promise: the component
+  // shows a placeholder and paints when it resolves, and renders the error
+  // into the row if the key expired between the listing and the click.
+  if (componentSupports(t, "detailFor", "Stored-value inspection")) {
+    t.detailFor = (k) => kvValueContent(info.id, k.key);
   }
+  t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// The expanded row under a clicked key: metadata line + the value itself.
-// A fetch failure is rendered into the row (e.g. the key expired between
-// the listing and the click), never swallowed.
-async function kvValueRow(hookId, key) {
-  const td = el("td", { colspan: "3" });
-  const row = el("tr", { class: "kv-value-row" }, td);
-  try {
-    const e = await fetchJSON(
-      `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
-    const meta = [fmtBytes(e.size)];
-    if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
-    let body;
-    if (e.value_utf8 != null) {
-      body = e.value_utf8;
-      try {
-        body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
-        meta.push("JSON");
-      } catch {
-        meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
-      }
-    } else {
-      body = e.value_base64;
-      meta.push("binary (shown base64)");
+// The expanded detail under a clicked key: metadata line + the value
+// itself. Returns the CONTENT (the component owns the row and its
+// column-spanning cell). A fetch failure is thrown, not swallowed — the
+// component paints the message into the open row, which is what the
+// operator needs when a key expires between the listing and the click.
+async function kvValueContent(hookId, key) {
+  const box = el("div", { class: "kv-value-box" });
+  const e = await fetchJSON(
+    `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
+  const meta = [fmtBytes(e.size)];
+  if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
+  let body;
+  if (e.value_utf8 != null) {
+    body = e.value_utf8;
+    try {
+      body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
+      meta.push("JSON");
+    } catch {
+      meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
     }
-    td.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
-    td.appendChild(el("pre", { class: "kv-value" },
-      body === "" ? "(empty value)" : linkifyGH(body)));
-  } catch (err) {
-    td.appendChild(el("div", { class: "kv-value-meta kv-value-error" },
-      `failed to load value: ${err.message}`));
+  } else {
+    body = e.value_base64;
+    meta.push("binary (shown base64)");
   }
-  return row;
+  box.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
+  box.appendChild(el("pre", { class: "kv-value" },
+    body === "" ? "(empty value)" : linkifyGH(body)));
+  return box;
 }
 
 // A run ID that opens the same output modal the runs tables use.
@@ -2558,30 +2778,54 @@ async function refreshReloadCommits() {
   }
 }
 
+
+// Recent origin commits, as a <data-table>. Sorting stays off the default
+// order deliberately until a header is clicked: the server sends them
+// newest-first, which is the order an operator picking "the last good one"
+// is reading in.
 function renderReloadCommits(data) {
   const commits = (data && data.commits) || [];
-  const tbody = document.querySelector("#reload-commits-table tbody");
-  tbody.innerHTML = "";
+  const t = document.getElementById("reload-commits-table");
+  if (!t) return;
+  // The note is now only for FETCH FAILURES (renderReloadCommits is not
+  // called on those); the table owns its own empty state.
   const note = document.getElementById("reload-commits-note");
-  note.textContent = "No commits found.";
-  note.hidden = commits.length > 0;
-  for (const c of commits) {
-    let action;
-    if (c.is_live) {
-      action = el("span", { class: "badge ok" }, "live");
-    } else {
-      action = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
-      action.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
-    }
-    tbody.appendChild(el("tr", { class: c.is_live ? "reload-live-commit" : "" },
-      el("td", null, el("code", { title: c.sha }, c.short)),
-      el("td", { class: "reload-commit-subject" }, linkifyGH(c.subject || "")),
-      el("td", null, fmtTime(c.date)),
-      el("td", null, reloadCIBadge(c.ci_state)),
-      el("td", null, reloadSrcBadge(!!c.has_src)),
-      el("td", { class: "row-actions" }, action),
-    ));
-  }
+  if (note) note.hidden = true;
+  t.columns = [
+    { key: "short", label: "Commit", render: (c) => el("code", { title: c.sha }, c.short) },
+    {
+      key: "subject",
+      label: "Subject",
+      className: "reload-commit-subject",
+      render: (c) => linkifyGH(c.subject || ""),
+    },
+    { key: "date", label: "Date", value: (c) => Date.parse(c.date), text: (c) => fmtTime(c.date), render: (c) => fmtTime(c.date) },
+    { key: "ci_state", label: "CI", render: (c) => reloadCIBadge(c.ci_state) },
+    {
+      key: "has_src",
+      label: "src/",
+      value: (c) => (c.has_src ? 1 : 0),
+      text: (c) => (c.has_src ? "src" : "no src"),
+      render: (c) => reloadSrcBadge(!!c.has_src),
+    },
+    {
+      key: "action",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (c) => {
+        if (c.is_live) return el("span", { class: "badge ok" }, "live");
+        const b = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
+        b.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
+        return b;
+      },
+    },
+  ];
+  t.rowId = (c) => c.sha;
+  t.rowClass = (c) => (c.is_live ? "reload-live-commit" : "");
+  t.styleText = SHARED_TABLE_CSS + RELOAD_TABLE_CSS;
+  t.rows = commits;
 }
 
 // The section fetcher (registered in sectionFetchers as "reload"): the
