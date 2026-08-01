@@ -84,10 +84,9 @@
        hook's all-clear signal); only the TMPDIR hazard needs a restart. -->
   <section id="attention-section" hidden>
     <h2>Needs attention</h2>
-    <table id="attention-table">
-      <thead><tr><th>Problem</th><th>Hook</th><th>Source</th><th>Active for</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <data-table id="attention-table" empty-text="Nothing needs attention.">
+      <p class="empty">loading…</p>
+    </data-table>
   </section>
 
   <section id="setup-section" hidden>
@@ -122,10 +121,9 @@
     <details id="reload-picker">
       <summary>Recent commits — pick one to make live</summary>
       <p class="window-note">Fetched fresh from origin. "Make live" switches the serving tree to that commit; a commit that is not CI-green (unknown counts as not green) or lacks src/hooks asks for an explicit override first.</p>
-      <table id="reload-commits-table">
-        <thead><tr><th>Commit</th><th>Subject</th><th>Date</th><th>CI</th><th>src/</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <data-table id="reload-commits-table" empty-text="No commits found.">
+        <p class="empty">loading commits…</p>
+      </data-table>
       <p id="reload-commits-note" class="empty" hidden></p>
       <div class="reload-ref-row">
         <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
@@ -140,11 +138,9 @@
          switch (on/green = enabled; off/grey = disabled — deliveries
          rejected 503, scheduled runs skipped) that flips the hook via
          POST /hooks/{id}/disable|enable. -->
-    <table id="hooks-table">
-      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Status</th><th>Endpoint</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
+    <data-table id="hooks-table" searchable placeholder="filter hooks…" storage-key="whr.hooks.filter" empty-text="No hooks loaded.">
+      <p class="empty">loading hooks…</p>
+    </data-table>
   </section>
 
   <!-- First-class MANAGERS: persistent, single-instance watchers the
@@ -155,11 +151,9 @@
        bounce button. -->
   <section id="managers-section">
     <h2>Managers</h2>
-    <table id="managers-table">
-      <thead><tr><th>Manager</th><th>Status</th><th>State</th><th>Instance</th><th>Restarts</th><th>Inbox</th><th>Last event</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="managers-empty" class="empty" hidden>No managers declared.</p>
+    <data-table id="managers-table" empty-text="No managers declared.">
+      <p class="empty">loading managers…</p>
+    </data-table>
     <div id="manager-detail" hidden>
       <h3 id="manager-detail-title"></h3>
       <dl id="manager-detail-meta"></dl>
@@ -173,11 +167,9 @@
 
   <section id="images-section">
     <h2>Images</h2>
-    <table id="images-table">
-      <thead><tr><th>Hook</th><th>Current tag</th><th>State</th><th>On disk</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="images-empty" class="empty" hidden>No hooks loaded.</p>
+    <data-table id="images-table" searchable placeholder="filter images…" storage-key="whr.images.filter" empty-text="No hooks loaded.">
+      <p class="empty">loading images…</p>
+    </data-table>
   </section>
 
   <section id="concurrency-section">
@@ -195,10 +187,9 @@
         (each running container holds a Docker bridge-network IP; excess runs queue and start as
         slots free). Per-group limits below are separate and keep applying under this ceiling —
         raising the cap never lifts a group's own limit. Click the row for holders and queue.</p>
-      <table id="concurrency-global-table">
-        <thead><tr><th></th><th>Default</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <data-table id="concurrency-global-table">
+        <p class="empty">loading…</p>
+      </data-table>
     </div>
     <h3>Groups</h3>
     <p class="window-note">Declared in the hooks repo's concurrency.json; each gates its own hooks
@@ -209,11 +200,9 @@
          and restarts). Override… PUTs /concurrency/{group}/limit; Revert
          DELETEs it. A 0 limit is rejected server-side — disable the
          group's hooks instead. -->
-    <table id="concurrency-table">
-      <thead><tr><th>Group</th><th>Declared</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
+    <data-table id="concurrency-table" empty-text="No concurrency groups declared.">
+      <p class="empty">loading groups…</p>
+    </data-table>
   </section>
 
 
@@ -238,11 +227,9 @@
          namespaces (hook removed/renamed) link there too: the app page
          still renders the browser for leftover state. -->
     <p class="window-note">Click a namespace to browse its stored keys and values.</p>
-    <table id="kv-table">
-      <thead><tr><th>Namespace (hook)</th><th>Keys</th><th>Size</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="kv-empty" class="empty" hidden>No state stored.</p>
+    <data-table id="kv-table" empty-text="No state stored.">
+      <p class="empty">loading namespaces…</p>
+    </data-table>
   </section>
 
   <!-- The activity feed is js-snippets' <activity-feed> component, imported
@@ -322,11 +309,9 @@
     <section id="app-kv-section" hidden>
       <h2>State (KV)</h2>
       <p class="window-note">Click a key to view its stored value.</p>
-      <table id="app-kv-table">
-        <thead><tr><th>Key</th><th>Size</th><th>TTL remaining</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p id="app-kv-empty" class="empty" hidden>No state stored yet.</p>
+      <data-table id="app-kv-table" searchable placeholder="filter keys…" empty-text="No state stored yet.">
+        <p class="empty">loading keys…</p>
+      </data-table>
     </section>
 
     <!-- Same component as the overview feed, its own persisted filter, and
