@@ -5,6 +5,23 @@ The activity-based timeout, declarative skips, run titles, concurrency groups an
 Moved VERBATIM out of `CLAUDE.md` when that file went over the
 40,000-character instruction-file budget. Nothing here was condensed.
 
+- **Terminal ordering — `Run.Finish` closes `done` LAST.** The sequence is
+  `onTerminal` → `onFinish` → `notifyChange` → `close(done)`, so by the
+  time anything observes `<-run.Done()` the terminal activity line, the
+  run-store write, the lock release and the stream delta have all landed.
+  `Done()` is therefore a sufficient barrier on its own — callers must
+  never need a second one. This is a fix, not an accident: the close used
+  to happen first, which meant `Done()` only promised "the status field
+  flipped", and three tests independently raced the other writes and had
+  to bolt on `Runner.Wait()`. Work that must precede the close belongs in
+  `Run.SetOnTerminal` (the runner registers the `run.finished` feed line
+  there — it needs the image name and spawn note, which `RunState` does
+  not carry), NOT after `Finish` returns. The GitHub commit-status POST
+  is the deliberate exception: it stays outside the seam because blocking
+  every `Done()` observer on a network call trades one footgun for a
+  worse one. `internal/runs/terminal_test.go` pins the ordering by
+  finishing on another goroutine and asserting from the `Done()` side.
+
 - The run `timeout` is **activity-based, not wall-clock**: it kills a run
   only when the container has produced **no output** (stdout or stderr) for
   that long — "time out after N minutes of no activity". There is **no

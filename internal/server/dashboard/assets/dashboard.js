@@ -75,13 +75,13 @@ function ghSlugHref(owner, repo, num) {
   return num ? `${base}/issues/${num}` : base;
 }
 
-function ghSlugLink(label, href) {
+function ghSlugLink(label, href, title) {
   const a = el("a", {
     href,
     class: "gh-slug",
     target: "_blank",
     rel: "noopener noreferrer",
-    title: `open ${label} on GitHub`,
+    title: title || `open ${label} on GitHub`,
   }, label);
   // Table rows are click targets themselves (a run row opens the modal, a KV
   // row expands): a slug click must open the link ONLY, never also fire the
@@ -90,7 +90,33 @@ function ghSlugLink(label, href) {
   return a;
 }
 
+// Bare http(s) URLs are linked too: messages that carry one (the reload
+// gate's held-commit run-details link, for instance) are useless as plain
+// text — the whole point is to click through. Trailing sentence punctuation
+// is excluded from the match so "see https://x/y." does not swallow the dot,
+// and a URL is matched BEFORE slug scanning so the "owner/repo" inside it is
+// never separately linked.
+const URL_RE = /https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]}]/g;
+
+function urlLink(url) {
+  return ghSlugLink(url, url, `open ${url}`);
+}
+
 function linkifyGH(text, opts) {
+  const s = text == null ? "" : String(text);
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  URL_RE.lastIndex = 0;
+  for (let m; (m = URL_RE.exec(s)) !== null; ) {
+    if (m.index > last) frag.appendChild(linkifySlugs(s.slice(last, m.index), opts));
+    frag.appendChild(urlLink(m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) frag.appendChild(linkifySlugs(s.slice(last), opts));
+  return frag;
+}
+
+function linkifySlugs(text, opts) {
   const bareRepo = !!(opts && opts.bareRepo);
   const s = text == null ? "" : String(text);
   const frag = document.createDocumentFragment();
