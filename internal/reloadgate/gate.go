@@ -86,8 +86,11 @@ type Config struct {
 	// (<data-dir>/reload-gate.json).
 	StatePath string
 	// Apply reloads hooks from the (already reset) working tree — the
-	// serve loop's loadAndApply closure.
-	Apply func()
+	// serve loop's loadAndApply closure. An error means the tree was
+	// REFUSED (some entity failed to load, so NOTHING was applied and the
+	// previous fleet is still serving); the gate treats that as a failed
+	// switch and rolls the working tree back — see applyOrRollbackLocked.
+	Apply func() error
 	// Status reads the gating context's current commit-status state for a
 	// sha (the reconciliation poll's authority — see StatusFunc). Nil
 	// means the poll cannot determine status and fails closed, loudly.
@@ -108,7 +111,7 @@ type Gate struct {
 	branch    string
 	context   string
 	statePath string
-	apply     func()
+	apply     func() error
 	status    StatusFunc
 	repoSlug  string
 	events    *events.Recorder
@@ -527,6 +530,7 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 		g.events.Record("reload.failed", "hooks repo reset to "+short(sha)+" failed: "+err.Error(), nil)
 		return "", fmt.Errorf("reset hooks repo to %s: %w", sha, err)
 	}
+	prevSHA, prevVerified := g.servingSHA, g.verified
 	g.servingSHA, g.verified = sha, true
 	// Pending bookkeeping: switching to the pending commit (or past it)
 	// clears the hold; a green for an INTERMEDIATE commit keeps the newer
@@ -547,8 +551,8 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 	g.log.Info("hooks repo switched", "sha", sha, "context", g.context)
 	g.events.Record("reload.switched", msg, nil)
 	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadUnverified)
-	if g.apply != nil {
-		g.apply()
+	if err := g.applyOrRollbackLocked(sha, prevSHA, prevVerified); err != nil {
+		return "refused", err
 	}
 	return "reloaded", nil
 }
@@ -569,35 +573,6 @@ func (g *Gate) Force() error {
 		return err
 	}
 	g.log.Warn("hooks repo force-switched, ci gate bypassed", "sha", tip)
-	return nil
-}
-
-// forceApplyLocked is the ONE Force-style apply path — reset the tree to
-// sha, record it serving + verified (the operator, or a green the operator
-// picked, vouched), persist, record the event, and reload. Force and both
-// ManualSwitch outcomes go through it; unlike trySwitch it applies NO
-// staleness ordering, which is exactly what makes operator rollback to an
-// older commit possible. clearPending drops the pending record and its
-// hold entries (switching to the pending commit itself always clears it —
-// nothing is awaited anymore). Caller holds g.mu.
-func (g *Gate) forceApplyLocked(sha string, clearPending bool, eventKind, eventMsg string) error {
-	if err := g.repo.ResetTo(sha); err != nil {
-		g.events.Record("reload.failed", "hooks repo reset to "+short(sha)+" failed: "+err.Error(), nil)
-		return fmt.Errorf("reset hooks repo to %s: %w", sha, err)
-	}
-	g.servingSHA, g.verified = sha, true
-	if clearPending || g.pendingSHA == sha {
-		g.pendingSHA, g.pendingState = "", ""
-	}
-	g.persistLocked()
-	if g.pendingSHA == "" {
-		g.resolveHoldEntriesLocked()
-	}
-	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadUnverified)
-	g.events.Record(eventKind, eventMsg, nil)
-	if g.apply != nil {
-		g.apply()
-	}
 	return nil
 }
 

@@ -331,20 +331,65 @@ tests:
   # and that break is unrecoverable by rollback -- the tree never changed, the
   # binary did. The removal ships once the fleet has migrated, gated by
   # ci.yml's fleet-compat job.
-  - desc: the superseded env block still loads (it must, or the fleet cannot be served)
-    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+  # References inside settings. ${settings:...} resolves at LOAD, so the schema
+  # validates the RESOLVED value -- a typo'd path is a load error, not a
+  # surprise mid-run. ${env:...} needs the runner host and resolves at run.
+  - desc: a ${settings:...} reference resolves at load and satisfies the schema
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
     inputs:
       files:
-        myhook/hook.json: |
-          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "env": {"TOKEN": "abc"}}
-        myhook/Dockerfile: |
+        h/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"],
+           "settings": {"base": "https://x.test", "url": "${settings:base}/v1"}}
+        h/settings.schema.json: |
+          {"type":"object","required":["url"],"properties":{"url":{"type":"string","pattern":"^https://"}},
+           "additionalProperties": true}
+        h/Dockerfile: |
           FROM alpine
     exit: 0
     outputs:
       stdout:
-        - ok  myhook
+        - ok  h
 
-  - desc: a hook still using env is named as deprecated, never silently accepted
+  - desc: a ${settings:...} reference to a missing path is a load error
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    inputs:
+      files:
+        h/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"],
+           "settings": {"url": "${settings:nope.missing}"}}
+        h/settings.schema.json: |
+          {"type":"object"}
+        h/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - no such setting
+
+  - desc: a resolved ${settings:...} value that violates the schema fails at load
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    inputs:
+      files:
+        h/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"],
+           "settings": {"base": "ftp://x.test", "url": "${settings:base}/v1"}}
+        h/settings.schema.json: |
+          {"type":"object","required":["url"],"properties":{"url":{"type":"string","pattern":"^https://"}},
+           "additionalProperties": true}
+        h/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - settings does not match
+
+  # `env` is REMOVED. It could not be dropped in one step -- a runner
+  # rejecting it could not have loaded the fleet still declaring it -- so it
+  # was accepted-and-announced for one release while the fleet migrated. Now
+  # that every entity carries `settings`, an `env` block is an unknown field:
+  # a LOUD load error naming it, never a hook that comes up unconfigured.
+  - desc: the removed env block is a load error naming the field
     cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.." 2>&1'
     inputs:
       files:
@@ -352,12 +397,10 @@ tests:
           {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "env": {"TOKEN": "abc"}}
         myhook/Dockerfile: |
           FROM alpine
-    exit: 0
+    exit: 1
     outputs:
       stdout:
-        - myhook
-        - deprecated
-        - settings
+        - 'unknown field "env"'
 
   # The PUBLISHED schema is enforced at load now, by the same implementation
   # (wow-look-at-my/json-validator) the hooks repo runs in CI -- so "passes CI"

@@ -237,23 +237,36 @@ jobs:
 
   # Would deploying THIS binary break the fleet that is actually running?
   #
-  # Nothing used to ask. webhooks' CI validates its manifests against the
-  # webhook-runner branch matching its own name, so a coordinated change is
-  # checked from that side -- but from THIS side a binary could go green,
-  # merge, and deploy while being unable to load the tree on webhooks master.
-  # That is not a degraded start: internal/cli/loadapply.go replaces the
-  # registry unconditionally, so every entity that fails to load simply stops
-  # serving, and the reload gate's last-good rollback cannot help because the
-  # TREE never changed -- the binary did. Recovery is manual.
+  # It checks TWO trees, because a manifest contract has two sides and a
+  # coordinated change moves both:
   #
-  # So: master's tree, always. Not the matching branch -- deploys happen
-  # against master, and the question is whether THIS binary can serve what is
-  # deployed right now.
+  #   - webhooks MASTER, the tree deployed right now. A binary that cannot
+  #     load it is not deployable ON ITS OWN.
+  #   - the webhooks branch with THIS BRANCH'''S NAME, when one exists: the
+  #     tree this change is paired with. webhooks CI already builds the
+  #     runner from its own matching branch, so this is the same convention
+  #     read from the other end, and it is what a coordinated pair is
+  #     actually going to be after both merge.
   #
-  # A field being added or removed will red this job until the fleet's
-  # manifests carry it, and that is the point: it forces expand/contract (the
-  # binary accepts old AND new for one release) instead of a flag-day merge
-  # nobody can undo without hand-editing production.
+  # THE GATE: the paired tree must load. If master does not, that is reported
+  # as the deploy ORDER (merge webhooks first), not as breakage -- because the
+  # runtime now makes the wrong order SAFE rather than catastrophic:
+  #
+  #   - a binary that cannot load the deployed tree REFUSES TO START
+  #     (internal/cli.buildLoadAndApply returns an error and serve exits
+  #     non-zero), so the image rollout fails visibly and the previous
+  #     container keeps serving. It never comes up serving a fraction.
+  #   - a tree the running binary cannot load is REFUSED and ROLLED BACK
+  #     (internal/reloadgate.applyOrRollbackLocked), so the fleet keeps
+  #     running the commit it was running and the deploy is held.
+  #
+  # That is why this job no longer has to be red to keep the fleet safe. It
+  # used to be the ONLY thing standing between a contract change and a silent
+  # fleet-wide outage, so it had to red every coordinated pair until the other
+  # repo merged -- which meant shipping red PRs with a merge-order runbook
+  # attached. The runtime owns that safety now; this job'''s job is to tell you
+  # what you are about to deploy, and to fail when NOTHING can serve the
+  # change.
   fleet-compat:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: test
@@ -282,11 +295,60 @@ jobs:
         with:
           repository: wow-look-at-my/webhooks
           ref: master
-          path: _webhooks
+          path: _webhooks_master
+          token: ${{ env.PRIVATE_ORG_REPO_READ }}
+      # The paired tree, when this change has one. A missing branch is the
+      # normal case (a runner-only change) and is not an error.
+      - uses: actions/checkout@v4
+        id: paired
+        continue-on-error: true
+        with:
+          repository: wow-look-at-my/webhooks
+          ref: ${{ github.ref_name }}
+          path: _webhooks_paired
           token: ${{ env.PRIVATE_ORG_REPO_READ }}
       # validate is docker-free: it loads and checks manifests, builds nothing.
-      - name: This binary must be able to load the deployed hooks tree
-        run: build/webhook-runner_linux_amd64 validate _webhooks
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const bin = 'build/webhook-runner_linux_amd64';
+            const check = async (dir: string) => {
+              const r = await $`${bin} validate ${dir}`.silent().nothrow();
+              return { ok: r.exitCode === 0, out: `${r.stdout}\n${r.stderr}`.trim() };
+            };
+
+            const master = await check('_webhooks_master');
+            const pairedRef = ${{ toJSON(steps.paired.outcome == 'success') }} ? '${{ github.ref_name }}' : null;
+            const paired = pairedRef ? await check('_webhooks_paired') : null;
+
+            core.info(`webhooks master: ${master.ok ? 'LOADS' : 'REFUSED'}`);
+            if (!master.ok) core.info(master.out);
+            if (paired) core.info(`webhooks@${pairedRef}: ${paired.ok ? 'LOADS' : 'REFUSED'}`);
+            if (paired && !paired.ok) core.info(paired.out);
+
+            // The gate: SOMETHING this change ships with must be servable.
+            if (paired ? !paired.ok : !master.ok) {
+              const which = paired ? `its paired tree webhooks@${pairedRef}` : 'webhooks master';
+              core.setFailed(
+                `This binary cannot load ${which}. Nothing this change ships with can be served by it, ` +
+                  `so there is no order in which it becomes deployable. Fix the manifests or the loader.\n` +
+                  (paired ? paired.out : master.out),
+              );
+              return;
+            }
+
+            if (!master.ok) {
+              // The deployable state exists, it just is not master yet. Say
+              // so plainly -- and say why merging out of order is survivable,
+              // so nobody re-invents a runbook the runtime already enforces.
+              core.notice(
+                `DEPLOY ORDER: merge wow-look-at-my/webhooks@${pairedRef} FIRST. ` +
+                  `This binary cannot load webhooks master (it can load the paired tree), so until that lands ` +
+                  `a deploy of this image REFUSES TO START rather than serving a partial fleet — the previous ` +
+                  `container keeps serving and the failed rollout is visible. Merging in either order is safe; ` +
+                  `this order is simply the one with no failed deploy in it.`,
+              );
+            }
 
   # Builds the Dockerfile from the go-build hand-off (the reusable workflow
   # cache-downloads `go-build` into build/) and pushes
