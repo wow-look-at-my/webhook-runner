@@ -943,24 +943,50 @@ function hookSwitch(id, disabled) {
   return sw;
 }
 
+
+// The hooks roster, as a <data-table>. Searchable because a fleet this size
+// is past scanning by eye, and the query covers the description too — which
+// is where a hook says what it is for. No row-click: the row carries a
+// link, a kill switch and a copyable endpoint, so "click anywhere" would
+// fight all three.
 function renderHooks(hooks) {
-  const tbody = document.querySelector("#hooks-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("hooks-empty").hidden = hooks.length > 0;
-  for (const h of hooks) {
-    tbody.appendChild(
-      el("tr", null,
-        // Each hook is an "app": its ID links to the per-hook drill-down.
-        el("td", null,
-          el("a", { href: hookHref(h.id), class: "hook-link" },
-            el("code", null, h.id))),
-        el("td", null, linkifyGH(h.description || "")),
-        el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
-        el("td", { class: "row-actions" }, hookSwitch(h.id, h.disabled)),
-        el("td", null, ...triggerPath(h.id)),
-      )
-    );
-  }
+  const t = document.getElementById("hooks-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "id",
+      label: "ID",
+      // Each hook is an "app": its ID links to the per-hook drill-down.
+      render: (h) => el("a", { href: hookHref(h.id), class: "hook-link" }, el("code", null, h.id)),
+    },
+    { key: "description", label: "Description", render: (h) => linkifyGH(h.description || "") },
+    {
+      key: "mode",
+      label: "Mode",
+      value: (h) => (h.synchronous ? "sync" : "async") + (h.schedule ? ` every ${h.schedule}` : ""),
+      render: (h) => (h.synchronous ? "sync" : "async") + (h.schedule ? ` \u00b7 every ${h.schedule}` : ""),
+    },
+    {
+      key: "disabled",
+      label: "Status",
+      className: "row-actions",
+      // Sorts and searches by STATE (so a disabled hook can be found); the
+      // cell itself is the live switch, which has no sortable text.
+      value: (h) => (h.disabled ? 1 : 0),
+      text: (h) => (h.disabled ? "disabled" : "enabled"),
+      render: (h) => hookSwitch(h.id, h.disabled),
+    },
+    {
+      key: "endpoint",
+      label: "Endpoint",
+      sortable: false,
+      text: (h) => `/hook/${h.id}`,
+      render: (h) => el("span", null, ...triggerPath(h.id)),
+    },
+  ];
+  t.rowId = (h) => h.id;
+  t.styleText = SHARED_TABLE_CSS;
+  t.rows = hooks || [];
 }
 
 // --- Managers: the first-class persistent-watcher roster --------------------
@@ -1044,42 +1070,75 @@ function renderNavManagers(list) {
   updateNav(currentPage());
 }
 
+
+// The manager roster, as a <data-table>. The whole row navigates to the
+// manager's page — the same destination its title link carries, so a click
+// landing on either is correct — while the switch and the restart button
+// stop their own clicks from reaching the row.
 function renderManagers(list) {
   list = list || [];
   renderNavManagers(list);
-  const tbody = document.querySelector("#managers-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("managers-empty").hidden = list.length > 0;
-  document.getElementById("managers-table").hidden = list.length === 0;
-  for (const m of list) {
-    const tr = el("tr", null,
-      el("td", null,
-        // Deliberately NOT linkified: this cell's whole job is the link to
-        // the manager's page (an <a> can't nest another). The drill-down's
-        // Title row carries the same text with its slugs clickable.
-        el("a", { href: managerHref(m.id), class: "hook-link" },
-          el("code", null, m.title || m.id))),
-      el("td", { class: "row-actions" }, managerSwitch(m.id, m.disabled)),
-      el("td", null, managerStateChip(m)),
-      el("td", null, m.instance_id
+  const t = document.getElementById("managers-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "id",
+      label: "Manager",
+      value: (m) => m.title || m.id,
+      // Deliberately NOT linkified: this cell's whole job is the link to
+      // the manager's page (an <a> can't nest another). The drill-down's
+      // Title row carries the same text with its slugs clickable.
+      render: (m) => el("a", { href: managerHref(m.id), class: "hook-link" },
+        el("code", null, m.title || m.id)),
+    },
+    {
+      key: "disabled",
+      label: "Status",
+      className: "row-actions",
+      value: (m) => (m.disabled ? 1 : 0),
+      text: (m) => (m.disabled ? "disabled" : "enabled"),
+      render: (m) => managerSwitch(m.id, m.disabled),
+    },
+    { key: "state", label: "State", render: (m) => managerStateChip(m) },
+    {
+      key: "instance_id",
+      label: "Instance",
+      render: (m) => (m.instance_id
         ? el("code", { title: m.instance_id }, m.instance_id.slice(0, 8))
         : "—"),
-      el("td", null, String(m.restarts)),
-      el("td", null, String(m.inbox_depth)),
-      el("td", null, managerLastEvent(m)),
-      el("td", { class: "row-actions" },
-        el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart")),
-    );
-    tr.querySelector("button").addEventListener("click", (e) => {
-      e.stopPropagation();
-      restartManager(m.id);
+    },
+    { key: "restarts", label: "Restarts", align: "end", render: (m) => String(m.restarts) },
+    { key: "inbox_depth", label: "Inbox", align: "end", render: (m) => String(m.inbox_depth) },
+    { key: "last_event", label: "Last event", render: (m) => managerLastEvent(m) },
+    {
+      key: "restart",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (m) => {
+        const b = el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart");
+        b.addEventListener("click", (e) => {
+          // Without this the click also reaches the row and navigates away
+          // from the page the operator is acting on.
+          e.stopPropagation();
+          restartManager(m.id);
+        });
+        return b;
+      },
+    },
+  ];
+  t.rowId = (m) => m.id;
+  t.styleText = SHARED_TABLE_CSS;
+  // Bound once: the element outlives every render, so re-adding per render
+  // would stack a handler per refresh.
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) location.hash = managerHref(e.detail.id);
     });
-    tr.addEventListener("click", (ev) => {
-      if (ev.target.closest("a, label, button")) return;
-      location.hash = managerHref(m.id);
-    });
-    tbody.appendChild(tr);
   }
+  t.rows = list;
   // The drill-down only renders while its fragment is open.
   if (!currentManagerId()) document.getElementById("manager-detail").hidden = true;
 }
@@ -1242,8 +1301,9 @@ function attentionSourceLabel(source) {
   }
 }
 
-function renderAttention(data) {
-  const entries = (data && data.entries) || [];
+
+function renderAttention(entries) {
+  entries = entries || [];
   const banner = document.getElementById("attention-banner");
   banner.hidden = entries.length === 0;
   document.getElementById("attention-banner-text").textContent =
@@ -1253,28 +1313,46 @@ function renderAttention(data) {
 
   const section = document.getElementById("attention-section");
   section.hidden = entries.length === 0;
-  const tbody = document.querySelector("#attention-table tbody");
-  tbody.innerHTML = "";
-  for (const e of entries) {
-    const tr = el("tr", { class: e.hook ? "attention-hook-row" : "" },
-      el("td", { class: "attention-msg" }, linkifyGH(e.message)),
-      el("td", null, e.hook
+  const t = document.getElementById("attention-table");
+  if (!t) return;
+  t.columns = [
+    { key: "message", label: "Problem", className: "attention-msg", render: (e) => linkifyGH(e.message) },
+    {
+      key: "hook",
+      label: "Hook",
+      render: (e) => (e.hook
         ? el("a", { href: hookHref(e.hook), class: "hook-link" }, el("code", null, e.hook))
         : "—"),
-      el("td", null, attentionSourceLabel(e.source)),
+    },
+    { key: "source", label: "Source", value: (e) => attentionSourceLabel(e.source) },
+    {
+      key: "since",
+      label: "Active for",
+      className: "attention-age",
       // Age since the problem FIRST became active (stable across
-      // re-derivations while it persists); tooltip = the absolute time.
-      el("td", { class: "attention-age", title: fmtTime(e.since) },
+      // re-derivations while it persists), so sorting by it puts the
+      // longest-standing problem at one end. Sorts on the instant, not the
+      // rendered duration, which would order "9m" after "10s".
+      value: (e) => Date.parse(e.since),
+      text: (e) => fmtTime(e.since),
+      render: (e) => el("span", { title: fmtTime(e.since) },
         fmtDuration(Date.now() - new Date(e.since)) || "0s"),
-    );
-    if (e.hook) {
-      tr.addEventListener("click", (ev) => {
-        if (ev.target.closest("a")) return;
-        location.hash = hookHref(e.hook);
-      });
-    }
-    tbody.appendChild(tr);
+    },
+  ];
+  // Entries without a hook are server-wide: they have nowhere to click
+  // through to, so only hook-scoped rows get the class the CSS marks as
+  // navigable.
+  t.rowClass = (e) => (e.hook ? "attention-hook-row" : "");
+  t.rowId = (e) => e.hook || "";
+  t.styleText = SHARED_TABLE_CSS + ATTENTION_TABLE_CSS;
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      // A server-wide entry has no id and no destination.
+      if (e.detail?.id) location.hash = hookHref(e.detail.id);
+    });
   }
+  t.rows = entries;
 }
 
 // The banner's "view" jump routes to the dedicated Attention page — the
@@ -1511,6 +1589,47 @@ function runCell(r) {
   );
 }
 
+// Cell styling shared by every converted <data-table>, passed INTO its
+// shadow root through the styleText hatch. These cells are built by this
+// file but live inside that root, where dashboard.css cannot reach them;
+// the COLORS still come from the page, because custom properties inherit
+// through the shadow boundary. Keep in sync with the matching rules in
+// dashboard.css — the same states, drawn in two places by necessity.
+const SHARED_TABLE_CSS = `
+code { font-size: 0.9em; }
+.hook-link { color: var(--accent); text-decoration: none; }
+.hook-link:hover { text-decoration: underline; }
+.badge { display: inline-block; padding: 0 0.4em; border-radius: 3px; font-size: 0.85em; border: 1px solid var(--border); }
+.badge.ok { color: var(--success); border-color: var(--success); }
+.badge.warn { color: var(--running); border-color: var(--running); }
+.badge.bad { color: var(--failure); border-color: var(--failure); }
+.row-actions { white-space: nowrap; }
+.toggle-btn { font: inherit; font-size: 0.85em; padding: 0.1em 0.5em; cursor: pointer; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+.toggle-btn:hover { border-color: var(--accent); }
+.switch { display: inline-flex; align-items: center; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-slider { position: relative; width: 2em; height: 1.1em; border-radius: 1em; background: var(--muted); transition: background 0.15s; }
+.switch-slider::before { content: ""; position: absolute; top: 0.15em; left: 0.15em; width: 0.8em; height: 0.8em; border-radius: 50%; background: var(--panel); transition: transform 0.15s; }
+.switch input:checked + .switch-slider { background: var(--success); }
+.switch input:checked + .switch-slider::before { transform: translateX(0.9em); }
+.switch input:focus-visible + .switch-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+.images-on-disk { color: var(--muted); font-size: 0.9em; }
+`;
+
+// Attention rows: only hook-scoped ones navigate, so only they get the
+// pointer the click promises.
+const ATTENTION_TABLE_CSS = `
+.attention-msg { font-weight: 500; }
+.attention-age { color: var(--muted); white-space: nowrap; }
+tbody tr.attention-hook-row { cursor: pointer; }
+`;
+
+// The live commit is the one the operator is looking for; mark it.
+const RELOAD_TABLE_CSS = `
+tbody tr.reload-live-commit { background: var(--panel); }
+.reload-commit-subject { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+`;
+
 // Cell styling for the runs tables, passed INTO <data-table>'s shadow root
 // through its styleText hatch. The status pill and the wait note are
 // rendered by this file but live inside that root, where dashboard.css
@@ -1564,27 +1683,49 @@ function renderRuns(rs) {
   t.rows = rs || [];
 }
 
+
+// Per-hook image state, as a <data-table>. Searchable: "which hook is on
+// tag abc123" and "what still needs building" are both text questions, and
+// the fleet is long enough that scrolling for them is the wrong answer.
 function renderImages(images) {
-  const tbody = document.querySelector("#images-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("images-empty").hidden = images.length > 0;
-  for (const im of images) {
-    let state;
-    if (im.error) state = el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
-    else if (im.built) state = el("span", { class: "badge ok" }, "built");
-    else state = el("span", { class: "badge warn" }, "will build on next run");
-    const others = (im.images || [])
-      .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
-      .join(", ");
-    tbody.appendChild(
-      el("tr", null,
-        el("td", null, el("code", null, im.hook_id)),
-        el("td", null, el("code", null, im.tag || "-")),
-        el("td", null, state),
-        el("td", { class: "images-on-disk" }, others || "none"),
-      )
-    );
-  }
+  const t = document.getElementById("images-table");
+  if (!t) return;
+  t.columns = [
+    { key: "hook_id", label: "Hook", render: (im) => el("code", null, im.hook_id) },
+    { key: "tag", label: "Current tag", render: (im) => el("code", null, im.tag || "-") },
+    {
+      key: "state",
+      label: "State",
+      // Sorted and searched by the STATE WORD, so "error" and "built" are
+      // findable; the cell is the badge.
+      value: (im) => (im.error ? "error" : im.built ? "built" : "will build"),
+      text: (im) => (im.error ? "error: " + im.error : im.built ? "built" : "will build on next run"),
+      render: (im) => {
+        if (im.error) return el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
+        if (im.built) return el("span", { class: "badge ok" }, "built");
+        return el("span", { class: "badge warn" }, "will build on next run");
+      },
+    },
+    {
+      key: "on_disk",
+      label: "On disk",
+      className: "images-on-disk",
+      value: (im) => imagesOnDisk(im),
+      render: (im) => imagesOnDisk(im) || "none",
+    },
+  ];
+  t.rowId = (im) => im.hook_id;
+  t.styleText = SHARED_TABLE_CSS;
+  t.rows = images || [];
+}
+
+// The other content-hash images still on disk for a hook, newest-tag-first
+// as the server sent them; "*" marks the one the current content resolves
+// to.
+function imagesOnDisk(im) {
+  return (im.images || [])
+    .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .join(", ");
 }
 
 // ---------------------------------------------------------------------------
@@ -1634,37 +1775,48 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+
+// The KV namespace roster, as a <data-table>. The whole row navigates to
+// the namespace's browser — the same destination as its link, so a click on
+// either is correct.
 function renderKV(namespaces, loadedHookIDs) {
-  const tbody = document.querySelector("#kv-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("kv-empty").hidden = namespaces.length > 0;
-  for (const ns of namespaces) {
-    // Namespace == hook ID, so each row links to that hook's app page,
-    // landed on its State (KV) key/value browser. A namespace whose hook is
-    // no longer loaded (leftover state from a removed/renamed hook) links
-    // to the SAME place: the app page detects the orphan and still renders
-    // the key/value browser — stored data must always be inspectable.
-    const orphan = !loadedHookIDs.has(ns.namespace);
-    const href = hookHref(ns.namespace, { kv: true });
-    const title = orphan
-      ? "no loaded hook with this ID — browse the namespace's stored keys and values"
-      : "browse this hook's stored keys and values";
-    const link = el("a", { href, class: "hook-link", title },
-      el("code", null, ns.namespace),
-      orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
-    );
-    const tr = el("tr", null,
-      el("td", null, link),
-      el("td", null, String(ns.keys)),
-      el("td", null, fmtBytes(ns.bytes)),
-    );
-    // The whole row is the click target (the pointer cursor promises it).
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest("a")) return; // let the real link handle itself
-      location.hash = href;
+  const t = document.getElementById("kv-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "namespace",
+      label: "Namespace (hook)",
+      // Namespace == hook ID, so each row links to that hook's app page,
+      // landed on its State (KV) key/value browser. A namespace whose hook
+      // is no longer loaded (leftover state from a removed/renamed hook)
+      // links to the SAME place: the app page detects the orphan and still
+      // renders the browser — stored data must always be inspectable.
+      render: (ns) => {
+        const orphan = !loadedHookIDs.has(ns.namespace);
+        return el("a", {
+          href: hookHref(ns.namespace, { kv: true }),
+          class: "hook-link",
+          title: orphan
+            ? "no loaded hook with this ID — browse the namespace's stored keys and values"
+            : "browse this hook's stored keys and values",
+        },
+          el("code", null, ns.namespace),
+          orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
+        );
+      },
+    },
+    { key: "keys", label: "Keys", align: "end", render: (ns) => String(ns.keys) },
+    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes, render: (ns) => fmtBytes(ns.bytes) },
+  ];
+  t.rowId = (ns) => ns.namespace;
+  t.styleText = SHARED_TABLE_CSS;
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) location.hash = hookHref(e.detail.id, { kv: true });
     });
-    tbody.appendChild(tr);
   }
+  t.rows = namespaces || [];
 }
 
 // --- Per-app view (app == one hook) ----------------------------------------
@@ -2558,30 +2710,54 @@ async function refreshReloadCommits() {
   }
 }
 
+
+// Recent origin commits, as a <data-table>. Sorting stays off the default
+// order deliberately until a header is clicked: the server sends them
+// newest-first, which is the order an operator picking "the last good one"
+// is reading in.
 function renderReloadCommits(data) {
   const commits = (data && data.commits) || [];
-  const tbody = document.querySelector("#reload-commits-table tbody");
-  tbody.innerHTML = "";
+  const t = document.getElementById("reload-commits-table");
+  if (!t) return;
+  // The note is now only for FETCH FAILURES (renderReloadCommits is not
+  // called on those); the table owns its own empty state.
   const note = document.getElementById("reload-commits-note");
-  note.textContent = "No commits found.";
-  note.hidden = commits.length > 0;
-  for (const c of commits) {
-    let action;
-    if (c.is_live) {
-      action = el("span", { class: "badge ok" }, "live");
-    } else {
-      action = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
-      action.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
-    }
-    tbody.appendChild(el("tr", { class: c.is_live ? "reload-live-commit" : "" },
-      el("td", null, el("code", { title: c.sha }, c.short)),
-      el("td", { class: "reload-commit-subject" }, linkifyGH(c.subject || "")),
-      el("td", null, fmtTime(c.date)),
-      el("td", null, reloadCIBadge(c.ci_state)),
-      el("td", null, reloadSrcBadge(!!c.has_src)),
-      el("td", { class: "row-actions" }, action),
-    ));
-  }
+  if (note) note.hidden = true;
+  t.columns = [
+    { key: "short", label: "Commit", render: (c) => el("code", { title: c.sha }, c.short) },
+    {
+      key: "subject",
+      label: "Subject",
+      className: "reload-commit-subject",
+      render: (c) => linkifyGH(c.subject || ""),
+    },
+    { key: "date", label: "Date", value: (c) => Date.parse(c.date), text: (c) => fmtTime(c.date), render: (c) => fmtTime(c.date) },
+    { key: "ci_state", label: "CI", render: (c) => reloadCIBadge(c.ci_state) },
+    {
+      key: "has_src",
+      label: "src/",
+      value: (c) => (c.has_src ? 1 : 0),
+      text: (c) => (c.has_src ? "src" : "no src"),
+      render: (c) => reloadSrcBadge(!!c.has_src),
+    },
+    {
+      key: "action",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (c) => {
+        if (c.is_live) return el("span", { class: "badge ok" }, "live");
+        const b = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
+        b.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
+        return b;
+      },
+    },
+  ];
+  t.rowId = (c) => c.sha;
+  t.rowClass = (c) => (c.is_live ? "reload-live-commit" : "");
+  t.styleText = SHARED_TABLE_CSS + RELOAD_TABLE_CSS;
+  t.rows = commits;
 }
 
 // The section fetcher (registered in sectionFetchers as "reload"): the
