@@ -193,6 +193,66 @@ function runDuration(r) {
   return "—";
 }
 
+// Milliseconds at the resolution startup actually costs. fmtDuration
+// bottoms out at whole seconds, which renders every container boot as
+// "0s" — the precision this instrumentation exists to recover.
+function fmtMs(ms) {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
+}
+
+// The hook's container-boot figure. Exact samples (hooks whose containers
+// report from the inside) are docker's own cost; bounded samples include
+// the hook runtime's cold start and are labeled "≤" so nobody quotes one
+// as the other. A hook with both kinds in its window shows both.
+function overheadBoot(o) {
+  if (!o) return "—";
+  const parts = [];
+  if (o.boot_sampled) {
+    parts.push(`${fmtMs(o.boot_avg_ms)} avg · ${fmtMs(o.boot_max_ms)} max (${o.boot_sampled} runs, docker only)`);
+  }
+  if (o.bound_sampled) {
+    parts.push(`≤ ${fmtMs(o.bound_avg_ms)} avg · ≤ ${fmtMs(o.bound_max_ms)} max (${o.bound_sampled} runs, docker + runtime)`);
+  }
+  return parts.length ? parts.join(" — ") : "—";
+}
+
+// The run's container-startup breakdown from its phase marks (see the
+// runner's runs.Phase). With the in-container mark, docker's own cost is
+// separated from the hook runtime's cold start; without it only the sum is
+// knowable and the row SAYS so — an unlabeled number would be read as
+// docker's cost, the conflation that made this unanswerable before.
+// Returns null when the run carries no marks: uninstrumented must look
+// uninstrumented, not instantaneous.
+function startupDetail(r) {
+  const ph = r.phases;
+  if (!ph) return null;
+  const at = (k) => {
+    if (!ph[k] || !tsPresent(ph[k])) return null;
+    const t = new Date(ph[k]).getTime();
+    return isNaN(t) ? null : t;
+  };
+  const spawned = at("spawned");
+  if (spawned === null) return null;
+  const entry = at("container_entry");
+  const firstOut = at("first_output");
+  const parts = [];
+  if (entry !== null) {
+    parts.push(`${fmtMs(entry - spawned)} docker`);
+    if (firstOut !== null && firstOut >= entry) parts.push(`${fmtMs(firstOut - entry)} runtime start`);
+  } else if (firstOut !== null) {
+    parts.push(`≤ ${fmtMs(firstOut - spawned)} docker + runtime (not separable: no in-container mark)`);
+  } else {
+    return null;
+  }
+  const slot = at("slot_acquired");
+  const inspected = at("inspected");
+  if (slot !== null && inspected !== null && inspected >= slot) {
+    parts.push(`${fmtMs(inspected - slot)} argv inspect`);
+  }
+  return parts.join(" · ");
+}
+
 // What a run is currently paused on (r.waiting_on), rendered inline on the
 // run row. Kind "wait" is a declared sleep (POST /wait) — "waiting Ns:
 // reason", remaining time computed client-side from `until` so it counts
@@ -1658,6 +1718,17 @@ function renderApp(detail, runs, events) {
     ["Max duration", st.completed ? fmtDuration(st.max_duration_ms) : "—"],
     ["Avg wait", st.wait_sampled ? fmtDuration(st.avg_wait_ms) : "—"],
     ["Max wait", st.wait_sampled ? fmtDuration(st.max_wait_ms) : "—"],
+    // Container overhead over the same window: what this hook pays to run
+    // at all, before it does anything. Exact and bounded samples are shown
+    // as separate rows because they are different measurements — averaging
+    // them together would produce a figure that means neither.
+    ["Container boot", overheadBoot(st.overhead)],
+    ["Runtime start", st.overhead && st.overhead.boot_sampled
+      ? `${fmtMs(st.overhead.runtime_start_avg_ms)} avg · ${fmtMs(st.overhead.runtime_start_max_ms)} max`
+      : "—"],
+    ["Argv inspect", st.overhead && st.overhead.inspect_sampled
+      ? `${fmtMs(st.overhead.inspect_avg_ms)} avg · ${fmtMs(st.overhead.inspect_max_ms)} max (${st.overhead.inspect_sampled} runs)`
+      : "—"],
     ["Last run", st.last_run
       ? [
           el("span", { class: "status " + st.last_run.status }, st.last_run.status),
@@ -2062,6 +2133,10 @@ function renderRunDetail(r, openDialog) {
     ["Waited", runWaited(r)],
     ["Duration", runDuration(r)],
   ];
+  // What launching this run cost, split from what it then did. Absent for
+  // uninstrumented history — a missing mark means unknown, never zero.
+  const startup = startupDetail(r);
+  if (startup) rows.push(["Startup", startup]);
   // A live pause gets its own row, whatever its kind: a declared sleep, a
   // blocked lock acquire (holder linked), or a concurrency-group queue
   // wait (position + holders linked).

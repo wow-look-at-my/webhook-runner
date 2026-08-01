@@ -347,6 +347,26 @@ function runToInterval(r) {
     const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
     segments.push({ start: s0, end: e0, kind: "waiting" });
   }
+  const ph = r.phases;
+  if (ph) {
+    const at = (k) => {
+      const v = ph[k];
+      if (!v) return null;
+      const t = Date.parse(v);
+      return Number.isFinite(t) ? t : null;
+    };
+    const spawned = at("spawned");
+    const entry = at("container_entry");
+    const firstOut = at("first_output");
+    if (spawned !== null && entry !== null) {
+      segments.push({ start: spawned, end: entry, kind: "boot" });
+      if (firstOut !== null && firstOut > entry) {
+        segments.push({ start: entry, end: firstOut, kind: "starting" });
+      }
+    } else if (spawned !== null && firstOut !== null) {
+      segments.push({ start: spawned, end: firstOut, kind: "bound" });
+    }
+  }
   if (r.status === "cancelled" && tsPresent(r.cancel_requested_at)) {
     segments.push({ start: Date.parse(r.cancel_requested_at), end, kind: "outline" });
   }
@@ -464,6 +484,42 @@ function ttRow(key, value) {
   const v = typeof value === "string" ? el("span", { class: "tt-v" }, value) : value;
   return el("div", { class: "tt-row" }, el("span", { class: "tt-k" }, key), v);
 }
+function fmtMs(ms) {
+  if (ms < 1e3) return `${Math.round(ms)}ms`;
+  return `${(ms / 1e3).toFixed(ms < 1e4 ? 2 : 1)}s`;
+}
+function appendStartupRows(frag, r) {
+  const ph = r.phases;
+  if (!ph) return;
+  const at = (k) => {
+    const v = ph[k];
+    if (!v) return null;
+    const t = Date.parse(v);
+    return Number.isFinite(t) && t > 0 ? t : null;
+  };
+  const spawned = at("spawned");
+  if (spawned === null) return;
+  const entry = at("container_entry");
+  const firstOut = at("first_output");
+  if (entry !== null) {
+    frag.appendChild(ttRow("boot", `${fmtMs(entry - spawned)} (docker)`));
+    if (firstOut !== null && firstOut >= entry) {
+      frag.appendChild(ttRow("runtime start", fmtMs(firstOut - entry)));
+    }
+  } else if (firstOut !== null) {
+    frag.appendChild(ttRow("startup", `\u2264 ${fmtMs(firstOut - spawned)} (docker + runtime)`));
+  }
+  const slot = at("slot_acquired");
+  const inspected = at("inspected");
+  if (slot !== null && inspected !== null && inspected >= slot) {
+    frag.appendChild(ttRow("argv inspect", fmtMs(inspected - slot)));
+  }
+  const exited = at("exited");
+  if (exited !== null && tsPresent(r.finished)) {
+    const reap = Date.parse(r.finished) - exited;
+    if (reap >= 0) frag.appendChild(ttRow("reap", fmtMs(reap)));
+  }
+}
 function appendWaitingRows(frag, r) {
   const w = r.waiting_on;
   if (!w || isTerminal(r.status)) return;
@@ -513,6 +569,7 @@ function runTooltip(r) {
   frag.appendChild(ttRow("queued", fmtTime(r.started)));
   frag.appendChild(ttRow("waited", runWaited(r) || "\u2014"));
   frag.appendChild(ttRow("ran", runDuration(r) || "\u2014"));
+  appendStartupRows(frag, r);
   if (r.error) frag.appendChild(ttRow("error", trimText(r.error, 160)));
   appendWaitingRows(frag, r);
   const held = waiterIndex.get(r.id);
@@ -574,9 +631,19 @@ function initTimeline() {
     return null;
   };
   if (typeof tl.markFresh === "function") tl.staleAfterMs = STALE_AFTER_MS;
+  if ("styles" in tl) {
+    tl.styles = {
+      ...tl.styles || {},
+      boot: { pattern: "stipple", saturationScale: 0.35, alphaScale: 0.85 },
+      starting: { pattern: "stipple", saturationScale: 0.35, lightnessScale: 1.25, alphaScale: 0.7 },
+      bound: { pattern: "hatch", saturationScale: 0.35, alphaScale: 0.7 }
+    };
+  }
   if ("legendEntries" in tl) {
     tl.legendEntries = [
       { glyph: "\u29D7", text: "waiting for a concurrency-group slot (group \xB7 place in line)" },
+      { glyph: "stipple", text: "container startup: the darker head is Docker creating the container, the lighter one is the hook runtime warming up \u2014 neither is the hook doing work" },
+      { glyph: "hatch (head)", text: "startup that could only be bounded, not split: this hook has no in-container mark, so Docker and runtime cost are mixed together" },
       { glyph: "\u23F3N", text: "holding a slot N queued runs are waiting on" },
       { glyph: "\xD7N waiting", text: "a collapsed queued backlog: N pending runs as one dim row (each executing run keeps its own colored bar; click opens the hook page)" }
     ];

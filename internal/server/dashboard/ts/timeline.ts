@@ -181,6 +181,13 @@ interface RunState {
 	cancel_requested?: boolean;
 	/** Feature-detected: when the first cancel request arrived. */
 	cancel_requested_at?: string;
+	/** Feature-detected: lifecycle instrumentation marks (see the runner's
+	 * runs.Phase). Present only on runs from a server that stamps them, and
+	 * only for marks that run actually reached — a missing key means
+	 * UNKNOWN, never zero. `container_entry` exists only for hooks with the
+	 * shim injected; without it, boot can only be bounded from above. */
+	phases?: Record<string, string>;
+
 	/** Feature-detected: historical wait segments (closed at their REAL
 	 * end times by the server — never derived client-side). */
 	wait_history?: Array<{ kind?: string; key?: string; start: string; end?: string }>;
@@ -842,6 +849,35 @@ function runToInterval(r: RunState): TimelineInterval {
 		const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
 		segments.push({ start: s0, end: e0, kind: 'waiting' });
 	}
+	// Container startup, drawn where it happened. The bar's leading edge
+	// after launch is not the hook working — it is the container being
+	// created and its runtime warming up, and until these segments existed
+	// nothing on this page could tell you which. 'boot' is Docker's own
+	// cost (spawn → the container's first instruction); 'starting' is the
+	// hook runtime's cold start (that instruction → first output). A hook
+	// with no shim injected has no in-container mark, so its whole
+	// spawn→first-output span is drawn as ONE 'bound' segment: honestly
+	// undifferentiated rather than a boot figure we cannot back up.
+	const ph = r.phases;
+	if (ph) {
+		const at = (k: string): number | null => {
+			const v = ph[k];
+			if (!v) return null;
+			const t = Date.parse(v);
+			return Number.isFinite(t) ? t : null;
+		};
+		const spawned = at('spawned');
+		const entry = at('container_entry');
+		const firstOut = at('first_output');
+		if (spawned !== null && entry !== null) {
+			segments.push({ start: spawned, end: entry, kind: 'boot' });
+			if (firstOut !== null && firstOut > entry) {
+				segments.push({ start: entry, end: firstOut, kind: 'starting' });
+			}
+		} else if (spawned !== null && firstOut !== null) {
+			segments.push({ start: spawned, end: firstOut, kind: 'bound' });
+		}
+	}
 	// The kill tail: the span up to the cancel request renders as the run's
 	// normal life; the request → death tail is an 'outline' segment, which
 	// the component draws as a TERMINAL CUT (dark scrim + bright cut line,
@@ -1043,6 +1079,57 @@ function ttRow(key: string, value: string | Node): HTMLElement {
 	return el('div', { class: 'tt-row' }, el('span', { class: 'tt-k' }, key), v);
 }
 
+/** Milliseconds, at the precision startup costs actually live in. The
+ * shared fmtDuration bottoms out at whole seconds, which renders every
+ * container boot as "0s" — the exact resolution this instrumentation
+ * exists to recover. */
+function fmtMs(ms: number): string {
+	if (ms < 1000) return `${Math.round(ms)}ms`;
+	return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
+}
+
+/** Appends the container-startup breakdown: what launching this run cost,
+ * split from what the hook then did. Absent marks print nothing at all —
+ * a run with no instrumentation must look uninstrumented, never fast. */
+function appendStartupRows(frag: DocumentFragment, r: RunState): void {
+	const ph = r.phases;
+	if (!ph) return;
+	const at = (k: string): number | null => {
+		const v = ph[k];
+		if (!v) return null;
+		const t = Date.parse(v);
+		return Number.isFinite(t) && t > 0 ? t : null;
+	};
+	const spawned = at('spawned');
+	if (spawned === null) return;
+	const entry = at('container_entry');
+	const firstOut = at('first_output');
+
+	if (entry !== null) {
+		// The measurement: container creation with no hook runtime in it.
+		frag.appendChild(ttRow('boot', `${fmtMs(entry - spawned)} (docker)`));
+		if (firstOut !== null && firstOut >= entry) {
+			frag.appendChild(ttRow('runtime start', fmtMs(firstOut - entry)));
+		}
+	} else if (firstOut !== null) {
+		// No in-container mark: say so IN the value. An unlabeled number here
+		// would be read as docker's cost, which is precisely the conflation
+		// that made this whole question unanswerable before.
+		frag.appendChild(ttRow('startup', `≤ ${fmtMs(firstOut - spawned)} (docker + runtime)`));
+	}
+
+	const slot = at('slot_acquired');
+	const inspected = at('inspected');
+	if (slot !== null && inspected !== null && inspected >= slot) {
+		frag.appendChild(ttRow('argv inspect', fmtMs(inspected - slot)));
+	}
+	const exited = at('exited');
+	if (exited !== null && tsPresent(r.finished)) {
+		const reap = Date.parse(r.finished as string) - exited;
+		if (reap >= 0) frag.appendChild(ttRow('reap', fmtMs(reap)));
+	}
+}
+
 /** Appends wait/lock rows for a live waiting run (short rows — the tooltip
  * never wraps, so the holder gets its own line instead of one long one). */
 function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
@@ -1101,6 +1188,7 @@ function runTooltip(r: RunState): Node {
 	frag.appendChild(ttRow('queued', fmtTime(r.started)));
 	frag.appendChild(ttRow('waited', runWaited(r) || '—'));
 	frag.appendChild(ttRow('ran', runDuration(r) || '—'));
+	appendStartupRows(frag, r);
 	if (r.error) frag.appendChild(ttRow('error', trimText(r.error, 160)));
 	appendWaitingRows(frag, r);
 	const held = waiterIndex.get(r.id);
@@ -1207,6 +1295,23 @@ function initTimeline(): void {
 	// hatch a healthy push stream between 10s-apart heartbeats.
 	if (typeof tl.markFresh === 'function') tl.staleAfterMs = STALE_AFTER_MS;
 
+	// Teach the component the startup segment kinds. They are OURS, not part
+	// of its vocabulary, so an unmerged map would draw them as plain fill and
+	// the split would be invisible. Merged over whatever the component ships
+	// so its own kinds ('queued', 'waiting', 'outline') keep their treatment.
+	// Boot is stippled and desaturated — visibly not-the-hook's-work; the
+	// runtime cold start is the same texture, lighter; the undifferentiated
+	// bound is hatched, the same "we don't know what's in here" texture the
+	// component uses for uncovered time.
+	if ('styles' in tl) {
+		tl.styles = {
+			...(tl.styles || {}),
+			boot: { pattern: 'stipple', saturationScale: 0.35, alphaScale: 0.85 },
+			starting: { pattern: 'stipple', saturationScale: 0.35, lightnessScale: 1.25, alphaScale: 0.7 },
+			bound: { pattern: 'hatch', saturationScale: 0.35, alphaScale: 0.7 },
+		};
+	}
+
 	// Teach the "?" legend panel the badge glyphs THIS adapter composes into
 	// labels (runLabel) — the component's built-in rows only cover its own
 	// vocabulary. Feature-detected: the live Pages component may predate
@@ -1215,6 +1320,8 @@ function initTimeline(): void {
 	if ('legendEntries' in tl) {
 		tl.legendEntries = [
 			{ glyph: '⧗', text: 'waiting for a concurrency-group slot (group · place in line)' },
+			{ glyph: 'stipple', text: 'container startup: the darker head is Docker creating the container, the lighter one is the hook runtime warming up — neither is the hook doing work' },
+			{ glyph: 'hatch (head)', text: 'startup that could only be bounded, not split: this hook has no in-container mark, so Docker and runtime cost are mixed together' },
 			{ glyph: '⏳N', text: 'holding a slot N queued runs are waiting on' },
 			{ glyph: '×N waiting', text: 'a collapsed queued backlog: N pending runs as one dim row (each executing run keeps its own colored bar; click opens the hook page)' },
 		];
