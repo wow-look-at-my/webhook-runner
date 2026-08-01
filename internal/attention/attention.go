@@ -64,6 +64,13 @@ const (
 	// not verified green. Reported and resolved by the gate itself as
 	// commits verify, switch, or the operator forces (admin /reload).
 	SourceReload = "reload"
+	// SourceTreeRefused: the whole hooks tree failed to apply. A load in
+	// which any entity errored is REFUSED rather than partially applied
+	// (internal/cli.buildLoadAndApply), so the fleet keeps serving what it
+	// was serving and the deploy is HELD. This is the entry that says so in
+	// one line -- the per-entity SourceLoad entries beside it say which
+	// entity and which field. Cleared by the next load that applies whole.
+	SourceTreeRefused = "tree-refused"
 	// SourceManager: a manager that should be running has no live instance
 	// (start failing, crash-looping, image unbuildable). Re-derived by the
 	// supervisor on every state change; clears the moment an instance runs

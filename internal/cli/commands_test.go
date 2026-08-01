@@ -257,7 +257,7 @@ func TestNewLogger(t *testing.T) {
 
 func TestBuildReloadFuncWithoutRepo(t *testing.T) {
 	called := 0
-	fn := buildReloadFunc(nil, func() { called++ }, events.NewRecorder(10))
+	fn := buildReloadFunc(nil, func() error { called++; return nil }, events.NewRecorder(10))
 	require.NoError(t, fn())
 	assert.Equal(t, 1, called)
 }

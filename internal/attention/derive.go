@@ -2,6 +2,7 @@ package attention
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -120,6 +121,29 @@ func RegisterStandardEventRules(a *Aggregator) {
 // concurrency.json problems, undeclared-group rejections) into the "load"
 // and "zero-hooks" entry sets for ReplaceSource. Hook attribution comes
 // from the typed errors the loader/concurrency checker produce.
+// KeyTreeRefused is the single refused-tree entry's key: one entry however
+// many entities failed, since the fleet-level fact is one fact.
+const KeyTreeRefused = "tree-refused"
+
+// TreeRefusedEntries is the fleet-level companion to FromLoadErrors: ONE
+// entry stating that nothing from this load was applied, and what is running
+// instead. `serving` is the entity count still being served (0 = the startup
+// load, where there is no previous fleet and serve exits instead).
+func TreeRefusedEntries(failed, serving int) []Entry {
+	if failed == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("hooks tree REFUSED: %d entit(y/ies) failed to load, so NONE of this tree was applied", failed)
+	if serving > 0 {
+		msg += fmt.Sprintf(" — still serving the previous %d entit(y/ies). Fix the entries below (a fleet-wide failure usually means the deployed binary and this tree disagree about a manifest field) and the next reload applies.", serving)
+	}
+	return []Entry{{
+		Source:  SourceTreeRefused,
+		Key:     KeyTreeRefused,
+		Message: msg,
+	}}
+}
+
 func FromLoadErrors(errs []error) (load, zero []Entry) {
 	load, zero = []Entry{}, []Entry{}
 	for _, err := range errs {
