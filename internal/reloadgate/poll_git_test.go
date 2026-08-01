@@ -84,7 +84,7 @@ func TestReconcileAgainstRealRepoAndFakeAPI(t *testing.T) {
 		Branch:    "master",
 		Context:   "all-builds",
 		StatePath: filepath.Join(base, "reload-gate.json"),
-		Apply:     func() { applies++ },
+		Apply:     func() error { applies++; return nil },
 		Status: func(ctx context.Context, sha string) (string, error) {
 			// The cli adapter's exact shape: missing context reads as "no
 			// status yet", everything else passes through.

@@ -1302,8 +1302,13 @@ function attentionSourceLabel(source) {
 }
 
 
-function renderAttention(entries) {
-  entries = entries || [];
+// Takes the GET /attention RESPONSE OBJECT ({count, entries}), not a bare
+// array: reading `.length` off the object yielded `undefined problems need
+// attention` on a banner that could never hide, above a table with nothing
+// in it. An array is still accepted so a caller passing entries directly
+// (the tests do) works, but the endpoint's own shape is the contract.
+function renderAttention(payload) {
+  const entries = Array.isArray(payload) ? payload : (payload && payload.entries) || [];
   const banner = document.getElementById("attention-banner");
   banner.hidden = entries.length === 0;
   document.getElementById("attention-banner-text").textContent =
