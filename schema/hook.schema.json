@@ -39,13 +39,6 @@
           "type": "boolean",
           "default": true
         },
-        "env": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "deprecated": true
-        },
         "extra_docker_args": {
           "type": "array",
           "items": {
@@ -323,9 +316,6 @@
     },
     "enable": {
       "description": "The hook's DEFAULT enabled state. When false, the hook loads disabled: deliveries are rejected (503) and scheduled runs are skipped exactly as if the operator kill switch were off, until an operator explicitly enables it. The dashboard/admin runtime override (POST /hooks/{id}/enable|disable, persisted server-side) always takes precedence over this default, in both directions. Absent = enabled, so existing hooks are unchanged."
-    },
-    "env": {
-      "description": "SUPERSEDED by `settings`; still accepted for one release. Environment variables passed to the container, values only strings. A ${NAME} reference resolves from the entity's sops-encrypted secrets.sops.env first, then the runner host's environment; an unresolvable one yields an empty value and is reported. Move this configuration to `settings`, which is arbitrary JSON validated at load against the settings.schema.json shipped next to the manifest and mounted read-only at $HOOK_SETTINGS_FILE. Every hook still declaring `env` is named on the runner's needs-attention surface until it migrates."
     },
     "extra_docker_args": {
       "description": "Additional raw arguments passed to docker run."

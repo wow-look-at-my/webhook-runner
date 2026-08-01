@@ -448,7 +448,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		}
 		args = append(args, "-e", k+"="+v)
 	}
-	args = append(args, r.supersededEnvArgs(hook, run, secrets)...)
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)
 	}

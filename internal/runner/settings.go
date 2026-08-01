@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/wow-look-at-my/webhook-runner/internal/runs"
-
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
@@ -31,35 +29,4 @@ func resolveSettingsFile(hook *hooks.Hook, secrets map[string]string, path strin
 		return fmt.Errorf("write settings: %w", err)
 	}
 	return nil
-}
-
-// supersededEnvArgs renders the `env` block into docker -e flags. It is still
-// injected exactly as it always was: a deprecation that quietly stops working
-// is worse than the flag day it exists to avoid -- the hook would load, run,
-// and behave wrongly. Values resolve ${NAME} from the entity's secrets first,
-// then the host environment.
-//
-// Every entity still using this is named at load (hooks.Deprecations) and
-// listed on the needs-attention surface; the field goes away once the fleet
-// has migrated to settings.
-func (r *Runner) supersededEnvArgs(hook *hooks.Hook, run *runs.Run, secrets map[string]string) []string {
-	if len(hook.Env) == 0 {
-		return nil
-	}
-	lookup := hooks.SecretsFirstLookup(secrets)
-	args := make([]string, 0, 2*len(hook.Env))
-	for k, v := range hook.Env {
-		expanded, missing := hooks.ExpandEnvRefs(v, lookup)
-		for _, name := range missing {
-			r.log.Warn("hook env references unset variable",
-				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
-			// A hook running with an empty secret looks healthy from the
-			// outside while every run fails downstream.
-			r.events.Record("env.unresolved",
-				hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
-				map[string]string{"hook": hook.ID, "run": run.ID()})
-		}
-		args = append(args, "-e", k+"="+expanded)
-	}
-	return args
 }
