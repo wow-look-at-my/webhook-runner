@@ -196,10 +196,13 @@ graph LR
   modal links holders and waiters for click-through; the chart's "?"
   legend explains both badges, and run tooltips spell them out in plain
   language ("waiting for model-gateway · 3rd in line", "holds the
-  model-gateway slot · 2 waiting"). A lane's **queued backlog collapses
-  into one "×N queued" span** (2+ pending runs; executing runs keep
-  their own spans) so a flood reads as depth, not a wall — clicking it
-  opens the hook's page. Failures are
+  model-gateway slot · 2 waiting"). **Waiting never stacks the lane**:
+  when runs queue behind each other, that stretch collapses into one
+  "×N waiting" row and the runs inside it are drawn from the moment
+  they LAUNCHED, so a lane packs to its concurrency limit — N rows of
+  real spans plus one row showing how deep the queue got — instead of
+  one row per queued run. A lone waiter keeps its dim lead-in, since
+  nothing is stacking. Clicking the row opens the hook's page. Failures are
   unmissable, cancelled runs render
   hollow with a dashed border and a marked kill tail, and instant runs
   become diamond pips — overlapping pips cluster into ×N markers that

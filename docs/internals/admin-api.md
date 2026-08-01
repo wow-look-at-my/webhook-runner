@@ -207,17 +207,26 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   pages now always carry every active run and an ancient live span must
   not vouch unfetched terminal history as known-empty). The testjs
   timeline-reconcile harness pins all of it.
-  PENDING-BACKLOG COLLAPSE (operator directive — a flood must read as
-  depth, not a wall of idle spans): per lane, 2+ status=pending runs
-  feed ONE synthetic `queued:<lane>` aggregate interval (earliest
-  queued start → live edge, `×N queued` badge restamped as the depth
-  moves) with the individual pending spans withheld; executing runs
-  (running, declared waits/locks included) stay individual; N=1 renders
-  the real span. The DATA model stays per-run — runsById and the truth
-  reconcile never see the aggregation, it exists only in the fed
-  interval set (`buildAllIntervals`). Collapse-boundary crossings in
-  either direction rebuild via setData (mergeData cannot remove
-  intervals); within a collapsed state, depth changes are aggregate
+  QUEUE COLLAPSE (operator directive — a flood must read as depth, not
+  a wall of spans): waiting never drives packing. Per lane the adapter
+  clusters the runs' QUEUED EXTENTS (accepted → launched; → the live
+  edge for one still waiting) and any cluster holding 2+ becomes ONE
+  synthetic `queued:<startMs>:<lane>` aggregate over the whole
+  oversubscribed stretch — with the runs inside it losing their
+  lead-ins: a run that launched is drawn from LAUNCH, one that never
+  launched is withheld (it has nothing but wait to show). What is left
+  overlapping is actual execution, so a lane packs to its concurrency
+  limit: N rows of real spans plus one row saying how deep the queue
+  got behind them. Before this, ~480 runs accepted at once each carried
+  a lead-in over the same stretch and the lane stacked ~480 sub-tracks
+  deep. A lane nobody queued behind is untouched — a lone waiter keeps
+  its dim lead-in. The badge counts what is WAITING NOW while the
+  cluster is open (it counts down as the queue drains; the tooltip adds
+  the peak) and the PEAK once it is closed. The DATA model stays
+  per-run — runsById and the truth reconcile never see the aggregation,
+  it exists only in the fed interval set (`buildAllIntervals`). A
+  change to the SET of clusters rebuilds via setData (mergeData cannot
+  remove intervals); within a stable set, depth changes are aggregate
   upserts. Aggregate click opens the lane's hook page (a run modal
   cannot show N runs); its tooltip names the depth + the first few
   queued runs. The ':' in the aggregate id namespace can never appear
