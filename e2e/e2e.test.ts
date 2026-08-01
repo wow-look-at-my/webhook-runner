@@ -76,9 +76,6 @@ const port = await freePort();
 const adminPort = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const adminBase = `http://127.0.0.1:${adminPort}`;
-// hostenv-hook's hook.json references ${E2E_HOST_VAR}; the server process
-// (spawned below, inheriting this env) expands it at container start.
-process.env.E2E_HOST_VAR = "host-says-hi";
 // sops-hook's secrets.sops.env decrypts with the committed test-only age key.
 process.env.SOPS_AGE_KEY_FILE = path.resolve("e2e", "age-test-key.txt");
 const proc = child_process.spawn(
@@ -101,9 +98,9 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 12);
+    assert.equal(hooks.length, 11);
     const ids = hooks.map((h: any) => h.id).sort();
-    assert.deepEqual(ids, ["apikey-hook", "dind-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "hostenv-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
+    assert.deepEqual(ids, ["apikey-hook", "dind-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
     // The scheduled hook advertises its interval in the summary.
     const scheduled = hooks.find((h: any) => h.id === "scheduled-hook");
     assert.equal(scheduled.schedule, "3s", "scheduled-hook should report its schedule");
@@ -209,13 +206,19 @@ try {
     assert.equal(r.status, 200);
   });
 
-  await test("env vars are injected", async () => {
+  await test("hook settings arrive as a mounted document", async () => {
     const r = await fetch(`${base}/hook/env-hook?wait=true`, { method: "POST", body: "{}" });
     assert.equal(r.status, 200);
     const run: any = await r.json();
     const output = run.output.join("\n");
     assert.ok(output.includes("id=env-hook"), "missing HOOK_ID");
-    assert.ok(output.includes("custom=e2e-value"), "missing MY_VAR");
+    // The whole settings document, verbatim -- including the integer, which
+    // the retired string-only env block could not carry. Compared without
+    // whitespace: the runner hands over the manifest's bytes as written, so
+    // the document's formatting is hook.json's, not a normalized re-encoding.
+    const dense = output.replace(/\s+/g, "");
+    assert.ok(dense.includes('"my_var":"e2e-value"'), `missing settings value: ${output}`);
+    assert.ok(dense.includes('"retries":2'), `settings must keep JSON types: ${output}`);
   });
 
   await test("payload and headers are mounted", async () => {
@@ -255,14 +258,7 @@ try {
     assert.ok(result.output.join("\n").includes("dind-smoke-ok"), "nested dockerd smoke check did not confirm");
   });
 
-  await test("env ${VAR} expands from the runner host", async () => {
-    const r = await fetch(`${base}/hook/hostenv-hook?wait=true`, { method: "POST", body: "{}" });
-    assert.equal(r.status, 200);
-    const run: any = await r.json();
-    assert.ok(run.output.join("\n").includes("fromhost=host-says-hi"), "missing expanded host env value");
-  });
-
-  await test("sops secrets: injected env, ${NAME} reference, and api_key all decrypt", async () => {
+  await test("sops secrets: injected env and api_key both decrypt", async () => {
     // SOPS_HOOK_KEY lives only inside the encrypted secrets.sops.env.
     const r = await fetch(`${base}/hook/sops-hook?wait=true`, {
       method: "POST",
@@ -273,7 +269,6 @@ try {
     const run: any = await r.json();
     const output = run.output.join("\n");
     assert.ok(output.includes("msg=hello-from-sops"), "missing injected secret");
-    assert.ok(output.includes("ref=sops-ref-value"), "missing ${NAME}-referenced secret");
   });
 
   await test("sops secrets: wrong api_key rejected", async () => {

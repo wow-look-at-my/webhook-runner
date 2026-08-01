@@ -164,7 +164,7 @@ func TestValidateCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"],"concurrency_group":"g"}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"],"concurrency_group":"g"}`), 0o644))
 
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
@@ -182,7 +182,7 @@ func TestValidateCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(badDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(badDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(badDir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"],"concurrency_group":"nope"}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"],"concurrency_group":"nope"}`), 0o644))
 	out.Reset()
 	errOut.Reset()
 	require.Error(t, cmd.RunE(cmd, []string{bad}))
@@ -196,7 +196,7 @@ func TestValidateCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(srcHook, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(srcHook, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(srcHook, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"]}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"]}`), 0o644))
 	writeTestHook(t, mixed, "leftover") // a top-level hook dir left behind
 	out.Reset()
 	errOut.Reset()
@@ -228,7 +228,7 @@ func TestTestCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"],"tests":[["true"]]}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"],"tests":[["true"]]}`), 0o644))
 	out.Reset()
 	require.NoError(t, cmd.RunE(cmd, []string{root}))
 	assert.Contains(t, out.String(), "1 test command(s) passed across 1 hook(s)")

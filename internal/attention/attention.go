@@ -64,6 +64,13 @@ const (
 	// not verified green. Reported and resolved by the gate itself as
 	// commits verify, switch, or the operator forces (admin /reload).
 	SourceReload = "reload"
+	// SourceDeprecated: an entity that LOADED but uses a manifest field on
+	// its way out (today: `env`, superseded by `settings`). Deliberately
+	// not a load error — a migration that requires a flag-day merge cannot
+	// be rolled out safely, so the old field keeps working for one release
+	// while every use of it is visible here. Re-derived per reload; clears
+	// the moment the manifest drops the field.
+	SourceDeprecated = "deprecated"
 	// SourceManager: a manager that should be running has no live instance
 	// (start failing, crash-looping, image unbuildable). Re-derived by the
 	// supervisor on every state change; clears the moment an instance runs
