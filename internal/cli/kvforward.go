@@ -42,6 +42,12 @@ func runKVForward(_ *cobra.Command, args []string) error {
 		return errors.New("kv-forward: HOOK_KV_SOCKET not set")
 	}
 
+	// Report the container's first instruction before doing anything else:
+	// this is the far side of the host's "docker run spawned" mark, and the
+	// gap between them is the container's own startup cost. Earliest
+	// possible point, so the number measures Docker and not our own setup.
+	reportContainerEntry(socket, os.Getenv("HOOK_KV_TOKEN"))
+
 	ln, err := kvproxy.Serve(firstNonEmpty(os.Getenv("HOOK_KV_LISTEN"), kvForwardListen), socket)
 	if err != nil {
 		return err
