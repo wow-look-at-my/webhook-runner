@@ -21,7 +21,12 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   and stream — anything landing in that window is buffered and delivered
   after (clients merge by run id, so the duplicate is harmless). The
   terminal notification fires AFTER the OnFinish seam (run store write
-  first). At shutdown `srv.CloseStreams()` runs before the admin server's
+  first) and BEFORE `close(done)` — `Run.Finish` settles every terminal
+  side effect (onTerminal, onFinish, notifyChange) and closes the done
+  channel last, so `<-run.Done()` is a sufficient barrier by itself and no
+  caller needs a second one. See "Terminal ordering" in
+  `docs/internals/runs-concurrency-and-overrides.md`. At shutdown
+  `srv.CloseStreams()` runs before the admin server's
   `Shutdown` — Shutdown drains in-flight handlers, and stream handlers
   only return when their subscription closes or their client hangs up.
   `streamHeartbeat` is a package var so tests can shrink it.

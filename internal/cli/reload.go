@@ -32,6 +32,10 @@ func buildReloadPath(repo *hooks.Repo, o *serveOptions, dataDir string, loadAndA
 	if repo == nil || o.gateContext == "" {
 		return buildReloadFunc(repo, loadAndApply, rec), nil, nil
 	}
+	// Same derivation the poll's status reader uses; here it only decorates
+	// held-commit messages with a run-details link, so an unparseable URL
+	// costs the link, never the gating.
+	repoSlug, _ := githubstatus.RepoFromGitURL(o.hooksRepo)
 	gate, err := reloadgate.New(reloadgate.Config{
 		Repo:      repo,
 		Branch:    o.hooksBranch,
@@ -39,6 +43,7 @@ func buildReloadPath(repo *hooks.Repo, o *serveOptions, dataDir string, loadAndA
 		StatePath: filepath.Join(dataDir, "reload-gate.json"),
 		Apply:     loadAndApply,
 		Status:    buildGateStatusFunc(gh, o, logger),
+		RepoSlug:  repoSlug,
 		Events:    rec,
 		Attention: agg,
 		Logger:    logger,

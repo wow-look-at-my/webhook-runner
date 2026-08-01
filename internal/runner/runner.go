@@ -697,20 +697,30 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		}
 	default:
 	}
+	// Registered rather than run after Finish returns: Finish invokes this
+	// BEFORE closing the done channel, so the terminal feed line is already
+	// there for anything that observes <-run.Done(). Doing it afterwards is
+	// what forced callers to add a second Runner.Wait() barrier. See
+	// runs.Run.SetOnTerminal.
+	run.SetOnTerminal(func(runs.RunState) {
+		r.log.Info("hook finished",
+			"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
+		// runRef, not run.ID(): a title set mid-run via the state API's /title
+		// lands here too, so the feed's terminal line names the subject.
+		finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)%s", hook.ID, runRef(run), status, exitCode, spawnNote(run))
+		if errMsg != "" && (status == runs.StatusTimeout ||
+			(status == runs.StatusCancelled && errMsg != "cancelled")) {
+			// Carry the reason (a timeout's "no output" verdict, a cancel's
+			// steal explanation) so the activity feed shows what killed the run.
+			finishedMsg += ": " + errMsg
+		}
+		r.events.Record("run.finished", finishedMsg,
+			map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
+	})
 	run.Finish(status, exitCode, errMsg)
-	r.log.Info("hook finished",
-		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	// runRef, not run.ID(): a title set mid-run via the state API's /title
-	// lands here too, so the feed's terminal line names the subject.
-	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)%s", hook.ID, runRef(run), status, exitCode, spawnNote(run))
-	if errMsg != "" && (status == runs.StatusTimeout ||
-		(status == runs.StatusCancelled && errMsg != "cancelled")) {
-		// Carry the reason (a timeout's "no output" verdict, a cancel's
-		// steal explanation) so the activity feed shows what killed the run.
-		finishedMsg += ": " + errMsg
-	}
-	r.events.Record("run.finished", finishedMsg,
-		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
+	// The GitHub commit-status POST stays OUTSIDE the terminal seam: it is a
+	// network call, and blocking every Done() observer on it would trade one
+	// footgun for a worse one.
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
