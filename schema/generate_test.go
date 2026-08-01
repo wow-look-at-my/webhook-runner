@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/json-validator/validator"
 )
 
 var update = flag.Bool("update", false, "rewrite the generated schemas from src/")
@@ -44,29 +45,19 @@ func TestGeneratedSchemasMatchSources(t *testing.T) {
 	}
 }
 
-// The whole point of the base: a constraint added there reaches both
-// documents, which is what hand-copying failed to do.
-func TestSharedConstraintsAreIdenticalInBothSchemas(t *testing.T) {
-	hook := propertiesOf(t, Hook)
-	manager := propertiesOf(t, Manager)
-
-	shared := 0
-	for name, hp := range hook {
-		mp, ok := manager[name]
-		if !ok {
-			continue
-		}
-		shared++
-		assert.Equal(t, constraintsOf(t, hp), constraintsOf(t, mp),
-			"property %q differs between the two schemas; shared constraints belong in src/common.json", name)
-	}
-	assert.NotZero(t, shared, "the schemas share no properties -- the base is not wired up")
+// The whole point of the base: ONE shared block, byte-identical in both
+// published documents, so a constraint cannot reach one and miss the other.
+func TestSharedBlockIsIdenticalInBothSchemas(t *testing.T) {
+	hook, manager := sharedBlock(t, Hook), sharedBlock(t, Manager)
+	assert.Equal(t, string(hook), string(manager),
+		"$defs.common differs between the schemas; it is generated from src/common.json and must not")
+	assert.NotEmpty(t, hook, "$defs.common is missing -- the base is not wired up")
 }
 
 // The five that had drifted, pinned so they cannot drift back.
 func TestPreviouslyDriftedConstraintsSurvive(t *testing.T) {
 	for _, doc := range [][]byte{Hook, Manager} {
-		props := propertiesOf(t, doc)
+		props := sharedProperties(t, doc)
 		assert.Equal(t, "^[0-9]+(ns|us|ms|s|m|h)+$", props["timeout"]["pattern"],
 			"a timeout must be a Go duration in BOTH schemas")
 		assert.Equal(t, "X-API-Key", props["api_key_header"]["default"])
@@ -74,6 +65,61 @@ func TestPreviouslyDriftedConstraintsSurvive(t *testing.T) {
 		assert.Contains(t, props["run_title"], "examples")
 		assert.NotContains(t, props["skip_if"], "minItems")
 	}
+}
+
+// The composition trap, pinned: additionalProperties would evaluate the shared
+// block alone and reject the entity's own properties. Only unevaluatedProperties
+// accounts for what a sibling subschema matched.
+func TestCompositionAcceptsEntityPropertiesAndStillRejectsUnknowns(t *testing.T) {
+	cases := []struct {
+		name, doc string
+		valid     bool
+	}{
+		{"hook-only property", `{"$schema":"https://example.test/hook.schema.json","api_key":"k","schedule":"1h"}`, true},
+		{"unknown property", `{"$schema":"https://example.test/hook.schema.json","api_key":"k","nope":1}`, false},
+		{"shared constraint still enforced", `{"$schema":"https://example.test/hook.schema.json","api_key":"k","timeout":"banana"}`, false},
+	}
+	v, err := validator.NewFromBytes("embedded:hook.schema.json", Hook, validator.Options{Draft: "2020"})
+	require.NoError(t, err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := v.ValidateBytes([]byte(c.doc), "hook.json")
+			require.NoError(t, res.Err)
+			assert.Equal(t, c.valid, res.Valid, res.Detail())
+		})
+	}
+}
+
+// Every published document must carry unevaluatedProperties and NOT
+// additionalProperties -- the latter is the shape that silently breaks.
+func TestPublishedSchemasUseUnevaluatedProperties(t *testing.T) {
+	for _, doc := range [][]byte{Hook, Manager} {
+		var top map[string]any
+		require.NoError(t, json.Unmarshal(doc, &top))
+		assert.Equal(t, false, top["unevaluatedProperties"])
+		assert.NotContains(t, top, "additionalProperties",
+			"additionalProperties does not compose through allOf")
+	}
+}
+
+func sharedBlock(t *testing.T, doc []byte) []byte {
+	t.Helper()
+	var parsed struct {
+		Defs struct {
+			Common json.RawMessage `json:"common"`
+		} `json:"$defs"`
+	}
+	require.NoError(t, json.Unmarshal(doc, &parsed))
+	return parsed.Defs.Common
+}
+
+func sharedProperties(t *testing.T, doc []byte) map[string]map[string]any {
+	t.Helper()
+	var parsed struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(sharedBlock(t, doc), &parsed))
+	return parsed.Properties
 }
 
 // A shared property an overlay does not document is an error, not an
@@ -91,24 +137,4 @@ func TestOverlayMayNotRedefineASharedProperty(t *testing.T) {
 		[]byte(`{"descriptions":{"timeout":"t"},"properties":{"timeout":{"type":"integer"}}}`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "declared in both")
-}
-
-func propertiesOf(t *testing.T, doc []byte) map[string]map[string]any {
-	t.Helper()
-	var parsed struct {
-		Properties map[string]map[string]any `json:"properties"`
-	}
-	require.NoError(t, json.Unmarshal(doc, &parsed))
-	return parsed.Properties
-}
-
-func constraintsOf(t *testing.T, prop map[string]any) map[string]any {
-	t.Helper()
-	out := map[string]any{}
-	for k, v := range prop {
-		if k != "description" {
-			out[k] = v
-		}
-	}
-	return out
 }

@@ -7,7 +7,6 @@
   "required": [
     "$schema"
   ],
-  "additionalProperties": false,
   "allOf": [
     {
       "not": {
