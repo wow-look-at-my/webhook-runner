@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -224,11 +225,43 @@ func (w *slogLineWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// imageCommandCache memoizes imageCommand's answer. An image TAG is a
+// content hash (see ImageTag), so a given tag's ENTRYPOINT/CMD can never
+// change — the answer is immutable for the life of the process, and every
+// state-hook run was paying a full docker CLI + daemon round trip to
+// re-derive it on the critical path between slot acquisition and container
+// launch.
+//
+// The key includes the hook's command override as well as the tag. That is
+// belt-and-braces: hook.json lives inside the hashed content, so a changed
+// `command` already yields a different tag. Keying on both means the cache
+// stays correct without depending on that, and costs one string join.
+//
+// Unbounded by design, and bounded in practice: entries are one small
+// []string per distinct (tag, command), and new tags only appear when a
+// hook's content changes — the same event that builds a new image. A server
+// that accumulated enough of these to matter would have filled its disk with
+// images first.
+var imageCommandCache sync.Map // string -> []string
+
 // imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
 // CMD, or ENTRYPOINT plus hookCommand when the hook overrides the command — via
 // docker inspect. State hooks set the KV shim as the container entrypoint, so
 // the shim must be handed the original command to exec after starting the proxy.
+//
+// Cached per (image tag, hook command): see imageCommandCache. Errors are
+// never cached — a failed inspect is a transient daemon condition, not a
+// property of the tag.
 func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
+	// \x00 cannot appear in an argv element or a docker tag, so it cannot
+	// make two different keys collide.
+	key := image + "\x00" + strings.Join(hookCommand, "\x00")
+	if cached, ok := imageCommandCache.Load(key); ok {
+		// Copy: callers append the shim's own argv onto the result, which
+		// would otherwise write into the cached slice's spare capacity and
+		// corrupt the next run's command.
+		return append([]string(nil), cached.([]string)...), nil
+	}
 	out, err := exec.Command(dockerBin, "inspect", image,
 		"--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}").Output()
 	if err != nil {
@@ -248,5 +281,6 @@ func imageCommand(dockerBin, image string, hookCommand []string) ([]string, erro
 	if len(argv) == 0 {
 		return nil, errors.New("image declares no entrypoint or cmd and the hook sets no command")
 	}
+	imageCommandCache.Store(key, append([]string(nil), argv...))
 	return argv, nil
 }
