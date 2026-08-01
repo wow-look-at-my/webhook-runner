@@ -57,6 +57,9 @@ Configuration via environment:
   WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS  global cap on simultaneously running hook containers (default 64;
                                       the dashboard's persisted override wins over it; excess runs queue)
   WEBHOOK_RUNNER_GITHUB_TOKEN         GitHub token for commit-status updates
+  WEBHOOK_RUNNER_SECRET_SERVER_TOKEN  sst_ machine token: read the GitHub credential from secret-server instead
+  WEBHOOK_RUNNER_SECRET_SERVER_URL    secret-server base URL (default https://secrets.pazer.io)
+  WEBHOOK_RUNNER_GITHUB_TOKEN_SECRET  secret-server secret name (default PRIVATE_ORG_REPO_READ)
   WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
