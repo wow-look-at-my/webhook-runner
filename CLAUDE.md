@@ -178,7 +178,11 @@ The server listens on two TCP ports plus a Unix socket:
   first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
   "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
   on the run's dashboard row, counts as activity for the idle `timeout`;
-  see the wait bullet under "Things easy to get wrong"), the friendly
+  see the wait bullet under "Things easy to get wrong"), the shim-only
+  instrumentation report `POST /phase/container-entry` (no body; the server
+  stamps its receive time — the one lifecycle mark the host cannot see, and
+  what separates docker's container-create cost from the hook runtime's
+  cold start; docs/internals/run-phases.md), the friendly
   run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
   chars — names the calling run mid-flight, replacing any run_title
   template title; see the run-title bullet under "Things easy to get
@@ -268,6 +272,7 @@ most often, plus where to read the rest.
 - **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
+- **A phase mark that is missing means UNKNOWN, never zero.** Container overhead is measured, not estimated (`internal/runs` phase marks) — but only a hook whose container reports from the inside yields an EXACT boot figure; every other hook gets an upper bound that also contains its runtime's cold start. Never let the two meet in one number.
 - **GitHub does not re-send a failed delivery.** A draining server therefore PARKS deliveries (`internal/spool`) and answers 202 — never 503 "the sender will retry". Shutdown order is load-bearing: the hook port and state socket stay up across `rn.Wait()`.
 
 Read before changing any of these areas:
@@ -280,5 +285,6 @@ Read before changing any of these areas:
 - [docs/internals/backlogs.md](docs/internals/backlogs.md) -- the batch-backlog primitive: push-as-set-union, take-removes, depths, how it differs from internal/queue, and why a hook must never build a cursor instead.
 - [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run), the push-fed admin surface, and unconditional github-state-mirror routing.
 - [docs/internals/waits-and-spawn.md](docs/internals/waits-and-spawn.md) -- declared waits and the manifest-authorized spawn primitive.
+- [docs/internals/run-phases.md](docs/internals/run-phases.md) -- lifecycle phase marks: what each one means, the exact-vs-bounded boot rule, the shim's in-container report.
 - [docs/internals/shim-and-timeline.md](docs/internals/shim-and-timeline.md) -- the state-socket proxy shim and the dashboard timeline adapter.
 - [docs/manager-entity-design.md](docs/manager-entity-design.md) -- the manager entity design, as built.
