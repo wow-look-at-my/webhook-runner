@@ -64,13 +64,13 @@ const (
 	// not verified green. Reported and resolved by the gate itself as
 	// commits verify, switch, or the operator forces (admin /reload).
 	SourceReload = "reload"
-	// SourceDeprecated: an entity that LOADED but uses a manifest field on
-	// its way out (today: `env`, superseded by `settings`). Deliberately
-	// not a load error — a migration that requires a flag-day merge cannot
-	// be rolled out safely, so the old field keeps working for one release
-	// while every use of it is visible here. Re-derived per reload; clears
-	// the moment the manifest drops the field.
-	SourceDeprecated = "deprecated"
+	// SourceTreeRefused: the whole hooks tree failed to apply. A load in
+	// which any entity errored is REFUSED rather than partially applied
+	// (internal/cli.buildLoadAndApply), so the fleet keeps serving what it
+	// was serving and the deploy is HELD. This is the entry that says so in
+	// one line -- the per-entity SourceLoad entries beside it say which
+	// entity and which field. Cleared by the next load that applies whole.
+	SourceTreeRefused = "tree-refused"
 	// SourceManager: a manager that should be running has no live instance
 	// (start failing, crash-looping, image unbuildable). Re-derived by the
 	// supervisor on every state change; clears the moment an instance runs

@@ -90,7 +90,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 		Branch:    "master",
 		Context:   "all-builds",
 		StatePath: filepath.Join(base, "reload-gate.json"),
-		Apply:     func() { applies++ },
+		Apply:     func() error { applies++; return nil },
 		// The wedged shape: every status read fails (no token / API down).
 		Status:    statusFor(nil),
 		Events:    rec,

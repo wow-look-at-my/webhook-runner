@@ -79,6 +79,11 @@ func groupStatus(t *testing.T, mgr *concurrency.Manager, name string) concurrenc
 func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	root := t.TempDir()
 	writeTestHook(t, root, "h1")
+	// A second hook that never goes away: removing the LAST hook empties the
+	// fleet, which is a load error, and a load with errors is refused whole
+	// (buildLoadAndApply) -- so an orphaning scenario has to leave a tree
+	// that still loads, exactly as a real hook deletion would.
+	writeTestHook(t, root, "h2")
 	writeConcurrencyJSON(t, root, `{"groups":{"g":{"limit":3}}}`)
 
 	ov, err := overrides.Open(filepath.Join(t.TempDir(), "overrides.json"))
@@ -96,7 +101,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 
 	// Initial load: the hook is registered (disabling never unloads it) and
 	// the limit override is effective on top of the declared config.
-	loadAndApply()
+	require.NoError(t, loadAndApply())
 	_, ok := reg.Get("h1")
 	require.True(t, ok, "a disabled hook stays loaded/registered")
 	assert.True(t, ov.HookDisabled("h1", true))
@@ -108,7 +113,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 
 	// An ordinary reload changes nothing: overrides still applied, no
 	// orphan noise.
-	loadAndApply()
+	require.NoError(t, loadAndApply())
 	assert.True(t, ov.HookDisabled("h1", true))
 	st = groupStatus(t, mgr, "g")
 	assert.Equal(t, 1, st.Limit)
@@ -119,20 +124,20 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	// orphans — KEPT in the store, announced exactly once each.
 	require.NoError(t, os.RemoveAll(filepath.Join(root, "h1")))
 	require.NoError(t, os.Remove(filepath.Join(root, concurrency.FileName)))
-	loadAndApply()
+	require.NoError(t, loadAndApply())
 	assert.Equal(t, 2, countEvents(rec, "override.orphaned"))
 	assert.True(t, ov.HookDisabled("h1", true), "an orphaned disable override is never dropped")
 	_, hasLimit := ov.ConcurrencyLimit("g")
 	assert.True(t, hasLimit, "an orphaned limit override is never dropped")
 
 	// Still orphaned on the next reload: no repeat announcements.
-	loadAndApply()
+	require.NoError(t, loadAndApply())
 	assert.Equal(t, 2, countEvents(rec, "override.orphaned"))
 
 	// The targets come back: overrides re-apply, nothing new announced.
 	writeTestHook(t, root, "h1")
 	writeConcurrencyJSON(t, root, `{"groups":{"g":{"limit":3}}}`)
-	loadAndApply()
+	require.NoError(t, loadAndApply())
 	assert.Equal(t, 2, countEvents(rec, "override.orphaned"))
 	_, ok = reg.Get("h1")
 	require.True(t, ok)
@@ -144,7 +149,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	// Orphaned a second time: announced again (returning reset the dedup).
 	require.NoError(t, os.RemoveAll(filepath.Join(root, "h1")))
 	require.NoError(t, os.Remove(filepath.Join(root, concurrency.FileName)))
-	loadAndApply()
+	require.NoError(t, loadAndApply())
 	assert.Equal(t, 4, countEvents(rec, "override.orphaned"))
 }
 
@@ -154,6 +159,11 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 func TestOverridesSurviveRestart(t *testing.T) {
 	root := t.TempDir()
 	writeTestHook(t, root, "h1")
+	// A second hook that never goes away: removing the LAST hook empties the
+	// fleet, which is a load error, and a load with errors is refused whole
+	// (buildLoadAndApply) -- so an orphaning scenario has to leave a tree
+	// that still loads, exactly as a real hook deletion would.
+	writeTestHook(t, root, "h2")
 	writeConcurrencyJSON(t, root, `{"groups":{"g":{"limit":3}}}`)
 	ovPath := filepath.Join(t.TempDir(), "overrides.json")
 

@@ -308,6 +308,14 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			return
 		}
 	}
+	if err := resolveSettingsFile(hook, secrets, settingsPath); err != nil {
+		run.Finish(runs.StatusError, -1, err.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+
 	// Every hook runs an image built from its directory, tagged by content
 	// hash — code is baked in, so a concurrent hooks-repo pull can't
 	// change what an in-flight run executes. The build is a cheap no-op
@@ -460,28 +468,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			continue
 		}
 		args = append(args, "-e", k+"="+v)
-	}
-	// The superseded `env` block, still injected exactly as it always was.
-	// A deprecation that quietly stops working is worse than the flag day it
-	// exists to avoid: the hook would load, run, and behave wrongly. Values
-	// resolve ${NAME} from the hook's secrets first, then the host
-	// environment. Every entity using this is named loudly at load
-	// (hooks.Deprecations) and listed on the needs-attention surface.
-	if len(hook.Env) > 0 {
-		lookup := hooks.SecretsFirstLookup(secrets)
-		for k, v := range hook.Env {
-			expanded, missing := hooks.ExpandEnvRefs(v, lookup)
-			for _, name := range missing {
-				r.log.Warn("hook env references unset variable",
-					"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
-				// A hook running with an empty secret looks healthy from the
-				// outside while every run fails downstream.
-				r.events.Record("env.unresolved",
-					hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
-					map[string]string{"hook": hook.ID, "run": run.ID()})
-			}
-			args = append(args, "-e", k+"="+expanded)
-		}
 	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)

@@ -390,14 +390,30 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// rather than polling for readiness, and necessarily after it, since a
 	// replay needs its hook to exist.
 	var replayOnce sync.Once
-	loadThenReplay := func() {
-		loadAndApply()
+	loadThenReplay := func() error {
+		err := loadAndApply()
 		replayOnce.Do(func() {
 			replaySpooledDeliveries(spoolStore, registry, rn, rec, logger)
 		})
+		return err
+	}
+
+	// THE STARTUP LOAD IS FATAL WHEN REFUSED. A binary that cannot load the
+	// deployed tree has exactly two options: serve a FRACTION of the fleet,
+	// or refuse to serve. The fraction is the dangerous one — it comes up
+	// answering /health, the dashboard looks alive, and the entities the
+	// binary could not parse have simply stopped existing, with no rollback
+	// available because the tree never changed (the binary did).
+	//
+	// Exiting instead makes it a FAILED DEPLOY: loud, immediate, and
+	// attributable to the image that just rolled out. This is the
+	// binary-moved half of the fail-closed rule; the tree-moved half is the
+	// reload gate's rollback (internal/reloadgate.applyOrRollbackLocked).
+	if err := loadThenReplay(); err != nil {
+		return fmt.Errorf("refusing to serve: %w", err)
 	}
 	go func() {
-		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadThenReplay, logger)
+		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, func() { _ = loadThenReplay() }, logger)
 	}()
 
 	// Scheduler loop runs for the lifetime of the server too; it does nothing

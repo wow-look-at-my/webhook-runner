@@ -112,13 +112,6 @@ func init() {
 				}
 				fmt.Fprintf(out, "ok  %s (manager, %s, %s)%s\n", id, tag, iv, spawns)
 			}
-			// Superseded fields on entities that validated fine. Reported here,
-			// not only at serve time, so the fleet repo's CI shows exactly what
-			// is left to migrate -- a deprecation nobody can see from CI is one
-			// that never gets done. Not an error: these entities load and run.
-			for _, d := range hooks.CollectDeprecations(loaded, loadedManagers) {
-				fmt.Fprintf(out, "deprecated  %s: %s\n", d.EntityID, d.Message)
-			}
 			if len(errs) > 0 {
 				for _, e := range errs {
 					fmt.Fprintf(cmd.ErrOrStderr(), "ERR %v\n", e)

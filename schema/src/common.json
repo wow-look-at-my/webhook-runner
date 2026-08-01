@@ -35,13 +35,6 @@
     "type": "boolean",
     "default": true
   },
-  "env": {
-    "type": "object",
-    "additionalProperties": {
-      "type": "string"
-    },
-    "deprecated": true
-  },
   "extra_docker_args": {
     "type": "array",
     "items": {
