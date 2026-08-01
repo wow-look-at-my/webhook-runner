@@ -197,10 +197,13 @@ graph LR
   modal links holders and waiters for click-through; the chart's "?"
   legend explains both badges, and run tooltips spell them out in plain
   language ("waiting for model-gateway · 3rd in line", "holds the
-  model-gateway slot · 2 waiting"). A lane's **queued backlog collapses
-  into one "×N queued" span** (2+ pending runs; executing runs keep
-  their own spans) so a flood reads as depth, not a wall — clicking it
-  opens the hook's page. Failures are
+  model-gateway slot · 2 waiting"). **Waiting never stacks the lane**:
+  when runs queue behind each other, that stretch collapses into one
+  "×N waiting" row and the runs inside it are drawn from the moment
+  they LAUNCHED, so a lane packs to its concurrency limit — N rows of
+  real spans plus one row showing how deep the queue got — instead of
+  one row per queued run. A lone waiter keeps its dim lead-in, since
+  nothing is stacking. Clicking the row opens the hook's page. Failures are
   unmissable, cancelled runs render
   hollow with a dashed border and a marked kill tail, and instant runs
   become diamond pips — overlapping pips cluster into ×N markers that
@@ -248,7 +251,9 @@ graph LR
 ## Quick start
 
 ```sh
-# Build
+# Build. GOPRIVATE is required: the secret-server client is a private module,
+# and no checksum database can contain one.
+export GOPRIVATE=github.com/wow-look-at-my/secret-server
 go-toolchain
 ./webhook-runner ./examples/hooks
 
@@ -1212,7 +1217,10 @@ dats test dats
 | `WEBHOOK_RUNNER_RUN_RETENTION`    | `48h`                        | How long completed runs are kept in the persistent run history (`<data-dir>/runs.db`). Go duration; the primary retention knob. |
 | `WEBHOOK_RUNNER_RUN_RETENTION_MAX`| `200000`                     | Max persisted runs per hook — a coarse disk safety net behind the time-based retention (the GC sweep prunes oldest-first). |
 | `WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS` | `64`                      | Default for the [global run cap](#the-global-run-cap): the max hook containers running at once across ALL hooks; excess executions queue. A set-but-invalid value (unparseable or `< 1`) fails startup. The dashboard's persisted override (`PUT /concurrency-global/limit`) wins over this default. |
-| `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | GitHub token for commit statuses: required if any hook uses `github_status`, and read by the reload gate's [reconciliation poll](#ci-gated-reloads) to check the hooks repo's gating status (needs read access to the hooks repo's commit statuses — a fine-grained PAT with "Commit statuses: Read" + "Metadata: Read" on that repo, or classic `repo:status`). Without it the poll holds loudly on tip changes. |
+| `WEBHOOK_RUNNER_GITHUB_TOKEN`     | (none)                       | GitHub token for commit statuses, used directly when set (explicit beats derived, so it wins over secret-server): required if any hook uses `github_status`, and read by the reload gate's [reconciliation poll](#ci-gated-reloads) to check the hooks repo's gating status (needs read access to the hooks repo's commit statuses — a fine-grained PAT with "Commit statuses: Read" + "Metadata: Read" on that repo, or classic `repo:status`). Without it the poll holds loudly on tip changes. |
+| `WEBHOOK_RUNNER_SECRET_SERVER_TOKEN` | (none)                    | An `sst_` machine token for [secret-server](https://github.com/wow-look-at-my/secret-server). When set (and `WEBHOOK_RUNNER_GITHUB_TOKEN` is not), the runner reads its GitHub credential from secret-server instead of the environment — the fix for a deployment that was never handed the token by hand and holds every reload with "no GitHub token configured". Resolved per call and cached briefly, so a secret-server outage during a restart heals on the next poll and a rotated credential needs no redeploy. A token without the `sst_` prefix fails startup. |
+| `WEBHOOK_RUNNER_SECRET_SERVER_URL` | `https://secrets.pazer.io` | secret-server base URL. |
+| `WEBHOOK_RUNNER_GITHUB_TOKEN_SECRET` | `PRIVATE_ORG_REPO_READ` | Which secret-server secret holds the GitHub credential. |
 **GitHub API routing is not configurable.** Every hook, manager, and test
 container is launched with `GITHUB_API_URL` pointing at the
 [github-state-mirror](https://github.com/wow-look-at-my/github-state-mirror)

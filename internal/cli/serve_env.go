@@ -9,8 +9,15 @@ import (
 	"strconv"
 	"time"
 
+	secretserver "github.com/wow-look-at-my/secret-server/client"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 )
+
+// defaultGitHubTokenSecret is the secret-server name holding this org's
+// private-repo read credential. It is the credential the reload gate needs to
+// read a PRIVATE hooks repo's gating commit status, and the same one every
+// GitHub Actions workflow in the org pulls under this name.
+const defaultGitHubTokenSecret = "PRIVATE_ORG_REPO_READ"
 
 type serveOptions struct {
 	addr            string
@@ -19,6 +26,9 @@ type serveOptions struct {
 	dataDir         string
 	logFormat       string
 	ghToken         string
+	secretServerURL string
+	secretServerTok string
+	ghTokenSecret   string
 	hooksRepo       string
 	hooksBranch     string
 	hooksRepoSecret string
@@ -109,6 +119,13 @@ func applyServeEnv(o *serveOptions) error {
 		o.logFormat = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_LOG_FORMAT"), "text")
 	}
 	o.ghToken = os.Getenv("WEBHOOK_RUNNER_GITHUB_TOKEN")
+	// secret-server: where the GitHub credential comes from when it is not
+	// pasted into the environment. An explicit WEBHOOK_RUNNER_GITHUB_TOKEN
+	// still wins -- explicit beats derived -- so setting both is not an
+	// error, just a preference.
+	o.secretServerTok = os.Getenv("WEBHOOK_RUNNER_SECRET_SERVER_TOKEN")
+	o.secretServerURL = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_SECRET_SERVER_URL"), secretserver.DefaultBaseURL)
+	o.ghTokenSecret = firstNonEmpty(os.Getenv("WEBHOOK_RUNNER_GITHUB_TOKEN_SECRET"), defaultGitHubTokenSecret)
 	if o.hooksRepo == "" {
 		o.hooksRepo = os.Getenv("WEBHOOK_RUNNER_HOOKS_REPO")
 	}
