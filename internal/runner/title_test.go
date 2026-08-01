@@ -76,7 +76,6 @@ func TestRunnerStartUntitled(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
-
 	assert.Empty(t, run.Snapshot(-1).Title)
 	// The bare id directly precedes the verb — no title parenthetical was
 	// inserted (the trailing "(image)" / "(exit N)" parens are unrelated).

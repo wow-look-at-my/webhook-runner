@@ -143,10 +143,16 @@ graph LR
   two flags apply on the `webhook-runner test` path. `--privileged` is
   host-root-equivalent, so enable it only for trusted, operator-curated
   hooks. See [Docker-in-Docker](#docker-in-docker-dind).
-- **Secrets without plaintext**: `env` values and `api_key` may reference
-  secrets as `${NAME}`, resolved from a per-hook sops-encrypted file
-  committed to the hooks repo (`secrets.sops.env`) or from the runner
-  host's environment.
+- **Schema-validated hook settings**: a hook's own configuration is one
+  `settings` object in hook.json, described by a `settings.schema.json` the
+  hook ships. It is validated AT LOAD — a hook whose settings do not match its
+  schema is dropped, so wrong config never becomes a running hook — and handed
+  to the container as a read-only `$HOOK_SETTINGS_FILE`. See
+  [Hook settings](#hook-settings).
+- **Secrets without plaintext**: `api_key` may reference secrets as `${NAME}`,
+  resolved from a per-hook sops-encrypted file committed to the hooks repo
+  (`secrets.sops.env`) or from the runner host's environment; decrypted
+  entries are injected into the container's environment.
 - **Scheduled hooks**: a `"schedule"` interval (a Go duration) fires a hook
   on a timer through the same run pipeline as an HTTP trigger, with
   skip-if-already-running overlap protection and fire-on-startup. See
@@ -162,7 +168,7 @@ graph LR
 - **Needs attention**: a persistent, impossible-to-miss misconfiguration
   surface. `GET /attention` (admin port) aggregates every ACTIVE problem —
   hooks dropped at load/validation (with the reason), unresolvable
-  `${NAME}` `api_key`/`env` references, sops decrypt failures, the
+  `${NAME}` `api_key` references, sops decrypt failures, the
   zero-hooks guard, the containerized-without-TMPDIR hazard, and
   recognized event-derived problems (a delivery denied over a broken
   api_key reference; a seam for future hook-emitted signals) — each with
@@ -301,7 +307,7 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | GET    | `/health`           | Liveness probe (200). Body carries the build version. |
 | GET    | `/version`          | Build identity + `hooks_tree` state (same shape as on the hook port). The dashboard footer shows the build string. |
 | GET    | `/hooks`            | List loaded hooks (id + description + `disabled`, the **effective** kill-switch state: the operator's persisted override when one exists, else the hook.json [`enable` default](#operational-overrides-the-kill-switch) — a disabled hook stays loaded and listed). |
-| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, env var *names* — never key material or env values), the operator kill-switch state (`disabled`), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
+| GET    | `/hooks/{id}`       | One hook's drill-down: a value-free config summary (schedule, concurrency group, state on/off, timeout, whether an api_key is configured as a boolean, the top-level `settings` key *names* — never values), the operator kill-switch state (`disabled`), its image state, its KV namespace stats, and run stats (counts by status, success rate, avg/max **processing** duration and avg/max **queue wait** — kept separate, see `/runs` — plus last run) over the live window merged with the persisted run history (`stats.retention` names the window, e.g. `48h`). |
 | POST   | `/hooks/{id}/disable` | Flip a hook's [kill switch](#operational-overrides-the-kill-switch) off: deliveries are rejected (`503`) and scheduled runs skipped until re-enabled. Writes an **explicit persisted override** that outranks the hook.json `enable` default; idempotent; `404` for unknown hooks; persisted before the response (a persist failure is a loud `500` with nothing half-applied). |
 | POST   | `/hooks/{id}/enable`  | Flip it back on — an explicit override too, so it also wins over a hook shipping `"enable": false`. Idempotent; `404` for unknown hooks. |
 | POST   | `/hook/{id}`        | Trigger a hook (also available here; a disabled hook is `503` here too — re-enable it to run it). |
@@ -316,8 +322,8 @@ URL (backed by an internal Unix socket; see below), not a public port.
 | POST   | `/reload/check`     | **Reload on demand.** Gated mode runs one pass of the existing reconcile logic (fetch the tip; switch only on an affirmative green; hold loudly otherwise) and reports `{"mode":"gated","outcome":...}` — `switched`, `already-current`, `held-red`, `held-pending`, `held-blind`, `ignored-stale`, `fetch-failed`, `switch-failed`. Legacy mode runs the verbatim pull+reload (`{"status":"reloaded"}`). |
 | POST   | `/reload/switch`    | **Manual commit pick**, body `{"ref": "<sha-or-branch>", "override": false\|true}` — see [CI-gated reloads](#ci-gated-reloads). Resolves the ref (fetching from origin as needed; `400` for an unresolvable one), evaluates its gating CI state and `src/hooks` tree marker, and: green + src present → switches (`reload.switched`); anything else **without** `override` → `409` `{"error", "requires_override": true, "reasons": [...], "commit": {...}}` naming every failed check, nothing moves; **with** `override: true` → switches anyway, loudly (`reload.forced` names each overridden reason). Routed through the gate's Force-style apply path, so rollback to an **older** commit works and a wedged gate (unreadable CI) stays overridable. `409` in legacy mode (per-commit switching needs the gate). |
 | GET    | `/config`           | Dashboard setup info: `hooks_repo`, `hook_base_url`, `reload_secret` (each only when set), plus `run_retention` — the persisted run-history window as a compact duration (e.g. `48h`), i.e. how far back `/runs?before=` paging can ever reach — present only when the run store is configured. |
-| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, reload-gate verdicts (`reload.held`, `reload.held_red`, `reload.switched`, `reload.verified`, `reload.unverified`, `reload.ignored_stale`, `reload.forced`, `reload.poll_blind`, plus the manual panel's `reload.check` and `reload.switch_refused` — see [CI-gated reloads](#ci-gated-reloads)), hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), unresolved env references (`env.unresolved`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
-| GET    | `/attention`        | The **needs-attention** problem set: `{count, entries}` where each entry is `{source, hook, key, message, since}`, oldest first. Sources: `load` (hook dropped at load/validation — the reason quoted), `zero-hooks` (nothing loaded at all), `secrets` (unresolvable `${NAME}` `api_key`/`env` references or a failing sops decrypt, statically re-probed on every reload), `server` (the containerized-without-TMPDIR hazard — boot-scoped, needs a restart to clear), `event` (derived from recognized activity events: today a delivery denied over a broken api_key reference; reserved kinds `hook.reported_misconfigured`/`hook.reported_healthy` are the seam for future hook-emitted signals). Entries are value-free (they name references, never resolved values) and **self-clearing**: state-derived ones vanish on the reload that fixes them, the event-derived api_key one when a reload's probe finds the reference resolvable (or the hook is removed), reported ones on the hook's paired all-clear event. `since` = when the problem first became active (stable while it persists; in-memory, so a restart re-derives state entries at boot). Entries of hooks that are **effectively disabled** (operator override, or an `"enable": false` default) are filtered out at read time — an off hook's failures are moot — and resurface the moment the hook is re-enabled. The dashboard's red banner + "Needs attention" panel render this. |
+| GET    | `/events`           | Activity feed: GitHub push webhooks, git pulls, reload-gate verdicts (`reload.held`, `reload.held_red`, `reload.switched`, `reload.verified`, `reload.unverified`, `reload.ignored_stale`, `reload.forced`, `reload.poll_blind`, plus the manual panel's `reload.check` and `reload.switch_refused` — see [CI-gated reloads](#ci-gated-reloads)), hook (re)loads and load errors, image builds, run lifecycle (including `run.queued` when a run waits for a concurrency slot), rejected requests (`hook.unknown`, `hook.denied`, `hook.misconfigured`, `hook.disabled_rejected`), and every operator kill-switch flip (`hook.disabled`, `hook.enabled`, `concurrency.overridden`, `concurrency.override_cleared`, `override.orphaned`, `override.write_failed`). Newest first; `?max=` caps it, `?hook={id}` narrows to one hook's slice. |
+| GET    | `/attention`        | The **needs-attention** problem set: `{count, entries}` where each entry is `{source, hook, key, message, since}`, oldest first. Sources: `load` (hook dropped at load/validation — the reason quoted), `zero-hooks` (nothing loaded at all), `secrets` (an unresolvable `${NAME}` `api_key` reference or a failing sops decrypt, statically re-probed on every reload), `server` (the containerized-without-TMPDIR hazard — boot-scoped, needs a restart to clear), `event` (derived from recognized activity events: today a delivery denied over a broken api_key reference; reserved kinds `hook.reported_misconfigured`/`hook.reported_healthy` are the seam for future hook-emitted signals). Entries are value-free (they name references, never resolved values) and **self-clearing**: state-derived ones vanish on the reload that fixes them, the event-derived api_key one when a reload's probe finds the reference resolvable (or the hook is removed), reported ones on the hook's paired all-clear event. `since` = when the problem first became active (stable while it persists; in-memory, so a restart re-derives state entries at boot). Entries of hooks that are **effectively disabled** (operator override, or an `"enable": false` default) are filtered out at read time — an off hook's failures are moot — and resurface the moment the hook is re-enabled. The dashboard's red banner + "Needs attention" panel render this. |
 | GET    | `/images`           | Per-hook image state: the tag the current content resolves to, whether it's built (false = next run builds it), and every `whr-hook/*` image on disk. |
 | GET    | `/concurrency`      | One document: `groups` — every declared concurrency group's live state: its **effective** `limit`, the `declared` limit from concurrency.json, an `overridden` flag when the two differ because of an operator override, how many runs are `active`, and how many are `waiting` (queued) behind it — plus the queue drill-down: `holders` (the runs occupying the slots, in acquire order) and `waiting_runs` (the queue, in order), each entry a `{run_id, hook_id, title, status, since, started, started_at}` enriched from the live tracker (an evicted run keeps its `run_id`/`since`). And `global` — the [global run cap](#the-global-run-cap)'s state in the same shape (`limit`, `default`, `overridden`, `active`, `waiting`, `holders`, `waiting_runs`). The dashboard renders both as expandable rows: one click from a saturated group (or the cap) to any holder's or waiter's run modal. |
 | PUT    | `/concurrency/{group}/limit` | Override a group's limit live: body `{"limit": N}`, `N >= 1` (`0` is rejected — it would deadlock queued runs; to stop a group's hooks entirely, disable the hooks). `404` for undeclared groups. The swap is safe with runs in flight, and the override survives reloads and restarts until deleted. |
@@ -577,7 +583,7 @@ the mandatory `Dockerfile`, code baked in — exactly the hook rules):
   [`GET /managers`](#admin-port-9001) and the dashboard's Managers page.
   Runs the manager dispatches via [`/spawn`](#state-kv-api-httplocalhost9002-in-state-hooks)
   are normal tracked runs.
-- **Full hook feature set**, manager-shaped: `env`/secrets, `tests`,
+- **Full hook feature set**, manager-shaped: `settings`/secrets, `tests`,
   `script`/`command`, `concurrency_group` (the instance holds one slot
   for its lifetime), `run_title` (panel title; `POST /title` renames),
   `synchronous` (each delivery's response holds until the manager
@@ -654,12 +660,78 @@ the interpreter must be installed there, e.g. via a shared base image such
 as the webhooks repo's `Dockerfile.common`. An explicit `command` overrides
 the derived one.
 
-Two values support `${NAME}` secret references:
+### No shell programs in the manifest
 
-- `env` values — expanded when the container starts. Unresolvable names
-  expand to `""` with a logged warning.
-- `api_key` — expanded on every request. If the reference is unresolvable,
-  the hook **fails closed** (every request is rejected with 401).
+`command` and `script.args` are rejected at load — and by the published
+schema, so CI fails too — when any element contains `$(`, a backtick, `<(`
+or `>(`:
+
+```json
+"command": ["sh", "-c", "curl -d @$HOOK_PAYLOAD_FILE \"$(jq -r .url $HOOK_SETTINGS_FILE)\""]
+```
+
+A nested command inside a JSON string is escaped twice, so nobody can read
+it; its exit status disappears into the surrounding string, so a failing
+`jq` silently becomes an empty argument; and it can never be run, linted or
+tested outside the runner. Write the program in a file next to the manifest,
+`COPY` it into the image, and call that:
+
+```json
+"command": ["sh", "notify.sh"]
+```
+
+Plain `$VAR` / `${VAR}` references stay legal — `$HOOK_PAYLOAD_FILE` and
+`$HOOK_SETTINGS_FILE` are exactly what they are for.
+
+## Hook settings
+
+A hook's own configuration lives in ONE place — hook.json's `settings` — and
+has a contract:
+
+```jsonc
+// myhook/hook.json
+{
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+  "command": ["node", "main.js"],
+  "settings": { "app_id": "4322350", "pacing_ms": 1000, "features": ["a", "b"] }
+}
+```
+
+```jsonc
+// myhook/settings.schema.json -- what this hook accepts
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app_id"],
+  "properties": {
+    "app_id":    { "type": "string", "minLength": 1 },
+    "pacing_ms": { "type": "integer", "minimum": 0 },
+    "features":  { "type": "array", "items": { "type": "string" } }
+  }
+}
+```
+
+- **Any JSON shape** — objects, arrays, numbers, booleans. The runner never
+  interprets the contents.
+- **Validated at LOAD, fail-closed.** Settings that do not match the schema
+  drop the hook (`validate` exits non-zero, and a live reload refuses the
+  hook), so a hook never runs with configuration its own schema calls wrong.
+  A `required` property that is absent is likewise a load error — there is no
+  "not configured yet" state that still looks healthy.
+- **A schema is mandatory when settings are declared.** Config with no
+  contract is refused outright.
+- **Delivered as a file, not env**: the container reads the document at
+  `$HOOK_SETTINGS_FILE` (always present and parseable — `{}` when the hook
+  declares none). Written per run, so changing settings takes effect on the
+  next run without rebuilding the image.
+- **Never readable from hook.json itself** — a hook reads its settings, not
+  the manifest that carries them (which also holds the runner's own keys).
+- The admin API exposes the top-level KEY NAMES only, never values.
+
+`api_key` supports `${NAME}` secret references — expanded on every request.
+If the reference is unresolvable, the hook **fails closed** (every request is
+rejected with 401).
 
 `${NAME}` resolves against the hook's decrypted `secrets.sops.env` first
 (see below), then the runner host's environment — so a secret can start

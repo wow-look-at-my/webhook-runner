@@ -40,6 +40,10 @@ import (
 const (
 	mountedPayload = "/var/run/webhook-runner/payload"
 	mountedHeaders = "/var/run/webhook-runner/headers.json"
+	// The hook's own configuration (hook.json `settings`), validated at load
+	// against its settings.schema.json. Mounted read-only like the payload:
+	// the hook reads its config, and never the manifest that carries it.
+	mountedSettings = "/var/run/webhook-runner/settings.json"
 	// mountedStateSocket is where a state hook's container sees the KV API's
 	// Unix socket (bind-mounted from the host-shared tmp dir).
 	mountedStateSocket = "/run/webhook-runner/state.sock"
@@ -205,7 +209,7 @@ func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte,
 		return run, ErrDraining
 	}
 
-	payloadPath, headersPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers)
+	payloadPath, headersPath, settingsPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers, hook.SettingsJSON())
 	if err != nil {
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("write temp files: %v", err))
 		if r.onFinish != nil {
@@ -218,7 +222,7 @@ func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte,
 	go func() {
 		defer r.wg.Done()
 		defer cleanup()
-		r.execute(parent, hook, run, payload, payloadPath, headersPath)
+		r.execute(parent, hook, run, payload, payloadPath, headersPath, settingsPath)
 	}()
 	return run, nil
 }
@@ -273,7 +277,7 @@ func runRef(run *runs.Run) string {
 	return run.ID()
 }
 
-func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
+func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath, settingsPath string) {
 	timeout := hook.Timeout()         // 0 = no absolute ceiling
 	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
 
@@ -304,8 +308,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			return
 		}
 	}
-	lookup := hooks.SecretsFirstLookup(secrets)
-
 	// Every hook runs an image built from its directory, tagged by content
 	// hash — code is baked in, so a concurrent hooks-repo pull can't
 	// change what an in-flight run executes. The build is a cheap no-op
@@ -413,8 +415,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		"--label", RunContainerLabel + "=" + runContainerLabelValue,
 		"-v", payloadPath + ":" + mountedPayload + ":ro",
 		"-v", headersPath + ":" + mountedHeaders + ":ro",
+		"-v", settingsPath + ":" + mountedSettings + ":ro",
 		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
+		"-e", "HOOK_SETTINGS_FILE=" + mountedSettings,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
 	}
@@ -457,21 +461,27 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		}
 		args = append(args, "-e", k+"="+v)
 	}
-	// hook.json env values resolve ${NAME} from the hook's secrets first,
-	// then the host environment.
-	for k, v := range hook.Env {
-		expanded, missing := hooks.ExpandEnvRefs(v, lookup)
-		for _, name := range missing {
-			r.log.Warn("hook env references unset variable",
-				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
-			// Also surface it on the dashboard: a hook silently running with
-			// an empty secret (e.g. an AI key that never resolved) looks
-			// healthy from the outside while every run fails downstream.
-			r.events.Record("env.unresolved",
-				hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
-				map[string]string{"hook": hook.ID, "run": run.ID()})
+	// The superseded `env` block, still injected exactly as it always was.
+	// A deprecation that quietly stops working is worse than the flag day it
+	// exists to avoid: the hook would load, run, and behave wrongly. Values
+	// resolve ${NAME} from the hook's secrets first, then the host
+	// environment. Every entity using this is named loudly at load
+	// (hooks.Deprecations) and listed on the needs-attention surface.
+	if len(hook.Env) > 0 {
+		lookup := hooks.SecretsFirstLookup(secrets)
+		for k, v := range hook.Env {
+			expanded, missing := hooks.ExpandEnvRefs(v, lookup)
+			for _, name := range missing {
+				r.log.Warn("hook env references unset variable",
+					"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
+				// A hook running with an empty secret looks healthy from the
+				// outside while every run fails downstream.
+				r.events.Record("env.unresolved",
+					hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
+					map[string]string{"hook": hook.ID, "run": run.ID()})
+			}
+			args = append(args, "-e", k+"="+expanded)
 		}
-		args = append(args, "-e", k+"="+expanded)
 	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)

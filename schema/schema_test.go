@@ -64,9 +64,9 @@ func TestSchemaAcceptsGoodSkipIf(t *testing.T) {
 	sch := compileHookSchema(t)
 	good := []string{
 		// The motivating one-liner: header shorthand equality.
-		`{"$schema":"s","skip_if":[{"header:x-github-event":"workflow_run"}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"header:x-github-event":"workflow_run"}]}`,
 		// Every operator, plus AND within a condition and OR across entries.
-		`{"$schema":"s","skip_if":[
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[
 			{"action":{"in":["labeled","unlabeled"]},"sender.type":"Bot"},
 			{"ref":{"prefix":"refs/tags/","ne":"refs/tags/latest"}},
 			{"workflow_run.conclusion":{"exists":false}},
@@ -74,7 +74,7 @@ func TestSchemaAcceptsGoodSkipIf(t *testing.T) {
 			{"action":{"eq":"closed"}}
 		]}`,
 		// Empty list: declared but no conditions.
-		`{"$schema":"s","skip_if":[]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[]}`,
 	}
 	for _, doc := range good {
 		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
@@ -85,10 +85,10 @@ func TestSchemaAcceptsGoodRunTitle(t *testing.T) {
 	sch := compileHookSchema(t)
 	good := []string{
 		// The motivating PR shape.
-		`{"$schema":"s","run_title":"{{repository.full_name}}#{{pull_request.number}}"}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":"{{repository.full_name}}#{{pull_request.number}}"}`,
 		// Header placeholders and static titles are titles too.
-		`{"$schema":"s","run_title":"{{header:x-github-event}} delivery"}`,
-		`{"$schema":"s","run_title":"nightly sweep"}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":"{{header:x-github-event}} delivery"}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":"nightly sweep"}`,
 	}
 	for _, doc := range good {
 		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
@@ -101,11 +101,11 @@ func TestSchemaRejectsBadRunTitle(t *testing.T) {
 		// Wrong types — the template is a string, full stop. (Malformed
 		// placeholder SYNTAX inside the string is the Go loader's check:
 		// JSON Schema can't parse templates.)
-		`{"$schema":"s","run_title":5}`,
-		`{"$schema":"s","run_title":["a"]}`,
-		`{"$schema":"s","run_title":{"tmpl":"a"}}`,
-		`{"$schema":"s","run_title":null}`,
-		`{"$schema":"s","run_title":""}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":5}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":["a"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":{"tmpl":"a"}}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":null}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":""}`,
 	}
 	for _, doc := range bad {
 		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)
@@ -115,19 +115,19 @@ func TestSchemaRejectsBadRunTitle(t *testing.T) {
 func TestSchemaDind(t *testing.T) {
 	sch := compileHookSchema(t)
 	good := []string{
-		`{"$schema":"s","dind":true}`,
-		`{"$schema":"s","dind":false}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":true}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":false}`,
 	}
 	for _, doc := range good {
 		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
 	}
 	bad := []string{
 		// dind is a boolean, full stop.
-		`{"$schema":"s","dind":"true"}`,
-		`{"$schema":"s","dind":1}`,
-		`{"$schema":"s","dind":null}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":"true"}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":1}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":null}`,
 		// additionalProperties:false still rejects unknown keys.
-		`{"$schema":"s","dindd":true}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dindd":true}`,
 	}
 	for _, doc := range bad {
 		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)
@@ -155,9 +155,9 @@ func compileManagerSchema(t *testing.T) *jsonschema.Schema {
 func TestSchemaManagerSpawnTargets(t *testing.T) {
 	sch := compileManagerSchema(t)
 	good := []string{
-		`{"$schema":"s","spawn_targets":["gha-runner","gha-runner-dind"]}`,
-		`{"$schema":"s","spawn_targets":[]}`,
-		`{"$schema":"s"}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":["gha-runner","gha-runner-dind"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":[]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`,
 	}
 	for _, doc := range good {
 		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
@@ -165,11 +165,11 @@ func TestSchemaManagerSpawnTargets(t *testing.T) {
 	bad := []string{
 		// An id list, full stop: no bare string, no non-strings, no
 		// empties, no duplicates.
-		`{"$schema":"s","spawn_targets":"gha-runner"}`,
-		`{"$schema":"s","spawn_targets":[1]}`,
-		`{"$schema":"s","spawn_targets":[""]}`,
-		`{"$schema":"s","spawn_targets":["a","a"]}`,
-		`{"$schema":"s","spawn_targets":null}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":"gha-runner"}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":[1]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":[""]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":["a","a"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":null}`,
 	}
 	for _, doc := range bad {
 		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)
@@ -180,23 +180,23 @@ func TestSchemaRejectsBadSkipIf(t *testing.T) {
 	sch := compileHookSchema(t)
 	bad := []string{
 		// Unknown operator.
-		`{"$schema":"s","skip_if":[{"x":{"contains":"y"}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"contains":"y"}}]}`,
 		// Matcher must be a string or an operator object.
-		`{"$schema":"s","skip_if":[{"x":5}]}`,
-		`{"$schema":"s","skip_if":[{"x":null}]}`,
-		`{"$schema":"s","skip_if":[{"x":["a"]}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":5}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":null}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":["a"]}]}`,
 		// Empty condition / empty matcher object.
-		`{"$schema":"s","skip_if":[{}]}`,
-		`{"$schema":"s","skip_if":[{"x":{}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{}}]}`,
 		// Operator value types.
-		`{"$schema":"s","skip_if":[{"x":{"eq":5}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"exists":"yes"}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"in":[]}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"in":"not-a-list"}}]}`,
-		`{"$schema":"s","skip_if":[{"x":{"in":[1]}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"eq":5}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"exists":"yes"}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"in":[]}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"in":"not-a-list"}}]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"x":{"in":[1]}}]}`,
 		// skip_if itself must be a list of objects.
-		`{"$schema":"s","skip_if":{"x":"y"}}`,
-		`{"$schema":"s","skip_if":["x"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":{"x":"y"}}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":["x"]}`,
 	}
 	for _, doc := range bad {
 		assert.Error(t, validateJSONC(t, sch, []byte(doc)), "should be rejected: %s", doc)

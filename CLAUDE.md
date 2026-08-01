@@ -31,7 +31,7 @@ internal/kv/               disk-backed per-hook KV store (state socket) + HMAC n
 internal/backlog/          durable per-hook batch backlogs (drain-a-slice; behind /backlog)
 internal/kvproxy/          TCP->Unix proxy shim injected into state hooks (plain localhost URL)
 internal/githubstatus/     GitHub commit status API client
-schema/                    JSON schemas for hook.json + manager.json + concurrency.json (published to buildhost sites — .github/workflows/schemas.yml)
+schema/                    JSON schemas for hook.json + manager.json + concurrency.json — published to buildhost sites (.github/workflows/schemas.yml) AND go:embed'd (embed.go) so the loader enforces the same contract at runtime. hook.schema.json + manager.schema.json are GENERATED from src/ (src/common.json holds the 24 shared property constraints ONCE; each overlay adds its own properties and the per-entity prose) — regenerate with `go test ./schema -update`; a drifted checkout fails TestGeneratedSchemasMatchSources
 e2e/                       end-to-end test (shell script, requires Docker)
 dats/                      black-box CLI-contract tests (.dats YAML, org dats runner — see "CLI contract tests" below)
 examples/hooks/            sample hook configs
@@ -60,7 +60,10 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   via the publish action's `public: true`). The legacy
   `https://wow-look-at-my.github.io/webhook-runner/` URLs keep serving
   their frozen 2026-07-15 content and stay valid in deployed hook.jsons.
-  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync.
+  Keep the Go model, the JSON schema, and the example/e2e fixtures in sync
+  — editing the schema means editing `schema/src/`, never the generated
+  `*.schema.json` (see the shared-base bullet under "Things easy to get
+  wrong").
 
 ## CLI contract tests (dats/)
 
@@ -222,7 +225,7 @@ The server listens on two TCP ports plus a Unix socket:
   requests: `hook.unknown` / `hook.denied` / `hook.misconfigured` — the
   last one names an unresolvable `${NAME}` api_key reference, logged to
   the feed but never to the 401 body) and the runner (image builds, run
-  lifecycle, `env.unresolved` when an env reference expands to nothing)
+  lifecycle)
   — memory only (run history, by contrast, persists completed runs via
   `internal/runstore`; see below). Rejections are events on purpose:
   the dashboard must be able to answer "did you receive anything?" —
@@ -1134,7 +1137,14 @@ most often, plus where to read the rest.
 - Run IDs are 16 random bytes, base32-lowercased to 26 chars — anything building container names from them must keep the `a-z2-7` alphabet in mind.
 - **A lock TTL is ENFORCED, never assumed.** An expired lock is still the holder's: the contender's acquire kills that run, waits for it to be certainly dead, and takes the lock the finish seam freed — or is refused. Expiry alone frees nothing, in the store or the sweeper.
 - **A backlog belongs in the runner, never in a hook-side cursor.** A hook run is one container, so "work I did not get to" has to outlive it. Two primitives, two questions: `internal/queue` decides WHEN to start a run; `internal/backlog` holds WHAT IS LEFT for a run that already exists (push is a set union, take removes a slice, depth is observable).
-- **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
+- **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded, `settings` that do not match the hook's own `settings.schema.json` — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
+- **The published schema is enforced at LOAD, by the CI validator itself.** `internal/hooks/schemacheck.go` compiles the EMBEDDED `schema/*.schema.json` (never a fetch — a reload must not depend on the network) and validates every manifest through `wow-look-at-my/json-validator`, the same implementation the hooks repo runs in CI. It runs AFTER the Go checks, whose messages are more actionable where they overlap; what it adds is everything a struct cannot express (enums, patterns, formats, minimums), which was previously checked in CI and nowhere else.
+- **A hook's own config is `settings`, never `env`, and never hook.json itself.** One JSON object validated at load against the `settings.schema.json` the hook ships, handed to the container as a read-only `$HOOK_SETTINGS_FILE`. A hook reading its manifest at run time is reading the runner's surface, not its configuration.
+- **`env` is SUPERSEDED, not removed — and removing it is a two-release job.** A field cannot be added or dropped in one step across two repos that deploy independently: a runner rejecting `env` cannot serve the fleet that declares it, and a fleet declaring `settings` cannot be served by a runner that predates it. Either way something is unservable at some instant, and no rollback fixes it — the tree never changed, the binary did. So both are accepted for one release, `env` still injecting exactly as it always did (a deprecation that quietly stops working is worse than the flag day), with every use named in the log, the activity feed, `validate` output, and the needs-attention surface (`SourceDeprecated`). The follow-up that deletes it is gated by `fleet-compat`, which cannot go green until the fleet has migrated. Add or retire a manifest field the same way.
+- **The two manifest schemas share ONE base — never hand-copy a property between them.** They declare 24 of the same properties, and when those were two hand-maintained copies they drifted: the manager's `timeout` lost the hook's duration `pattern` (so `"banana"` validated), `api_key_header` and `enable` lost their defaults. Shared CONSTRAINTS now live once in `schema/src/common.json` and reach each published document as one `$defs.common` block it `allOf`-`$ref`s; prose stays per-entity (a manager's concurrency slot is held for the instance's whole lifetime, its `run_title` placeholders always resolve empty), so each overlay supplies its own description and a shared key with none is a generate error. `go test ./schema -update` regenerates.
+- **`unevaluatedProperties: false`, NEVER `additionalProperties: false`, in a composed schema.** additionalProperties does not compose through `allOf`: the `$ref`'d common block is evaluated on its own, sees the entity's `schedule`/`spawn_targets`, and rejects a valid manifest — measured, not theorized. `unevaluatedProperties` is the 2020-12 keyword that accounts for what sibling subschemas matched. The generator applies it and refuses an overlay that reintroduces additionalProperties.
+- **A manifest may not carry a shell program.** `command` and `script.args` are rejected at load (and by the published schema) when an element contains `$(`, a backtick, `<(` or `>(`. A nested command in JSON is double-escaped, throws away the inner exit status, and can never be linted or run outside the runner. Put it in a `.sh` next to the manifest and call that. Plain `$VAR` references stay legal.
+- **A binary that cannot load the DEPLOYED tree must not merge — ci.yml's `fleet-compat` job.** It runs `validate` against webhooks **master** (not the matching branch: deploys happen against master). Without it a runner could go green, merge and deploy while unable to load the live fleet — and that fails open, not closed: `buildLoadAndApply` replaces the registry unconditionally, so every rejected entity just stops serving, and the reload gate's last-good rollback cannot help because the tree never changed, the binary did. Recovery is manual. A field add/remove reds this job until the fleet's manifests carry it, which forces expand/contract (accept old AND new for one release) instead of a flag-day merge.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
 - **Filter BEFORE the cap, in every listing.** `max`/limit bounds what is RETURNED, never what is EXAMINED (`/runs?exclude=`, `/events?exclude=`+`?hook=`). Page-then-filter blanks a surface on exactly the busy hooks it exists for: a burst of excluded entries fills the page, the filter empties it, and the panel reports "nothing here" while the matches sit just behind them.
@@ -1144,7 +1154,7 @@ most often, plus where to read the rest.
 
 Read before changing any of these areas:
 
-- [docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md) -- the CI-gated reload, cancellation, secrets/env refs, the two tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, `dind`, `script`.
+- [docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md) -- the CI-gated reload, cancellation, per-hook `settings` + their schema, secrets refs, the two tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, `dind`, `script`.
 - [docs/internals/runs-concurrency-and-overrides.md](docs/internals/runs-concurrency-and-overrides.md) -- the activity-based timeout, `skip_if`, `run_title`, concurrency groups, the global run cap, the operator kill switch, the scheduler, the run store.
 - [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, the five section-signal seams, the needs-attention surface.
 - [docs/internals/delivery-durability.md](docs/internals/delivery-durability.md) -- deploy windows: `/restart-ready`, the delivery spool and its replay, the shutdown ordering, and the port-down gap none of it covers.

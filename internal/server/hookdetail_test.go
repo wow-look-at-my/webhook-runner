@@ -32,7 +32,7 @@ func TestHookDetail(t *testing.T) {
 		Command:          []string{"x"},
 		SourcePath:       filepath.Join(hookDir, "hook.json"),
 		APIKey:           "super-secret-key",
-		Env:              map[string]string{"TOKEN": "hunter2", "AI_URL": "https://model.internal"},
+		Settings:         json.RawMessage(`{"token":"hunter2","ai_url":"https://model.internal"}`),
 		Schedule:         "5m",
 		ConcurrencyGroup: "g",
 		State:            true,
@@ -66,7 +66,9 @@ func TestHookDetail(t *testing.T) {
 	assert.True(t, got.Info.State)
 	assert.Equal(t, "1m30s", got.Info.Timeout)
 	assert.True(t, got.Info.APIKey)
-	assert.Equal(t, []string{"AI_URL", "TOKEN"}, got.Info.EnvKeys)
+	// Settings KEYS only: this port is operator-only, but a settings document
+	// can hold credentials, so no value ever renders here.
+	assert.Equal(t, []string{"ai_url", "token"}, got.Info.SettingsKeys)
 	body := rec.Body.String()
 	assert.NotContains(t, body, "super-secret-key")
 	assert.NotContains(t, body, "hunter2")
@@ -108,7 +110,7 @@ func TestHookDetailDefaultsAndNoKV(t *testing.T) {
 	// (omitted), not as some default.
 	assert.Empty(t, got.Info.Timeout)
 	assert.False(t, got.Info.APIKey)
-	assert.Empty(t, got.Info.EnvKeys)
+	assert.Empty(t, got.Info.SettingsKeys)
 	assert.Nil(t, got.KV)
 	assert.Equal(t, 0, got.Stats.Tracked)
 	assert.Nil(t, got.Stats.LastRun)

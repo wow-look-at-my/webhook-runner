@@ -131,6 +131,18 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 		loadEnts, zeroEnts := attention.FromLoadErrors(errs)
 		agg.ReplaceSource(attention.SourceLoad, loadEnts)
 		agg.ReplaceSource(attention.SourceZeroHooks, zeroEnts)
+
+		// Superseded manifest fields on entities that LOADED. Not errors --
+		// they still work, which is the only way a field can be removed
+		// across two independently-deployed repos without a flag day -- but
+		// every use is named in all three places an operator looks, so the
+		// old field cannot quietly outlive its deprecation.
+		deps := hooks.CollectDeprecations(loaded, loadedManagers)
+		for _, d := range deps {
+			logger.Warn("deprecated manifest field", "entity", d.EntityID, "field", d.Field, "advice", d.Message)
+			rec.Record("hook.deprecated_field", d.Error(), map[string]string{"hook": d.EntityID})
+		}
+		agg.ReplaceSource(attention.SourceDeprecated, attention.FromDeprecations(deps))
 		attention.ApplyServeProbe(agg, loaded, secrets)
 
 		announceOrphanedOverrides(loaded, cfg, ov, &orphanMu, announced, logger, rec)

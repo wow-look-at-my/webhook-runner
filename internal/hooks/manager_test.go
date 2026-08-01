@@ -21,6 +21,8 @@ func writeManagerTree(t *testing.T, id, managerJSON string) string {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "manager.json"), []byte(managerJSON), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644))
+	// Permissive settings contract; hooks/settings_test.go owns the contract.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, SettingsSchemaFile), []byte(`{"type":"object"}`), 0o644))
 	return root
 }
 
@@ -34,7 +36,7 @@ const minimalManager = `{
 
 func TestParseManagerFullFieldSet(t *testing.T) {
 	root := writeManagerTree(t, "m1", `{
-	  "$schema": "x",
+	  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json",
 	  "description": "full",
 	  "enable": true,
 	  "reconcile_interval": "90s",
@@ -43,7 +45,7 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 	  "tests": [["true"]],
 	  "networks": ["net"],
 	  "volumes": ["/a:/b"],
-	  "env": {"K": "v"},
+	  "settings": {"k": "v", "limit": 4},
 	  "user": "1000",
 	  "workdir": "/w",
 	  "extra_docker_args": ["--label", "x"],
@@ -67,6 +69,7 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 	assert.Equal(t, "mgr", m.GitHubStatus.Context)
 	assert.True(t, m.State, "state is implied true — the inbox/KV ride the socket")
 	assert.NotEmpty(t, m.SrcRoot, "SDK build-context semantics apply")
+	assert.JSONEq(t, `{"k":"v","limit":4}`, string(m.SettingsJSON()), "a manager carries its own settings like a hook")
 }
 
 // Managers share the hook enable default: absent `enable` means enabled;
@@ -78,7 +81,7 @@ func TestManagerDefaultsEnabled(t *testing.T) {
 	require.Empty(t, errs)
 	assert.True(t, ms["m1"].EnabledByDefault(), "absent enable must mean enabled")
 
-	root2 := writeManagerTree(t, "m2", `{"$schema":"x","enable":false,"command":["run"]}`)
+	root2 := writeManagerTree(t, "m2", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":false,"command":["run"]}`)
 	ms2, errs := LoadManagers(DetectLayout(root2))
 	require.Empty(t, errs)
 	assert.False(t, ms2["m2"].EnabledByDefault(), "explicit enable:false loads disabled")
@@ -88,9 +91,9 @@ func TestManagerDefaultsEnabled(t *testing.T) {
 // `schedule` is superseded by reconcile_interval.
 func TestParseManagerRejectsNonFields(t *testing.T) {
 	for _, bad := range []string{
-		`{"$schema":"x","state":true,"command":["run"]}`,
-		`{"$schema":"x","schedule":"5m","command":["run"]}`,
-		`{"$schema":"x","bogus":1,"command":["run"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","state":true,"command":["run"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","schedule":"5m","command":["run"]}`,
+		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","bogus":1,"command":["run"]}`,
 	} {
 		root := writeManagerTree(t, "m1", bad)
 		_, errs := LoadManagers(DetectLayout(root))
@@ -103,10 +106,10 @@ func TestParseManagerRejectsNonFields(t *testing.T) {
 
 func TestParseManagerValidation(t *testing.T) {
 	cases := map[string]string{
-		"bad interval":  `{"$schema":"x","reconcile_interval":"nope","command":["run"]}`,
-		"zero interval": `{"$schema":"x","reconcile_interval":"0s","command":["run"]}`,
+		"bad interval":  `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","reconcile_interval":"nope","command":["run"]}`,
+		"zero interval": `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","reconcile_interval":"0s","command":["run"]}`,
 		"no schema":     `{"description":"d","command":["run"]}`,
-		"two auth":      `{"$schema":"x","secret":"a","api_key":"b","command":["run"]}`,
+		"two auth":      `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","secret":"a","api_key":"b","command":["run"]}`,
 	}
 	for name, doc := range cases {
 		root := writeManagerTree(t, "m1", doc)
@@ -152,7 +155,7 @@ func TestLoadManagersSkipsNonManagerDirs(t *testing.T) {
 // spawn_targets: the manifest-sourced spawn allowlist — parses, matches
 // exactly, and validates against the declared hook set.
 func TestManagerSpawnTargets(t *testing.T) {
-	root := writeManagerTree(t, "m1", `{"$schema":"x","command":["run"],"spawn_targets":["gha-runner","gha-runner-dind"]}`)
+	root := writeManagerTree(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","command":["run"],"spawn_targets":["gha-runner","gha-runner-dind"]}`)
 	ms, errs := LoadManagers(DetectLayout(root))
 	require.Empty(t, errs)
 	m := ms["m1"]
@@ -165,7 +168,7 @@ func TestManagerSpawnTargets(t *testing.T) {
 }
 
 func TestParseManagerRejectsBlankSpawnTarget(t *testing.T) {
-	root := writeManagerTree(t, "m1", `{"$schema":"x","command":["run"],"spawn_targets":[" "]}`)
+	root := writeManagerTree(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","command":["run"],"spawn_targets":[" "]}`)
 	_, errs := LoadManagers(DetectLayout(root))
 	require.NotEmpty(t, errs)
 	assert.Contains(t, errs[0].Error(), "spawn_targets")

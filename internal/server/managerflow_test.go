@@ -176,7 +176,7 @@ func managerServer(t *testing.T, doc string) (*Server, *fakeManagers, *hooks.Man
 }
 
 const managerDoc = `{
-  "$schema": "x",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json",
   "description": "coordinator",
   "enable": true,
   "secret": "hmac-secret",
