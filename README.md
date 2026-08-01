@@ -659,6 +659,29 @@ the interpreter must be installed there, e.g. via a shared base image such
 as the webhooks repo's `Dockerfile.common`. An explicit `command` overrides
 the derived one.
 
+### No shell programs in the manifest
+
+`command` and `script.args` are rejected at load — and by the published
+schema, so CI fails too — when any element contains `$(`, a backtick, `<(`
+or `>(`:
+
+```json
+"command": ["sh", "-c", "curl -d @$HOOK_PAYLOAD_FILE \"$(jq -r .url $HOOK_SETTINGS_FILE)\""]
+```
+
+A nested command inside a JSON string is escaped twice, so nobody can read
+it; its exit status disappears into the surrounding string, so a failing
+`jq` silently becomes an empty argument; and it can never be run, linted or
+tested outside the runner. Write the program in a file next to the manifest,
+`COPY` it into the image, and call that:
+
+```json
+"command": ["sh", "notify.sh"]
+```
+
+Plain `$VAR` / `${VAR}` references stay legal — `$HOOK_PAYLOAD_FILE` and
+`$HOOK_SETTINGS_FILE` are exactly what they are for.
+
 ## Hook settings
 
 A hook's own configuration lives in ONE place — hook.json's `settings` — and

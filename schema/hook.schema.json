@@ -21,7 +21,11 @@
     "command": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "not": {
+          "pattern": "\\$\\(|`|<\\(|>\\("
+        },
+        "description": "Each entry is one argv element, NOT a shell program: command substitution ($(...), backticks) and process substitution (<(...), >(...)) are REJECTED, by this schema and by the runner at load. A manifest carrying a shell program cannot be checked, tested, or reviewed -- every character is escaped twice and no linter can see it. Put the logic in a .sh file next to the manifest, COPY it into the image, and call that (e.g. [\"sh\", \"run.sh\"], or use the script field). Plain $VAR / ${VAR} references are fine."
       },
       "minItems": 1,
       "description": "Optional override of the image's CMD, passed to docker run after the image name. Every hook runs the image webhook-runner builds from the Dockerfile in its directory (tagged by content hash) \u2014 code is baked in and immutable per run; when command is omitted, the image's CMD/ENTRYPOINT runs."
@@ -208,7 +212,11 @@
         "args": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "not": {
+              "pattern": "\\$\\(|`|<\\(|>\\("
+            },
+            "description": "Each entry is one argv element, NOT a shell program: command substitution ($(...), backticks) and process substitution (<(...), >(...)) are REJECTED, by this schema and by the runner at load. A manifest carrying a shell program cannot be checked, tested, or reviewed -- every character is escaped twice and no linter can see it. Put the logic in a .sh file next to the manifest, COPY it into the image, and call that (e.g. [\"sh\", \"run.sh\"], or use the script field). Plain $VAR / ${VAR} references are fine."
           },
           "description": "Additional arguments passed after the script path."
         }

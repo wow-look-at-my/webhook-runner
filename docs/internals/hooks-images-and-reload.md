@@ -265,3 +265,17 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   webhooks repo's `Dockerfile.common` base ships bash/node/tsx). An
   explicit `command` wins over `script`. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule`/`concurrency_group`.
+- **A manifest may not carry a shell program.** `command` and
+  `script.args` are rejected at load when any element contains `$(`, a
+  backtick, `<(` or `>(` — command, arithmetic or process substitution
+  (`internal/hooks/shellsafe.go`, and the same rule as a `not.pattern` in
+  both published schemas, so CI and the loader agree). What a nested
+  command in JSON costs: it is escaped twice (once for JSON, once for the
+  shell) so nobody can read it; its exit status vanishes into the outer
+  string, so a failed `sed`/`curl` silently becomes an empty argument; and
+  it can never be run, linted, or tested outside the runner. Put the
+  program in a `.sh` next to the manifest, COPY it into the image, and
+  call that (`"command": ["sh", "run.sh"]`, or the `script` field) — a
+  real file gets `set -eu`, shellcheck, and a stack trace. Plain `$VAR` /
+  `${VAR}` references stay legal: `$HOOK_PAYLOAD_FILE` and friends are the
+  point, and there is nothing nested to hide in them.

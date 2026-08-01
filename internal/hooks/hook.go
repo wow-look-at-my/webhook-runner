@@ -332,6 +332,11 @@ func (h *Hook) resolveScript() error {
 	if s.File == "" {
 		return errors.New("script.file is required")
 	}
+	// Checked HERE, before the args are folded into Command: the author wrote
+	// script.args, so that is the key the error must name (see shellsafe.go).
+	if err := checkNoShellSubstitution("script.args", s.Args); err != nil {
+		return err
+	}
 	if s.Interpreter == "" {
 		return errors.New("script.interpreter is required")
 	}
@@ -502,6 +507,13 @@ func (h *Hook) validate() error {
 		if d <= 0 {
 			return fmt.Errorf("schedule must be positive, got %s", d)
 		}
+	}
+	// A manifest is not a place to write shell (see shellsafe.go): nested
+	// command/process substitution in an argv entry is a load error. script.args
+	// is checked in resolveScript, before it becomes part of Command, so each
+	// error names the key the author actually wrote.
+	if err := checkNoShellSubstitution("command", h.Command); err != nil {
+		return err
 	}
 	// Compiles every skip_if regex too, so evaluation never compiles at
 	// request time and a bad pattern can never load.

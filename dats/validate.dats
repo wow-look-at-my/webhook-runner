@@ -373,3 +373,56 @@ tests:
     outputs:
       stderr:
         - 'does not match the published schema'
+
+  # A manifest is argv, NOT a place to write shell. Nested command/process
+  # substitution is refused at load AND by the published schema (the same rule
+  # the hooks repo's CI enforces), because a shell program inside a JSON string
+  # is escaped twice, checkable by nothing, and testable only in production.
+  - desc: command substitution in a hook's command is a load error
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {
+            "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+            "command": ["sh", "-c", "curl --data-binary @$HOOK_PAYLOAD_FILE \"$(sed -n 's/x/y/p' $HOOK_SETTINGS_FILE)\""]
+          }
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'must not carry a shell program'
+        - '.sh file'
+
+  - desc: backticks are refused the same way
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {
+            "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+            "command": ["sh", "-c", "echo `date`"]
+          }
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'must not carry a shell program'
+
+  - desc: a plain $VAR reference stays legal (that is what those vars are for)
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {
+            "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+            "command": ["sh", "-c", "cat $HOOK_PAYLOAD_FILE"]
+          }
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 0
+    outputs:
+      stdout:
+        - ok  myhook

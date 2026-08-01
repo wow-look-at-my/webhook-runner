@@ -1,7 +1,10 @@
 {
   "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "Deploy the frontend on push to main",
-  "command": ["sh", "-c", "echo \"deploying $(cat $HOOK_SETTINGS_FILE) with payload at $HOOK_PAYLOAD_FILE\"; cat $HOOK_PAYLOAD_FILE | head -c 200"],
+  // The work lives in deploy.sh, baked into the image. `command` is argv, not
+  // a shell program: nested command substitution is refused at load and by
+  // the schema.
+  "command": ["sh", "deploy.sh"],
   "settings": {
     "deploy_target": "production"
   },

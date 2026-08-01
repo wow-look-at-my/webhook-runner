@@ -3,7 +3,7 @@
   // The hook's own config arrives as a FILE (HOOK_SETTINGS_FILE), validated at
   // load against settings.schema.json next door. Nothing hook-specific is an
   // env var any more.
-  "command": ["sh", "-c", "echo id=$HOOK_ID custom=$(cat $HOOK_SETTINGS_FILE)"],
+  "command": ["sh", "settings.sh"],
   "settings": {"my_var": "e2e-value", "retries": 2},
   "timeout": "60s"
 }
