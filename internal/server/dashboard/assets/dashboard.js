@@ -2650,14 +2650,37 @@ async function loadConfig() {
   }
 }
 
-// One-shot footer stamp: which build is this host running? The tooltip
-// carries the VCS revision/commit time when the build has them.
+// This binary's own repo — where the footer stamp's commit lives.
+const SELF_REPO_URL = "https://github.com/wow-look-at-my/webhook-runner";
+
+// The commit the running build was made from. A stamped VCS revision is
+// authoritative; failing that, a Go pseudo-version ends in the commit's
+// 12-hex prefix, which GitHub resolves like any other sha.
+function buildCommit(v) {
+  if (v.revision) return v.revision;
+  const m = /-([0-9a-f]{12})$/.exec(v.version || "");
+  return m ? m[1] : "";
+}
+
+// One-shot footer stamp: which build is this host running? The stamp links
+// to that commit on GitHub; the tooltip carries the VCS revision/commit
+// time when the build has them.
 async function loadVersion() {
   try {
     const v = await fetchJSON("/version");
     const span = document.getElementById("server-version");
     if (!span || !v.version) return;
-    span.textContent = v.version;
+    const sha = buildCommit(v);
+    span.textContent = "";
+    span.appendChild(
+      sha
+        ? el("a", {
+            href: `${SELF_REPO_URL}/commit/${sha}`,
+            target: "_blank",
+            rel: "noopener noreferrer",
+          }, v.version)
+        : document.createTextNode(v.version)
+    );
     if (v.revision) span.title = v.revision + (v.time ? " @ " + v.time : "");
   } catch (e) {
     console.error("loadVersion:", e);

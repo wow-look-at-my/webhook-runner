@@ -59,6 +59,12 @@ tbody tr:last-child td { border-bottom: 0; }
    Affordance now follows behavior: no handler, no pointer. */
 tbody tr.clickable:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
 code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }
+/* Every link on the page reads the same: accent, underlined on hover only
+   (a log line full of slugs stays readable). Links that are something else
+   -- a button, a nav entry, a <code> chip -- override this below; a plain
+   link needs no rule of its own. */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
 .badge {
   display: inline-block;
   padding: 0.1rem 0.6rem;
@@ -337,8 +343,6 @@ html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: 
   word-break: break-word;
 }
 #setup-section #setup-repo { font-size: 0.9rem; margin: 0 0 0.5rem; }
-#setup-section a:not(.btn) { color: var(--accent); text-decoration: none; }
-#setup-section a:not(.btn):hover { text-decoration: underline; }
 #setup-section dl { margin: 0.75rem 0; }
 .copyable { user-select: all; }
 details#setup-details {
@@ -352,8 +356,6 @@ details#setup-details summary { cursor: pointer; color: var(--muted); }
 details#setup-details[open] summary { margin-bottom: 0.5rem; }
 /* Per-app (per-hook) drill-down view. */
 .crumbs { margin: 0; font-size: 0.875rem; }
-.crumbs a { color: var(--accent); text-decoration: none; }
-.crumbs a:hover { text-decoration: underline; }
 #app-head h2 {
   text-transform: none;
   letter-spacing: normal;
@@ -411,19 +413,16 @@ td code { white-space: nowrap; }
 a.hook-link { text-decoration: none; }
 a.hook-link code { color: var(--accent); }
 a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
-a.run-link { text-decoration: none; }
+/* A run-id chip reads as body text until hovered, so it opts out of the
+   base link color rather than turning every id in every table blue. */
+a.run-link { color: inherit; text-decoration: none; }
 a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
 /* GitHub slugs found in rendered text (run titles, log lines, event
    messages, KV values, commit subjects) -- "wow-look-at-my/webhooks#41"
    opens the PR/issue in a new tab. Underlined only on hover so a log line
    full of slugs stays readable, and inheriting the surrounding font so a
    slug inside a <pre> stays monospaced and in-line. */
-a.gh-slug { color: var(--accent); text-decoration: none; font: inherit; }
-a.gh-slug:hover { text-decoration: underline; }
-/* Plain-text jump link (the Info card's State (KV) summary): no <code>
-   child, so it carries the link color itself. */
-a.kv-jump { color: var(--accent); text-decoration: none; }
-a.kv-jump:hover { text-decoration: underline; }
+a.gh-slug { font: inherit; }
 /* The overview State (KV) rows link into the per-hook KV browser; the
    orphaned badge rides inside the link without picking up link styling. */
 #kv-table a.hook-link .badge { margin-left: 0.5rem; }
