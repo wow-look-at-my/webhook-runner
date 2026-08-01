@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -487,6 +488,14 @@ func describePush(body []byte) string {
 
 // handleEvents returns the activity feed, newest first (admin port).
 // ?hook={id} narrows it to one hook's slice, same convention as /runs.
+// ?exclude=run[,image,…] drops whole kind FAMILIES (the segment before the
+// dot). The dashboard passes exclude=run on both feeds: run lifecycle
+// belongs to the runs table, which shows each run as one row with its
+// status, timings and output instead of three log lines.
+//
+// Both narrowings are applied by the recorder BEFORE max — see
+// events.ListFiltered. A page-then-filter implementation would blank the
+// feed on exactly the busy hooks it matters for.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	max := 200
 	if m := r.URL.Query().Get("max"); m != "" {
@@ -494,11 +503,25 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	if hookID := r.URL.Query().Get("hook"); hookID != "" {
-		writeJSON(w, http.StatusOK, s.events.ListByHook(hookID, max))
-		return
+	f := events.Filter{Hook: r.URL.Query().Get("hook")}
+	if ex := r.URL.Query().Get("exclude"); ex != "" {
+		for _, fam := range strings.Split(ex, ",") {
+			fam = strings.TrimSpace(fam)
+			if fam == "" {
+				continue
+			}
+			// A FAMILY, never a full kind: "run", not "run.started".
+			// Accepting a kind here would silently match nothing and read as
+			// "the filter did not work".
+			if strings.Contains(fam, ".") {
+				writeError(w, http.StatusBadRequest,
+					"exclude takes kind families, not kinds: use "+events.Family(fam)+" to drop "+fam)
+				return
+			}
+			f.ExcludeFamilies = append(f.ExcludeFamilies, fam)
+		}
 	}
-	writeJSON(w, http.StatusOK, s.events.List(max))
+	writeJSON(w, http.StatusOK, s.events.ListFiltered(f, max))
 }
 
 // handleImages reports per-hook image state — the tag the hook's current
