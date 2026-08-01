@@ -124,7 +124,7 @@ func newFixtureAt(t *testing.T, repo *fakeRepo, statePath string) *gateFixture {
 		Branch:    "master",
 		Context:   "all-builds",
 		StatePath: statePath,
-		Apply:     func() { applies++ },
+		Apply:     func() error { applies++; return nil },
 		Events:    rec,
 		Attention: agg,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),

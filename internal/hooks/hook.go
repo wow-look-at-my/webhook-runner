@@ -71,22 +71,7 @@ type Hook struct {
 	// shipped next to the manifest, and handed to the container as a file
 	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
 	// hook-private config into the runner's own parsed keys. See settings.go.
-	Settings json.RawMessage `json:"settings,omitempty"`
-	// Env is the SUPERSEDED config block, kept working for one release so
-	// the migration to Settings can be rolled out without a flag day.
-	//
-	// It cannot simply be deleted: a runner that rejects `env` cannot load
-	// the fleet that still declares it, and a fleet that declares `settings`
-	// cannot be served by a runner that predates it -- so removing it in one
-	// step means an instant where SOMETHING is unservable, and nothing about
-	// that is recoverable without hand-editing production. So both are
-	// accepted for one release: `env` still injects exactly as it always did
-	// (that is the point -- a deprecation that quietly stops working is worse
-	// than the flag day), while every entity using it is named loudly at
-	// load, in the log, the activity feed, and the needs-attention surface.
-	// The follow-up that deletes this field is gated by ci.yml's
-	// fleet-compat job, which cannot go green until the fleet has migrated.
-	Env             map[string]string   `json:"env,omitempty"`
+	Settings        json.RawMessage     `json:"settings,omitempty"`
 	User            string              `json:"user,omitempty"`
 	Workdir         string              `json:"workdir,omitempty"`
 	TimeoutRaw      string              `json:"timeout,omitempty"`

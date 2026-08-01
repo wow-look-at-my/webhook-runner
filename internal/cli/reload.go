@@ -28,7 +28,7 @@ import (
 // Reconcile can read a newer tip's gating status from the GitHub API. An
 // empty gate context (or no repo) keeps the legacy path: any reload
 // pulls-to-tip + reloads.
-func buildReloadPath(repo *hooks.Repo, o *serveOptions, dataDir string, loadAndApply func(), gh *githubstatus.Client, rec *events.Recorder, agg *attention.Aggregator, logger *slog.Logger) (func() error, *reloadgate.Gate, error) {
+func buildReloadPath(repo *hooks.Repo, o *serveOptions, dataDir string, loadAndApply func() error, gh *githubstatus.Client, rec *events.Recorder, agg *attention.Aggregator, logger *slog.Logger) (func() error, *reloadgate.Gate, error) {
 	if repo == nil || o.gateContext == "" {
 		return buildReloadFunc(repo, loadAndApply, rec), nil, nil
 	}
@@ -85,7 +85,7 @@ func buildGateStatusFunc(gh *githubstatus.Client, o *serveOptions, logger *slog.
 
 // buildReloadFunc is the legacy (gate-less) reload: pull the hooks repo to
 // its tip when one is configured, then reload from disk.
-func buildReloadFunc(repo *hooks.Repo, loadAndApply func(), rec *events.Recorder) func() error {
+func buildReloadFunc(repo *hooks.Repo, loadAndApply func() error, rec *events.Recorder) func() error {
 	if repo != nil {
 		return func() error {
 			if err := repo.Pull(); err != nil {
@@ -93,12 +93,8 @@ func buildReloadFunc(repo *hooks.Repo, loadAndApply func(), rec *events.Recorder
 				return err
 			}
 			rec.Record("git.pulled", "hooks repo pulled", nil)
-			loadAndApply()
-			return nil
+			return loadAndApply()
 		}
 	}
-	return func() error {
-		loadAndApply()
-		return nil
-	}
+	return loadAndApply
 }

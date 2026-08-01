@@ -39,13 +39,6 @@
           "type": "boolean",
           "default": true
         },
-        "env": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "deprecated": true
-        },
         "extra_docker_args": {
           "type": "array",
           "items": {
@@ -289,9 +282,6 @@
     "enable": {
       "description": "The kill switch's DEFAULT position, exactly the hook contract: absent or true means ENABLED — a declared manager starts working the moment it deploys. Explicit false loads it disabled (no session container, deliveries 503) until an operator enables it. The dashboard switch is a persisted runtime override that outranks this default in both directions; it is the emergency control, never a go-live gate."
     },
-    "env": {
-      "description": "SUPERSEDED by `settings`; still accepted for one release. Environment variables passed to the container, values only strings. A ${NAME} reference resolves from the entity's sops-encrypted secrets.sops.env first, then the runner host's environment; an unresolvable one yields an empty value and is reported. Move this configuration to `settings`, which is arbitrary JSON validated at load against the settings.schema.json shipped next to the manifest and mounted read-only at $HOOK_SETTINGS_FILE. Every manager still declaring `env` is named on the runner's needs-attention surface until it migrates."
-    },
     "extra_docker_args": {
       "description": "Additional raw docker run arguments, appended before the image name."
     },
@@ -318,7 +308,7 @@
       "description": "GitHub-style HMAC-SHA256 webhook secret: deliveries must carry a valid X-Hub-Signature-256 over the raw body. The usual choice for managers fed by a GitHub App/org webhook."
     },
     "settings": {
-      "description": "The manager's OWN configuration: any JSON object shape it wants. webhook-runner never interprets it — it validates the object against the settings.schema.json shipped next to this manifest (declaring settings without that file is a load error) and hands it to the container as a read-only file at $HOOK_SETTINGS_FILE. This replaced the `env` block, which mixed manager-private config into the runner's own parsed keys, forced every value to be a string, and was validated by nobody. Settings are read per RUN, so changing them takes effect on the next run without rebuilding the image. Credentials belong here only under the same private-repo posture as the rest of the manifest; the admin API exposes the top-level KEY NAMES only."
+      "description": "The manager's OWN configuration: any JSON object shape it wants. webhook-runner never interprets it -- it validates the object against the settings.schema.json shipped next to this manifest (declaring settings without that file is a load error) and hands it to the container as a read-only file at $HOOK_SETTINGS_FILE. This replaced the `env` block, which mixed manager-private config into the runner's own parsed keys, forced every value to be a string, and was validated by nobody. Settings are read per RUN, so changing them takes effect on the next run without rebuilding the image. REFERENCES: a string value may contain ${settings:a.b[2].c} (another value in this same document) or ${env:NAME} (a variable from the entity's secrets.sops.env, then the runner host's environment). ${settings:...} resolves at LOAD, so the schema validates the RESOLVED value and a bad path is a load error; a whole-string reference keeps the referenced value's type. ${env:NAME} resolves when the container starts -- an unresolvable one FAILS THE RUN rather than becoming an empty string -- so at load the schema sees the reference text, and a field meant to hold one must permit it (e.g. anyOf with a ^\\\\$\\\\{env: pattern). Credentials belong here only under the same private-repo posture as the rest of the manifest; the admin API exposes the top-level KEY NAMES only."
     },
     "signature_header": {
       "description": "Header carrying the request signature. Defaults to X-Signature-Ed25519 (ed25519) or X-Hub-Signature-256 (HMAC secret)."

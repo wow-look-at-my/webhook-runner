@@ -52,7 +52,7 @@ func TestRedHeldMessageCarriesChecksLink(t *testing.T) {
 		Branch:    "master",
 		Context:   "all-builds",
 		StatePath: filepath.Join(t.TempDir(), "reload-gate.json"),
-		Apply:     func() {},
+		Apply:     func() error { return nil },
 		RepoSlug:  "wow-look-at-my/webhooks",
 		Events:    rec,
 		Attention: agg,

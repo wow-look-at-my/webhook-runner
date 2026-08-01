@@ -39,13 +39,6 @@
           "type": "boolean",
           "default": true
         },
-        "env": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "deprecated": true
-        },
         "extra_docker_args": {
           "type": "array",
           "items": {
@@ -324,9 +317,6 @@
     "enable": {
       "description": "The hook's DEFAULT enabled state. When false, the hook loads disabled: deliveries are rejected (503) and scheduled runs are skipped exactly as if the operator kill switch were off, until an operator explicitly enables it. The dashboard/admin runtime override (POST /hooks/{id}/enable|disable, persisted server-side) always takes precedence over this default, in both directions. Absent = enabled, so existing hooks are unchanged."
     },
-    "env": {
-      "description": "SUPERSEDED by `settings`; still accepted for one release. Environment variables passed to the container, values only strings. A ${NAME} reference resolves from the entity's sops-encrypted secrets.sops.env first, then the runner host's environment; an unresolvable one yields an empty value and is reported. Move this configuration to `settings`, which is arbitrary JSON validated at load against the settings.schema.json shipped next to the manifest and mounted read-only at $HOOK_SETTINGS_FILE. Every hook still declaring `env` is named on the runner's needs-attention surface until it migrates."
-    },
     "extra_docker_args": {
       "description": "Additional raw arguments passed to docker run."
     },
@@ -354,7 +344,7 @@
       "description": "Legacy: shared secret for HMAC-SHA256 signature verification. Prefer api_key or public_key."
     },
     "settings": {
-      "description": "The hook's OWN configuration: any JSON object shape it wants. webhook-runner never interprets it — it validates the object against the settings.schema.json shipped next to this manifest (declaring settings without that file is a load error) and hands it to the container as a read-only file at $HOOK_SETTINGS_FILE. This replaced the `env` block, which mixed hook-private config into the runner's own parsed keys, forced every value to be a string, and was validated by nobody. Settings are read per RUN, so changing them takes effect on the next run without rebuilding the image. Credentials belong here only under the same private-repo posture as the rest of the manifest; the admin API exposes the top-level KEY NAMES only."
+      "description": "The hook's OWN configuration: any JSON object shape it wants. webhook-runner never interprets it -- it validates the object against the settings.schema.json shipped next to this manifest (declaring settings without that file is a load error) and hands it to the container as a read-only file at $HOOK_SETTINGS_FILE. This replaced the `env` block, which mixed hook-private config into the runner's own parsed keys, forced every value to be a string, and was validated by nobody. Settings are read per RUN, so changing them takes effect on the next run without rebuilding the image. REFERENCES: a string value may contain ${settings:a.b[2].c} (another value in this same document) or ${env:NAME} (a variable from the entity's secrets.sops.env, then the runner host's environment). ${settings:...} resolves at LOAD, so the schema validates the RESOLVED value and a bad path is a load error; a whole-string reference keeps the referenced value's type. ${env:NAME} resolves when the container starts -- an unresolvable one FAILS THE RUN rather than becoming an empty string -- so at load the schema sees the reference text, and a field meant to hold one must permit it (e.g. anyOf with a ^\\\\$\\\\{env: pattern). Credentials belong here only under the same private-repo posture as the rest of the manifest; the admin API exposes the top-level KEY NAMES only."
     },
     "signature_header": {
       "description": "HTTP header containing the signature. Default: X-Signature-Ed25519 for public_key auth, X-Hub-Signature-256 for legacy HMAC."
