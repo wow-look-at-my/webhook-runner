@@ -331,6 +331,59 @@ tests:
   # and that break is unrecoverable by rollback -- the tree never changed, the
   # binary did. The removal ships once the fleet has migrated, gated by
   # ci.yml's fleet-compat job.
+  # References inside settings. ${settings:...} resolves at LOAD, so the schema
+  # validates the RESOLVED value -- a typo'd path is a load error, not a
+  # surprise mid-run. ${env:...} needs the runner host and resolves at run.
+  - desc: a ${settings:...} reference resolves at load and satisfies the schema
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    inputs:
+      files:
+        h/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"],
+           "settings": {"base": "https://x.test", "url": "${settings:base}/v1"}}
+        h/settings.schema.json: |
+          {"type":"object","required":["url"],"properties":{"url":{"type":"string","pattern":"^https://"}},
+           "additionalProperties": true}
+        h/Dockerfile: |
+          FROM alpine
+    exit: 0
+    outputs:
+      stdout:
+        - ok  h
+
+  - desc: a ${settings:...} reference to a missing path is a load error
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    inputs:
+      files:
+        h/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"],
+           "settings": {"url": "${settings:nope.missing}"}}
+        h/settings.schema.json: |
+          {"type":"object"}
+        h/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - no such setting
+
+  - desc: a resolved ${settings:...} value that violates the schema fails at load
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.h/hook.json}")/.."'
+    inputs:
+      files:
+        h/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"],
+           "settings": {"base": "ftp://x.test", "url": "${settings:base}/v1"}}
+        h/settings.schema.json: |
+          {"type":"object","required":["url"],"properties":{"url":{"type":"string","pattern":"^https://"}},
+           "additionalProperties": true}
+        h/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - settings does not match
+
   - desc: the superseded env block still loads (it must, or the fleet cannot be served)
     cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
     inputs:

@@ -69,6 +69,16 @@ func (h *Hook) ValidateSettings() error {
 		if _, ok := probe.(map[string]any); !ok {
 			return errors.New("settings must be a JSON object")
 		}
+		// ${settings:...} references resolve HERE, before the schema runs, so
+		// the schema validates real values rather than reference text -- and a
+		// typo'd path is a load error instead of a surprise mid-run. The
+		// expanded document is what the container is handed. ${env:...} is
+		// left for the run path (see settingsref.go).
+		expanded, err := ExpandSettingsSelfRefs(h.Settings)
+		if err != nil {
+			return fmt.Errorf("settings references: %w", err)
+		}
+		h.Settings = expanded
 	}
 
 	path := settingsSchemaPath(h.SourcePath)
