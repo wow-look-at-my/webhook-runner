@@ -232,6 +232,22 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		}
 		args = append(args, "-e", k+"="+v)
 	}
+	// The superseded `env` block — same contract as a hook's (see runner.go):
+	// still injected verbatim for one release, loudly reported at load.
+	if len(hook.Env) > 0 {
+		lookup := hooks.SecretsFirstLookup(secrets)
+		for k, v := range hook.Env {
+			expanded, missing := hooks.ExpandEnvRefs(v, lookup)
+			for _, name := range missing {
+				r.log.Warn("manager env references unset variable",
+					"manager", hook.ID, "instance", instanceID, "env", k, "var", name)
+				r.events.Record("env.unresolved",
+					hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
+					map[string]string{"hook": hook.ID})
+			}
+			args = append(args, "-e", k+"="+expanded)
+		}
+	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)
 	}

@@ -440,6 +440,28 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		}
 		args = append(args, "-e", k+"="+v)
 	}
+	// The superseded `env` block, still injected exactly as it always was.
+	// A deprecation that quietly stops working is worse than the flag day it
+	// exists to avoid: the hook would load, run, and behave wrongly. Values
+	// resolve ${NAME} from the hook's secrets first, then the host
+	// environment. Every entity using this is named loudly at load
+	// (hooks.Deprecations) and listed on the needs-attention surface.
+	if len(hook.Env) > 0 {
+		lookup := hooks.SecretsFirstLookup(secrets)
+		for k, v := range hook.Env {
+			expanded, missing := hooks.ExpandEnvRefs(v, lookup)
+			for _, name := range missing {
+				r.log.Warn("hook env references unset variable",
+					"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
+				// A hook running with an empty secret looks healthy from the
+				// outside while every run fails downstream.
+				r.events.Record("env.unresolved",
+					hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
+					map[string]string{"hook": hook.ID, "run": run.ID()})
+			}
+			args = append(args, "-e", k+"="+expanded)
+		}
+	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)
 	}

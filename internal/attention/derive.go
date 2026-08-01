@@ -307,3 +307,25 @@ func oneLine(s string) string {
 	}
 	return s[:cut] + "..."
 }
+
+// KeyDeprecatedField prefixes the per-field deprecation entries, so one
+// entity using two superseded fields gets two entries rather than one that
+// overwrites the other.
+const KeyDeprecatedField = "field:"
+
+// FromDeprecations turns each loaded entity's use of a superseded manifest
+// field into an attention entry. These entities LOADED and are serving
+// normally -- the surface exists so a field cannot quietly outlive its
+// deprecation, and so the follow-up that deletes it has a list to work from.
+func FromDeprecations(deps []hooks.Deprecation) []Entry {
+	out := []Entry{}
+	for _, d := range deps {
+		out = append(out, Entry{
+			Source:  SourceDeprecated,
+			Hook:    d.EntityID,
+			Key:     KeyDeprecatedField + d.Field,
+			Message: d.Message,
+		})
+	}
+	return out
+}

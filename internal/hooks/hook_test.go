@@ -146,7 +146,6 @@ func TestParseRejectsBadDocs(t *testing.T) {
 		// json-validator enforces it points at the published schema.
 		"missing schema":             `{"command":["x"]}`,
 		"image is not a field":       `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","image":"alpine"}`,
-		"env is not a field":         `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","env":{"FOO":"bar"}}`,
 		"settings must be an object": `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","settings":[1,2]}`,
 		"empty test command":         `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","tests":[["ok"],[]]}`,
 		"bad timeout":                `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","timeout":"banana"}`,

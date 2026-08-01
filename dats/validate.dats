@@ -326,7 +326,12 @@ tests:
       stdout:
         - ok  myhook
 
-  - desc: the retired env block is rejected outright, never silently ignored
+  # `env` is SUPERSEDED, not removed. It has to keep loading for one release:
+  # a runner that rejects it cannot serve the fleet that still declares it,
+  # and that break is unrecoverable by rollback -- the tree never changed, the
+  # binary did. The removal ships once the fleet has migrated, gated by
+  # ci.yml's fleet-compat job.
+  - desc: the superseded env block still loads (it must, or the fleet cannot be served)
     cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
     inputs:
       files:
@@ -334,10 +339,25 @@ tests:
           {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "env": {"TOKEN": "abc"}}
         myhook/Dockerfile: |
           FROM alpine
-    exit: 1
+    exit: 0
     outputs:
-      stderr:
-        - 'unknown field "env"'
+      stdout:
+        - ok  myhook
+
+  - desc: a hook still using env is named as deprecated, never silently accepted
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.." 2>&1'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"], "env": {"TOKEN": "abc"}}
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 0
+    outputs:
+      stdout:
+        - myhook
+        - deprecated
+        - settings
 
   # The PUBLISHED schema is enforced at load now, by the same implementation
   # (wow-look-at-my/json-validator) the hooks repo runs in CI -- so "passes CI"

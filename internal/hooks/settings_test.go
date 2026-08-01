@@ -133,11 +133,14 @@ func TestParseAcceptsValidSettings(t *testing.T) {
 	assert.JSONEq(t, `{"app_id":"42"}`, string(h.SettingsJSON()))
 }
 
-// `env` is gone: a manifest still carrying one must fail loudly rather than
-// have its configuration silently ignored.
-func TestParseRejectsTheRetiredEnvBlock(t *testing.T) {
+// `env` is SUPERSEDED, not gone. Rejecting it outright would mean a runner
+// that cannot load the fleet still declaring it -- an unrecoverable break,
+// since the tree never changed and only the binary did. So it loads, keeps
+// working, and is reported (see deprecation_test.go for the reporting).
+func TestParseAcceptsTheSupersededEnvBlockAndFlagsIt(t *testing.T) {
 	src := writeSettingsFixture(t, "")
-	_, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","env":{"A":"b"}}`))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "env")
+	h, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","env":{"A":"b"}}`))
+	require.NoError(t, err, "rejecting env would strand every manifest that still uses it")
+	assert.Equal(t, map[string]string{"A": "b"}, h.Env)
+	require.Len(t, h.Deprecations(), 1, "accepted, but never silently")
 }
