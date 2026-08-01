@@ -279,12 +279,26 @@ test('page load fetches /hooks exactly once and paints every section', async () 
 	const h = await boot();
 	const hookFetches = h.urls().filter((u) => u === '/hooks');
 	assert.equal(hookFetches.length, 1, `/hooks must be fetched exactly once at boot, saw: ${h.urls().join(', ')}`);
-	for (const want of ['/health', '/hooks', '/attention', '/images', '/events?max=100', '/kv', '/concurrency']) {
+	for (const want of ['/health', '/hooks', '/attention', '/images', '/events?max=100&exclude=run', '/kv', '/concurrency']) {
 		assert.ok(h.urls().includes(want), `boot must fetch ${want}`);
 	}
 	// The single fetch is REPUBLISHED for timeline.js instead of refetched.
 	assert.ok(Array.isArray(h.sandbox.whrHooks), 'boot must publish window.whrHooks');
 	assert.equal(h.sandbox.whrHooks[0].id, 'a');
+});
+
+// Run lifecycle belongs to the runs table, which shows each run as one row
+// with status, timings and output. The feed asks the SERVER to drop that
+// family, so the exclusion happens before max: filtering the page after
+// fetching it would blank the feed on any hook mid-burst, which is the
+// whole failure this parameter exists to avoid.
+test('every activity feed excludes the run family server-side', async () => {
+	const h = await boot();
+	const feeds = h.urls().filter((u) => u.startsWith('/events'));
+	assert.ok(feeds.length > 0, 'boot must fetch the activity feed');
+	for (const u of feeds) {
+		assert.ok(u.includes('exclude=run'), `activity feed must exclude runs, saw ${u}`);
+	}
 });
 
 test('idle dashboard with the stream live makes ZERO requests for 60s', async () => {

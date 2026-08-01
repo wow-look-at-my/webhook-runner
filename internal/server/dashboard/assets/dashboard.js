@@ -219,6 +219,31 @@ function runDuration(r) {
   return "—";
 }
 
+// The numeric spans behind runWaited/runDuration, for SORTING. The rendered
+// strings ("1.2s", "—") are what the operator reads; sorting by them would
+// put "10s" before "9s" and file every em-dash under punctuation. null =
+// unknown, which the table parks last in both directions.
+function waitedMs(r) {
+  const queued = new Date(r.started).getTime();
+  if (isNaN(queued)) return null;
+  if (tsPresent(r.started_at)) return new Date(r.started_at).getTime() - queued;
+  if (r.status === "pending") return Date.now() - queued;
+  return null;
+}
+
+function durationMs(r) {
+  if (tsPresent(r.started_at)) {
+    const startedAt = new Date(r.started_at).getTime();
+    return (tsPresent(r.finished) ? new Date(r.finished).getTime() : Date.now()) - startedAt;
+  }
+  if (r.status === "pending") return null;
+  const ranStatuses = ["success", "failure", "timeout"];
+  if (tsPresent(r.finished) && ranStatuses.includes(r.status)) {
+    return new Date(r.finished).getTime() - new Date(r.started).getTime();
+  }
+  return null;
+}
+
 // Milliseconds at the resolution startup actually costs. fmtDuration
 // bottoms out at whole seconds, which renders every container boot as
 // "0s" — the precision this instrumentation exists to recover.
@@ -677,7 +702,13 @@ const sectionFetchers = {
     renderRuns(await fetchJSON("/runs?max=50"));
   },
   images: async () => renderImages(await fetchJSON("/images")),
-  events: async () => renderEvents(await fetchJSON("/events?max=100")),
+  // exclude=run: run lifecycle is the runs table's job, and it does it
+  // better (one row per run with status, timings and output, instead of
+  // three log lines). The feed keeps everything that has NO run to show —
+  // rejected deliveries, image builds, unresolved env, reload/git activity
+  // — which is what makes it worth having beside the table. Excluded
+  // server-side, before max, so a run-heavy burst can never crowd those out.
+  events: async () => renderEvents(await fetchJSON("/events?max=100&exclude=run")),
   kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
   concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
   // First-class managers: the roster (+ the open detail, when a
@@ -1480,21 +1511,57 @@ function runCell(r) {
   );
 }
 
+// Cell styling for the runs tables, passed INTO <data-table>'s shadow root
+// through its styleText hatch. The status pill and the wait note are
+// rendered by this file but live inside that root, where dashboard.css
+// cannot reach them; the COLORS still come from the page, because custom
+// properties do inherit through the shadow boundary. Keep these selectors
+// in sync with the .status/.wait-note rules in dashboard.css — they are the
+// same states, drawn in two places by necessity, not by choice.
+const RUNS_TABLE_CSS = `
+.status { font-weight: 500; }
+.status.success { color: var(--success); }
+.status.failure, .status.error, .status.timeout { color: var(--failure); }
+.status.running { color: var(--running); }
+.status.pending { color: var(--pending); }
+.status.skipped { color: var(--skipped); }
+.wait-note { margin-left: 0.5rem; font-weight: 400; font-style: italic; font-size: 0.85em; color: var(--muted); }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--panel); }
+code { font-size: 0.9em; }
+`;
+
+// The overview runs list, as a <data-table>. Columns declare how to SORT
+// (value), how to DISPLAY (render) and how to SEARCH (text) separately —
+// the queued column sorts by epoch millis while showing a locale string,
+// which a single accessor could not do without sorting by the rendered
+// text. Rows arrive newest-first and stay that way until a header is
+// clicked; the sort cycle's third state returns to exactly that order.
 function renderRuns(rs) {
-  const tbody = document.querySelector("#runs-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("runs-empty").hidden = rs.length > 0;
-  for (const r of rs) {
-    const tr = el("tr", { data: { runId: r.id } },
-      el("td", null, fmtTime(r.started)),
-      el("td", null, el("code", null, r.hook_id)),
-      el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
-      el("td", null, String(r.exit_code)),
-      runCell(r),
-    );
-    tr.addEventListener("click", () => showRun(r.id));
-    tbody.appendChild(tr);
+  const t = document.getElementById("runs-table");
+  if (!t) return;
+  t.columns = [
+    { key: "started", label: "Queued", value: (r) => Date.parse(r.started), render: (r) => fmtTime(r.started) },
+    { key: "hook_id", label: "Hook", render: (r) => el("code", null, r.hook_id) },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => el("span", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
+    },
+    { key: "exit_code", label: "Exit", align: "end", render: (r) => String(r.exit_code) },
+    { key: "id", label: "Run ID", render: (r) => runCell(r) },
+  ];
+  t.rowId = (r) => r.id;
+  t.styleText = RUNS_TABLE_CSS;
+  // Bound once: the element outlives every render, so re-adding per render
+  // would stack a handler per refresh and open N modals on one click.
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) void showRun(e.detail.id);
+    });
   }
+  t.rows = rs || [];
 }
 
 function renderImages(images) {
@@ -1635,7 +1702,11 @@ async function refreshApp(id) {
   const exclude = [...appRunsHiddenStatuses()].sort().join(",");
   const [runs, events, kvKeys] = await Promise.all([
     fetchJSON(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
-    fetchJSON(`/events?hook=${enc}&max=100`),
+    // Same exclusion as the overview feed: this page already has a Recent
+    // runs table two sections up, so the feed shows only what that table
+    // cannot — deliveries that produced no run at all, image builds, and
+    // this hook's misconfigurations.
+    fetchJSON(`/events?hook=${enc}&max=100&exclude=run`),
     // The KV namespace listing exists only for state:true hooks
     // (namespace == hook ID); skip the fetch entirely otherwise.
     detail.info.state ? fetchJSON(`/kv/${enc}`) : Promise.resolve(null),
@@ -1780,6 +1851,7 @@ function renderApp(detail, runs, events) {
 
   // by_status covers the whole retention window, not the fetched page, so
   // the chips can count statuses the server just filtered out.
+  bindAppRunsFilterEvents();
   renderAppRunsTable(runs, st.by_status);
 
   renderEventsInto("app-events-feed", events);
@@ -1829,101 +1901,87 @@ function saveAppRunsHiddenStatuses(hidden) {
   }
 }
 
-// The pure selection the table renders: runs whose status is not hidden,
-// plus how many each hidden status filtered out (for the chip counts).
-function filterAppRuns(runs, hidden) {
-  const shown = [];
-  const hiddenCounts = new Map();
-  for (const r of runs || []) {
-    if (hidden.has(r.status)) {
-      hiddenCounts.set(r.status, (hiddenCounts.get(r.status) || 0) + 1);
-    } else {
-      shown.push(r);
-    }
-  }
-  return { shown, hiddenCounts };
-}
-
 let lastAppRuns = [];
 let lastAppStatusCounts = null;
 
+// The per-hook runs table, as a <data-table>.
+//
+// The status chips are declared local:false — the component renders,
+// toggles and persists them but filters NOTHING itself, because the
+// exclusion is applied server-side BEFORE the row cap. Letting it filter
+// locally would undo exactly that: the page it holds is already a filtered
+// window, so a second pass would empty a table whose remaining rows all
+// sit past the cap. A chip click therefore REFETCHES rather than
+// re-selects — a different filter is a different fifty rows.
+//
+// Chip counts come from the hook's stats.by_status (the WHOLE retention
+// window), not from the page: a hidden status is simply absent from the
+// page, so a derived count would read ×0 on the very chip that needs a
+// number. "skipped ×4213" is the fact worth showing next to the toggle.
 function renderAppRunsTable(runs, statusCounts) {
   lastAppRuns = runs || [];
   if (statusCounts) lastAppStatusCounts = statusCounts;
+  const t = document.getElementById("app-runs-table");
+  if (!t) return;
   const hidden = appRunsHiddenStatuses();
-  // The server already excluded these, so this is belt-and-braces: the
-  // table must never show a hidden status even if the filter did not reach
-  // the server (an in-flight request racing a chip click).
-  const { shown } = filterAppRuns(lastAppRuns, hidden);
-  renderAppRunsFilter(lastAppStatusCounts, hidden);
 
-  const tbody = document.querySelector("#app-runs-table tbody");
-  tbody.innerHTML = "";
-  const empty = document.getElementById("app-runs-empty");
-  empty.hidden = shown.length > 0;
-  // Filtering happens server-side now, so an empty table means the filter
-  // matched nothing in the WHOLE window — not that the newest page happened
-  // to be all-hidden. Say which it is rather than counting a page that no
-  // longer exists.
-  empty.textContent = hidden.size > 0
-    ? `No runs in this window with the status filter above (hiding ${[...hidden].sort().join(", ")}).`
-    : "No runs yet.";
-  for (const r of shown) {
-    // Queued = accepted; Waited = queue time until launch (live for pending
-    // runs); Duration = processing only (live while running).
-    const tr = el("tr", null,
-      el("td", null, fmtTime(r.started)),
-      el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
-      el("td", null, runWaited(r)),
-      el("td", null, runDuration(r)),
-      el("td", null, String(r.exit_code)),
-      runCell(r),
-    );
-    tr.addEventListener("click", () => showRun(r.id));
-    tbody.appendChild(tr);
-  }
+  t.columns = [
+    { key: "started", label: "Queued", value: (r) => Date.parse(r.started), render: (r) => fmtTime(r.started) },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => el("span", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
+    },
+    // Waited/Duration sort by their real millisecond spans, not by the
+    // "1.2s"/"—" strings the cells show.
+    { key: "waited", label: "Waited", align: "end", value: (r) => waitedMs(r), render: (r) => runWaited(r) },
+    { key: "duration", label: "Duration", align: "end", value: (r) => durationMs(r), render: (r) => runDuration(r) },
+    { key: "exit_code", label: "Exit", align: "end", render: (r) => String(r.exit_code) },
+    { key: "id", label: "Run ID", render: (r) => runCell(r) },
+  ];
+  t.facets = [
+    {
+      key: "status",
+      label: "run(s) in this window",
+      of: (r) => r.status,
+      local: false,
+      counts: lastAppStatusCounts || {},
+      // Keep the control discoverable on a hook that has never skipped.
+      always: APP_RUNS_FILTER_DEFAULT,
+    },
+  ];
+  t.rowId = (r) => r.id;
+  t.styleText = RUNS_TABLE_CSS;
+  // An empty table means the filter matched nothing in the WHOLE window —
+  // not that the newest page happened to be all-hidden. Say which it is.
+  t.setAttribute(
+    "empty-text",
+    hidden.size > 0
+      ? `No runs in this window with the status filter above (hiding ${[...hidden].sort().join(", ")}).`
+      : "No runs yet.",
+  );
+  t.filter = { query: "", hidden: { status: [...hidden] }, sort: t.filter?.sort ?? null };
+  t.rows = lastAppRuns;
 }
 
-// One chip per status: every status in the stats window, plus every hidden
-// one (its chip must stay visible while it hides), plus the default-hidden
-// "skipped" (so the control is discoverable even with zero skips). Active
-// chips hide on click; dimmed (hidden) chips show on click.
-//
-// Counts come from the hook detail's stats.by_status — the WHOLE retention
-// window — not from the fetched page. Deriving them from the page stopped
-// working the moment the page became server-filtered (a hidden status is
-// simply absent from it), and window counts were the more useful number
-// anyway: "skipped ×4213" is the fact worth showing next to the toggle.
-function renderAppRunsFilter(statusCounts, hidden) {
-  const bar = document.getElementById("app-runs-filter");
-  if (!bar) return;
-  bar.innerHTML = "";
-  const counts = new Map(Object.entries(statusCounts || {}));
-  const statuses = new Set([...counts.keys(), ...hidden, ...APP_RUNS_FILTER_DEFAULT]);
-  for (const st of [...statuses].sort()) {
-    const n = counts.get(st) || 0;
-    const off = hidden.has(st);
-    const chip = el("button", {
-      type: "button",
-      class: `filter-chip status ${st}${off ? " filter-off" : ""}`,
-      title: off
-        ? `${n} ${st} run(s) in this window are hidden — click to show them`
-        : `click to hide ${st} runs from the table`,
-    }, `${st} ×${n}`);
-    chip.addEventListener("click", () => {
-      const next = appRunsHiddenStatuses();
-      if (next.has(st)) next.delete(st);
-      else next.add(st);
-      saveAppRunsHiddenStatuses(next);
-      // REFETCH, don't re-select: the filter is applied server-side before
-      // the limit, so a different filter is a different fifty rows. Falls
-      // back to re-rendering the page in hand if the app id is unknown.
-      const id = currentHookId();
-      if (id) void refreshApp(id);
-      else renderAppRunsTable(lastAppRuns);
-    });
-    bar.appendChild(chip);
-  }
+// A chip toggle changes the SERVER-side filter, so it refetches. Bound once
+// per element; the component re-emits on every toggle.
+function bindAppRunsFilterEvents() {
+  const t = document.getElementById("app-runs-table");
+  if (!t || t.dataset.filterBound) return;
+  t.dataset.filterBound = "1";
+  t.addEventListener("table-filter-change", (e) => {
+    const next = new Set(e.detail?.hidden?.status || []);
+    const current = appRunsHiddenStatuses();
+    if (next.size === current.size && [...next].every((s) => current.has(s))) return;
+    saveAppRunsHiddenStatuses(next);
+    const id = currentHookId();
+    if (id) void refreshApp(id);
+    else renderAppRunsTable(lastAppRuns);
+  });
+  t.addEventListener("row-click", (e) => {
+    if (e.detail?.id) void showRun(e.detail.id);
+  });
 }
 
 // --- Per-app State (KV) inspection -----------------------------------------

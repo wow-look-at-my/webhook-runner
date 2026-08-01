@@ -220,6 +220,12 @@ const COMPONENT_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/t
 // Activity feeds. Loaded here (see loadActivityFeedForever) so every module
 // script the dashboard runs is compiled from ts/ by ts0.
 const ACTIVITY_FEED_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js';
+// The third: <data-table>, behind both runs tables. <activity-feed> imports
+// it too (it IS a data-table underneath), so this load is often redundant —
+// but only often. Depending on the feed's import graph to register a tag
+// this page's runs tables need is the kind of implicit coupling that breaks
+// silently the day the feed stops using it.
+const DATA_TABLE_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/data-table.js';
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const STREAM_PATH = '/runs/stream';
 // One supervisor/fallback tick: FIXED cadence, forever. Handles both the
@@ -1731,12 +1737,36 @@ async function loadComponentForever(): Promise<void> {
  * giving up would leave the feeds permanently on their "loading" line.
  */
 async function loadActivityFeedForever(): Promise<void> {
+	await loadComponentModuleForever(ACTIVITY_FEED_URL, 'activity-feed');
+}
+
+/**
+ * Load <data-table> — the component behind both runs tables (the overview
+ * list and the per-hook section). dashboard.js sets `.columns`/`.rows` on
+ * elements that have usually not upgraded yet, which the component's
+ * connectedCallback replays.
+ *
+ * Independent of the chart and the feeds for the same reason they are
+ * independent of each other: one failed fetch must not take a working
+ * surface down with it.
+ */
+async function loadDataTableForever(): Promise<void> {
+	await loadComponentModuleForever(DATA_TABLE_URL, 'data-table');
+}
+
+/**
+ * The shared never-give-up loader: the imports are cross-origin, and giving
+ * up would leave a surface permanently on its "loading" line. FIXED
+ * cadence, no backoff, no attempt cap; the retry query param defeats the
+ * browser's memoization of a failed module fetch.
+ */
+async function loadComponentModuleForever(url: string, name: string): Promise<void> {
 	for (let attempt = 0; ; attempt++) {
 		try {
-			await import(attempt === 0 ? ACTIVITY_FEED_URL : `${ACTIVITY_FEED_URL}?retry=${attempt}`);
+			await import(attempt === 0 ? url : `${url}?retry=${attempt}`);
 			return;
 		} catch (e) {
-			console.error(`activity-feed: component load failed (retry in ${COMPONENT_RETRY_MS}ms):`, e);
+			console.error(`${name}: component load failed (retry in ${COMPONENT_RETRY_MS}ms):`, e);
 			await new Promise((r) => setTimeout(r, COMPONENT_RETRY_MS));
 		}
 	}
@@ -1760,6 +1790,7 @@ async function boot(): Promise<void> {
 	// Fired, never awaited: the feeds and the chart are independent, and the
 	// chart must not wait on a component it does not use.
 	void loadActivityFeedForever();
+	void loadDataTableForever();
 	await loadComponentForever();
 	document.getElementById('timeline-loading')?.remove();
 	initTimeline();
