@@ -21,8 +21,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/tidwall/jsonc v0.3.3 h1:RVQqL3xFfDkKKXIDsrBiVQiEpBtxoKbmMXONb2H/y2w=
 github.com/tidwall/jsonc v0.3.3/go.mod h1:dw+3CIxqHi+t8eFSpzzMlcVYxKp08UP5CD8/uSFCyJE=
-github.com/wow-look-at-my/json-validator v0.0.0-20260801104922-78d538a6b758 h1:Q4f5rOR9wANSrFGtZZYVRAatl4ksu5ptYXuTHx+Ftn0=
-github.com/wow-look-at-my/json-validator v0.0.0-20260801104922-78d538a6b758/go.mod h1:5JneVKjitjCgjOkpEtTbVUW+9uif7mT25kkFrlpkf4M=
+github.com/wow-look-at-my/json-validator v0.0.0-20260801110450-053d64d75e07 h1:xX4FLAIHrBAyh4QkaU13WRRJWuXs8zmlBDH0eEH3jJo=
+github.com/wow-look-at-my/json-validator v0.0.0-20260801110450-053d64d75e07/go.mod h1:5JneVKjitjCgjOkpEtTbVUW+9uif7mT25kkFrlpkf4M=
 go.etcd.io/bbolt v1.5.0 h1:S7GAl7Fxv12yohbwFfIbQCGDWbQbtDGPET4P/bD4lxU=
 go.etcd.io/bbolt v1.5.0/go.mod h1:mkltfYE5aUHQxUct9N9V+Kp7aSjFqjgrhcXIS70Lrdk=
 go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=

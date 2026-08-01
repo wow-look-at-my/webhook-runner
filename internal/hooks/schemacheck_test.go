@@ -97,8 +97,10 @@ func TestManagerSchemaGate(t *testing.T) {
 // The embedded schemas must be compilable -- a broken one would otherwise turn
 // every load into a schema-compile error (loud, but the wrong loud).
 func TestEmbeddedSchemasCompile(t *testing.T) {
-	_, err := hookSchema()
+	v, err := hookSchemaValidator()
 	require.NoError(t, err)
-	_, err = managerSchema()
+	require.NotNil(t, v.Schema())
+	v, err = managerSchemaValidator()
 	require.NoError(t, err)
+	require.NotNil(t, v.Schema())
 }
