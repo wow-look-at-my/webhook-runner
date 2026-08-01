@@ -35,6 +35,11 @@ func TestRunnerStartCarriesTitle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
+	// Done() closes inside run.Finish, BEFORE the OnFinish seam fires and
+	// before the runner goroutine records run.finished — wait for the
+	// goroutine itself or both `finished` and the recorder race those writes
+	// (same barrier as TestRunnerMidRunTitleReachesFinishedEvent).
+	r.Wait()
 
 	assert.Equal(t, "wow-look-at-my/go-toolchain#47", run.Snapshot(-1).Title)
 	require.Len(t, finished, 1)
@@ -74,6 +79,11 @@ func TestRunnerStartUntitled(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
+
+	// Same barrier as above: run.finished is recorded after Done() closes, so
+	// without this the loop below can run before the event exists and silently
+	// assert nothing.
+	r.Wait()
 
 	assert.Empty(t, run.Snapshot(-1).Title)
 	// The bare id directly precedes the verb — no title parenthetical was
