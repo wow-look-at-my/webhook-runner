@@ -254,3 +254,87 @@ tests:
     outputs:
       stderr:
         - 'ERR manager "dup": id collides with a hook of the same name'
+
+  # The settings contract: a hook's OWN config is validated against the
+  # settings.schema.json it ships, AT LOAD. These three cases are the whole
+  # guarantee — wrong config never becomes a running hook, and config with no
+  # contract is refused outright.
+  - desc: settings that violate the hook's settings.schema.json fail validation
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "s", "command": ["x"], "settings": {"pacing_ms": "not-a-number"}}
+        myhook/settings.schema.json: |
+          {
+            "type": "object",
+            "required": ["app_id"],
+            "properties": {"app_id": {"type": "string"}, "pacing_ms": {"type": "integer"}}
+          }
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'settings does not match settings.schema.json'
+
+  - desc: a required setting left out fails validation (unconfigured is a load error)
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "s", "command": ["x"]}
+        myhook/settings.schema.json: |
+          {"type": "object", "required": ["app_id"], "properties": {"app_id": {"type": "string"}}}
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'settings does not match settings.schema.json'
+
+  - desc: settings declared without a settings.schema.json is refused
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "s", "command": ["x"], "settings": {"anything": 1}}
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'settings is declared but settings.schema.json is missing'
+
+  - desc: settings matching the schema validate with exit 0
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "s", "command": ["x"], "settings": {"app_id": "42", "pacing_ms": 1000}}
+        myhook/settings.schema.json: |
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["app_id"],
+            "properties": {"app_id": {"type": "string"}, "pacing_ms": {"type": "integer"}}
+          }
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 0
+    outputs:
+      stdout:
+        - ok  myhook
+
+  - desc: the retired env block is rejected outright, never silently ignored
+    cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+    inputs:
+      files:
+        myhook/hook.json: |
+          {"$schema": "s", "command": ["x"], "env": {"TOKEN": "abc"}}
+        myhook/Dockerfile: |
+          FROM alpine
+    exit: 1
+    outputs:
+      stderr:
+        - 'unknown field "env"'

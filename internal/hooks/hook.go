@@ -58,15 +58,20 @@ type Hook struct {
 	// Set by the loader, never by JSON. It selects the docker build context
 	// (src/ instead of the hook dir) and widens the content hash to include
 	// src/sdk — see BuildContext and ContentHash.
-	SrcRoot         string              `json:"-"`
-	Schema          string              `json:"$schema,omitempty"`
-	Description     string              `json:"description"`
-	Command         []string            `json:"command,omitempty"`
-	Script          *Script             `json:"script,omitempty"`
-	Tests           [][]string          `json:"tests,omitempty"`
-	Networks        []string            `json:"networks,omitempty"`
-	Volumes         []string            `json:"volumes,omitempty"`
-	Env             map[string]string   `json:"env,omitempty"`
+	SrcRoot     string     `json:"-"`
+	Schema      string     `json:"$schema,omitempty"`
+	Description string     `json:"description"`
+	Command     []string   `json:"command,omitempty"`
+	Script      *Script    `json:"script,omitempty"`
+	Tests       [][]string `json:"tests,omitempty"`
+	Networks    []string   `json:"networks,omitempty"`
+	Volumes     []string   `json:"volumes,omitempty"`
+	// Settings is the hook's OWN configuration: arbitrary JSON this runner
+	// never interprets, validated at load against the settings.schema.json
+	// shipped next to the manifest, and handed to the container as a file
+	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
+	// hook-private config into the runner's own parsed keys. See settings.go.
+	Settings        json.RawMessage     `json:"settings,omitempty"`
 	User            string              `json:"user,omitempty"`
 	Workdir         string              `json:"workdir,omitempty"`
 	TimeoutRaw      string              `json:"timeout,omitempty"`
@@ -447,7 +452,7 @@ func hashTree(digest io.Writer, base, root string, withMode bool) error {
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
 	switch k {
-	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID",
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_SETTINGS_FILE", "HOOK_ID", "HOOK_RUN_ID",
 		"HOOK_KV_URL", "HOOK_KV_TOKEN", "HOOK_KV_SOCKET":
 		return true
 	}
@@ -457,6 +462,14 @@ func ReservedEnvKey(k string) bool {
 func (h *Hook) validate() error {
 	if h.Schema == "" {
 		return errors.New("$schema is required (point it at https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json)")
+	}
+	// The hook's OWN configuration, checked against the contract it ships
+	// (settings.schema.json). Fail closed like every other load gate: a hook
+	// configured wrongly must not run at all, because the alternative is a
+	// container that starts, finds its config missing, and reports whatever it
+	// decides to report.
+	if err := h.ValidateSettings(); err != nil {
+		return err
 	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
@@ -479,11 +492,6 @@ func (h *Hook) validate() error {
 		}
 		if d <= 0 {
 			return fmt.Errorf("schedule must be positive, got %s", d)
-		}
-	}
-	for k := range h.Env {
-		if ReservedEnvKey(k) {
-			return fmt.Errorf("env key %q is reserved", k)
 		}
 	}
 	// Compiles every skip_if regex too, so evaluation never compiles at

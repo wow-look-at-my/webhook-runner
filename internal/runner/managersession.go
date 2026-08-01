@@ -138,7 +138,6 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 			return fail(runs.StatusError, fmt.Sprintf("manager secrets: %v", err), false)
 		}
 	}
-	lookup := hooks.SecretsFirstLookup(secrets)
 
 	buildLog := &slogLineWriter{logFn: func(line string) {
 		r.log.Info("manager image build", "manager", hook.ID, "instance", instanceID, "line", line)
@@ -187,7 +186,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})
 	headers := http.Header{"Content-Type": []string{"application/json"}}
-	payloadPath, headersPath, cleanup, err := r.writeTempFiles(instanceID, payload, headers)
+	payloadPath, headersPath, settingsPath, cleanup, err := r.writeTempFiles(instanceID, payload, headers, hook.SettingsJSON())
 	if err != nil {
 		return fail(runs.StatusError, fmt.Sprintf("write temp files: %v", err), false)
 	}
@@ -205,8 +204,10 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		"--name", containerName,
 		"-v", payloadPath + ":" + mountedPayload + ":ro",
 		"-v", headersPath + ":" + mountedHeaders + ":ro",
+		"-v", settingsPath + ":" + mountedSettings + ":ro",
 		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
+		"-e", "HOOK_SETTINGS_FILE=" + mountedSettings,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + instanceID,
 		"--entrypoint", mountedShim,
@@ -230,17 +231,6 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 			continue
 		}
 		args = append(args, "-e", k+"="+v)
-	}
-	for k, v := range hook.Env {
-		expanded, missing := hooks.ExpandEnvRefs(v, lookup)
-		for _, name := range missing {
-			r.log.Warn("manager env references unset variable",
-				"manager", hook.ID, "instance", instanceID, "env", k, "var", name)
-			r.events.Record("env.unresolved",
-				hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
-				map[string]string{"hook": hook.ID})
-		}
-		args = append(args, "-e", k+"="+expanded)
 	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)

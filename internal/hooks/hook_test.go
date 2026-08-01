@@ -18,6 +18,9 @@ func parseInDir(t *testing.T, doc string) (*Hook, error) {
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName), []byte("FROM alpine\n"), 0o644))
+	// A permissive settings contract, so cases that declare settings load;
+	// settings_test.go owns the contract's own behavior.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, SettingsSchemaFile), []byte(`{"type":"object"}`), 0o644))
 	return Parse("h", filepath.Join(dir, "hook.json"), []byte(doc))
 }
 
@@ -29,7 +32,7 @@ func TestParseValid(t *testing.T) {
 		"command": ["sh", "-c", "echo hi"],
 		"tests": [["sh", "-c", "true"], ["node", "--test", "x.test.ts"]],
 		"timeout": "30s",
-		"env": {"FOO": "bar"},
+		"settings": {"foo": "bar", "retries": 3},
 		"github_status": { "enabled": true, "context": "ci/deploy" }
 	}`
 	h, err := parseInDir(t, doc)
@@ -42,6 +45,9 @@ func TestParseValid(t *testing.T) {
 	assert.Equal(t, 30*time.Second, got)
 
 	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
+	// settings is the hook's own config, kept verbatim and never coerced --
+	// note the integer, which the old string-only env block could not express.
+	assert.JSONEq(t, `{"foo":"bar","retries":3}`, string(h.SettingsJSON()))
 }
 
 func TestParseMinimal(t *testing.T) {
@@ -138,12 +144,13 @@ func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
 		// Go validation only checks that $schema is present (non-empty);
 		// json-validator enforces it points at the published schema.
-		"missing schema":       `{"command":["x"]}`,
-		"image is not a field": `{"$schema":"s","image":"alpine"}`,
-		"reserved env":         `{"$schema":"s","env":{"HOOK_PAYLOAD_FILE":"x"}}`,
-		"empty test command":   `{"$schema":"s","tests":[["ok"],[]]}`,
-		"bad timeout":          `{"$schema":"s","timeout":"banana"}`,
-		"negative timeout":     `{"$schema":"s","timeout":"-1s"}`,
+		"missing schema":             `{"command":["x"]}`,
+		"image is not a field":       `{"$schema":"s","image":"alpine"}`,
+		"env is not a field":         `{"$schema":"s","env":{"FOO":"bar"}}`,
+		"settings must be an object": `{"$schema":"s","settings":[1,2]}`,
+		"empty test command":         `{"$schema":"s","tests":[["ok"],[]]}`,
+		"bad timeout":                `{"$schema":"s","timeout":"banana"}`,
+		"negative timeout":           `{"$schema":"s","timeout":"-1s"}`,
 		// idle_timeout was removed when timeout itself became activity-based;
 		// DisallowUnknownFields makes a hook.json that still sets it fail to
 		// load (acceptable: nothing merged ever set it).

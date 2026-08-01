@@ -25,9 +25,6 @@ const (
 	// shared by the probe ("secrets" source) and the request-time event
 	// rule ("event" source).
 	KeyAPIKey = "api_key"
-	// KeyEnvPrefix + <env var name>: that env value has unresolvable
-	// ${NAME} references.
-	KeyEnvPrefix = "env:"
 	// KeyReportedPrefix + <message>: a hook-emitted misconfiguration
 	// signal (the reserved future event class; see
 	// RegisterStandardEventRules).
@@ -190,9 +187,11 @@ func FromLoadErrors(errs []error) (load, zero []Entry) {
 //     per-reference entries would be noise.
 //   - api_key: must expand to a non-empty value (an unresolvable ${NAME}
 //     or an empty expansion denies every delivery with a 401).
-//   - env values: every ${NAME} reference must resolve (an unset one
-//     injects an empty value into the container — the silent downstream
-//     failure env.unresolved warns about at run time).
+//
+// A hook's own `settings` are NOT probed here: they are validated against
+// the hook's settings.schema.json at LOAD, so a bad one never becomes a
+// loaded hook — it surfaces as a load error instead of a running hook with
+// quietly-wrong config.
 //
 // Clear rules applied here for the "event" source: an entry for a hook no
 // longer in the loaded set clears (any key — the hook is gone), and the
@@ -270,18 +269,6 @@ func ProbeHooks(loaded map[string]*hooks.Hook, secrets *hooks.SecretsLoader) []E
 					Message: "api_key expands to an empty value — every delivery is denied (401)",
 				})
 			}
-		}
-		for _, k := range sortedKeys(h.Env) {
-			_, missing := hooks.ExpandEnvRefs(h.Env[k], lookup)
-			if len(missing) == 0 {
-				continue
-			}
-			entries = append(entries, Entry{
-				Source:  SourceSecrets,
-				Hook:    id,
-				Key:     KeyEnvPrefix + k,
-				Message: "env " + k + " references unset ${" + strings.Join(missing, "}, ${") + "} — the container gets an empty value",
-			})
 		}
 	}
 	return entries

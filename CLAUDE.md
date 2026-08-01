@@ -222,7 +222,7 @@ The server listens on two TCP ports plus a Unix socket:
   requests: `hook.unknown` / `hook.denied` / `hook.misconfigured` — the
   last one names an unresolvable `${NAME}` api_key reference, logged to
   the feed but never to the 401 body) and the runner (image builds, run
-  lifecycle, `env.unresolved` when an env reference expands to nothing)
+  lifecycle)
   — memory only (run history, by contrast, persists completed runs via
   `internal/runstore`; see below). Rejections are events on purpose:
   the dashboard must be able to answer "did you receive anything?".
@@ -269,7 +269,8 @@ most often, plus where to read the rest.
 - Run IDs are 16 random bytes, base32-lowercased to 26 chars — anything building container names from them must keep the `a-z2-7` alphabet in mind.
 - **A lock TTL is ENFORCED, never assumed.** An expired lock is still the holder's: the contender's acquire kills that run, waits for it to be certainly dead, and takes the lock the finish seam freed — or is refused. Expiry alone frees nothing, in the store or the sweeper.
 - **A backlog belongs in the runner, never in a hook-side cursor.** A hook run is one container, so "work I did not get to" has to outlive it. Two primitives, two questions: `internal/queue` decides WHEN to start a run; `internal/backlog` holds WHAT IS LEFT for a run that already exists (push is a set union, take removes a slice, depth is observable).
-- **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
+- **Fail closed, everywhere.** An undeclared concurrency group, a non-compiling `skip_if` regex, a malformed `run_title`, a mixed hook layout, zero hooks loaded, `settings` that do not match the hook's own `settings.schema.json` — each is a load/validation error that DROPS the hook (or fails the run) rather than running it unbounded.
+- **A hook's own config is `settings`, never `env`, and never hook.json itself.** One JSON object validated at load against the `settings.schema.json` the hook ships, handed to the container as a read-only `$HOOK_SETTINGS_FILE`. `env` is GONE from both manifests: hook-private config must not live among the runner's own parsed keys. A hook reading its manifest at run time is reading the runner's surface, not its configuration.
 - **New hook.json fields are deploy-first.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner before merging hooks that rely on one.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
 - **A phase mark that is missing means UNKNOWN, never zero.** Container overhead is measured, not estimated (`internal/runs` phase marks) — but only a hook whose container reports from the inside yields an EXACT boot figure; every other hook gets an upper bound that also contains its runtime's cold start. Never let the two meet in one number.
@@ -277,7 +278,7 @@ most often, plus where to read the rest.
 
 Read before changing any of these areas:
 
-- [docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md) -- the CI-gated reload, cancellation, secrets/env refs, the two tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, `dind`, `script`.
+- [docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md) -- the CI-gated reload, cancellation, per-hook `settings` + their schema, secrets refs, the two tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, `dind`, `script`.
 - [docs/internals/runs-concurrency-and-overrides.md](docs/internals/runs-concurrency-and-overrides.md) -- the activity-based timeout, `skip_if`, `run_title`, concurrency groups, the global run cap, the operator kill switch, the scheduler, the run store.
 - [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, the five section-signal seams, the needs-attention surface.
 - [docs/internals/delivery-durability.md](docs/internals/delivery-durability.md) -- deploy windows: `/restart-ready`, the delivery spool and its replay, the shutdown ordering, and the port-down gap none of it covers.

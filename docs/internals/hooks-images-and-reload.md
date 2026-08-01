@@ -1,6 +1,6 @@
 # Gotchas: the reload gate, hook layouts, images, and hook.json fields
 
-The CI-gated hooks-repo reload, cancellation, secrets and env refs, the two hook-tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, and the dind/script fields.
+The CI-gated hooks-repo reload, cancellation, per-hook settings, secrets and their refs, the two hook-tree layouts, image immutability, the containerized-TMPDIR hazard, hook tests, and the dind/script fields.
 
 Moved VERBATIM out of `CLAUDE.md` when that file went over the
 40,000-character instruction-file budget. Nothing here was condensed.
@@ -101,7 +101,23 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   cmd.Wait returned. A cancel that races the container launch is covered
   twice — a pre-start check in `runner.execute`, and the watcher's select
   firing immediately on the already-closed channel.
-- `${NAME}` references in hook.json (`env` values, `api_key`) are expanded
+- **Per-hook settings** (`internal/hooks/settings.go`): a hook's OWN
+  configuration is one `settings` object in its manifest, an arbitrary JSON
+  shape the runner never interprets, and it MUST ship a `settings.schema.json`
+  next to the manifest describing what it accepts. The runner validates one
+  against the other AT LOAD and DROPS the hook on a mismatch — a hook is never
+  started with configuration its own schema calls wrong, and "unconfigured"
+  (a required property absent) is a load error rather than a hook that starts
+  and no-ops. Declaring `settings` with no schema is refused: config with no
+  contract is the state this replaced. The document reaches the container as a
+  read-only mount at `$HOOK_SETTINGS_FILE` (`{}` when none is declared, so a
+  hook reading its config has no missing-file branch), written PER RUN — the
+  image content hash covers the hook's source, so config baked into the image
+  could only change by rebuilding it; a settings edit takes effect on the next
+  run. This replaced hook.json's `env` block, which mixed hook-private config
+  into the runner's own parsed keys, forced every value to be a string, and was
+  validated by nobody. The admin API exposes the top-level KEY NAMES only.
+- `${NAME}` references in hook.json (`api_key`) are expanded
   at run/request time via `hooks.ExpandEnvRefs`, never at load time —
   `validate` in CI must pass without the production environment or keys.
   Resolution order: the hook's decrypted `secrets.sops.env` first, then
@@ -115,9 +131,11 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   this exec in-container; the age *identity* is mounted at runtime via
   `SOPS_AGE_KEY_FILE`, never baked in. The decrypt runs host-side in the
   server process — the hook container only ever receives the plaintext
-  values as env vars, so hook images need nothing sops-related. Decrypted entries
-  are also injected into the container env, with hook.json `env` winning
-  on conflict (it's appended after, and docker keeps the last `-e`).
+  values as env vars, so hook images need nothing sops-related. Decrypted
+  entries are injected into the container env (a secret that would shadow a
+  key the runner sets itself is skipped with a warning). Note the split: sops
+  entries are SECRETS delivered as environment; a hook's CONFIG is `settings`
+  and never an env var.
   Decrypt failures fail the run (status `error`) before the container
   starts — never run a secrets-bearing hook without its secrets. The e2e
   fixture key at `e2e/age-test-key.txt` is intentionally committed.
@@ -193,7 +211,7 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   `runner.RunHookTests`) execute in the hook's built image (built first
   if needed), so tests exercise the exact baked bytes; copy test files
   into the image and set WORKDIR so relative paths resolve. Tests get NO
-  payload, NO hook.json `env`, and NO secrets — they must be
+  payload, NO `settings`, and NO secrets — they must be
   self-contained, which is what lets a hooks repo's CI run them without
   production keys. The per-command timeout (`--timeout`, default 10m) is
   deliberately independent of the hook's run `timeout` (sized for

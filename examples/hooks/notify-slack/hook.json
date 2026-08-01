@@ -26,10 +26,10 @@
 
   "command": [
     "sh", "-c",
-    "curl -fsS -X POST -H 'content-type: application/json' --data-binary @$HOOK_PAYLOAD_FILE \"$SLACK_WEBHOOK_URL\""
+    "curl -fsS -X POST -H 'content-type: application/json' --data-binary @$HOOK_PAYLOAD_FILE \"$(sed -n 's/.*\"slack_webhook_url\": *\"\\([^\"]*\\)\".*/\\1/p' $HOOK_SETTINGS_FILE)\""
   ],
-  "env": {
-    "SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/replace/me"
+  "settings": {
+    "slack_webhook_url": "https://hooks.slack.com/services/replace/me"
   },
   "timeout": "30s"
 }

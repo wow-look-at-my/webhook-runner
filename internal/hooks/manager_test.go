@@ -21,6 +21,8 @@ func writeManagerTree(t *testing.T, id, managerJSON string) string {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "manager.json"), []byte(managerJSON), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644))
+	// Permissive settings contract; hooks/settings_test.go owns the contract.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, SettingsSchemaFile), []byte(`{"type":"object"}`), 0o644))
 	return root
 }
 
@@ -43,7 +45,7 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 	  "tests": [["true"]],
 	  "networks": ["net"],
 	  "volumes": ["/a:/b"],
-	  "env": {"K": "v"},
+	  "settings": {"k": "v", "limit": 4},
 	  "user": "1000",
 	  "workdir": "/w",
 	  "extra_docker_args": ["--label", "x"],
@@ -67,6 +69,7 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 	assert.Equal(t, "mgr", m.GitHubStatus.Context)
 	assert.True(t, m.State, "state is implied true — the inbox/KV ride the socket")
 	assert.NotEmpty(t, m.SrcRoot, "SDK build-context semantics apply")
+	assert.JSONEq(t, `{"k":"v","limit":4}`, string(m.SettingsJSON()), "a manager carries its own settings like a hook")
 }
 
 // Managers share the hook enable default: absent `enable` means enabled;
