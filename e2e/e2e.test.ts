@@ -98,7 +98,7 @@ try {
     const r = await fetch(`${adminBase}/hooks`);
     assert.equal(r.status, 200);
     const hooks: any = await r.json();
-    assert.equal(hooks.length, 12);
+    assert.equal(hooks.length, 11);
     const ids = hooks.map((h: any) => h.id).sort();
     assert.deepEqual(ids, ["apikey-hook", "dind-hook", "dockerfile-hook", "echo-test", "env-hook", "fail-hook", "mount-hook", "scheduled-hook", "secure-hook", "sleep-hook", "sops-hook"]);
     // The scheduled hook advertises its interval in the summary.
@@ -213,9 +213,12 @@ try {
     const output = run.output.join("\n");
     assert.ok(output.includes("id=env-hook"), "missing HOOK_ID");
     // The whole settings document, verbatim -- including the integer, which
-    // the retired string-only env block could not carry.
-    assert.ok(output.includes('"my_var":"e2e-value"'), `missing settings value: ${output}`);
-    assert.ok(output.includes('"retries":2'), `settings must keep JSON types: ${output}`);
+    // the retired string-only env block could not carry. Compared without
+    // whitespace: the runner hands over the manifest's bytes as written, so
+    // the document's formatting is hook.json's, not a normalized re-encoding.
+    const dense = output.replace(/\s+/g, "");
+    assert.ok(dense.includes('"my_var":"e2e-value"'), `missing settings value: ${output}`);
+    assert.ok(dense.includes('"retries":2'), `settings must keep JSON types: ${output}`);
   });
 
   await test("payload and headers are mounted", async () => {
