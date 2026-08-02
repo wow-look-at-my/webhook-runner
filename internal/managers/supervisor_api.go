@@ -210,20 +210,6 @@ func (s *Supervisor) outputSink(mg *managed) func(string) {
 	}
 }
 
-// inboxDropReporter records one loud event per overflow-dropped inbox
-// entry — coalescing is operating-as-designed, but never silent.
-func (s *Supervisor) inboxDropReporter(id string) func(Event) {
-	return func(e Event) {
-		if s.events == nil {
-			return
-		}
-		s.events.Record("manager.inbox_dropped",
-			fmt.Sprintf("%s: inbox full; dropped oldest %s event (received %s) — reconcile covers the loss",
-				id, e.Kind, e.ReceivedAt.Format(time.RFC3339)),
-			map[string]string{"hook": id})
-	}
-}
-
 // reportAttention re-derives the manager problem set: every declared,
 // enabled manager without a live instance and with a recorded failure is a
 // problem; it clears the moment an instance runs (or the manager is

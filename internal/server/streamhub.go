@@ -221,8 +221,8 @@ func sectionsForEvent(kind string) []string {
 		// manager panel instead of the hooks table.
 		out = append(out, "managers", "attention")
 	case strings.HasPrefix(kind, "manager."):
-		// Manager lifecycle (started/exited/leased/inbox_dropped/wait/
-		// skipped/restart_requested) moves the Managers panel.
+		// Manager lifecycle (started/exited/leased/wait/skipped/
+		// restart_requested) moves the Managers panel.
 		out = append(out, "managers")
 	case kind == "hook.load_error":
 		out = append(out, "hooks", "managers")
