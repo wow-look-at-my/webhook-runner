@@ -77,6 +77,12 @@ const (
 	// — or the manager is disabled (the read-time disabled filter applies
 	// like every hook-scoped entry) or removed.
 	SourceManager = "manager"
+	// SourceSchedule: a hook declaring a `schedule` interval has not
+	// SUCCEEDED within its staleness threshold (CheckStaleSchedules).
+	// Re-derived periodically (independent of reload — staleness is a
+	// function of elapsed time, not of a tree change); clears the moment
+	// a run of that hook succeeds.
+	SourceSchedule = "schedule"
 )
 
 // Entry is one active problem. Identity is (Source, Hook, Key); Message is

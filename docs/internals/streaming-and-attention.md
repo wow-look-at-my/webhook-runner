@@ -142,6 +142,20 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
     later successful run (a run can succeed while the feature it should
     exercise stays inert). New hook-emitted classes plug in by recording
     a recognized kind + registering a rule — no redesign.
+  - `schedule` (`attention.CheckStaleSchedules`): a hook declaring a
+    `schedule` interval whose last SUCCESSFUL run (over its tracked
+    history, `internal/runs.Tracker.ListByHook`) is older than
+    max(interval*3, 15m) — or that has never once succeeded, once enough
+    time has passed for that to be meaningful. TIME-derived, not
+    reload-derived: a dedicated ticker in cli/serve.go re-runs the check
+    every minute (independent of any reload) and `ReplaceSource`s the
+    result, because staleness is a function of elapsed time. This is the
+    source that watches whether a hook's own reliability backstop is
+    still backstopping anything — a scheduled tick that silently stops
+    succeeding (a broken credential, a refusing dependency) looks, from
+    the outside, identical to a hook with nothing to do, and every other
+    source here only covers load-time or request-time defects. Clears
+    the moment a run of that hook succeeds.
   Everything is IN-MEMORY (the events/requestLog stance): a restart
   re-derives the state sources at the boot load (their `since` resets to
   boot) and loses event-derived entries until their events recur. Entries
