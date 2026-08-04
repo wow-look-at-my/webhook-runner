@@ -423,6 +423,29 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// due hooks each tick.
 	go sched.Run(watchCtx)
 
+	// Scheduled-hook staleness watch: independent of reload (staleness is a
+	// function of elapsed time, not a tree change), so it runs on its own
+	// ticker for the server's lifetime. See attention.CheckStaleSchedules —
+	// a scheduled tick is often the reliability BACKSTOP for whatever a hook
+	// manages, and a backstop that silently stops succeeding looks, from the
+	// outside, identical to one with nothing to do.
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-t.C:
+				agg.ReplaceSource(attention.SourceSchedule, attention.CheckStaleSchedules(
+					sched.Schedules(),
+					func(hookID string) []*runs.Run { return tracker.ListByHook(hookID, 50) },
+					time.Now(),
+				))
+			}
+		}
+	}()
+
 	// The manager supervisor: acquires the single-instance lease (flat
 	// poll — during a rolling deploy the old process holds it until its
 	// instances are down), then runs one loop per declared manager. Its
