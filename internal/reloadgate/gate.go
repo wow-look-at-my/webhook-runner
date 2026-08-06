@@ -23,6 +23,7 @@
 package reloadgate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +57,11 @@ type GitRepo interface {
 	// FetchBranch fetches the tracked branch at the given depth without
 	// touching the working tree, and returns the fetched tip.
 	FetchBranch(depth int) (tip string, err error)
+	// FetchBranchContext is FetchBranch bounded by ctx, which KILLS the git
+	// process when the remote stops answering. The manual switch needs it:
+	// an unbounded fetch there hangs holding the gate mutex and takes the
+	// whole reload panel down with it.
+	FetchBranchContext(ctx context.Context, depth int) (tip string, err error)
 	// RecentCommits lists up to max commits from the last fetch
 	// (FETCH_HEAD), newest first.
 	RecentCommits(max int) ([]string, error)

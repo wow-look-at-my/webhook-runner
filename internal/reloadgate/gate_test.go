@@ -1,6 +1,7 @@
 package reloadgate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,6 +47,10 @@ func (f *fakeRepo) FetchBranch(depth int) (string, error) {
 		return "", f.fetchErr
 	}
 	return f.tip, nil
+}
+
+func (f *fakeRepo) FetchBranchContext(_ context.Context, depth int) (string, error) {
+	return f.FetchBranch(depth)
 }
 
 func (f *fakeRepo) RecentCommits(max int) ([]string, error) {

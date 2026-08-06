@@ -40,6 +40,9 @@ type fakePanelRepo struct {
 
 func (f *fakePanelRepo) Head() (string, error)                 { return f.head, nil }
 func (f *fakePanelRepo) FetchBranch(depth int) (string, error) { f.fetches++; return f.tip, nil }
+func (f *fakePanelRepo) FetchBranchContext(_ context.Context, depth int) (string, error) {
+	return f.FetchBranch(depth)
+}
 func (f *fakePanelRepo) RecentCommits(max int) ([]string, error) {
 	if max < len(f.commits) {
 		return f.commits[:max], nil

@@ -27,6 +27,29 @@ import (
 // tree the manual switch must warn about.
 const SrcMarkerDir = "src/hooks"
 
+// ciStateNotProbed is the CI state of an OVERRIDDEN switch: we deliberately
+// did not ask GitHub, because the answer changes nothing once the operator
+// has overridden and the probe is a network call that hangs when GitHub is
+// the thing that is broken. It is NOT "unknown" (a probe that failed) and
+// certainly not "success" — the surfaces must never show a green nobody saw.
+const ciStateNotProbed = "not-probed (override)"
+
+// manualFetchTimeout bounds the fetch the manual switch may need when a ref
+// is not local yet. A `git fetch` against a degraded GitHub HANGS rather
+// than fails, and this call holds the gate mutex — so an unbounded one takes
+// the whole reload panel down with it (a Cloudflare 524 on /reload/switch
+// and /reload/status timing out behind the same lock). The operator gets an
+// answer either way; a switch to an already-local commit never waits at all.
+const manualFetchTimeout = 20 * time.Second
+
+// fetchBranchBounded fetches with manualFetchTimeout, killing the git process
+// when the remote will not answer.
+func (g *Gate) fetchBranchBounded() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), manualFetchTimeout)
+	defer cancel()
+	return g.repo.FetchBranchContext(ctx, fetchDepth)
+}
+
 // manualCILookupTimeout bounds each best-effort CI status read: the panel
 // (and a manual switch under a wedged gate) must answer promptly, with
 // "unknown", rather than hang on GitHub.
@@ -105,9 +128,10 @@ type SwitchOutcome struct {
 	// Switched is true when the tree moved to SHA. False with a non-empty
 	// Reasons means the switch was REFUSED pending an explicit override.
 	Switched bool
-	// Reasons names every gate check the commit fails (empty = a clean
-	// green pick). On a Switched outcome a non-empty Reasons means the
-	// operator overrode them.
+	// Reasons names everything about this pick the gate would have refused
+	// on (empty = a clean green pick). An override always contributes at
+	// least the un-probed CI state, so a Switched outcome with reasons is
+	// exactly an overridden one.
 	Reasons []string
 }
 
@@ -123,14 +147,15 @@ func (o SwitchOutcome) Overridden() bool {
 //
 //   - The ref is resolved (fetching from origin as needed); an
 //     unresolvable ref errors with ErrUnknownRef and mutates nothing.
-//   - The commit's gating CI state and src-layout tree marker are
-//     evaluated. Green AND src present: switch, recorded as an ordinary
-//     reload.switched (the operator picked a vouched commit).
-//   - Anything else — a red/pending/absent/UNREADABLE CI state, or a tree
-//     missing src/hooks — is refused without override (Switched=false,
-//     every failed check in Reasons; nothing moves), and with
-//     override=true switches anyway, loudly: a reload.forced event names
-//     the override and each reason.
+//   - Without override the commit's gating CI state and src-layout tree
+//     marker are evaluated. Green AND src present: switch, recorded as an
+//     ordinary reload.switched (the operator picked a vouched commit).
+//     Anything else — a red/pending/absent/UNREADABLE CI state, or a tree
+//     missing src/hooks — is refused (Switched=false, every failed check
+//     in Reasons; nothing moves).
+//   - With override=true the CI probe is SKIPPED (see ciStateNotProbed)
+//     and the switch happens regardless, loudly: a reload.forced event
+//     names the un-probed state and any other reason.
 //
 // Rollback to a commit OLDER than the serving one is deliberately allowed
 // (no trySwitch staleness ordering — that rule exists to order automatic
@@ -143,30 +168,52 @@ func (g *Gate) ManualSwitch(ctx context.Context, ref string, override bool) (Swi
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Freshen the tracked branch first (best-effort): a just-pushed ref
-	// should resolve, and the tip comparison below wants current knowledge.
-	// A fetch failure must NOT block the switch — rolling back to an
-	// already-local commit while origin is unreachable is a supported
-	// escape hatch.
-	tip, tipErr := g.repo.FetchBranch(fetchDepth)
+	// LOCAL FIRST. This endpoint is the escape hatch for a wedged gate, and a
+	// wedged gate is usually GitHub being down — so it must not begin with a
+	// network round trip. It used to fetch unconditionally, holding g.mu
+	// across a `git fetch` that HANGS (not fails) when GitHub is degraded:
+	// the request never answered, Cloudflare 524'd at 100s, /reload/status
+	// timed out behind the same mutex, and the operator was left with a
+	// dashboard that could not show the problem or fix it. The commit an
+	// operator forces is nearly always already local — the push webhook
+	// fetched it when it recorded the hold — so resolve first and reach for
+	// the network only when that fails.
+	sha, resolveErr := g.repo.ResolveRef(ref)
+
+	// THEN freshen, on a leash. The fetch still runs — the tip is what tells
+	// us whether this switch settles the pending hold — but it can no longer
+	// decide whether the switch happens at all, and it cannot run forever.
+	tip, tipErr := g.fetchBranchBounded()
 	if tipErr != nil {
 		g.log.Warn("manual switch: hooks repo fetch failed; continuing with local objects", "err", tipErr)
 		g.events.Record("git.pull_failed", "manual switch: hooks repo fetch failed (continuing with local objects): "+tipErr.Error(), nil)
 	}
-
-	sha, err := g.repo.ResolveRef(ref)
-	if err != nil {
-		return SwitchOutcome{}, fmt.Errorf("%w: %q: %v", ErrUnknownRef, ref, err)
+	if resolveErr != nil {
+		// Only a ref we could NOT resolve locally depends on that fetch.
+		if sha, resolveErr = g.repo.ResolveRef(ref); resolveErr != nil {
+			return SwitchOutcome{}, fmt.Errorf("%w: %q: %v", ErrUnknownRef, ref, resolveErr)
+		}
 	}
 
 	out := SwitchOutcome{
-		SHA:     sha,
-		CIState: g.CIState(ctx, sha),
-		HasSrc:  g.repo.TreeHasDir(sha, SrcMarkerDir),
+		SHA:    sha,
+		HasSrc: g.repo.TreeHasDir(sha, SrcMarkerDir),
 	}
-	if out.CIState != "success" {
+	// The CI probe is a GitHub call, and under override its answer changes
+	// NOTHING — the operator has already decided. Skipping it keeps the force
+	// path working when GitHub is the thing that is broken, which is exactly
+	// when it gets used. Without override the probe still runs: that is the
+	// gate doing its job.
+	if override {
+		out.CIState = ciStateNotProbed
 		out.Reasons = append(out.Reasons,
-			fmt.Sprintf("%s state for %s is %q, not success", g.context, short(sha), out.CIState))
+			fmt.Sprintf("%s state for %s was not probed (operator override)", g.context, short(sha)))
+	} else {
+		out.CIState = g.CIState(ctx, sha)
+		if out.CIState != "success" {
+			out.Reasons = append(out.Reasons,
+				fmt.Sprintf("%s state for %s is %q, not success", g.context, short(sha), out.CIState))
+		}
 	}
 	if !out.HasSrc {
 		out.Reasons = append(out.Reasons,
@@ -187,7 +234,10 @@ func (g *Gate) ManualSwitch(ctx context.Context, ref string, override bool) (Swi
 	kind := "reload.switched"
 	msg := fmt.Sprintf("hooks repo manually switched to %s (operator pick; %s green)", short(sha), g.context)
 	logMsg := "hooks repo manually switched"
-	if len(out.Reasons) > 0 {
+	// An override is ALWAYS recorded as forced: we never asked GitHub for the
+	// CI state, so "green" is something we do not know, and recording it as an
+	// ordinary switch would put a green nobody saw into the audit trail.
+	if override {
 		kind = "reload.forced"
 		msg = fmt.Sprintf("operator forced manual switch to %s, OVERRIDING the reload gate: %s",
 			short(sha), strings.Join(out.Reasons, "; "))
