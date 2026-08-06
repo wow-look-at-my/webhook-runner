@@ -2753,15 +2753,27 @@ function reloadSrcBadge(has) {
     : el("span", { class: "badge bad", title: "the commit's tree has NO src/hooks directory — reloading from it would load zero hooks" }, "no src/hooks");
 }
 
-function renderReloadStatus(data) {
-  const section = document.getElementById("reload-section");
+function renderReloadStatus(data, statusErr) {
   const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
-  section.hidden = !usable;
   reloadMode = usable ? data.mode : null;
-  if (!usable) return;
+  // The panel stays up NO MATTER WHAT. Hiding it on an unreadable status was
+  // a silent degradation that removed the force controls from the page in
+  // the one situation they exist for; a status we cannot read is a loud line
+  // here and the controls stay usable (forcing a ref needs no status at all).
+  const errBox = document.getElementById("reload-status-error");
+  if (usable) {
+    errBox.hidden = true;
+    errBox.textContent = "";
+  } else {
+    errBox.hidden = false;
+    errBox.textContent = statusErr
+      ? `Could not read the reload gate status (${statusErr}). The controls below still work — "Force live" needs no status.`
+      : `The reload gate reported no usable mode${data && data.mode ? ` (mode: ${data.mode})` : ""}. The controls below still work — "Force live" needs no status.`;
+  }
   // Per-commit switching needs the gate; legacy mode keeps the live view
   // and the Check & reload (pull to tip) but hides the picker.
-  document.getElementById("reload-picker").hidden = data.mode !== "gated";
+  document.getElementById("reload-picker").hidden = data && data.mode === "legacy";
+  if (!usable) return;
 
   const box = document.getElementById("reload-live");
   box.innerHTML = "";
@@ -2785,18 +2797,20 @@ function renderReloadStatus(data) {
   }
   if (data.pending) {
     const p = data.pending;
-    // The held commit gets its OWN "Make live": this row is where an operator
-    // is standing when the gate is the problem, and the only other one is
-    // inside the collapsed commits picker — which is useless in the case that
-    // matters most, a held tree whose CI cannot go green because the fleet it
-    // fixes is down. Same informed-override flow as the picker's: the first
-    // attempt never carries override, and the server's own 409 reasons are
-    // what the confirmation quotes.
+    // The held commit gets its OWN "Make live", and it is ONE CLICK. This row
+    // is where an operator stands when the gate is the problem, and the case
+    // that matters most is a held tree whose CI cannot go green because the
+    // fleet it fixes is down — the gate blocking its own repair. Making that
+    // operator hunt through a collapsed picker and answer two confirmations
+    // is friction charged at exactly the wrong moment: they are already
+    // looking at the row that says HELD and the reasons why. One confirm
+    // naming the commit, then override — the force is the whole point of the
+    // button, not an escalation from it.
     const force = el("button", {
       class: "toggle-btn",
-      title: "Switch the serving hooks tree to this held commit, overriding the CI gate if it refuses",
+      title: "Force the serving hooks tree to this held commit NOW, overriding the CI gate",
     }, "Make live");
-    force.addEventListener("click", () => void reloadSwitchTo(p.sha || p.short, p.short || p.sha));
+    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short, p.short || p.sha, p.why || ""));
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
@@ -2873,7 +2887,19 @@ function renderReloadCommits(data) {
 // cheap status view always; the origin-fetching commits list only while
 // the picker is open.
 async function refreshReloadPanel() {
-  renderReloadStatus(await fetchJSON("/reload/status"));
+  // A THROWN status read must never take the panel down with it: this call
+  // used to be unguarded, so a failing /reload/status left #reload-section
+  // hidden and the page showed nothing but the webhook setup instructions —
+  // no live commit, no held row, no force controls. The error belongs ON the
+  // panel, not instead of it.
+  let data = null;
+  let statusErr = "";
+  try {
+    data = await fetchJSON("/reload/status");
+  } catch (err) {
+    statusErr = err && err.message ? err.message : String(err);
+  }
+  renderReloadStatus(data, statusErr);
   if (reloadMode === "gated" && document.getElementById("reload-picker").open) {
     await refreshReloadCommits();
   }
@@ -2919,6 +2945,37 @@ async function reloadCheckNow() {
 // attempt NEVER carries override, and only its 409 (with the server's own
 // reasons) leads to a confirmation that quotes them verbatim; the retry —
 // and only the retry — carries override:true.
+// The one-click force, for the operator who is already looking at the reason
+// the gate is holding: ONE confirm, then override:true. No first attempt that
+// exists only to be refused, no second dialog quoting reasons already on
+// screen. The server still records it loudly (reload.forced on the activity
+// feed); what is dropped here is ceremony, not the audit trail.
+async function reloadForceTo(ref, label, why) {
+  if (reloadSwitchInFlight) return;
+  const name = label || ref;
+  const detail = why ? `\n\nThe gate is holding it: ${why}` : "";
+  if (!confirm(`Force ${name} live now, OVERRIDING the reload gate?${detail}\n\nThe serving tree switches to it and hooks reload.`)) return;
+  reloadSwitchInFlight = true;
+  const resultEl = document.getElementById("reload-check-result");
+  resultEl.textContent = `forcing ${name}…`;
+  try {
+    const { res, data } = await postJSON("/reload/switch", { ref, override: true });
+    if (!res.ok) {
+      const errMsg = (data && data.error) || `HTTP ${res.status}`;
+      alert(`Forcing ${name} failed: ${errMsg}`);
+      resultEl.textContent = "force failed";
+      return;
+    }
+    resultEl.textContent = `forced ${name} live (gate overridden)`;
+  } catch (err) {
+    alert(`Forcing ${name} failed: ${err.message}`);
+    resultEl.textContent = "force failed";
+  } finally {
+    reloadSwitchInFlight = false;
+    void refreshReloadPanel();
+  }
+}
+
 async function reloadSwitchTo(ref, label) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
@@ -2967,6 +3024,17 @@ document.getElementById("reload-ref-switch").addEventListener("click", () => {
 });
 document.getElementById("reload-ref-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("reload-ref-switch").click();
+});
+// The wedged-gate escape hatch: one confirm, straight to override:true. It
+// asks the server for nothing first, so it works even when the status read
+// is failing and the panel above it is showing an error.
+document.getElementById("reload-ref-force").addEventListener("click", () => {
+  const ref = (document.getElementById("reload-ref-input").value || "").trim();
+  if (!ref) {
+    alert("Enter a commit sha or branch/tag name first.");
+    return;
+  }
+  void reloadForceTo(ref, ref, "");
 });
 // The commits list is fetched lazily: opening the picker is the operator
 // asking for it (it fetches origin and probes CI per commit).

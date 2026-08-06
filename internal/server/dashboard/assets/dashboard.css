@@ -473,6 +473,14 @@ table.kv-keys-table th, table.kv-keys-table td { font-size: 0.8rem; padding: 0.3
   font-size: 0.75rem;
   border-radius: 5px;
 }
+/* An override control: it does the thing the gate is refusing, so it reads
+   as consequential rather than hiding among the ordinary actions. Only the
+   delta from .toggle-btn — colour — lives here. */
+.toggle-btn.danger { border-color: var(--failure); color: var(--failure); }
+.toggle-btn.danger:hover { background: rgba(248, 81, 73, 0.12); }
+/* The reload panel's own error line: what it could not read, stated where
+   the controls are, never a vanished panel. */
+.attention-line { margin: 0 0 0.5rem; color: var(--failure); font-size: 0.875rem; }
 .row-actions { white-space: nowrap; }
 .row-actions .badge, .row-actions .toggle-btn { margin-right: 0.4rem; }
 .row-actions :last-child { margin-right: 0; }
