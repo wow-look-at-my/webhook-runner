@@ -244,7 +244,14 @@ html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: 
    stacks one card per turn; the raw view is a single <pre>. */
 #run-detail-output {
   flex: 1;
-  min-height: 0;
+  /* A FLOOR, not the usual min-height:0. Zero says "may shrink to nothing",
+     which is what let a run holding a busy concurrency group list every
+     waiter above and squeeze the log down to its title bar. The floor is
+     still below content height, so the pane keeps scrolling internally; it
+     just can never be squeezed out of existence. Capping #run-detail-meta is
+     the other half -- either alone leaves the log at the mercy of a row with
+     no bound. */
+  min-height: 8rem;
   overflow: auto;
   /* Keep wheel/touch scrolling inside this box -- don't chain to the page
      behind the modal when reaching the top/bottom of the output. */
