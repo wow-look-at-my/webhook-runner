@@ -2785,6 +2785,18 @@ function renderReloadStatus(data) {
   }
   if (data.pending) {
     const p = data.pending;
+    // The held commit gets its OWN "Make live": this row is where an operator
+    // is standing when the gate is the problem, and the only other one is
+    // inside the collapsed commits picker — which is useless in the case that
+    // matters most, a held tree whose CI cannot go green because the fleet it
+    // fixes is down. Same informed-override flow as the picker's: the first
+    // attempt never carries override, and the server's own 409 reasons are
+    // what the confirmation quotes.
+    const force = el("button", {
+      class: "toggle-btn",
+      title: "Switch the serving hooks tree to this held commit, overriding the CI gate if it refuses",
+    }, "Make live");
+    force.addEventListener("click", () => void reloadSwitchTo(p.sha || p.short, p.short || p.sha));
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
@@ -2792,6 +2804,7 @@ function renderReloadStatus(data) {
       el("span", { class: "wait-note" }, p.why || "awaiting CI"),
       reloadCIBadge(p.ci_state),
       reloadSrcBadge(!!p.has_src),
+      force,
     ));
   }
 }

@@ -154,6 +154,16 @@ html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: 
   height: 100%;
   padding: 1.25rem 1.5rem 1.5rem;
 }
+/* The metadata block must never starve the log. "Held up by this run" is the
+   one row with no bound — a run holding a busy concurrency group lists every
+   waiter — and as a content-sized flex item it pushed #run-detail-output
+   (flex-basis 0) to zero height, so the operator could not see the output at
+   all. Capped and scrolled inside itself, the log keeps the rest. */
+#run-detail-meta {
+  max-height: 35%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .modal-header {
   display: flex;
   align-items: center;
