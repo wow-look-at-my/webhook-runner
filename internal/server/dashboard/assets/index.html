@@ -124,6 +124,8 @@
     <div class="reload-actions">
       <button id="reload-check" class="toggle-btn"
         title="Fetch the tip and re-evaluate now: switches only if its CI is green (gated mode) or pulls to tip (legacy mode)">Check &amp; reload now</button>
+      <button id="reload-force-tip" class="toggle-btn danger"
+        title="Go to the remote tip NOW without waiting for its CI — for a gate wedged behind a check that will not arrive">Force to tip now</button>
       <span id="reload-check-result" class="window-note"></span>
     </div>
     <!-- Top level, NOT inside the collapsed picker: forcing a ref live is the

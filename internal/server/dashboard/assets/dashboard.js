@@ -2941,6 +2941,31 @@ async function reloadCheckNow() {
   }
 }
 
+// POST /reload: go to the REMOTE TIP, gate bypassed, recorded verified. The
+// server has always had this endpoint and the page never had a control for
+// it, so the only way to reach it was a devtools console call — which is no
+// escape hatch at all for the operator staring at a wedged gate. Distinct
+// from "Check & reload now" (/reload/check), which re-evaluates and switches
+// only on green: this one is the deliberate bypass, for the gate held behind
+// a check that is never going to arrive.
+async function reloadForceTip() {
+  const btn = document.getElementById("reload-force-tip");
+  const resultEl = document.getElementById("reload-check-result");
+  if (!confirm("Fetch the hooks repo and go to its REMOTE TIP now, bypassing the CI gate?\n\nThe serving tree switches and hooks reload. Recorded as an operator force.")) return;
+  btn.disabled = true;
+  resultEl.textContent = "forcing to tip…";
+  try {
+    const { res, data } = await postJSON("/reload", null);
+    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    resultEl.textContent = "forced to tip: " + ((data && data.status) || "reloaded");
+  } catch (err) {
+    resultEl.textContent = "force to tip failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+    void refreshReloadPanel();
+  }
+}
+
 // The informed-override flow. The server stays authoritative: the first
 // attempt NEVER carries override, and only its 409 (with the server's own
 // reasons) leads to a confirmation that quotes them verbatim; the retry —
@@ -3014,6 +3039,7 @@ async function reloadSwitchTo(ref, label) {
 }
 
 document.getElementById("reload-check").addEventListener("click", () => void reloadCheckNow());
+document.getElementById("reload-force-tip").addEventListener("click", () => void reloadForceTip());
 document.getElementById("reload-ref-switch").addEventListener("click", () => {
   const ref = (document.getElementById("reload-ref-input").value || "").trim();
   if (!ref) {
