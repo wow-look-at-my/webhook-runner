@@ -732,6 +732,21 @@ function stampUpdated() {
     "updated " + new Date().toLocaleTimeString();
 }
 
+// Which section each periodic fetcher feeds, so refresh() can skip the ones
+// this page does not show. `hooks` is absent deliberately: it publishes the
+// roster the KV render keys off and fills the hook nav, so it runs on every
+// page regardless of whether its own section is visible. `attention` is
+// absent for the same reason -- refresh() calls it unconditionally.
+const FETCHER_SECTIONS = {
+  runs: "runs-section",
+  managers: "managers-section",
+  images: "images-section",
+  events: "events-section",
+  kv: "kv-section",
+  concurrency: "concurrency-section",
+  reload: "reload-section",
+};
+
 async function refresh() {
   try {
     await fetchJSON("/health");
@@ -748,16 +763,18 @@ async function refresh() {
     } else {
       // hooks first: the kv render keys off the roster it publishes.
       await sectionFetchers.hooks();
-      await Promise.all([
-        sectionFetchers.attention(),
-        sectionFetchers.runs(),
-        sectionFetchers.managers(),
-        sectionFetchers.images(),
-        sectionFetchers.events(),
-        sectionFetchers.kv(),
-        sectionFetchers.concurrency(),
-        sectionFetchers.reload(),
-      ]);
+      // Only the sections this page actually shows. Every tick used to
+      // refetch all eight regardless, so sitting on the Hooks repo page
+      // pulled /events, /images, /managers, /kv and /concurrency forever --
+      // work whose results were rendered into hidden sections nobody was
+      // looking at. attention is exempt: its banner lives outside <main>
+      // and shows on every page.
+      const on = new Set(PAGE_SECTIONS[currentPage()] || PAGE_SECTIONS.overview);
+      const wanted = [sectionFetchers.attention()];
+      for (const [name, section] of Object.entries(FETCHER_SECTIONS)) {
+        if (on.has(section)) wanted.push(sectionFetchers[name]());
+      }
+      await Promise.all(wanted);
     }
     stampUpdated();
   } catch (e) {
