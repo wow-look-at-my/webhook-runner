@@ -229,7 +229,8 @@
          The child <p> is LIGHT DOM: it shows until the element upgrades,
          so a slow (or failed) component fetch reads as "loading", not as a
          blank panel. -->
-    <data-table id="runs-table" empty-text="No runs yet." storage-key="whr.runs.filter">
+    <data-table id="runs-table" empty-text="No runs yet." storage-key="whr.runs.filter"
+      searchable placeholder="filter by hook, status, run id…">
       <p class="empty">loading runs…</p>
     </data-table>
   </section>

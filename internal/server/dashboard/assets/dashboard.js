@@ -699,7 +699,11 @@ const sectionFetchers = {
   runs: async () => {
     const runsSection = document.getElementById("runs-section");
     if (!runsSection || runsSection.hidden) return;
-    renderRuns(await fetchJSON("/runs?max=50"));
+    // ?exclude= so max=50 counts fifty runs the operator can actually see:
+    // hiding a status the fleet is flooded with must not spend the cap on
+    // the rows it then removes.
+    const exclude = [...runsHiddenStatuses()].sort().join(",");
+    renderRuns(await fetchJSON(`/runs?max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`));
   },
   images: async () => renderImages(await fetchJSON("/images")),
   // exclude=run: run lifecycle is the runs table's job, and it does it
@@ -1724,6 +1728,46 @@ code { font-size: 0.9em; }
 // which a single accessor could not do without sorting by the rendered
 // text. Rows arrive newest-first and stay that way until a header is
 // clicked; the sort cycle's third state returns to exactly that order.
+// The fleet-wide runs table. Search and status chips here for the same
+// reason the Activity feed has them: this is the busiest surface on the
+// page, and "what failed" / "what is this hook doing" were questions you
+// could only answer by scrolling.
+//
+// The status facet is local:false and REFETCHES, exactly like the per-hook
+// table's (see "App runs table status filter"): the exclusion is applied
+// server-side via ?exclude= BEFORE the fifty-row cap, so letting the
+// component also filter locally would re-hide rows out of an already
+// filtered window. Search stays local — it is a question about the rows on
+// screen, and the component's own "showing N of M" says so.
+const RUNS_FILTER_KEY = "whr.runs.hiddenStatuses";
+
+// No default hiding here, unlike the per-hook table: that one hides skips
+// because ONE flooded hook drowns its own table, while this view is already
+// spread across the fleet and an operator opening it wants what happened.
+function runsHiddenStatuses() {
+  try {
+    const raw = localStorage.getItem(RUNS_FILTER_KEY);
+    if (raw !== null) return new Set(raw.split(",").filter(Boolean));
+  } catch {
+    /* storage unavailable: no hiding */
+  }
+  return new Set();
+}
+
+function saveRunsHiddenStatuses(hidden) {
+  try {
+    localStorage.setItem(RUNS_FILTER_KEY, [...hidden].sort().join(","));
+  } catch {
+    /* storage unavailable: the choice just doesn't persist */
+  }
+}
+
+// Every status the runner can report, so a chip is present to turn OFF even
+// when the current page happens to contain none of that status — a filter
+// you can only reach once the thing you want to hide is already on screen
+// is the wrong way round.
+const RUN_STATUSES = ["success", "failure", "error", "timeout", "running", "pending", "skipped", "cancelled"];
+
 function renderRuns(rs) {
   const t = document.getElementById("runs-table");
   if (!t) return;
@@ -1738,6 +1782,25 @@ function renderRuns(rs) {
     { key: "exit_code", label: "Exit", align: "end", render: (r) => String(r.exit_code) },
     { key: "id", label: "Run ID", render: (r) => runCell(r) },
   ];
+  // Counts come from the LOADED PAGE, and the label says so. The per-hook
+  // table can quote whole-window totals because a hook carries
+  // stats.by_status; there is no fleet-wide equivalent, and a chip that
+  // silently reported 0 for a status the page does contain would be a lie
+  // told next to the rows that disprove it. A status excluded server-side
+  // is genuinely absent from the page, so its 0 is true of what is loaded.
+  const counts = {};
+  for (const s of RUN_STATUSES) counts[s] = 0;
+  for (const r of rs || []) counts[r.status] = (counts[r.status] || 0) + 1;
+  t.facets = [
+    {
+      key: "status",
+      label: "run(s) on this page",
+      of: (r) => r.status,
+      local: false,
+      counts,
+      always: RUN_STATUSES,
+    },
+  ];
   t.rowId = (r) => r.id;
   t.styleText = RUNS_TABLE_CSS;
   // Bound once: the element outlives every render, so re-adding per render
@@ -1746,6 +1809,15 @@ function renderRuns(rs) {
     t.dataset.rowClickBound = "1";
     t.addEventListener("row-click", (e) => {
       if (e.detail?.id) void showRun(e.detail.id);
+    });
+    t.addEventListener("table-filter-change", (e) => {
+      const next = new Set(e.detail?.hidden?.status || []);
+      const current = runsHiddenStatuses();
+      if (next.size === current.size && [...next].every((s) => current.has(s))) return;
+      saveRunsHiddenStatuses(next);
+      // A different filter is a different fifty rows, so this refetches
+      // rather than re-selecting what is already on screen.
+      void sectionFetchers.runs();
     });
   }
   t.rows = rs || [];
