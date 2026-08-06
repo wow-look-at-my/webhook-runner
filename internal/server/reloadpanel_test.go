@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,6 +68,10 @@ type fakeReloadControl struct {
 	gotOverride bool
 	switches    int
 	reconciles  int
+
+	ciMu    sync.Mutex
+	ciDelay time.Duration
+	calls   int
 }
 
 func (f *fakeReloadControl) Status() reloadgate.GateStatus { return f.status }
@@ -79,11 +84,36 @@ func (f *fakeReloadControl) ManualSwitch(ctx context.Context, ref string, overri
 	f.gotRef, f.gotOverride = ref, override
 	return f.switchOut, f.switchErr
 }
+
+// CIState is probed from a BACKGROUND goroutine now, so the fake has to be
+// safe against a test mutating f.ci while one is in flight. ciDelay scripts
+// a slow GitHub; ciCalls counts probes, which is how the in-flight dedupe
+// is observed.
 func (f *fakeReloadControl) CIState(ctx context.Context, sha string) string {
-	if st, ok := f.ci[sha]; ok {
+	f.ciMu.Lock()
+	delay := f.ciDelay
+	st, ok := f.ci[sha]
+	f.calls++
+	f.ciMu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if ok {
 		return st
 	}
 	return "unknown"
+}
+
+func (f *fakeReloadControl) ciCalls() int {
+	f.ciMu.Lock()
+	defer f.ciMu.Unlock()
+	return f.calls
+}
+
+func (f *fakeReloadControl) setCI(sha, state string) {
+	f.ciMu.Lock()
+	defer f.ciMu.Unlock()
+	f.ci[sha] = state
 }
 
 func newReloadPanelServer(t *testing.T, repo ReloadRepo, control ReloadControl, onReload func() error, rec *events.Recorder) *Server {
@@ -314,10 +344,34 @@ func TestReloadSwitchBadRequests(t *testing.T) {
 func TestReloadCIStateCaching(t *testing.T) {
 	control := &fakeReloadControl{ci: map[string]string{"aaaa": "success"}}
 	s := newReloadPanelServer(t, &fakePanelRepo{}, control, nil, events.NewRecorder(16))
-	ctx := context.Background()
 
-	assert.Equal(t, "success", s.reloadCIState(ctx, "aaaa"))
-	control.ci["aaaa"] = "failure" // the cached terminal verdict keeps serving
-	assert.Equal(t, "success", s.reloadCIState(ctx, "aaaa"))
-	assert.Equal(t, "unknown", s.reloadCIState(ctx, "eeee"))
+	assert.Equal(t, "success", s.reloadCIState("aaaa"))
+	control.setCI("aaaa", "failure") // the cached terminal verdict keeps serving
+	assert.Equal(t, "success", s.reloadCIState("aaaa"))
+	assert.Equal(t, "unknown", s.reloadCIState("eeee"))
+}
+
+// The failure this prevents: /reload/status is polled on every dashboard
+// tick, and a probe on the request path made it the slowest endpoint on the
+// admin port whenever GitHub was slow -- measured on the live server at
+// 4242ms, 1170ms and 593ms, and aborting outright, while everything else
+// answered in under 90ms. An EXPIRED entry must serve its stale value
+// immediately and refresh behind.
+func TestReloadCIStateExpiredEntryServesStaleAndRefreshesBehind(t *testing.T) {
+	control := &fakeReloadControl{ci: map[string]string{"aaaa": "pending"}, ciDelay: 2 * time.Second}
+	s := newReloadPanelServer(t, &fakePanelRepo{}, control, nil, events.NewRecorder(16))
+
+	// Seed an entry that is already past the live TTL — the exact state a
+	// degraded GitHub leaves behind, since "unknown" is not terminal.
+	s.ciCache = map[string]ciCacheEntry{"aaaa": {state: "unknown", at: time.Now().Add(-time.Hour)}}
+
+	start := time.Now()
+	for range 5 {
+		assert.Equal(t, "unknown", s.reloadCIState("aaaa"), "serves the stale value")
+	}
+	assert.Less(t, time.Since(start), time.Second, "an expired entry must not wait on the probe")
+	assert.LessOrEqual(t, control.ciCalls(), 1, "five polls share ONE probe, not one each")
+
+	require.Eventually(t, func() bool { return s.reloadCIState("aaaa") == "pending" },
+		5*time.Second, 20*time.Millisecond, "the background refresh lands and replaces the stale value")
 }

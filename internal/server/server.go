@@ -76,6 +76,10 @@ type Server struct {
 	reloadControl ReloadControl
 	ciMu          sync.Mutex
 	ciCache       map[string]ciCacheEntry
+	// ciInflight dedupes the background CI refreshes reloadCIState kicks
+	// off, so a page polling every second cannot stack one GitHub call per
+	// tick on a sha whose probe is already running.
+	ciInflight map[string]bool
 
 	// stream fans run lifecycle updates out to GET /runs/stream clients;
 	// fed by the tracker's OnChange seam (wired in New). Never nil.
