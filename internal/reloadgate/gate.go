@@ -563,16 +563,44 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 	return "reloaded", nil
 }
 
+// localTipLocked names the newest commit the local clone already holds: the
+// pending hold when there is one (the push webhook fetched that commit when
+// it recorded it — during a GitHub outage it is the newest thing here), else
+// the tracked branch's local ref.
+func (g *Gate) localTipLocked() (string, error) {
+	if g.pendingSHA != "" {
+		return g.pendingSHA, nil
+	}
+	ref := "HEAD"
+	if g.branch != "" {
+		ref = "origin/" + g.branch
+	}
+	return g.repo.ResolveRef(ref)
+}
+
 // Force is the operator's manual bypass (admin POST /reload): fetch, jump
 // to the remote tip, and record it verified — the operator vouched.
 // Deliberately loud about skipping the gate.
 func (g *Gate) Force() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	tip, err := g.repo.FetchBranch(fetchDepth)
+	// The fetch is how Force learns the REMOTE tip, but it must not be able
+	// to hang the admin port: a degraded GitHub makes `git fetch` block
+	// rather than fail, and this call holds the gate mutex, so an unbounded
+	// one takes /reload/status and /reload/switch down with it. On a leash,
+	// and on failure force to the newest commit already local — which during
+	// an outage is exactly the commit an operator is reaching for.
+	tip, err := g.fetchBranchBounded()
 	if err != nil {
-		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
-		return fmt.Errorf("fetch hooks repo: %w", err)
+		local, localErr := g.localTipLocked()
+		if localErr != nil {
+			g.events.Record("git.pull_failed", "hooks repo fetch failed, and no local commit to force to: "+err.Error(), nil)
+			return fmt.Errorf("fetch hooks repo: %w", err)
+		}
+		g.log.Warn("force reload: hooks repo fetch failed; forcing to the newest LOCAL commit", "err", err, "sha", local)
+		g.events.Record("git.pull_failed", fmt.Sprintf(
+			"hooks repo fetch failed (%v) — forcing to the newest LOCAL commit %s, which may be behind the remote tip", err, short(local)), nil)
+		tip = local
 	}
 	if err := g.forceApplyLocked(tip, true, "reload.forced",
 		fmt.Sprintf("operator forced switch to %s, bypassing ci gate", short(tip))); err != nil {

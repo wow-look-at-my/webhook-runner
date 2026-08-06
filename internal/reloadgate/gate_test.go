@@ -3,6 +3,7 @@ package reloadgate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -632,6 +633,46 @@ func TestForceBypassesGate(t *testing.T) {
 	assert.True(t, st.Verified)
 	assert.Empty(t, st.PendingSHA)
 	assert.Empty(t, attentionKeys(f.agg), "both gate entries resolved")
+}
+
+// The outage shape: GitHub is the reason the tree is held, so the fetch
+// Force opens with is exactly what cannot be relied on. It must still land
+// on the held commit — the push webhook already fetched that one — rather
+// than erroring out or (unbounded) hanging the admin port behind the gate
+// mutex.
+func TestForceFallsBackToTheHeldCommitWhenGitHubIsDown(t *testing.T) {
+	repo := &fakeRepo{fetchErr: errors.New("origin unreachable"), commits: []string{"C", "A"}}
+	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
+	seedState(t, statePath, gateState{ServingSHA: "A", Verified: false, PendingSHA: "C", PendingState: "pending"})
+	repo.head = "A"
+	f := newFixtureAt(t, repo, statePath)
+	f.gate.Startup()
+
+	require.NoError(t, f.gate.Force(), "a dead origin must not block the operator's bypass")
+
+	assert.Equal(t, []string{"C"}, repo.resets, "forced to the commit already fetched and held")
+	assert.Equal(t, 1, *f.applies)
+	kinds := eventKinds(f.rec)
+	assert.Contains(t, kinds, "reload.forced")
+	assert.Contains(t, kinds, "git.pull_failed", "the degraded path is LOUDER, never silent")
+	st := readState(t, f.statePath)
+	assert.Equal(t, "C", st.ServingSHA)
+	assert.True(t, st.Verified)
+}
+
+// With nothing local to fall back to, a dead origin is a real failure and
+// says so — never a success that moved nothing.
+func TestForceStillFailsWhenThereIsNothingLocalToForceTo(t *testing.T) {
+	// No pending hold and no resolvable origin/master: nothing local is newer
+	// than what is already serving.
+	repo := &fakeRepo{fetchErr: errors.New("origin unreachable")}
+	f := servingFixture(t, repo, "A")
+
+	err := f.gate.Force()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch hooks repo")
+	assert.Empty(t, repo.resets, "nothing moved")
 }
 
 func TestMalformedPayloadsIgnoredLoudly(t *testing.T) {
