@@ -58,9 +58,11 @@ type GitRepo interface {
 	// touching the working tree, and returns the fetched tip.
 	FetchBranch(depth int) (tip string, err error)
 	// FetchBranchContext is FetchBranch bounded by ctx, which KILLS the git
-	// process when the remote stops answering. The manual switch needs it:
-	// an unbounded fetch there hangs holding the gate mutex and takes the
-	// whole reload panel down with it.
+	// process when the remote stops answering. EVERY fetch in this package
+	// goes through it: an unbounded one hangs holding the gate mutex, which
+	// freezes the reload panel, both force paths, the status webhook and the
+	// poll at once — the tree then cannot move by any route until the
+	// process restarts.
 	FetchBranchContext(ctx context.Context, depth int) (tip string, err error)
 	// RecentCommits lists up to max commits from the last fetch
 	// (FETCH_HEAD), newest first.
@@ -286,7 +288,7 @@ func (g *Gate) startupRestoreLocked() {
 	// The recorded commit is gone (force-push removed it?): fall to the
 	// branch tip, loudly unverified.
 	lost := g.servingSHA
-	tip, terr := g.repo.FetchBranch(fetchDepth)
+	tip, terr := g.fetchBranchBounded()
 	if terr == nil {
 		terr = g.repo.ResetTo(tip)
 	}
@@ -346,7 +348,7 @@ func (g *Gate) handlePush(body []byte) (string, error) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	tip, err := g.repo.FetchBranch(fetchDepth)
+	tip, err := g.fetchBranchBounded()
 	if err != nil {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return "", fmt.Errorf("fetch hooks repo: %w", err)
@@ -505,7 +507,18 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 		}
 		return "already-serving", nil
 	}
-	if _, err := g.repo.FetchBranch(fetchDepth); err != nil {
+	// ON A LEASH, like every other fetch this package runs under g.mu. This
+	// one is the dangerous one: trySwitch is what HandleEvent (the status
+	// webhook) and Reconcile (the hourly poll) call, so an unbounded fetch
+	// here wedges the gate with NOBODY having clicked anything -- and a
+	// `git fetch` onto a half-open socket does not fail, it hangs forever.
+	// Everything that touches the gate then hangs behind it: /version,
+	// /reload/status, both force buttons, the poll, and this path itself. The
+	// tree can no longer switch by ANY route, and the only symptom is
+	// requests that never answer. Bounded, a degraded origin fails closed in
+	// 20s and the next event or tick retries -- which is what the ordering
+	// rule below wants anyway.
+	if _, err := g.fetchBranchBounded(); err != nil {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return "", fmt.Errorf("fetch hooks repo: %w", err)
 	}

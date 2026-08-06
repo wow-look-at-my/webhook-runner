@@ -34,18 +34,23 @@ const SrcMarkerDir = "src/hooks"
 // certainly not "success" — the surfaces must never show a green nobody saw.
 const ciStateNotProbed = "not-probed (override)"
 
-// manualFetchTimeout bounds the fetch the manual switch may need when a ref
-// is not local yet. A `git fetch` against a degraded GitHub HANGS rather
-// than fails, and this call holds the gate mutex — so an unbounded one takes
-// the whole reload panel down with it (a Cloudflare 524 on /reload/switch
-// and /reload/status timing out behind the same lock). The operator gets an
-// answer either way; a switch to an already-local commit never waits at all.
-const manualFetchTimeout = 20 * time.Second
+// gateFetchTimeout bounds EVERY fetch this package runs. A `git fetch` onto
+// a half-open socket does not fail, it hangs — indefinitely, since git sets
+// no timeout of its own — and most of these calls hold the gate mutex. One
+// such hang froze a production runner: /version and /reload/status stopped
+// answering, both force buttons hung, and the status webhook and hourly poll
+// could no longer switch the tree, so the fleet could not be deployed by ANY
+// route. The only symptom was requests that never returned, and the only
+// cure was restarting the process.
+//
+// Bounded, a degraded origin fails closed in 20s and the next event or tick
+// retries — which is what every caller here already handles.
+const gateFetchTimeout = 20 * time.Second
 
-// fetchBranchBounded fetches with manualFetchTimeout, killing the git process
+// fetchBranchBounded fetches with gateFetchTimeout, killing the git process
 // when the remote will not answer.
 func (g *Gate) fetchBranchBounded() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), manualFetchTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), gateFetchTimeout)
 	defer cancel()
 	return g.repo.FetchBranchContext(ctx, fetchDepth)
 }

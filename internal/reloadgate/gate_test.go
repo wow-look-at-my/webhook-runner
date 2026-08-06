@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -673,6 +675,50 @@ func TestForceStillFailsWhenThereIsNothingLocalToForceTo(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fetch hooks repo")
 	assert.Empty(t, repo.resets, "nothing moved")
+}
+
+// EVERY fetch this package runs must go through the bounded helper. This is
+// a source-level assertion on purpose: the failure it prevents is not a
+// wrong value but a call that never returns, which no behavioural test can
+// observe without hanging the suite itself. A production runner froze this
+// way -- one unbounded fetch under g.mu took /version, /reload/status, both
+// force paths, the status webhook and the poll with it, and the tree could
+// not move by any route until the process was restarted.
+func TestEveryGateFetchIsBounded(t *testing.T) {
+	for _, name := range []string{"gate.go", "poll.go", "manual.go"} {
+		src, err := os.ReadFile(name)
+		require.NoError(t, err)
+		for i, line := range strings.Split(string(src), "\n") {
+			if !strings.Contains(line, "repo.FetchBranch(") {
+				continue
+			}
+			t.Errorf("%s:%d calls the UNBOUNDED repo.FetchBranch; use g.fetchBranchBounded() — an unbounded fetch here can hang forever holding the gate mutex:\n\t%s",
+				name, i+1, strings.TrimSpace(line))
+		}
+	}
+}
+
+// The status webhook's switch path fetches under the gate mutex. A dead
+// origin must make it fail CLOSED and release the lock, never hold it.
+func TestStatusSwitchFailsClosedOnDeadOrigin(t *testing.T) {
+	repo := &fakeRepo{fetchErr: errors.New("origin unreachable"), commits: []string{"B", "A"}}
+	f := servingFixture(t, repo, "A")
+
+	status, err := f.gate.HandleEvent("status", statusBody(t, "B", "success", "all-builds", "master"))
+
+	require.Error(t, err, "a fetch it could not complete must not read as a switch")
+	assert.NotEqual(t, "reloaded", status)
+	assert.Empty(t, repo.resets, "nothing moved")
+	assert.Zero(t, *f.applies)
+
+	// The lock is FREE: the next call answers instead of hanging behind it.
+	done := make(chan struct{})
+	go func() { defer close(done); _ = f.gate.Status() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gate mutex still held after a failed fetch — this is the production freeze")
+	}
 }
 
 func TestMalformedPayloadsIgnoredLoudly(t *testing.T) {

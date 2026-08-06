@@ -41,7 +41,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 	serving := g.servingSHA
 	g.mu.Unlock()
 
-	tip, err := g.repo.FetchBranch(fetchDepth)
+	tip, err := g.fetchBranchBounded()
 	if err != nil {
 		// Learned nothing; the next tick (or the next delivery) retries.
 		g.log.Warn("reload poll: hooks repo fetch failed", "err", err)
