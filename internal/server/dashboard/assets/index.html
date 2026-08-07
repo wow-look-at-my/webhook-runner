@@ -110,13 +110,31 @@
        server answers 409 with every reason, and only a confirmed retry
        with override:true moves the tree (recorded loudly). Hidden when no
        hooks repo is configured. -->
-  <section id="reload-section" hidden>
+  <!-- NEVER `hidden`. This panel used to start hidden and only unhide once
+       GET /reload/status answered with a usable mode — so an unreadable
+       status (a throw, a mode the page didn't recognize) left the page
+       showing setup instructions and NOTHING else, hiding every control at
+       exactly the moment the gate is stuck and an operator needs to force a
+       commit live. It renders always; a status it cannot read becomes a loud
+       line INSIDE it, never a disappearing panel. -->
+  <section id="reload-section">
     <h2>Hooks repo commit</h2>
+    <p id="reload-status-error" class="attention-line" hidden></p>
     <div id="reload-live"></div>
     <div class="reload-actions">
       <button id="reload-check" class="toggle-btn"
         title="Fetch the tip and re-evaluate now: switches only if its CI is green (gated mode) or pulls to tip (legacy mode)">Check &amp; reload now</button>
+      <button id="reload-force-tip" class="toggle-btn danger"
+        title="Go to the remote tip NOW without waiting for its CI — for a gate wedged behind a check that will not arrive">Force to tip now</button>
       <span id="reload-check-result" class="window-note"></span>
+    </div>
+    <!-- Top level, NOT inside the collapsed picker: forcing a ref live is the
+         escape hatch for a wedged gate, and an escape hatch behind a
+         <details> nobody thinks to open is not one. -->
+    <div class="reload-ref-row">
+      <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
+      <button id="reload-ref-switch" class="toggle-btn" title="Resolve the ref (fetching from origin if needed) and make it the live hooks commit">Switch to ref</button>
+      <button id="reload-ref-force" class="toggle-btn danger" title="Force this ref live NOW, overriding the CI gate — one confirmation, no gate handshake">Force live</button>
     </div>
     <details id="reload-picker">
       <summary>Recent commits — pick one to make live</summary>
@@ -125,10 +143,6 @@
         <p class="empty">loading commits…</p>
       </data-table>
       <p id="reload-commits-note" class="empty" hidden></p>
-      <div class="reload-ref-row">
-        <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
-        <button id="reload-ref-switch" class="toggle-btn" title="Resolve the ref (fetching from origin if needed) and make it the live hooks commit">Switch to ref</button>
-      </div>
     </details>
   </section>
 
@@ -215,7 +229,8 @@
          The child <p> is LIGHT DOM: it shows until the element upgrades,
          so a slow (or failed) component fetch reads as "loading", not as a
          blank panel. -->
-    <data-table id="runs-table" empty-text="No runs yet." storage-key="whr.runs.filter">
+    <data-table id="runs-table" empty-text="No runs yet." storage-key="whr.runs.filter"
+      searchable placeholder="filter by hook, status, run id…">
       <p class="empty">loading runs…</p>
     </data-table>
   </section>

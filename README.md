@@ -1413,10 +1413,12 @@ LEGACY                        SRC (SDK layout)
   my-hook/Dockerfile            src/
   concurrency.json                hooks/my-hook/hook.json   # ids/routes unchanged
                                   hooks/my-hook/Dockerfile
-                                  sdk/…                     # shared, dependency-free code
+                                  sdk/…                     # shared code (any src/ child
+                                  actions-runner/…          #   that is not hooks/ or managers/)
 ```
 
-The src layout exists for shared code: hooks import from `src/sdk/`
+The src layout exists for shared code: hooks import from a shared dir —
+every immediate child of `src/` except `hooks/` and `managers/` is one —
 relatively (`../../sdk/util.ts`), and Dockerfiles follow the
 **tree-mirror COPY convention** — the build context is `src/` (the runner
 passes the hook's own Dockerfile with `-f`), and the image mirrors the
@@ -1442,13 +1444,13 @@ Rules that keep it predictable:
   `src/hooks/` sibling, e.g. this repo's `examples/hooks/` and
   `e2e/hooks/` fixtures) is never scanned for it and stays fully valid.
 - **Content hashing** (src layout): a deterministic walk of
-  `src/hooks/<id>/` **and** `src/sdk/` (relative path + file mode +
-  bytes) — never sibling hook dirs. An sdk edit re-tags every src-layout
-  hook (each lazily rebuilds on its next run); an edit to hook A never
-  re-tags hook B. Legacy hashing is byte-identical to previous releases,
+  `src/hooks/<id>/` **and every shared dir** (relative path + file mode +
+  bytes) — never sibling entity dirs. A shared-code edit re-tags every
+  src-layout entity (each lazily rebuilds on its next run); an edit to
+  hook A never re-tags hook B. Legacy hashing is byte-identical to previous releases,
   so upgrading the runner never re-tags existing deployments.
-- **COPY surface**: an src-layout Dockerfile may COPY only from `sdk/`
-  and its own `hooks/<id>/`. Anything else in the `src/` context is
+- **COPY surface**: an src-layout Dockerfile may COPY only from a shared
+  dir and its own `hooks/<id>/`. Anything else in the `src/` context is
   undefined-staleness territory — the build won't fail, but edits there
   never re-tag the hook.
 - **Zero hooks is a loud failure.** A root that yields no hooks (empty,

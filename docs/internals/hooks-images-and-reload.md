@@ -161,8 +161,11 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   rule — `<root>/src/hooks/` exists ⇒ src layout, else legacy — applied
   identically in serve/validate/test because they all load through
   hooks.LoadDir/LoadLayout. Under the src layout: hooks at
-  src/hooks/<id>/, shared dependency-free code at src/sdk/ (imported
-  relatively — ../../sdk/...), concurrency.json at
+  src/hooks/<id>/, shared code in one or more SHARED DIRS — every
+  immediate child of src/ that is not hooks/ or managers/ (src/sdk/ is
+  the generic-infrastructure one; a tree may carry others, e.g.
+  src/actions-runner/ for one domain's shared code), imported relatively
+  (../../sdk/...), concurrency.json at
   cfg/concurrency.json — repo-root cfg/, deliberately OUTSIDE src/
   (concurrency config is repo-wide config, not source) — read by
   concurrency.LoadFile at the layout-resolved path (Load(root) is the
@@ -185,19 +188,24 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   and stays 100% valid. Content hashing:
   legacy stays BYTE-IDENTICAL to the historical algorithm (golden-hash
   test — never change it, or every deployed hook re-tags on upgrade); the
-  src layout hashes src/hooks/<id>/ AND src/sdk/ (src-relative path +
-  mode + bytes, never sibling hooks), so an sdk edit re-tags every
-  src-layout hook while hook A's edit never re-tags hook B; the COPY
-  surface is therefore sdk/ + own hook dir ONLY (anything else in the
-  context builds fine but never re-tags — undefined staleness, document
-  don't debug). ZERO hooks loaded is a LOUD, typed failure
+  src layout hashes src/hooks/<id>/ AND EVERY shared dir (src-relative
+  path + mode + bytes, never sibling entities), so a shared-code edit
+  re-tags every src-layout entity while hook A's edit never re-tags hook
+  B; the COPY surface is therefore the shared dirs + own hook dir ONLY (a
+  sibling entity's dir builds fine but never re-tags — undefined
+  staleness, document don't debug). Hashing EVERY shared dir, not just
+  src/sdk, is what lets a tree organize shared code by what it IS instead
+  of piling everything into src/sdk to be covered: a shared dir outside
+  the hash is worse than no sharing, since editing it re-tags nothing and
+  every consumer silently keeps running the old copy. ZERO hooks loaded is a LOUD, typed failure
   (ZeroHooksError) in BOTH layouts: validate exits non-zero, serve logs +
   records it via the normal load-error event path every reload — the
   guard that stops a premature repo restructure from taking the fleet
   offline behind green CI. Layout detection re-runs on EVERY reload (a
   hooks-repo pull can restructure the tree); the watcher additionally
-  watches src/, src/hooks/*, and root cfg/ under the src layout (not
-  src/sdk — sdk edits matter at image-build time, not reload time).
+  watches src/, src/hooks/*, and root cfg/ under the src layout (not the
+  shared dirs — shared-code edits matter at image-build time, not reload
+  time).
   SEQUENCING: the runner with this support deploys BEFORE the webhooks
   repo's src/ restructure lands — an old binary scanning a new tree loads
   zero hooks (now loud, still offline).
