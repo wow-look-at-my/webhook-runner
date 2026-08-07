@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -135,6 +136,16 @@ func (r *Repo) Head() (string, error) {
 // FetchBranch fetches the tracked branch from origin at the given history
 // depth WITHOUT touching the working tree, and returns the fetched tip.
 func (r *Repo) FetchBranch(depth int) (string, error) {
+	return r.FetchBranchContext(context.Background(), depth)
+}
+
+// FetchBranchContext is FetchBranch with a KILL SWITCH. A `git fetch` against
+// a degraded GitHub does not fail — it HANGS, and it hangs holding r.mu, so
+// every later ResetTo/ResolveRef queues behind it. That is how one unreachable
+// remote wedges the reload gate's own escape hatch. A caller that must stay
+// answerable (the operator's manual switch) passes a deadline; the context
+// kills the git process rather than waiting on it.
+func (r *Repo) FetchBranchContext(ctx context.Context, depth int) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -142,7 +153,10 @@ func (r *Repo) FetchBranch(depth int) (string, error) {
 	if r.branch != "" {
 		fetchArgs = append(fetchArgs, r.branch)
 	}
-	if out, err := r.gitCmd(fetchArgs...).CombinedOutput(); err != nil {
+	if out, err := r.gitCmdContext(ctx, fetchArgs...).CombinedOutput(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("git fetch: %w (killed after the deadline; the remote was not answering)\n%s", ctxErr, out)
+		}
 		return "", fmt.Errorf("git fetch: %w\n%s", err, out)
 	}
 
@@ -298,7 +312,11 @@ func isFullSHA(s string) bool {
 }
 
 func (r *Repo) gitCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+	return r.gitCmdContext(context.Background(), args...)
+}
+
+func (r *Repo) gitCmdContext(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if r.sshKeyPath != "" {
 		cmd.Env = append(os.Environ(),
 			"GIT_SSH_COMMAND=ssh -i "+r.sshKeyPath+" -o StrictHostKeyChecking=accept-new",

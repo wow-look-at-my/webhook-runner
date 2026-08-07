@@ -52,7 +52,9 @@ func TestDetectLayout(t *testing.T) {
 	assert.Equal(t, legacy, l.HooksDir())
 	assert.Equal(t, filepath.Join(legacy, "concurrency.json"), l.ConcurrencyPath())
 	assert.Empty(t, l.SrcDir())
-	assert.Empty(t, l.SDKDir())
+	shared, err := l.SharedDirs()
+	require.NoError(t, err)
+	assert.Empty(t, shared)
 
 	src := t.TempDir()
 	writeSrcHook(t, src, "a")
@@ -62,7 +64,13 @@ func TestDetectLayout(t *testing.T) {
 	assert.Equal(t, filepath.Join(src, "src", "hooks"), l.HooksDir())
 	assert.Equal(t, filepath.Join(src, "cfg", "concurrency.json"), l.ConcurrencyPath())
 	assert.Equal(t, filepath.Join(src, "src"), l.SrcDir())
-	assert.Equal(t, filepath.Join(src, "src", "sdk"), l.SDKDir())
+	// Every shared dir, lexical, entity trees excluded — not just src/sdk.
+	writeFile(t, filepath.Join(src, "src", "sdk", "util.ts"), "export const x = 1;\n")
+	writeFile(t, filepath.Join(src, "src", "actions-runner", "jit.ts"), "export const y = 2;\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "src", "managers"), 0o755))
+	shared, err = l.SharedDirs()
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(src, "src", "actions-runner"), filepath.Join(src, "src", "sdk")}, shared)
 
 	// src/hooks must be a DIRECTORY — a stray file doesn't flip the layout.
 	odd := t.TempDir()
@@ -258,4 +266,51 @@ func TestContentHashSDKSensitivity(t *testing.T) {
 	require.Empty(t, errs)
 	_, err := loaded["solo"].ContentHash()
 	assert.NoError(t, err)
+}
+
+// EVERY shared dir is hashed, not just src/sdk — the property that lets
+// shared code be organized by what it is. A shared dir the tag ignores is
+// the worst outcome available: editing it re-tags nothing, so every
+// consumer silently keeps running the old copy.
+func TestContentHashCoversEverySharedDir(t *testing.T) {
+	root := t.TempDir()
+	writeSrcHook(t, root, "a")
+	writeFile(t, filepath.Join(root, "src", "sdk", "util.ts"), "export const x = 1;\n")
+	writeFile(t, filepath.Join(root, "src", "actions-runner", "jit.ts"), "export const mint = 1;\n")
+
+	hash := func() string {
+		loaded, errs := LoadDir(root)
+		require.Empty(t, errs)
+		v, err := loaded["a"].ContentHash()
+		require.NoError(t, err)
+		return v
+	}
+
+	before := hash()
+	writeFile(t, filepath.Join(root, "src", "actions-runner", "jit.ts"), "export const mint = 2;\n")
+	assert.NotEqual(t, before, hash(), "an edit in a non-sdk shared dir must re-tag its consumers")
+
+	// A NEW shared dir joins the hash the moment it exists.
+	mid := hash()
+	writeFile(t, filepath.Join(root, "src", "wire", "proto.ts"), "export const v = 1;\n")
+	assert.NotEqual(t, mid, hash(), "adding a shared dir must re-tag")
+}
+
+// An sdk-only tree must hash EXACTLY as it did before shared dirs were
+// generalized: the deployed fleet is sdk-only, and a changed algorithm
+// re-tags and rebuilds every image on upgrade for no reason. Golden value
+// computed from the pre-generalization code (hook dir, then src/sdk).
+func TestContentHashSDKOnlyUnchanged(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "src", "hooks", "golden")
+	writeFile(t, filepath.Join(dir, "hook.json"), minimalHookJSON)
+	writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine:3.20\n")
+	writeFile(t, filepath.Join(root, "src", "sdk", "util.ts"), "export const x = 1;\n")
+
+	loaded, errs := LoadDir(root)
+	require.Empty(t, errs)
+	hash, err := loaded["golden"].ContentHash()
+	require.NoError(t, err)
+	assert.Equal(t, "da957cfcb483a28b", hash,
+		"src-layout content hashing changed for an sdk-only tree — every deployed entity would re-tag on upgrade")
 }
