@@ -1,13 +1,17 @@
 package reloadgate
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +50,10 @@ func (f *fakeRepo) FetchBranch(depth int) (string, error) {
 		return "", f.fetchErr
 	}
 	return f.tip, nil
+}
+
+func (f *fakeRepo) FetchBranchContext(_ context.Context, depth int) (string, error) {
+	return f.FetchBranch(depth)
 }
 
 func (f *fakeRepo) RecentCommits(max int) ([]string, error) {
@@ -495,118 +503,6 @@ func TestPushFetchErrorSurfaces(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "git.pull_failed")
 }
 
-func TestStartupRestoresLastGood(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
-	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
-	repo := &fakeRepo{head: "Z", known: map[string]bool{"A": true}}
-	f := newFixtureAt(t, repo, statePath)
-
-	f.gate.Startup()
-
-	assert.Equal(t, []string{"A"}, repo.resets)
-	assert.Equal(t, 1, repo.fetchSHACalls)
-	assert.Zero(t, *f.applies, "startup never applies — the watcher's initial scan loads")
-	assert.NotContains(t, eventKinds(f.rec), "reload.unverified")
-	assert.NotContains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
-}
-
-func TestStartupNormalRestartIsQuiet(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
-	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
-	repo := &fakeRepo{head: "A"}
-	f := newFixtureAt(t, repo, statePath)
-
-	f.gate.Startup()
-
-	assert.Empty(t, repo.resets)
-	assert.Zero(t, repo.fetchSHACalls+repo.fetchBranchCalls)
-	assert.Empty(t, attentionKeys(f.agg))
-}
-
-func TestStartupVanishedShaFallsToTipUnverified(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
-	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
-	repo := &fakeRepo{head: "Z", tip: "T", commits: []string{"T"}, known: map[string]bool{}}
-	f := newFixtureAt(t, repo, statePath)
-
-	f.gate.Startup()
-
-	assert.Equal(t, []string{"T"}, repo.resets)
-	st := readState(t, f.statePath)
-	assert.Equal(t, "T", st.ServingSHA)
-	assert.False(t, st.Verified)
-	assert.Contains(t, eventKinds(f.rec), "reload.unverified")
-	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
-	assert.Zero(t, *f.applies)
-}
-
-func TestStartupTotalGitFailureKeepsLastGoodRecord(t *testing.T) {
-	// Every git op fails (dead remote, broken clone): startup must degrade
-	// to serving whatever the tree holds — no apply, loud — and must NOT
-	// rewrite the state file, so the last-good record survives untouched
-	// for the next boot.
-	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
-	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
-	repo := &fakeRepo{
-		headErr:  fmt.Errorf("head: repo broken"),
-		fetchErr: fmt.Errorf("remote unreachable"),
-		resetErr: fmt.Errorf("reset: repo broken"),
-		// known stays nil, so FetchSHA errors too.
-	}
-	f := newFixtureAt(t, repo, statePath)
-
-	f.gate.Startup()
-
-	assert.Zero(t, *f.applies, "degraded startup must not apply")
-	assert.Empty(t, repo.resets, "the tree never moved")
-	assert.Contains(t, eventKinds(f.rec), "reload.failed")
-	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
-
-	// The no-persist-on-degrade guarantee: the on-disk record still names
-	// the original last-good sha.
-	st := readState(t, f.statePath)
-	assert.Equal(t, "A", st.ServingSHA)
-	assert.True(t, st.Verified)
-}
-
-func TestStartupFreshThenGreenVerifies(t *testing.T) {
-	repo := &fakeRepo{head: "A"}
-	f := newFixture(t, repo)
-
-	f.gate.Startup()
-
-	st := readState(t, f.statePath)
-	assert.Equal(t, "A", st.ServingSHA)
-	assert.False(t, st.Verified)
-	assert.Contains(t, eventKinds(f.rec), "reload.unverified")
-	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
-
-	// The first green for the serving tree verifies it in place: no
-	// reset, no apply, entry resolved.
-	status, err := f.gate.HandleEvent("status", statusBody(t, "A", "success", "all-builds", "master"))
-	require.NoError(t, err)
-	assert.Equal(t, "already-serving", status)
-	assert.Empty(t, repo.resets)
-	assert.Zero(t, *f.applies)
-	assert.Contains(t, eventKinds(f.rec), "reload.verified")
-	assert.True(t, readState(t, f.statePath).Verified)
-	assert.NotContains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
-}
-
-func TestStartupReArmsHeldFromPersistedPending(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
-	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true, PendingSHA: "B", PendingState: "failure"})
-	repo := &fakeRepo{head: "A"}
-	f := newFixtureAt(t, repo, statePath)
-
-	f.gate.Startup()
-
-	keys := attentionKeys(f.agg)
-	require.Contains(t, keys, attention.KeyReloadHeld)
-	assert.Contains(t, keys[attention.KeyReloadHeld], "failure")
-	assert.NotContains(t, keys, attention.KeyReloadUnverified)
-}
-
 func TestForceBypassesGate(t *testing.T) {
 	repo := &fakeRepo{tip: "C", commits: []string{"C", "B", "A"}}
 	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
@@ -627,6 +523,90 @@ func TestForceBypassesGate(t *testing.T) {
 	assert.True(t, st.Verified)
 	assert.Empty(t, st.PendingSHA)
 	assert.Empty(t, attentionKeys(f.agg), "both gate entries resolved")
+}
+
+// The outage shape: GitHub is the reason the tree is held, so the fetch
+// Force opens with is exactly what cannot be relied on. It must still land
+// on the held commit — the push webhook already fetched that one — rather
+// than erroring out or (unbounded) hanging the admin port behind the gate
+// mutex.
+func TestForceFallsBackToTheHeldCommitWhenGitHubIsDown(t *testing.T) {
+	repo := &fakeRepo{fetchErr: errors.New("origin unreachable"), commits: []string{"C", "A"}}
+	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
+	seedState(t, statePath, gateState{ServingSHA: "A", Verified: false, PendingSHA: "C", PendingState: "pending"})
+	repo.head = "A"
+	f := newFixtureAt(t, repo, statePath)
+	f.gate.Startup()
+
+	require.NoError(t, f.gate.Force(), "a dead origin must not block the operator's bypass")
+
+	assert.Equal(t, []string{"C"}, repo.resets, "forced to the commit already fetched and held")
+	assert.Equal(t, 1, *f.applies)
+	kinds := eventKinds(f.rec)
+	assert.Contains(t, kinds, "reload.forced")
+	assert.Contains(t, kinds, "git.pull_failed", "the degraded path is LOUDER, never silent")
+	st := readState(t, f.statePath)
+	assert.Equal(t, "C", st.ServingSHA)
+	assert.True(t, st.Verified)
+}
+
+// With nothing local to fall back to, a dead origin is a real failure and
+// says so — never a success that moved nothing.
+func TestForceStillFailsWhenThereIsNothingLocalToForceTo(t *testing.T) {
+	// No pending hold and no resolvable origin/master: nothing local is newer
+	// than what is already serving.
+	repo := &fakeRepo{fetchErr: errors.New("origin unreachable")}
+	f := servingFixture(t, repo, "A")
+
+	err := f.gate.Force()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch hooks repo")
+	assert.Empty(t, repo.resets, "nothing moved")
+}
+
+// EVERY fetch this package runs must go through the bounded helper. This is
+// a source-level assertion on purpose: the failure it prevents is not a
+// wrong value but a call that never returns, which no behavioural test can
+// observe without hanging the suite itself. A production runner froze this
+// way -- one unbounded fetch under g.mu took /version, /reload/status, both
+// force paths, the status webhook and the poll with it, and the tree could
+// not move by any route until the process was restarted.
+func TestEveryGateFetchIsBounded(t *testing.T) {
+	for _, name := range []string{"gate.go", "poll.go", "manual.go"} {
+		src, err := os.ReadFile(name)
+		require.NoError(t, err)
+		for i, line := range strings.Split(string(src), "\n") {
+			if !strings.Contains(line, "repo.FetchBranch(") {
+				continue
+			}
+			t.Errorf("%s:%d calls the UNBOUNDED repo.FetchBranch; use g.fetchBranchBounded() — an unbounded fetch here can hang forever holding the gate mutex:\n\t%s",
+				name, i+1, strings.TrimSpace(line))
+		}
+	}
+}
+
+// The status webhook's switch path fetches under the gate mutex. A dead
+// origin must make it fail CLOSED and release the lock, never hold it.
+func TestStatusSwitchFailsClosedOnDeadOrigin(t *testing.T) {
+	repo := &fakeRepo{fetchErr: errors.New("origin unreachable"), commits: []string{"B", "A"}}
+	f := servingFixture(t, repo, "A")
+
+	status, err := f.gate.HandleEvent("status", statusBody(t, "B", "success", "all-builds", "master"))
+
+	require.Error(t, err, "a fetch it could not complete must not read as a switch")
+	assert.NotEqual(t, "reloaded", status)
+	assert.Empty(t, repo.resets, "nothing moved")
+	assert.Zero(t, *f.applies)
+
+	// The lock is FREE: the next call answers instead of hanging behind it.
+	done := make(chan struct{})
+	go func() { defer close(done); _ = f.gate.Status() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gate mutex still held after a failed fetch — this is the production freeze")
+	}
 }
 
 func TestMalformedPayloadsIgnoredLoudly(t *testing.T) {

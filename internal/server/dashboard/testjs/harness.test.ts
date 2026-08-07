@@ -275,16 +275,51 @@ async function boot() {
 
 // -- The tests ---------------------------------------------------------------------
 
-test('page load fetches /hooks exactly once and paints every section', async () => {
+// The dashboard is PAGED: each section lives on its own page, so a fetch is
+// scoped to the page being looked at. Fetching every section on every tick
+// filled panels nobody had open -- and each one is a server round trip.
+test('page load fetches the global data plus the CURRENT page, and nothing else', async () => {
 	const h = await boot();
 	const hookFetches = h.urls().filter((u) => u === '/hooks');
 	assert.equal(hookFetches.length, 1, `/hooks must be fetched exactly once at boot, saw: ${h.urls().join(', ')}`);
-	for (const want of ['/health', '/hooks', '/attention', '/images', '/events?max=100&exclude=run', '/kv', '/concurrency']) {
-		assert.ok(h.urls().includes(want), `boot must fetch ${want}`);
+	// Global on every page: the health pill, the hook roster, the attention banner.
+	for (const want of ['/health', '/hooks', '/attention']) {
+		assert.ok(h.urls().includes(want), `boot must fetch ${want}, saw: ${h.urls().join(', ')}`);
+	}
+	// The overview's own section.
+	assert.ok(h.urls().some((u) => u.startsWith('/runs')), `the overview shows runs, so boot must fill it, saw: ${h.urls().join(', ')}`);
+	// The gate itself: another page's data is NOT pulled into a hidden panel.
+	for (const off of ['/images', '/kv', '/concurrency', '/events']) {
+		assert.ok(
+			!h.urls().some((u) => u.startsWith(off)),
+			`boot on the overview must NOT fetch ${off}, saw: ${h.urls().join(', ')}`,
+		);
 	}
 	// The single fetch is REPUBLISHED for timeline.js instead of refetched.
 	assert.ok(Array.isArray(h.sandbox.whrHooks), 'boot must publish window.whrHooks');
 	assert.equal(h.sandbox.whrHooks[0].id, 'a');
+});
+
+// The other half of the gate, and the reason it cannot just be "fetch less":
+// every page must still fill its own section, or the gate has broken the page
+// it was meant to make cheaper.
+test('each page fetches its OWN section on a refresh tick', async () => {
+	const h = await boot();
+	h.streamState(false); // the fallback tick IS the periodic refresh path
+	for (const [hash, want] of [
+		['#page=images', '/images'],
+		['#page=kv', '/kv'],
+		['#page=concurrency', '/concurrency'],
+		['#page=events', '/events'],
+	]) {
+		h.sandbox.location.hash = hash;
+		h.clear();
+		await h.advance(5_000);
+		assert.ok(
+			h.urls().some((u) => u.startsWith(want)),
+			`${hash} must fetch ${want}, saw: ${h.urls().join(', ')}`,
+		);
+	}
 });
 
 // Run lifecycle belongs to the runs table, which shows each run as one row
@@ -294,8 +329,13 @@ test('page load fetches /hooks exactly once and paints every section', async () 
 // whole failure this parameter exists to avoid.
 test('every activity feed excludes the run family server-side', async () => {
 	const h = await boot();
+	// The feed lives on its own page now, so go where it is.
+	h.streamState(false);
+	h.sandbox.location.hash = '#page=events';
+	h.clear();
+	await h.advance(5_000);
 	const feeds = h.urls().filter((u) => u.startsWith('/events'));
-	assert.ok(feeds.length > 0, 'boot must fetch the activity feed');
+	assert.ok(feeds.length > 0, `the Activity page must fetch the feed, saw: ${h.urls().join(', ')}`);
 	for (const u of feeds) {
 		assert.ok(u.includes('exclude=run'), `activity feed must exclude runs, saw ${u}`);
 	}
@@ -386,8 +426,14 @@ test('stream down: the fixed-cadence fallback poll takes over, and never gives u
 	h.streamState(false);
 	h.clear();
 	await h.advance(5_000);
-	const first = h.urls().length;
-	assert.ok(first >= 6, `a fallback tick must do a full refresh, saw only: ${h.urls().join(', ')}`);
+	// A tick refreshes the CURRENT page in full -- named, not counted: the old
+	// ">= 6 requests" stood in for "everything", which stopped being the
+	// contract when the fetch became page-scoped.
+	const tick = h.urls();
+	for (const want of ['/health', '/hooks', '/attention']) {
+		assert.ok(tick.includes(want), `a fallback tick must refresh ${want}, saw: ${tick.join(', ')}`);
+	}
+	assert.ok(tick.some((u) => u.startsWith('/runs')), `a fallback tick must refresh the overview runs table, saw: ${tick.join(', ')}`);
 	// A dead server does not stop it (fixed cadence forever, no backoff).
 	h.setServerUp(false);
 	h.clear();

@@ -699,7 +699,11 @@ const sectionFetchers = {
   runs: async () => {
     const runsSection = document.getElementById("runs-section");
     if (!runsSection || runsSection.hidden) return;
-    renderRuns(await fetchJSON("/runs?max=50"));
+    // ?exclude= so max=50 counts fifty runs the operator can actually see:
+    // hiding a status the fleet is flooded with must not spend the cap on
+    // the rows it then removes.
+    const exclude = [...runsHiddenStatuses()].sort().join(",");
+    renderRuns(await fetchJSON(`/runs?max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`));
   },
   images: async () => renderImages(await fetchJSON("/images")),
   // exclude=run: run lifecycle is the runs table's job, and it does it
@@ -728,6 +732,21 @@ function stampUpdated() {
     "updated " + new Date().toLocaleTimeString();
 }
 
+// Which section each periodic fetcher feeds, so refresh() can skip the ones
+// this page does not show. `hooks` is absent deliberately: it publishes the
+// roster the KV render keys off and fills the hook nav, so it runs on every
+// page regardless of whether its own section is visible. `attention` is
+// absent for the same reason -- refresh() calls it unconditionally.
+const FETCHER_SECTIONS = {
+  runs: "runs-section",
+  managers: "managers-section",
+  images: "images-section",
+  events: "events-section",
+  kv: "kv-section",
+  concurrency: "concurrency-section",
+  reload: "reload-section",
+};
+
 async function refresh() {
   try {
     await fetchJSON("/health");
@@ -744,16 +763,18 @@ async function refresh() {
     } else {
       // hooks first: the kv render keys off the roster it publishes.
       await sectionFetchers.hooks();
-      await Promise.all([
-        sectionFetchers.attention(),
-        sectionFetchers.runs(),
-        sectionFetchers.managers(),
-        sectionFetchers.images(),
-        sectionFetchers.events(),
-        sectionFetchers.kv(),
-        sectionFetchers.concurrency(),
-        sectionFetchers.reload(),
-      ]);
+      // Only the sections this page actually shows. Every tick used to
+      // refetch all eight regardless, so sitting on the Hooks repo page
+      // pulled /events, /images, /managers, /kv and /concurrency forever --
+      // work whose results were rendered into hidden sections nobody was
+      // looking at. attention is exempt: its banner lives outside <main>
+      // and shows on every page.
+      const on = new Set(PAGE_SECTIONS[currentPage()] || PAGE_SECTIONS.overview);
+      const wanted = [sectionFetchers.attention()];
+      for (const [name, section] of Object.entries(FETCHER_SECTIONS)) {
+        if (on.has(section)) wanted.push(sectionFetchers[name]());
+      }
+      await Promise.all(wanted);
     }
     stampUpdated();
   } catch (e) {
@@ -1724,6 +1745,46 @@ code { font-size: 0.9em; }
 // which a single accessor could not do without sorting by the rendered
 // text. Rows arrive newest-first and stay that way until a header is
 // clicked; the sort cycle's third state returns to exactly that order.
+// The fleet-wide runs table. Search and status chips here for the same
+// reason the Activity feed has them: this is the busiest surface on the
+// page, and "what failed" / "what is this hook doing" were questions you
+// could only answer by scrolling.
+//
+// The status facet is local:false and REFETCHES, exactly like the per-hook
+// table's (see "App runs table status filter"): the exclusion is applied
+// server-side via ?exclude= BEFORE the fifty-row cap, so letting the
+// component also filter locally would re-hide rows out of an already
+// filtered window. Search stays local — it is a question about the rows on
+// screen, and the component's own "showing N of M" says so.
+const RUNS_FILTER_KEY = "whr.runs.hiddenStatuses";
+
+// No default hiding here, unlike the per-hook table: that one hides skips
+// because ONE flooded hook drowns its own table, while this view is already
+// spread across the fleet and an operator opening it wants what happened.
+function runsHiddenStatuses() {
+  try {
+    const raw = localStorage.getItem(RUNS_FILTER_KEY);
+    if (raw !== null) return new Set(raw.split(",").filter(Boolean));
+  } catch {
+    /* storage unavailable: no hiding */
+  }
+  return new Set();
+}
+
+function saveRunsHiddenStatuses(hidden) {
+  try {
+    localStorage.setItem(RUNS_FILTER_KEY, [...hidden].sort().join(","));
+  } catch {
+    /* storage unavailable: the choice just doesn't persist */
+  }
+}
+
+// Every status the runner can report, so a chip is present to turn OFF even
+// when the current page happens to contain none of that status — a filter
+// you can only reach once the thing you want to hide is already on screen
+// is the wrong way round.
+const RUN_STATUSES = ["success", "failure", "error", "timeout", "running", "pending", "skipped", "cancelled"];
+
 function renderRuns(rs) {
   const t = document.getElementById("runs-table");
   if (!t) return;
@@ -1738,6 +1799,25 @@ function renderRuns(rs) {
     { key: "exit_code", label: "Exit", align: "end", render: (r) => String(r.exit_code) },
     { key: "id", label: "Run ID", render: (r) => runCell(r) },
   ];
+  // Counts come from the LOADED PAGE, and the label says so. The per-hook
+  // table can quote whole-window totals because a hook carries
+  // stats.by_status; there is no fleet-wide equivalent, and a chip that
+  // silently reported 0 for a status the page does contain would be a lie
+  // told next to the rows that disprove it. A status excluded server-side
+  // is genuinely absent from the page, so its 0 is true of what is loaded.
+  const counts = {};
+  for (const s of RUN_STATUSES) counts[s] = 0;
+  for (const r of rs || []) counts[r.status] = (counts[r.status] || 0) + 1;
+  t.facets = [
+    {
+      key: "status",
+      label: "run(s) on this page",
+      of: (r) => r.status,
+      local: false,
+      counts,
+      always: RUN_STATUSES,
+    },
+  ];
   t.rowId = (r) => r.id;
   t.styleText = RUNS_TABLE_CSS;
   // Bound once: the element outlives every render, so re-adding per render
@@ -1746,6 +1826,15 @@ function renderRuns(rs) {
     t.dataset.rowClickBound = "1";
     t.addEventListener("row-click", (e) => {
       if (e.detail?.id) void showRun(e.detail.id);
+    });
+    t.addEventListener("table-filter-change", (e) => {
+      const next = new Set(e.detail?.hidden?.status || []);
+      const current = runsHiddenStatuses();
+      if (next.size === current.size && [...next].every((s) => current.has(s))) return;
+      saveRunsHiddenStatuses(next);
+      // A different filter is a different fifty rows, so this refetches
+      // rather than re-selecting what is already on screen.
+      void sectionFetchers.runs();
     });
   }
   t.rows = rs || [];
@@ -2753,15 +2842,27 @@ function reloadSrcBadge(has) {
     : el("span", { class: "badge bad", title: "the commit's tree has NO src/hooks directory — reloading from it would load zero hooks" }, "no src/hooks");
 }
 
-function renderReloadStatus(data) {
-  const section = document.getElementById("reload-section");
+function renderReloadStatus(data, statusErr) {
   const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
-  section.hidden = !usable;
   reloadMode = usable ? data.mode : null;
-  if (!usable) return;
+  // The panel stays up NO MATTER WHAT. Hiding it on an unreadable status was
+  // a silent degradation that removed the force controls from the page in
+  // the one situation they exist for; a status we cannot read is a loud line
+  // here and the controls stay usable (forcing a ref needs no status at all).
+  const errBox = document.getElementById("reload-status-error");
+  if (usable) {
+    errBox.hidden = true;
+    errBox.textContent = "";
+  } else {
+    errBox.hidden = false;
+    errBox.textContent = statusErr
+      ? `Could not read the reload gate status (${statusErr}). The controls below still work — "Force live" needs no status.`
+      : `The reload gate reported no usable mode${data && data.mode ? ` (mode: ${data.mode})` : ""}. The controls below still work — "Force live" needs no status.`;
+  }
   // Per-commit switching needs the gate; legacy mode keeps the live view
   // and the Check & reload (pull to tip) but hides the picker.
-  document.getElementById("reload-picker").hidden = data.mode !== "gated";
+  document.getElementById("reload-picker").hidden = data && data.mode === "legacy";
+  if (!usable) return;
 
   const box = document.getElementById("reload-live");
   box.innerHTML = "";
@@ -2785,6 +2886,20 @@ function renderReloadStatus(data) {
   }
   if (data.pending) {
     const p = data.pending;
+    // The held commit gets its OWN "Make live", and it is ONE CLICK. This row
+    // is where an operator stands when the gate is the problem, and the case
+    // that matters most is a held tree whose CI cannot go green because the
+    // fleet it fixes is down — the gate blocking its own repair. Making that
+    // operator hunt through a collapsed picker and answer two confirmations
+    // is friction charged at exactly the wrong moment: they are already
+    // looking at the row that says HELD and the reasons why. One confirm
+    // naming the commit, then override — the force is the whole point of the
+    // button, not an escalation from it.
+    const force = el("button", {
+      class: "toggle-btn",
+      title: "Force the serving hooks tree to this held commit NOW, overriding the CI gate",
+    }, "Make live");
+    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short, p.short || p.sha, p.why || ""));
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
@@ -2792,6 +2907,7 @@ function renderReloadStatus(data) {
       el("span", { class: "wait-note" }, p.why || "awaiting CI"),
       reloadCIBadge(p.ci_state),
       reloadSrcBadge(!!p.has_src),
+      force,
     ));
   }
 }
@@ -2860,7 +2976,19 @@ function renderReloadCommits(data) {
 // cheap status view always; the origin-fetching commits list only while
 // the picker is open.
 async function refreshReloadPanel() {
-  renderReloadStatus(await fetchJSON("/reload/status"));
+  // A THROWN status read must never take the panel down with it: this call
+  // used to be unguarded, so a failing /reload/status left #reload-section
+  // hidden and the page showed nothing but the webhook setup instructions —
+  // no live commit, no held row, no force controls. The error belongs ON the
+  // panel, not instead of it.
+  let data = null;
+  let statusErr = "";
+  try {
+    data = await fetchJSON("/reload/status");
+  } catch (err) {
+    statusErr = err && err.message ? err.message : String(err);
+  }
+  renderReloadStatus(data, statusErr);
   if (reloadMode === "gated" && document.getElementById("reload-picker").open) {
     await refreshReloadCommits();
   }
@@ -2902,10 +3030,66 @@ async function reloadCheckNow() {
   }
 }
 
+// POST /reload: go to the REMOTE TIP, gate bypassed, recorded verified. The
+// server has always had this endpoint and the page never had a control for
+// it, so the only way to reach it was a devtools console call — which is no
+// escape hatch at all for the operator staring at a wedged gate. Distinct
+// from "Check & reload now" (/reload/check), which re-evaluates and switches
+// only on green: this one is the deliberate bypass, for the gate held behind
+// a check that is never going to arrive.
+async function reloadForceTip() {
+  const btn = document.getElementById("reload-force-tip");
+  const resultEl = document.getElementById("reload-check-result");
+  if (!confirm("Fetch the hooks repo and go to its REMOTE TIP now, bypassing the CI gate?\n\nThe serving tree switches and hooks reload. Recorded as an operator force.")) return;
+  btn.disabled = true;
+  resultEl.textContent = "forcing to tip…";
+  try {
+    const { res, data } = await postJSON("/reload", null);
+    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    resultEl.textContent = "forced to tip: " + ((data && data.status) || "reloaded");
+  } catch (err) {
+    resultEl.textContent = "force to tip failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+    void refreshReloadPanel();
+  }
+}
+
 // The informed-override flow. The server stays authoritative: the first
 // attempt NEVER carries override, and only its 409 (with the server's own
 // reasons) leads to a confirmation that quotes them verbatim; the retry —
 // and only the retry — carries override:true.
+// The one-click force, for the operator who is already looking at the reason
+// the gate is holding: ONE confirm, then override:true. No first attempt that
+// exists only to be refused, no second dialog quoting reasons already on
+// screen. The server still records it loudly (reload.forced on the activity
+// feed); what is dropped here is ceremony, not the audit trail.
+async function reloadForceTo(ref, label, why) {
+  if (reloadSwitchInFlight) return;
+  const name = label || ref;
+  const detail = why ? `\n\nThe gate is holding it: ${why}` : "";
+  if (!confirm(`Force ${name} live now, OVERRIDING the reload gate?${detail}\n\nThe serving tree switches to it and hooks reload.`)) return;
+  reloadSwitchInFlight = true;
+  const resultEl = document.getElementById("reload-check-result");
+  resultEl.textContent = `forcing ${name}…`;
+  try {
+    const { res, data } = await postJSON("/reload/switch", { ref, override: true });
+    if (!res.ok) {
+      const errMsg = (data && data.error) || `HTTP ${res.status}`;
+      alert(`Forcing ${name} failed: ${errMsg}`);
+      resultEl.textContent = "force failed";
+      return;
+    }
+    resultEl.textContent = `forced ${name} live (gate overridden)`;
+  } catch (err) {
+    alert(`Forcing ${name} failed: ${err.message}`);
+    resultEl.textContent = "force failed";
+  } finally {
+    reloadSwitchInFlight = false;
+    void refreshReloadPanel();
+  }
+}
+
 async function reloadSwitchTo(ref, label) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
@@ -2944,6 +3128,7 @@ async function reloadSwitchTo(ref, label) {
 }
 
 document.getElementById("reload-check").addEventListener("click", () => void reloadCheckNow());
+document.getElementById("reload-force-tip").addEventListener("click", () => void reloadForceTip());
 document.getElementById("reload-ref-switch").addEventListener("click", () => {
   const ref = (document.getElementById("reload-ref-input").value || "").trim();
   if (!ref) {
@@ -2954,6 +3139,17 @@ document.getElementById("reload-ref-switch").addEventListener("click", () => {
 });
 document.getElementById("reload-ref-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("reload-ref-switch").click();
+});
+// The wedged-gate escape hatch: one confirm, straight to override:true. It
+// asks the server for nothing first, so it works even when the status read
+// is failing and the panel above it is showing an error.
+document.getElementById("reload-ref-force").addEventListener("click", () => {
+  const ref = (document.getElementById("reload-ref-input").value || "").trim();
+  if (!ref) {
+    alert("Enter a commit sha or branch/tag name first.");
+    return;
+  }
+  void reloadForceTo(ref, ref, "");
 });
 // The commits list is fetched lazily: opening the picker is the operator
 // asking for it (it fetches origin and probes CI per commit).

@@ -390,13 +390,14 @@ func (h *Hook) hasDockerfile() bool {
 // relative path + content — byte-identical to the historical algorithm
 // (existing deployments must not re-tag on upgrade).
 //
-// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND src/sdk/
-// — never sibling hook dirs — hashed as src-relative path + file mode +
-// content. An sdk edit re-tags every src-layout hook (lazy rebuild on its
-// next run, intended even for non-consumers); an edit to hook A never
-// re-tags hook B. The COPY-surface convention follows from this: an
-// SDK-layout Dockerfile may COPY only from sdk/ and its own hooks/<id>/ —
-// anything else in the src context is undefined-staleness territory
+// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every
+// SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the
+// tree has) — never sibling entity dirs — hashed as src-relative path +
+// file mode + content. A shared-code edit re-tags every src-layout entity
+// (lazy rebuild on its next run, intended even for non-consumers); an edit
+// to hook A never re-tags hook B. The COPY-surface convention follows from
+// this: an SDK-layout Dockerfile may COPY only from a shared dir and its
+// own hooks/<id>/ — a sibling entity's dir is undefined-staleness territory
 // (builds don't fail, but edits there never re-tag).
 func (h *Hook) ContentHash() (string, error) {
 	dir := h.Dir()
@@ -408,12 +409,15 @@ func (h *Hook) ContentHash() (string, error) {
 		if err := hashTree(digest, h.SrcRoot, dir, true); err != nil {
 			return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
 		}
-		// A src tree without shared code is fine: a missing sdk dir simply
-		// contributes nothing.
-		sdk := filepath.Join(h.SrcRoot, "sdk")
-		if fi, err := os.Stat(sdk); err == nil && fi.IsDir() {
-			if err := hashTree(digest, h.SrcRoot, sdk, true); err != nil {
-				return "", fmt.Errorf("hash sdk dir %s: %w", sdk, err)
+		// A src tree without shared code is fine: no shared dirs simply
+		// contribute nothing.
+		shared, err := SharedDirs(h.SrcRoot)
+		if err != nil {
+			return "", fmt.Errorf("list shared dirs under %s: %w", h.SrcRoot, err)
+		}
+		for _, sd := range shared {
+			if err := hashTree(digest, h.SrcRoot, sd, true); err != nil {
+				return "", fmt.Errorf("hash shared dir %s: %w", sd, err)
 			}
 		}
 		return hex.EncodeToString(digest.Sum(nil))[:16], nil

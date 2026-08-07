@@ -23,6 +23,7 @@
 package reloadgate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +57,13 @@ type GitRepo interface {
 	// FetchBranch fetches the tracked branch at the given depth without
 	// touching the working tree, and returns the fetched tip.
 	FetchBranch(depth int) (tip string, err error)
+	// FetchBranchContext is FetchBranch bounded by ctx, which KILLS the git
+	// process when the remote stops answering. EVERY fetch in this package
+	// goes through it: an unbounded one hangs holding the gate mutex, which
+	// freezes the reload panel, both force paths, the status webhook and the
+	// poll at once — the tree then cannot move by any route until the
+	// process restarts.
+	FetchBranchContext(ctx context.Context, depth int) (tip string, err error)
 	// RecentCommits lists up to max commits from the last fetch
 	// (FETCH_HEAD), newest first.
 	RecentCommits(max int) ([]string, error)
@@ -195,111 +203,6 @@ func New(cfg Config) (*Gate, error) {
 	return g, nil
 }
 
-// Startup settles the working tree — called BEFORE the watcher's initial
-// scan performs the first hooks load, and it never calls Apply itself. It
-// restores the persisted last-good commit, or (first boot / vanished
-// commit) serves what is checked out, loudly flagged unverified. Git
-// failures degrade to serving the current tree rather than crashing:
-// the runner staying up on the old tree IS the design.
-func (g *Gate) Startup() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if g.servingSHA == "" {
-		g.startupFreshLocked()
-	} else {
-		g.startupRestoreLocked()
-	}
-
-	// A pending commit that ended up serving is settled.
-	if g.pendingSHA != "" && g.pendingSHA == g.servingSHA {
-		g.pendingSHA, g.pendingState = "", ""
-		g.persistLocked()
-	}
-	// Re-arm the in-memory attention entries from the settled state (the
-	// aggregator is empty after a restart).
-	if !g.verified {
-		g.attention.Report(attention.Entry{
-			Source: attention.SourceReload,
-			Key:    attention.KeyReloadUnverified,
-			Message: fmt.Sprintf("serving hooks tree %s without a recorded %s green; verifies on its next success (or admin /reload)",
-				short(g.servingSHA), g.context),
-		})
-	}
-	if g.pendingSHA != "" {
-		g.attention.Report(attention.Entry{
-			Source: attention.SourceReload,
-			Key:    attention.KeyReloadHeld,
-			Message: g.withChecks(fmt.Sprintf("hooks repo %s awaiting %s (last known: %s); serving %s",
-				short(g.pendingSHA), g.context, g.pendingStateLocked(), short(g.servingSHA)), g.pendingSHA),
-		})
-	}
-}
-
-// startupFreshLocked handles the first boot with no recorded state: serve
-// whatever is checked out (fresh clone = branch tip; upgraded deployment =
-// the tree it was already serving), flagged unverified until the first
-// green.
-func (g *Gate) startupFreshLocked() {
-	head, err := g.repo.Head()
-	if err != nil {
-		// Degrade: stay up on whatever the tree holds; the next status
-		// event or admin /reload settles it.
-		g.log.Error("reload gate: reading hooks repo HEAD failed", "err", err)
-		g.events.Record("reload.failed", "reload gate: reading hooks repo head failed: "+err.Error(), nil)
-	}
-	g.servingSHA, g.verified = head, false
-	g.persistLocked()
-	msg := fmt.Sprintf("serving unverified tree %s; no recorded green — will verify on the next %s success (or admin /reload)",
-		short(head), g.context)
-	g.log.Warn("hooks repo serving unverified tree", "sha", head, "context", g.context)
-	g.events.Record("reload.unverified", msg, nil)
-}
-
-// startupRestoreLocked puts the tree back at the persisted last-good
-// commit, falling to the branch tip (unverified, loud) when that commit is
-// no longer reachable.
-func (g *Gate) startupRestoreLocked() {
-	head, err := g.repo.Head()
-	if err != nil {
-		g.log.Error("reload gate: reading hooks repo HEAD failed", "err", err)
-	}
-	if err == nil && head == g.servingSHA {
-		return // normal restart: already at the last-good commit
-	}
-	// The tree is not at the record (dir wiped and re-cloned, or a crash
-	// between reset and persist): restore the last-good commit, keeping
-	// its verified flag.
-	if ferr := g.repo.FetchSHA(g.servingSHA, fetchDepth); ferr == nil {
-		if rerr := g.repo.ResetTo(g.servingSHA); rerr == nil {
-			g.log.Info("hooks repo restored to last-good commit", "sha", g.servingSHA)
-			g.events.Record("reload.restored", "hooks repo restored to last-good "+short(g.servingSHA), nil)
-			return
-		}
-	}
-	// The recorded commit is gone (force-push removed it?): fall to the
-	// branch tip, loudly unverified.
-	lost := g.servingSHA
-	tip, terr := g.repo.FetchBranch(fetchDepth)
-	if terr == nil {
-		terr = g.repo.ResetTo(tip)
-	}
-	if terr != nil {
-		// Full git failure: serve whatever the tree holds, and keep the
-		// last-good record on disk for the next boot — this boot runs
-		// degraded but runs.
-		g.log.Error("reload gate: falling back to hooks repo tip failed", "err", terr)
-		g.events.Record("reload.failed", "reload gate: falling back to hooks repo tip failed: "+terr.Error(), nil)
-		g.servingSHA, g.verified = head, false
-		return
-	}
-	g.servingSHA, g.verified = tip, false
-	g.persistLocked()
-	msg := fmt.Sprintf("could not restore last-good %s; serving unverified tip %s", short(lost), short(tip))
-	g.log.Warn("hooks repo last-good commit not restorable", "lost", lost, "serving", tip)
-	g.events.Record("reload.unverified", msg, nil)
-}
-
 // HandleEvent processes one HMAC-verified /_reload delivery. The returned
 // status goes into the HTTP response body; a non-nil error means the
 // delivery is answered 500 (GitHub records a red, redeliverable delivery).
@@ -340,7 +243,7 @@ func (g *Gate) handlePush(body []byte) (string, error) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	tip, err := g.repo.FetchBranch(fetchDepth)
+	tip, err := g.fetchBranchBounded()
 	if err != nil {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return "", fmt.Errorf("fetch hooks repo: %w", err)
@@ -499,7 +402,18 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 		}
 		return "already-serving", nil
 	}
-	if _, err := g.repo.FetchBranch(fetchDepth); err != nil {
+	// ON A LEASH, like every other fetch this package runs under g.mu. This
+	// one is the dangerous one: trySwitch is what HandleEvent (the status
+	// webhook) and Reconcile (the hourly poll) call, so an unbounded fetch
+	// here wedges the gate with NOBODY having clicked anything -- and a
+	// `git fetch` onto a half-open socket does not fail, it hangs forever.
+	// Everything that touches the gate then hangs behind it: /version,
+	// /reload/status, both force buttons, the poll, and this path itself. The
+	// tree can no longer switch by ANY route, and the only symptom is
+	// requests that never answer. Bounded, a degraded origin fails closed in
+	// 20s and the next event or tick retries -- which is what the ordering
+	// rule below wants anyway.
+	if _, err := g.fetchBranchBounded(); err != nil {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return "", fmt.Errorf("fetch hooks repo: %w", err)
 	}
@@ -557,16 +471,44 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 	return "reloaded", nil
 }
 
+// localTipLocked names the newest commit the local clone already holds: the
+// pending hold when there is one (the push webhook fetched that commit when
+// it recorded it — during a GitHub outage it is the newest thing here), else
+// the tracked branch's local ref.
+func (g *Gate) localTipLocked() (string, error) {
+	if g.pendingSHA != "" {
+		return g.pendingSHA, nil
+	}
+	ref := "HEAD"
+	if g.branch != "" {
+		ref = "origin/" + g.branch
+	}
+	return g.repo.ResolveRef(ref)
+}
+
 // Force is the operator's manual bypass (admin POST /reload): fetch, jump
 // to the remote tip, and record it verified — the operator vouched.
 // Deliberately loud about skipping the gate.
 func (g *Gate) Force() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	tip, err := g.repo.FetchBranch(fetchDepth)
+	// The fetch is how Force learns the REMOTE tip, but it must not be able
+	// to hang the admin port: a degraded GitHub makes `git fetch` block
+	// rather than fail, and this call holds the gate mutex, so an unbounded
+	// one takes /reload/status and /reload/switch down with it. On a leash,
+	// and on failure force to the newest commit already local — which during
+	// an outage is exactly the commit an operator is reaching for.
+	tip, err := g.fetchBranchBounded()
 	if err != nil {
-		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
-		return fmt.Errorf("fetch hooks repo: %w", err)
+		local, localErr := g.localTipLocked()
+		if localErr != nil {
+			g.events.Record("git.pull_failed", "hooks repo fetch failed, and no local commit to force to: "+err.Error(), nil)
+			return fmt.Errorf("fetch hooks repo: %w", err)
+		}
+		g.log.Warn("force reload: hooks repo fetch failed; forcing to the newest LOCAL commit", "err", err, "sha", local)
+		g.events.Record("git.pull_failed", fmt.Sprintf(
+			"hooks repo fetch failed (%v) — forcing to the newest LOCAL commit %s, which may be behind the remote tip", err, short(local)), nil)
+		tip = local
 	}
 	if err := g.forceApplyLocked(tip, true, "reload.forced",
 		fmt.Sprintf("operator forced switch to %s, bypassing ci gate", short(tip))); err != nil {
