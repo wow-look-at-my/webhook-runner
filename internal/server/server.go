@@ -356,6 +356,15 @@ func (s *Server) registerRoutes() {
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
 	s.adminMux.HandleFunc("GET /restart-ready", s.handleRestartReady)
+	// The same two questions at the paths docker-updater discovers by itself,
+	// with no label to configure. Aliases, not new handlers: /restart-ready
+	// already answers "may I be replaced right now", down to the max-defer
+	// valve, and a second implementation of that is a second answer that can
+	// disagree with the first. On the admin mux because that is where the
+	// existing pair lives, so nothing new is published on the tunnel-facing
+	// hook port; the deploy names it with docker-updater.well-known.port=9001.
+	s.adminMux.HandleFunc("GET "+wellKnownHealth, s.handleHealth)
+	s.adminMux.HandleFunc("GET "+wellKnownPreUpdate, s.handleRestartReady)
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)

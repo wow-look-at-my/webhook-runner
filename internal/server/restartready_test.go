@@ -148,3 +148,31 @@ func mustCode(t *testing.T, s *Server) int {
 	code, _ := restartReady(t, s)
 	return code
 }
+
+// The standard paths are aliases, so they must answer identically to the two
+// they alias — including the 503 that holds an update back. A pre-update that
+// answered 200 with runs in flight would reap live CI jobs, which is the whole
+// reason the gate exists.
+func TestWellKnownPathsMirrorTheAdminPair(t *testing.T) {
+	s, _, tr, _ := newTestServer(t)
+
+	idle := httptest.NewRecorder()
+	admin(s).ServeHTTP(idle, httptest.NewRequest(http.MethodGet, wellKnownPreUpdate, nil))
+	assert.Equal(t, http.StatusOK, idle.Code)
+
+	health := httptest.NewRecorder()
+	admin(s).ServeHTTP(health, httptest.NewRequest(http.MethodGet, wellKnownHealth, nil))
+	assert.Equal(t, http.StatusOK, health.Code)
+
+	tr.New("h") // a live run: not terminal
+
+	busy := httptest.NewRecorder()
+	admin(s).ServeHTTP(busy, httptest.NewRequest(http.MethodGet, wellKnownPreUpdate, nil))
+	assert.Equal(t, http.StatusServiceUnavailable, busy.Code,
+		"pre-update must hold the update back while a run is in flight")
+
+	stillUp := httptest.NewRecorder()
+	admin(s).ServeHTTP(stillUp, httptest.NewRequest(http.MethodGet, wellKnownHealth, nil))
+	assert.Equal(t, http.StatusOK, stillUp.Code,
+		"health answers whether the process is up, which a busy run does not change")
+}
