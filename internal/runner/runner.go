@@ -17,7 +17,6 @@ package runner
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +40,10 @@ import (
 const (
 	mountedPayload = "/var/run/webhook-runner/payload"
 	mountedHeaders = "/var/run/webhook-runner/headers.json"
+	// The hook's own configuration (hook.json `settings`), validated at load
+	// against its settings.schema.json. Mounted read-only like the payload:
+	// the hook reads its config, and never the manifest that carries it.
+	mountedSettings = "/var/run/webhook-runner/settings.json"
 	// mountedStateSocket is where a state hook's container sees the KV API's
 	// Unix socket (bind-mounted from the host-shared tmp dir).
 	mountedStateSocket = "/run/webhook-runner/state.sock"
@@ -81,6 +83,15 @@ type Runner struct {
 	events   *events.Recorder
 	groups   *concurrency.Manager
 
+	// globalCap is the server-wide ceiling on simultaneously RUNNING hook
+	// containers (all hooks together) — the Docker-bridge IPv4 guard. nil
+	// applies no cap. Acquired in execute strictly AFTER the hook's
+	// concurrency-group slot (group-then-global everywhere: no ordering
+	// cycles, and global slots are never consumed by runs still parked on
+	// a group queue), released when the run finishes. Manager instances
+	// and image builds deliberately sit outside the cap.
+	globalCap *concurrency.Global
+
 	// kv, kvSocket, and kvShim inject state-store access into containers whose
 	// hook sets state: true. kv == nil (or an empty socket/shim path) disables
 	// injection. kvSocket is the host path of the KV API's Unix socket and
@@ -115,6 +126,11 @@ type Options struct {
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
 
+	// GlobalCap bounds how many hook executions run containers at once,
+	// across ALL hooks (excess runs queue as pending). nil = no cap. See
+	// concurrency.Global; serve always wires one (default 64).
+	GlobalCap *concurrency.Global
+
 	// KV mints per-hook state tokens; KVSocket is the host path of the KV
 	// API's Unix socket and KVShim is the host path of webhook-runner's own
 	// binary (the in-container proxy entrypoint), both bind-mounted into
@@ -144,38 +160,12 @@ func New(opts Options) *Runner {
 		secrets:   opts.Secrets,
 		events:    opts.Events,
 		groups:    opts.Groups,
+		globalCap: opts.GlobalCap,
 		kv:        opts.KV,
 		kvSocket:  opts.KVSocket,
 		kvShim:    opts.KVShim,
 		dockerBin: opts.Docker,
 	}
-}
-
-// imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
-// CMD, or ENTRYPOINT plus hookCommand when the hook overrides the command — via
-// docker inspect. State hooks set the KV shim as the container entrypoint, so
-// the shim must be handed the original command to exec after starting the proxy.
-func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
-	out, err := exec.Command(dockerBin, "inspect", image,
-		"--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}").Output()
-	if err != nil {
-		return nil, err
-	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
-	var entrypoint, cmd []string
-	_ = json.Unmarshal([]byte(parts[0]), &entrypoint)
-	if len(parts) > 1 {
-		_ = json.Unmarshal([]byte(parts[1]), &cmd)
-	}
-	tail := hookCommand
-	if len(tail) == 0 {
-		tail = cmd
-	}
-	argv := append(append([]string{}, entrypoint...), tail...)
-	if len(argv) == 0 {
-		return nil, errors.New("image declares no entrypoint or cmd and the hook sets no command")
-	}
-	return argv, nil
 }
 
 // Wait blocks until all in-flight runs have finished. Useful for tests
@@ -194,8 +184,18 @@ func (r *Runner) Wait() { r.wg.Wait() }
 // resolution context is the caller's: the HTTP path renders it once before
 // skip evaluation, and the scheduler applies its own "schedule" fallback.
 func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title string) (*runs.Run, error) {
+	return r.start(parent, hook, payload, headers, title, "", "")
+}
+
+// start is the shared dispatch behind Start and StartSpawned (spawn.go);
+// empty parent IDs mean an ordinary, unattributed run.
+func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title, parentHookID, parentRunID string) (*runs.Run, error) {
 	run := r.tracker.New(hook.ID)
 	run.SetTitle(title)
+	// Parent attribution stamps BEFORE any path that can Finish the run
+	// (drain refusal below included), so every terminal snapshot — and the
+	// persisted history — carries it. No-op for the empty IDs Start passes.
+	run.SetSpawnedBy(parentHookID, parentRunID)
 
 	// Drain gate: a run launched by a dying process races the state-socket
 	// handover and the shutdown teardown — refuse loudly instead. The run
@@ -209,7 +209,7 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 		return run, ErrDraining
 	}
 
-	payloadPath, headersPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers)
+	payloadPath, headersPath, settingsPath, cleanup, err := r.writeTempFiles(run.ID(), payload, headers, hook.SettingsJSON())
 	if err != nil {
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("write temp files: %v", err))
 		if r.onFinish != nil {
@@ -222,7 +222,7 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 	go func() {
 		defer r.wg.Done()
 		defer cleanup()
-		r.execute(parent, hook, run, payload, payloadPath, headersPath)
+		r.execute(parent, hook, run, payload, payloadPath, headersPath, settingsPath)
 	}()
 	return run, nil
 }
@@ -265,7 +265,7 @@ func runRef(run *runs.Run) string {
 	return run.ID()
 }
 
-func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath string) {
+func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath, settingsPath string) {
 	timeout := hook.Timeout()
 
 	// A cancel that arrives while the run is still pending skips the
@@ -295,7 +295,13 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			return
 		}
 	}
-	lookup := hooks.SecretsFirstLookup(secrets)
+	if err := resolveSettingsFile(hook, secrets, settingsPath); err != nil {
+		run.Finish(runs.StatusError, -1, err.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
 
 	// Every hook runs an image built from its directory, tagged by content
 	// hash — code is baked in, so a concurrent hooks-repo pull can't
@@ -319,6 +325,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		r.events.Record("image.built", fmt.Sprintf("built %s in %s", image, time.Since(buildStart).Round(time.Millisecond)),
 			map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 	}
+	run.Mark(runs.PhaseImageReady)
 	// A build can take a while; honor a cancel that arrived during it
 	// instead of starting a container nobody wants anymore.
 	select {
@@ -363,15 +370,42 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	clearQueued()
 	defer release()
 
+	// The GLOBAL run cap: after the group slot (group-then-global ordering
+	// everywhere — no lock-order cycles, and the global slots can never
+	// fill up with runs still parked on tiny group queues), before the
+	// container starts. Same queue semantics as a group: the run stays
+	// pending, the watchdog stays unarmed, waiting_on mirrors its place in
+	// line, and cancellation is honored while queued.
+	gRelease, gAcquired, gClearQueued := r.acquireGlobalSlot(hook, run)
+	if !gAcquired {
+		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	gClearQueued()
+	defer gRelease()
+	// Both slots held: from here to PhaseSpawned is pure launch preparation
+	// (argv assembly, and for state hooks the imageCommand inspect), with no
+	// queueing left in it.
+	run.Mark(runs.PhaseSlotAcquired)
+
 	containerName := "webhook-runner-" + run.ID()
 
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
+		// The orphan-sweep marker (see orphans.go): lets the next serve
+		// boot find and reap containers whose owning server process died
+		// before their run finished.
+		"--label", RunContainerLabel + "=" + runContainerLabelValue,
 		"-v", payloadPath + ":" + mountedPayload + ":ro",
 		"-v", headersPath + ":" + mountedHeaders + ":ro",
+		"-v", settingsPath + ":" + mountedSettings + ":ro",
 		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
 		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
+		"-e", "HOOK_SETTINGS_FILE=" + mountedSettings,
 		"-e", "HOOK_ID=" + hook.ID,
 		"-e", "HOOK_RUN_ID=" + run.ID(),
 	}
@@ -394,6 +428,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
 		)
 	}
+	// github-state-mirror routing (unconditional — see GSMBaseURL): the
+	// GITHUB_API_URL fleet default, injected BEFORE secrets/hook env so an
+	// explicit hook.json value still wins.
+	args = append(args, r.gsmArgs()...)
 	for _, n := range hook.Networks {
 		args = append(args, "--network", n)
 	}
@@ -409,22 +447,6 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			continue
 		}
 		args = append(args, "-e", k+"="+v)
-	}
-	// hook.json env values resolve ${NAME} from the hook's secrets first,
-	// then the host environment.
-	for k, v := range hook.Env {
-		expanded, missing := hooks.ExpandEnvRefs(v, lookup)
-		for _, name := range missing {
-			r.log.Warn("hook env references unset variable",
-				"hook", hook.ID, "run", run.ID(), "env", k, "var", name)
-			// Also surface it on the dashboard: a hook silently running with
-			// an empty secret (e.g. an AI key that never resolved) looks
-			// healthy from the outside while every run fails downstream.
-			r.events.Record("env.unresolved",
-				hook.ID+": env "+k+" references unset ${"+name+"}; the container gets an empty value",
-				map[string]string{"hook": hook.ID, "run": run.ID()})
-		}
-		args = append(args, "-e", k+"="+expanded)
 	}
 	if hook.User != "" {
 		args = append(args, "--user", hook.User)
@@ -459,6 +481,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			}
 			return
 		}
+		run.Mark(runs.PhaseInspected)
 		args = append(args, "kv-forward")
 		args = append(args, childArgv...)
 	} else {
@@ -468,7 +491,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	r.log.Info("hook starting",
 		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
-	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)", hook.ID, runRef(run), image),
+	r.events.Record("run.started", fmt.Sprintf("%s run %s started (%s)%s", hook.ID, runRef(run), image, spawnNote(run)),
 		map[string]string{"hook": hook.ID, "run": run.ID(), "tag": image})
 
 	if r.onStart != nil {
@@ -521,6 +544,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// Close write ends in the parent; only the child holds them now.
 	stdoutW.Close()
 	stderrW.Close()
+	// The handoff instant: everything after this and before the container's
+	// own first instruction (PhaseContainerEntry, reported by the injected
+	// shim) is Docker's create/namespace/overlay/entrypoint cost.
+	run.Mark(runs.PhaseSpawned)
 	run.SetRunning()
 
 	timedOut := make(chan struct{})
@@ -578,6 +605,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}()
 
 	waitErr := cmd.Wait()
+	// The docker CLI has returned: the container exited AND `--rm` teardown
+	// is done. Whatever separates this from Finished is the runner's own
+	// bookkeeping, not container cost.
+	run.Mark(runs.PhaseExited)
 	close(stopWatcher)
 
 	// In the normal case the process has exited and its pipe ends
@@ -641,20 +672,30 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		}
 	default:
 	}
+	// Registered rather than run after Finish returns: Finish invokes this
+	// BEFORE closing the done channel, so the terminal feed line is already
+	// there for anything that observes <-run.Done(). Doing it afterwards is
+	// what forced callers to add a second Runner.Wait() barrier. See
+	// runs.Run.SetOnTerminal.
+	run.SetOnTerminal(func(runs.RunState) {
+		r.log.Info("hook finished",
+			"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
+		// runRef, not run.ID(): a title set mid-run via the state API's /title
+		// lands here too, so the feed's terminal line names the subject.
+		finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)%s", hook.ID, runRef(run), status, exitCode, spawnNote(run))
+		if errMsg != "" && (status == runs.StatusTimeout ||
+			(status == runs.StatusCancelled && errMsg != "cancelled")) {
+			// Carry the reason (a timeout's "no output" verdict, a cancel's
+			// steal explanation) so the activity feed shows what killed the run.
+			finishedMsg += ": " + errMsg
+		}
+		r.events.Record("run.finished", finishedMsg,
+			map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
+	})
 	run.Finish(status, exitCode, errMsg)
-	r.log.Info("hook finished",
-		"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-	// runRef, not run.ID(): a title set mid-run via the state API's /title
-	// lands here too, so the feed's terminal line names the subject.
-	finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)", hook.ID, runRef(run), status, exitCode)
-	if errMsg != "" && (status == runs.StatusTimeout ||
-		(status == runs.StatusCancelled && errMsg != "cancelled")) {
-		// Carry the reason (a timeout's "no output" verdict, a cancel's
-		// steal explanation) so the activity feed shows what killed the run.
-		finishedMsg += ": " + errMsg
-	}
-	r.events.Record("run.finished", finishedMsg,
-		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
+	// The GitHub commit-status POST stays OUTSIDE the terminal seam: it is a
+	// network call, and blocking every Done() observer on it would trade one
+	// footgun for a worse one.
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
@@ -684,37 +725,4 @@ func (r *Runner) killContainer(name string) {
 		r.log.Debug("docker kill",
 			"name", name, "err", err, "out", strings.TrimSpace(string(out)))
 	}
-}
-
-// writeTempFiles materializes the payload and headers in a temp dir
-// dedicated to this run. The returned cleanup removes the directory.
-func (r *Runner) writeTempFiles(runID string, payload []byte, headers http.Header) (payloadPath, headersPath string, cleanup func(), err error) {
-	dir, err := os.MkdirTemp(r.tmpDir, "wh-"+runID+"-")
-	if err != nil {
-		return "", "", func() {}, err
-	}
-	cleanup = func() { _ = os.RemoveAll(dir) }
-
-	payloadPath = filepath.Join(dir, "payload")
-	if err := os.WriteFile(payloadPath, payload, 0o600); err != nil {
-		cleanup()
-		return "", "", func() {}, err
-	}
-	headersPath = filepath.Join(dir, "headers.json")
-	hb, err := json.MarshalIndent(headers, "", "  ")
-	if err != nil {
-		cleanup()
-		return "", "", func() {}, err
-	}
-	if err := os.WriteFile(headersPath, hb, 0o600); err != nil {
-		cleanup()
-		return "", "", func() {}, err
-	}
-	// Loosen perms so the in-container user can read the files even if
-	// the container runs as a non-root user that doesn't share UID with
-	// the host process.
-	_ = os.Chmod(dir, 0o755)
-	_ = os.Chmod(payloadPath, 0o644)
-	_ = os.Chmod(headersPath, 0o644)
-	return payloadPath, headersPath, cleanup, nil
 }

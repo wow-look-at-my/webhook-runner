@@ -104,6 +104,15 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	// connection nobody owns. The HookID check mirrors handleCancelRun's
 	// cross-hook guard; the HMAC already binds the pair, so it's belt-only.
 	if run == nil || run.HookID() != ns || run.Status().Terminal() {
+		// Manager instances are not runs (first-class identity): their
+		// tokens land here and get the manager-shaped wait — same hold,
+		// same watchdog credit (TouchInstance feeds the instance's idle
+		// watchdog, exactly what a mid-event declared sleep needs), no
+		// run bookkeeping (there is no run row to badge).
+		if s.managerCaller(ns, runID) {
+			s.managerWait(w, r, ns, runID, req.Seconds, reason)
+			return
+		}
 		writeError(w, http.StatusConflict, "run is not active")
 		return
 	}
@@ -149,16 +158,55 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	}
 }
 
+// managerWait is the /wait hold for a manager instance: block ~seconds,
+// feeding the instance's idle watchdog on the touch cadence, ending early
+// when the instance stops being current (the container is going away) or
+// the client hangs up. One manager.wait event, mirroring run.wait.
+func (s *Server) managerWait(w http.ResponseWriter, r *http.Request, ns, instanceID string, seconds int, reason string) {
+	s.events.Record("manager.wait",
+		fmt.Sprintf("%s instance %s waiting %ds: %s", ns, instanceID, seconds, reason),
+		map[string]string{"hook": ns})
+
+	started := time.Now()
+	deadline := time.NewTimer(time.Duration(seconds) * time.Second)
+	defer deadline.Stop()
+	touch := time.NewTicker(s.waitTouchInterval(ns))
+	defer touch.Stop()
+	s.managers.TouchInstance(ns, instanceID)
+	for {
+		select {
+		case <-deadline.C:
+			s.managers.TouchInstance(ns, instanceID)
+			writeJSON(w, http.StatusOK, waitResult{Waited: seconds})
+			return
+		case <-touch.C:
+			if !s.managers.TouchInstance(ns, instanceID) {
+				// No longer the current instance: the container is being
+				// replaced/stopped underneath this hold.
+				writeJSON(w, http.StatusOK, interruptedResult(started, "instance stopped"))
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
 // waitTouchInterval picks how often an in-flight wait resets the caller's
 // idle watchdog: at least ~3 touches per idle window (see the constants
 // above). The namespace is the hook ID, so the hook's own timeout is a
-// registry lookup away; an unknown hook (or no registry, as in tests) gets
-// the default cadence, which suits DefaultTimeout and anything longer.
+// registry lookup away (managers included); an unknown id (or no registry,
+// as in tests) gets the default cadence, which suits DefaultTimeout and
+// anything longer.
 func (s *Server) waitTouchInterval(ns string) time.Duration {
 	interval := maxWaitTouchInterval
 	if s.registry != nil {
 		if h, ok := s.registry.Get(ns); ok {
 			if d := h.Timeout() / 3; d < interval {
+				interval = d
+			}
+		} else if m, ok := s.registry.GetManager(ns); ok {
+			if d := m.Timeout() / 3; d < interval {
 				interval = d
 			}
 		}

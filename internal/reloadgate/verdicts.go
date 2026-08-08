@@ -1,0 +1,84 @@
+package reloadgate
+
+import "time"
+
+// Recorded gating verdicts: every terminal gating status the gate accepts is
+// written down, whether or not it was applicable at the time. A status event
+// carries the verdict the reconciliation poll would otherwise have to buy from
+// the GitHub API, and the gate used to discard it whenever the ordering rule
+// refused the switch — so a tree that moved backwards (a manual rollback, which
+// ManualSwitch supports on purpose) left the poll asking for a fact it had
+// already been told and thrown away.
+//
+// The store answers "is this sha green?", never "should the tree switch to it?"
+// — trySwitch's recent-history and not-older-than-serving checks still gate
+// every apply, so a recorded verdict is an input to that rule, not a bypass.
+const (
+	// Verdicts older than the ordering window are dead weight: a sha too old
+	// to be within fetchDepth of the tip can never pass trySwitch anyway.
+	verdictTTL = 7 * 24 * time.Hour
+	// Count cap so the state file stays small on a busy repo.
+	maxVerdicts = 200
+)
+
+// verdictRecord is one sha's last known gating state ("success", "failure",
+// or "error" — "pending" is not a verdict and is never recorded).
+type verdictRecord struct {
+	SHA    string    `json:"sha"`
+	State  string    `json:"state"`
+	SeenAt time.Time `json:"seen_at"`
+}
+
+// recordVerdict upserts a sha's gating state and persists. Last write wins, so
+// a CI re-run flipping green->red is respected.
+func (g *Gate) recordVerdict(sha, state string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now().UTC()
+	for i := range g.verdicts {
+		if g.verdicts[i].SHA == sha {
+			g.verdicts[i].State, g.verdicts[i].SeenAt = state, now
+			g.pruneVerdictsLocked(now)
+			g.persistLocked()
+			return
+		}
+	}
+	g.verdicts = append(g.verdicts, verdictRecord{SHA: sha, State: state, SeenAt: now})
+	g.pruneVerdictsLocked(now)
+	g.persistLocked()
+}
+
+// pruneVerdictsLocked drops expired records, then the oldest until the count
+// cap holds. Caller holds g.mu.
+func (g *Gate) pruneVerdictsLocked(now time.Time) {
+	kept := g.verdicts[:0]
+	for _, v := range g.verdicts {
+		if now.Sub(v.SeenAt) < verdictTTL {
+			kept = append(kept, v)
+		}
+	}
+	g.verdicts = kept
+	for len(g.verdicts) > maxVerdicts {
+		oldest := 0
+		for i := range g.verdicts {
+			if g.verdicts[i].SeenAt.Before(g.verdicts[oldest].SeenAt) {
+				oldest = i
+			}
+		}
+		g.verdicts = append(g.verdicts[:oldest], g.verdicts[oldest+1:]...)
+	}
+}
+
+// verdictFor returns the recorded gating state for a sha, if one is on record
+// and unexpired.
+func (g *Gate) verdictFor(sha string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now().UTC()
+	for _, v := range g.verdicts {
+		if v.SHA == sha && now.Sub(v.SeenAt) < verdictTTL {
+			return v.State, true
+		}
+	}
+	return "", false
+}

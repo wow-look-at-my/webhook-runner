@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
   "description": "Example of a scheduled hook: fires on a timer, not (only) on HTTP POST",
 
   // "schedule" is a Go duration. The hook fires immediately on startup (and
@@ -14,6 +14,8 @@
   // A scheduled run still receives a payload in $HOOK_PAYLOAD_FILE: a small
   // JSON object {"trigger":"schedule","hook":"<id>","time":"<RFC3339>"} so the
   // code can tell a timer fire from an HTTP caller.
-  "command": ["sh", "-c", "echo scheduled sweep at $(date -u +%FT%TZ); cat $HOOK_PAYLOAD_FILE"],
+  // argv, not a shell program -- the date lookup lives in sweep.sh (nested
+  // command substitution in a manifest is a load error).
+  "command": ["sh", "sweep.sh"],
   "timeout": "5m"
 }

@@ -7,6 +7,8 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	github.com/wow-look-at-my/json-validator v0.0.0-20260801111049-3be1f1326433
+	github.com/wow-look-at-my/secret-server v0.0.0-20260801212640-b5dfe1922e8b
 	go.etcd.io/bbolt v1.5.0
 )
 
@@ -15,7 +17,8 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	github.com/tidwall/jsonc v0.3.3 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

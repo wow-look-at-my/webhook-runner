@@ -1,0 +1,220 @@
+{
+  "$schema": {
+    "type": "string",
+    "format": "uri"
+  },
+  "api_key": {
+    "type": "string"
+  },
+  "api_key_header": {
+    "type": "string",
+    "default": "X-API-Key"
+  },
+  "command": {
+    "type": "array",
+    "items": {
+      "type": "string",
+      "not": {
+        "pattern": "\\$\\(|`|<\\(|>\\("
+      },
+      "description": "Each entry is one argv element, NOT a shell program: command substitution ($(...), backticks) and process substitution (<(...), >(...)) are REJECTED, by this schema and by the runner at load. A manifest carrying a shell program cannot be checked, tested, or reviewed -- every character is escaped twice and no linter can see it. Put the logic in a .sh file next to the manifest, COPY it into the image, and call that (e.g. [\"sh\", \"run.sh\"], or use the script field). Plain $VAR / ${VAR} references are fine."
+    },
+    "minItems": 1
+  },
+  "concurrency_group": {
+    "type": "string"
+  },
+  "description": {
+    "type": "string"
+  },
+  "dind": {
+    "type": "boolean",
+    "default": false
+  },
+  "enable": {
+    "type": "boolean",
+    "default": true
+  },
+  "extra_docker_args": {
+    "type": "array",
+    "items": {
+      "type": "string"
+    }
+  },
+  "github_status": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Enable GitHub commit status updates."
+      },
+      "context": {
+        "type": "string",
+        "description": "The status context string (e.g. \"ci/deploy\"). Required when enabled is true."
+      },
+      "target_url": {
+        "type": "string",
+        "format": "uri",
+        "description": "Optional URL linked from the GitHub status check."
+      }
+    },
+    "if": {
+      "properties": {
+        "enabled": {
+          "const": true
+        }
+      },
+      "required": [
+        "enabled"
+      ]
+    },
+    "then": {
+      "required": [
+        "context"
+      ]
+    }
+  },
+  "networks": {
+    "type": "array",
+    "items": {
+      "type": "string"
+    }
+  },
+  "public_key": {
+    "type": "string"
+  },
+  "run_title": {
+    "type": "string",
+    "minLength": 1,
+    "examples": [
+      "{{repository.full_name}}#{{pull_request.number}}"
+    ]
+  },
+  "script": {
+    "type": "object",
+    "required": [
+      "file",
+      "interpreter"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "file": {
+        "type": "string",
+        "description": "Script file path, relative to the hook or manager directory. Must resolve inside that directory -- a symlink escaping it is a load error."
+      },
+      "interpreter": {
+        "type": "string",
+        "enum": [
+          "bash",
+          "pwsh",
+          "node",
+          "tsx"
+        ],
+        "description": "Interpreter that runs the file. Must be installed in the image (the Dockerfile bakes the code in; nothing is mounted)."
+      },
+      "args": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "not": {
+            "pattern": "\\$\\(|`|<\\(|>\\("
+          },
+          "description": "Each entry is one argv element, NOT a shell program: command substitution ($(...), backticks) and process substitution (<(...), >(...)) are REJECTED, by this schema and by the runner at load. A manifest carrying a shell program cannot be checked, tested, or reviewed -- every character is escaped twice and no linter can see it. Put the logic in a .sh file next to the manifest, COPY it into the image, and call that (e.g. [\"sh\", \"run.sh\"], or use the script field). Plain $VAR / ${VAR} references are fine."
+        },
+        "description": "Additional arguments passed after the script path."
+      }
+    }
+  },
+  "secret": {
+    "type": "string"
+  },
+  "settings": {
+    "type": "object"
+  },
+  "signature_header": {
+    "type": "string"
+  },
+  "skip_if": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Shorthand for {\"eq\": ...}: the path/header must stringify to exactly this value."
+          },
+          {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "eq": {
+                "type": "string",
+                "description": "Matches a leaf whose stringified value equals this exactly."
+              },
+              "ne": {
+                "type": "string",
+                "description": "Matches a leaf whose stringified value differs. A missing path does NOT match (absence is not inequality)."
+              },
+              "in": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "description": "Matches a leaf whose stringified value equals any listed value."
+              },
+              "exists": {
+                "type": "boolean",
+                "description": "true matches when the path resolves to anything (header present); false when it does not."
+              },
+              "prefix": {
+                "type": "string",
+                "description": "Matches a leaf whose stringified value starts with this."
+              },
+              "regex": {
+                "type": "string",
+                "format": "regex",
+                "description": "Matches a leaf containing a match of this Go (RE2 \u2014 linear-time, no backtracking) pattern; anchor with ^ and $ for a full match. Compiled at load time \u2014 a non-compiling pattern fails validation."
+              }
+            },
+            "description": "Operator object; when several operators are set, all must accept (AND)."
+          }
+        ]
+      }
+    }
+  },
+  "synchronous": {
+    "type": "boolean",
+    "default": false
+  },
+  "tests": {
+    "type": "array",
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    }
+  },
+  "timeout": {
+    "type": "string",
+    "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$"
+  },
+  "user": {
+    "type": "string"
+  },
+  "volumes": {
+    "type": "array",
+    "items": {
+      "type": "string"
+    }
+  },
+  "workdir": {
+    "type": "string"
+  }
+}

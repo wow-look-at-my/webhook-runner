@@ -29,15 +29,16 @@ var ErrNoContextStatus = errors.New("github_status: no status for context")
 // realistic context count; a context squeezed past it reads as missing,
 // which also fails closed.
 func (c *Client) ContextState(ctx context.Context, repo, sha, statusContext string) (string, error) {
-	if c == nil || c.token == "" {
-		return "", errors.New("github_status: no GitHub token configured (WEBHOOK_RUNNER_GITHUB_TOKEN)")
+	tok, err := c.token(ctx)
+	if err != nil {
+		return "", err
 	}
 	u := fmt.Sprintf("%s/repos/%s/commits/%s/status?per_page=100", c.apiURL, repo, sha)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", fmt.Errorf("github_status: request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 

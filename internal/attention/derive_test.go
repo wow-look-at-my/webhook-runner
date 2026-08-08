@@ -58,14 +58,10 @@ func TestProbeHooksReferences(t *testing.T) {
 	t.Setenv("WHR_ATTN_TEST_SET", "resolved-value")
 	loaded := map[string]*hooks.Hook{
 		"bad-key": {ID: "bad-key", APIKey: "${WHR_ATTN_TEST_UNSET_X9}"},
-		"bad-env": {ID: "bad-env", APIKey: "literal-key", Env: map[string]string{
-			"GOOD": "${WHR_ATTN_TEST_SET}",
-			"BAD":  "prefix-${WHR_ATTN_TEST_UNSET_Y9}",
-		}},
-		"healthy": {ID: "healthy", APIKey: "${WHR_ATTN_TEST_SET}", Env: map[string]string{"A": "plain"}},
+		"healthy": {ID: "healthy", APIKey: "${WHR_ATTN_TEST_SET}"},
 	}
 	entries := ProbeHooks(loaded, hooks.NewSecretsLoader(""))
-	require.Len(t, entries, 2)
+	require.Len(t, entries, 1)
 	byKey := map[string]Entry{}
 	for _, e := range entries {
 		byKey[e.Hook+"/"+e.Key] = e
@@ -73,9 +69,7 @@ func TestProbeHooksReferences(t *testing.T) {
 	keyEnt := byKey["bad-key/"+KeyAPIKey]
 	assert.Contains(t, keyEnt.Message, "${WHR_ATTN_TEST_UNSET_X9}")
 	assert.Contains(t, keyEnt.Message, "401")
-	envEnt := byKey["bad-env/"+KeyEnvPrefix+"BAD"]
-	assert.Contains(t, envEnt.Message, "${WHR_ATTN_TEST_UNSET_Y9}")
-	assert.NotContains(t, envEnt.Message, "resolved-value", "probe messages must never carry resolved values")
+	assert.NotContains(t, keyEnt.Message, "resolved-value", "probe messages must never carry resolved values")
 
 	// An api_key that RESOLVES to empty is just as broken (fail-closed 401).
 	t.Setenv("WHR_ATTN_TEST_EMPTY", "")

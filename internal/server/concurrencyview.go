@@ -34,26 +34,58 @@ type groupRunView struct {
 	StartedAt time.Time `json:"started_at,omitzero"`
 }
 
-// concurrencyGroupView is one GET /concurrency entry: the embedded
-// GroupStatus keeps the original shape (name/limit/declared/overridden/
-// active/waiting) — Holders and WaitingRuns are additive. The waiting
-// COUNT stays the `waiting` integer it has always been; the waiting LIST
-// is `waiting_runs` (renaming the count to make room would break the
-// existing shape for no gain).
+// concurrencyGroupView is one per-group entry: the embedded GroupStatus
+// keeps the original shape (name/limit/declared/overridden/active/waiting)
+// — Holders and WaitingRuns are additive. The waiting COUNT stays the
+// `waiting` integer it has always been; the waiting LIST is `waiting_runs`
+// (renaming the count to make room would break the existing shape for no
+// gain).
 type concurrencyGroupView struct {
 	concurrency.GroupStatus
 	Holders     []groupRunView `json:"holders,omitempty"`
 	WaitingRuns []groupRunView `json:"waiting_runs,omitempty"`
 }
 
-// handleConcurrency reports the live state of every declared concurrency
-// group — limit, active, queued — plus the per-group holder/waiting run
-// lists (admin port).
-func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.concurrencyView())
+// globalCapView is the global run cap's entry: its GlobalStatus
+// (limit/default/overridden/active/waiting) plus the same holder/waiting
+// drill-down lists the groups carry.
+type globalCapView struct {
+	concurrency.GlobalStatus
+	Holders     []groupRunView `json:"holders,omitempty"`
+	WaitingRuns []groupRunView `json:"waiting_runs,omitempty"`
 }
 
-func (s *Server) concurrencyView() []concurrencyGroupView {
+// concurrencyView is the GET /concurrency document: the global run cap
+// (the ceiling across ALL runs; omitted when no cap is configured) plus
+// the declared groups — which gate independently UNDER the cap, so both
+// belong on one page. This replaced the older bare-array response when the
+// global cap landed; the dashboard is served by the same binary, and it
+// still tolerates the array form for older servers.
+type concurrencyView struct {
+	Global *globalCapView         `json:"global,omitempty"`
+	Groups []concurrencyGroupView `json:"groups"`
+}
+
+// handleConcurrency reports the global run cap and the live state of every
+// declared concurrency group — limit, active, queued — plus the per-entry
+// holder/waiting run lists (admin port).
+func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.concurrencyDoc())
+}
+
+func (s *Server) concurrencyDoc() concurrencyView {
+	doc := concurrencyView{Groups: s.groupViews()}
+	if s.globalCap != nil {
+		v := &globalCapView{GlobalStatus: s.globalCap.Status()}
+		holders, waiting := s.globalCap.QueueDetail()
+		v.Holders = s.groupRunViews(holders)
+		v.WaitingRuns = s.groupRunViews(waiting)
+		doc.Global = v
+	}
+	return doc
+}
+
+func (s *Server) groupViews() []concurrencyGroupView {
 	sts := s.concurrency.Status()
 	out := make([]concurrencyGroupView, 0, len(sts))
 	for _, st := range sts {

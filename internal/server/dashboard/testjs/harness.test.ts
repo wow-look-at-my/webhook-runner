@@ -11,7 +11,7 @@
 //      and it never grows and never gives up.
 //   5. Stream recovery does ONE full resync, then goes silent again.
 //
-// Run: node --test internal/server/dashboard/testjs/*.test.mjs
+// Run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
 // No dependencies; node's built-in test runner.
 
 import { test } from 'node:test';
@@ -56,7 +56,18 @@ function makeElement(id) {
 					return () => makeElement();
 				case 'closest':
 					return () => null;
+				// Children are RECORDED: text the page renders through
+				// nodes (linkified slugs, fragments) is only observable as a
+				// child tree — see textOf below.
 				case 'appendChild':
+					return (x) => {
+						t.children.push(x);
+						return x;
+					};
+				case 'replaceChildren':
+					return (...xs) => {
+						t.children = xs;
+					};
 				case 'before':
 				case 'after':
 					return (x) => x;
@@ -69,10 +80,21 @@ function makeElement(id) {
 			}
 		},
 		set(t, prop, v) {
+			if (prop === 'innerHTML' && v === '') t.children = [];
 			t[prop] = v;
 			return true;
 		},
 	});
+}
+
+// Depth-first text extraction over the recorded child tree (createTextNode
+// children are {text}; element children carry .children).
+function textOf(node) {
+	if (!node) return '';
+	if (typeof node.text === 'string') return node.text;
+	let out = typeof node.textContent === 'string' ? node.textContent : '';
+	for (const c of node.children || []) out += textOf(c);
+	return out;
 }
 
 // -- The sandbox ------------------------------------------------------------------
@@ -183,6 +205,11 @@ function makeSandbox() {
 							return () => makeElement();
 						case 'createTextNode':
 							return (s) => ({ text: s });
+						// The page builds fragments (linkified text, wait
+						// details); an element stub is close enough here —
+						// this harness asserts on fetches, not markup.
+						case 'createDocumentFragment':
+							return () => makeElement();
 						case 'querySelectorAll':
 							return () => [];
 						case 'querySelector':
@@ -248,16 +275,70 @@ async function boot() {
 
 // -- The tests ---------------------------------------------------------------------
 
-test('page load fetches /hooks exactly once and paints every section', async () => {
+// The dashboard is PAGED: each section lives on its own page, so a fetch is
+// scoped to the page being looked at. Fetching every section on every tick
+// filled panels nobody had open -- and each one is a server round trip.
+test('page load fetches the global data plus the CURRENT page, and nothing else', async () => {
 	const h = await boot();
 	const hookFetches = h.urls().filter((u) => u === '/hooks');
 	assert.equal(hookFetches.length, 1, `/hooks must be fetched exactly once at boot, saw: ${h.urls().join(', ')}`);
-	for (const want of ['/health', '/hooks', '/attention', '/images', '/events?max=100', '/kv', '/concurrency']) {
-		assert.ok(h.urls().includes(want), `boot must fetch ${want}`);
+	// Global on every page: the health pill, the hook roster, the attention banner.
+	for (const want of ['/health', '/hooks', '/attention']) {
+		assert.ok(h.urls().includes(want), `boot must fetch ${want}, saw: ${h.urls().join(', ')}`);
+	}
+	// The overview's own section.
+	assert.ok(h.urls().some((u) => u.startsWith('/runs')), `the overview shows runs, so boot must fill it, saw: ${h.urls().join(', ')}`);
+	// The gate itself: another page's data is NOT pulled into a hidden panel.
+	for (const off of ['/images', '/kv', '/concurrency', '/events']) {
+		assert.ok(
+			!h.urls().some((u) => u.startsWith(off)),
+			`boot on the overview must NOT fetch ${off}, saw: ${h.urls().join(', ')}`,
+		);
 	}
 	// The single fetch is REPUBLISHED for timeline.js instead of refetched.
 	assert.ok(Array.isArray(h.sandbox.whrHooks), 'boot must publish window.whrHooks');
 	assert.equal(h.sandbox.whrHooks[0].id, 'a');
+});
+
+// The other half of the gate, and the reason it cannot just be "fetch less":
+// every page must still fill its own section, or the gate has broken the page
+// it was meant to make cheaper.
+test('each page fetches its OWN section on a refresh tick', async () => {
+	const h = await boot();
+	h.streamState(false); // the fallback tick IS the periodic refresh path
+	for (const [hash, want] of [
+		['#page=images', '/images'],
+		['#page=kv', '/kv'],
+		['#page=concurrency', '/concurrency'],
+		['#page=events', '/events'],
+	]) {
+		h.sandbox.location.hash = hash;
+		h.clear();
+		await h.advance(5_000);
+		assert.ok(
+			h.urls().some((u) => u.startsWith(want)),
+			`${hash} must fetch ${want}, saw: ${h.urls().join(', ')}`,
+		);
+	}
+});
+
+// Run lifecycle belongs to the runs table, which shows each run as one row
+// with status, timings and output. The feed asks the SERVER to drop that
+// family, so the exclusion happens before max: filtering the page after
+// fetching it would blank the feed on any hook mid-burst, which is the
+// whole failure this parameter exists to avoid.
+test('every activity feed excludes the run family server-side', async () => {
+	const h = await boot();
+	// The feed lives on its own page now, so go where it is.
+	h.streamState(false);
+	h.sandbox.location.hash = '#page=events';
+	h.clear();
+	await h.advance(5_000);
+	const feeds = h.urls().filter((u) => u.startsWith('/events'));
+	assert.ok(feeds.length > 0, `the Activity page must fetch the feed, saw: ${h.urls().join(', ')}`);
+	for (const u of feeds) {
+		assert.ok(u.includes('exclude=run'), `activity feed must exclude runs, saw ${u}`);
+	}
 });
 
 test('idle dashboard with the stream live makes ZERO requests for 60s', async () => {
@@ -345,8 +426,14 @@ test('stream down: the fixed-cadence fallback poll takes over, and never gives u
 	h.streamState(false);
 	h.clear();
 	await h.advance(5_000);
-	const first = h.urls().length;
-	assert.ok(first >= 6, `a fallback tick must do a full refresh, saw only: ${h.urls().join(', ')}`);
+	// A tick refreshes the CURRENT page in full -- named, not counted: the old
+	// ">= 6 requests" stood in for "everything", which stopped being the
+	// contract when the fetch became page-scoped.
+	const tick = h.urls();
+	for (const want of ['/health', '/hooks', '/attention']) {
+		assert.ok(tick.includes(want), `a fallback tick must refresh ${want}, saw: ${tick.join(', ')}`);
+	}
+	assert.ok(tick.some((u) => u.startsWith('/runs')), `a fallback tick must refresh the overview runs table, saw: ${tick.join(', ')}`);
 	// A dead server does not stop it (fixed cadence forever, no backoff).
 	h.setServerUp(false);
 	h.clear();
@@ -407,4 +494,38 @@ test('a revealed runs table refills immediately', async () => {
 	h.sandbox.dispatchEvent(new CustomEvent('whr:runs-table-shown'));
 	await h.advance(1_000);
 	assert.deepEqual(h.urls(), ['/runs?max=50']);
+});
+
+test('manager output copy: the clipboard text assembles from the DATA, exactly as rendered', async () => {
+	// The copy button's payload comes from managerOutputText over the
+	// /managers/{id} response's output array — never from DOM innerText.
+	// Pin the exact assembly (input lines → copied string) and that the
+	// drill-down <pre> renders the SAME assembly, so the copied text is
+	// byte-identical to what is on screen. (A real clipboard click needs a
+	// browser; headless coverage stops at the assembly + render parity.)
+	const h = await boot();
+	const text = h.sandbox.managerOutputText;
+	assert.equal(typeof text, 'function', 'managerOutputText must be a page-global function');
+	// Lines join with single newlines; no trailing newline is invented.
+	assert.equal(text(['a', 'b', 'c']), 'a\nb\nc');
+	assert.equal(text(['single']), 'single');
+	// Blank lines and internal whitespace survive byte-for-byte.
+	assert.equal(text(['one', '', '  indented', 'tab\tkept']), 'one\n\n  indented\ntab\tkept');
+	// Absent/empty output is the empty string — never "undefined".
+	assert.equal(text([]), '');
+	assert.equal(text(undefined), '');
+	assert.equal(text(null), '');
+
+	h.sandbox.location.hash = '#manager=gha-coordinator';
+	h.sandbox.renderManagerDetail({
+		id: 'gha-coordinator',
+		state: 'running',
+		restarts: 0,
+		inbox_depth: 0,
+		output: ['line 1', '', 'line 3'],
+	});
+	const pre = h.sandbox.document.getElementById('manager-detail-output');
+	// The <pre> renders the assembly as linkified TEXT NODES (GitHub slugs in
+	// the log are clickable), so parity is read off the rendered tree.
+	assert.equal(textOf(pre), text(['line 1', '', 'line 3']), 'the <pre> and the copy payload share one assembly');
 });

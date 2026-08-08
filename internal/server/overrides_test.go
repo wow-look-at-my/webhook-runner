@@ -37,6 +37,13 @@ func newOverrideTestServer(t *testing.T) (*Server, *hooks.Registry, *overrides.S
 	tr := runs.NewTracker()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker})
+	// Drain in-flight runs before the test's TempDir is removed. A delivery
+	// answers 202 and runs ASYNC, so without this the run's goroutine is
+	// still writing its workdir under `dir` while t.TempDir's cleanup walks
+	// it -- an intermittent "directory not empty" that has nothing to do
+	// with the assertions. Registered AFTER t.TempDir(), so LIFO cleanup
+	// waits first and removes second.
+	t.Cleanup(rn.Wait)
 	mgr := concurrency.NewManager(&concurrency.Config{
 		Groups: map[string]concurrency.Group{"g": {Limit: 3}},
 	})
@@ -235,6 +242,13 @@ func TestDisablePersistFailureIsLoud(t *testing.T) {
 	tr := runs.NewTracker()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker})
+	// Drain in-flight runs before the test's TempDir is removed. A delivery
+	// answers 202 and runs ASYNC, so without this the run's goroutine is
+	// still writing its workdir under `dir` while t.TempDir's cleanup walks
+	// it -- an intermittent "directory not empty" that has nothing to do
+	// with the assertions. Registered AFTER t.TempDir(), so LIFO cleanup
+	// waits first and removes second.
+	t.Cleanup(rn.Wait)
 	s := New(Options{
 		Registry: reg, Runner: rn, Tracker: tr, Logger: logger,
 		Events: rec, Overrides: ov, Version: testVersion,
@@ -290,9 +304,11 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 		w := httptest.NewRecorder()
 		admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/concurrency", nil))
 		require.Equal(t, 200, w.Code)
-		var st []concurrency.GroupStatus
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &st))
-		return st
+		var doc struct {
+			Groups []concurrency.GroupStatus `json:"groups"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &doc))
+		return doc.Groups
 	}
 
 	// Baseline: declared 3, not overridden.

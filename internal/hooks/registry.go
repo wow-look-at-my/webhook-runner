@@ -7,15 +7,50 @@ import (
 
 // Registry is a concurrency-safe mapping from hook ID to the loaded hook
 // definition. The watcher updates it as hook.json files appear, change, or
-// disappear; the HTTP server reads it to dispatch requests.
+// disappear; the HTTP server reads it to dispatch requests. Managers ride
+// the same registry under the same id namespace (a collision is a load
+// error upstream), in their own map so hook consumers (the roster, image
+// status, schedules) never see them by accident.
 type Registry struct {
-	mu    sync.RWMutex
-	hooks map[string]*Hook
+	mu       sync.RWMutex
+	hooks    map[string]*Hook
+	managers map[string]*Manager
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{hooks: make(map[string]*Hook)}
+	return &Registry{hooks: make(map[string]*Hook), managers: make(map[string]*Manager)}
+}
+
+// ReplaceManagers atomically replaces the entire manager set — the
+// managers half of a reload's Replace.
+func (r *Registry) ReplaceManagers(managers map[string]*Manager) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if managers == nil {
+		managers = make(map[string]*Manager)
+	}
+	r.managers = managers
+}
+
+// GetManager returns the manager with the given ID, or nil/false.
+func (r *Registry) GetManager(id string) (*Manager, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m, ok := r.managers[id]
+	return m, ok
+}
+
+// AllManagers returns every loaded manager, alphabetically sorted by ID.
+func (r *Registry) AllManagers() []*Manager {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*Manager, 0, len(r.managers))
+	for _, m := range r.managers {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // Replace atomically replaces the entire hook set. This is the path used

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -54,9 +55,13 @@ type HookInfo struct {
 	// Timeout is the effective run timeout (hook.json's or the default) —
 	// the no-output kill limit: the run dies only after this long with no
 	// container output, never for running long while it keeps logging.
-	Timeout string   `json:"timeout"`
-	APIKey  bool     `json:"api_key"`
-	EnvKeys []string `json:"env_keys,omitempty"`
+	Timeout string `json:"timeout"`
+	APIKey  bool   `json:"api_key"`
+	// SettingsKeys are the TOP-LEVEL keys of the hook's own settings object
+	// (hook.json `settings`, validated at load against the hook's
+	// settings.schema.json). Keys only, never values: this port is
+	// operator-only but a settings document can hold credentials.
+	SettingsKeys []string `json:"settings_keys,omitempty"`
 	// SkipConditions is how many skip_if conditions the hook declares
 	// (0 = every authenticated delivery runs). A count, not the conditions:
 	// this summary stays compact — the conditions live in hook.json, and
@@ -77,10 +82,13 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		APIKey:           h.APIKey != "",
 		SkipConditions:   len(h.SkipIf),
 	}
-	for k := range h.Env {
-		info.EnvKeys = append(info.EnvKeys, k)
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(h.SettingsJSON(), &settings); err == nil {
+		for k := range settings {
+			info.SettingsKeys = append(info.SettingsKeys, k)
+		}
 	}
-	sort.Strings(info.EnvKeys)
+	sort.Strings(info.SettingsKeys)
 	return info
 }
 

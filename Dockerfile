@@ -4,7 +4,12 @@
 # downloaded into build/ by the publish-ghcr workflow. This Dockerfile only
 # packages that prebuilt artifact, mirroring the buildhost pattern. The
 # runtime needs docker-cli, git, and ssh because the server shells out to
-# `docker run` for each hook and clones/pulls the hooks repo over SSH. It also
+# `docker run` for each hook and clones/pulls the hooks repo over SSH.
+# docker-cli-buildx is REQUIRED, not optional: THIS CLI drives every hook image
+# build, and without the plugin it silently falls back to the legacy builder,
+# which cannot parse `# syntax=` frontends or flags like `ADD --unpack` however
+# capable the host daemon is. It also
+
 # needs sops to decrypt per-hook `secrets.sops.env` files: the server execs the
 # `sops` binary host-side (hooks.SecretsLoader), then injects the decrypted
 # values into the hook container as plain env vars — the hook container itself
@@ -14,7 +19,7 @@
 # is never baked into the image.
 
 FROM alpine:3.20
-RUN apk add --no-cache docker-cli git openssh-client ca-certificates tzdata sops age && \
+RUN apk add --no-cache docker-cli docker-cli-buildx git openssh-client ca-certificates tzdata sops age && \
     addgroup -S webhook && adduser -S -G webhook webhook
 
 
@@ -42,6 +47,12 @@ ENV WEBHOOK_RUNNER_ADDR=":9000" \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -q -O /dev/null "http://127.0.0.1:${WEBHOOK_RUNNER_ADDR##*:}/health" || exit 1
 
+# Metadata only -- this publishes nothing on the host. Both ports are declared
+# because both exist; the /.well-known/docker-updater/ endpoints live on the
+# admin port beside /restart-ready, so a deployment has to name it with
+# docker-updater.well-known.port: "9001" -- discovery only picks a port by
+# itself when an image declares exactly one.
+EXPOSE 9000 9001
 
 # Runs as root by default so it can talk to the bind-mounted Docker socket.
 ENTRYPOINT ["/usr/local/bin/webhook-runner"]

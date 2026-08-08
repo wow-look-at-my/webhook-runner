@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <title>webhook-runner</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- No favicon shipped: the empty data URL stops the browser requesting
+     /favicon.ico (which 404s into the console on every load). -->
+<link rel="icon" href="data:,">
 <meta name="darkreader-lock">
 <link rel="stylesheet" href="dashboard.css">
 </head>
@@ -22,17 +25,58 @@
      hazard, a recognized event-derived problem) this banner pins itself
      above BOTH views (it sits outside <main>, position: sticky) until the
      underlying state resolves — entries self-clear, no acknowledgement.
-     "View" jumps to the Needs attention panel on the overview. -->
+     "View" opens the dedicated Attention page. -->
 <div id="attention-banner" class="attention-banner" hidden>
   <span class="attention-banner-icon" aria-hidden="true">&#9888;</span>
   <span id="attention-banner-text"></span>
   <a href="#" id="attention-banner-link">view</a>
 </div>
 
+<!-- The persistent sidebar: every top-level section is its own page
+     (#page=<name> fragments; the plain # hash is the chart-first overview),
+     with per-hook and manager drill-downs below. dashboard.js routes on
+     hashchange and highlights the active link; the dynamic hook/manager
+     sub-lists are filled from the same data the tables render. -->
+<div class="layout">
+<nav id="sidebar" aria-label="Sections">
+  <a href="#" data-page="overview" class="nav-link">Overview</a>
+  <a href="#page=hooks" data-page="hooks" class="nav-link">Hooks</a>
+  <div id="nav-hooks" class="nav-sub"></div>
+  <a href="#page=managers" data-page="managers" class="nav-link">Managers</a>
+  <div id="nav-managers" class="nav-sub"></div>
+  <a href="#page=runs" data-page="runs" class="nav-link">Runs</a>
+  <a href="#page=events" data-page="events" class="nav-link">Activity</a>
+  <a href="#page=kv" data-page="kv" class="nav-link">State (KV)</a>
+  <a href="#page=concurrency" data-page="concurrency" class="nav-link">Concurrency</a>
+  <a href="#page=images" data-page="images" class="nav-link">Images</a>
+  <a href="#page=attention" data-page="attention" class="nav-link">Attention</a>
+  <a href="#page=reload" data-page="reload" class="nav-link">Hooks repo</a>
+</nav>
+<div class="content">
 <!-- Two views share the page: the global overview, and a per-app drill-down
      (an "app" is one hook, for now) selected by the #hook=<id> fragment.
      dashboard.js toggles between them on hashchange — no server routing. -->
 <main id="overview-view">
+  <section id="timeline-section">
+    <!-- The primary runs view: a realtime swimlane timeline, one lane per
+         hook (stable hue per hook). A bar runs queued→finished with the
+         queue wait as a dim lead-in; hatching = a declared wait or a
+         blocked lock, emphasis = failure, hollow + dashed border =
+         cancelled (the kill tail marked as a terminal cut), diamond pips =
+         instant runs (overlapping pips cluster into ×N markers that split
+         apart on zoom). Wheel/drag pans,
+         ctrl/cmd+wheel zooms, and dragging into the past pages history via
+         /runs?before= until retention runs out. Clicking a bar opens the
+         run modal; clicking a lane label opens that hook's page. Rendered
+         by timeline.js (generated from ts/ — see dashboard.go). The old
+         runs table below stays reachable via the toggle. -->
+    <div class="section-head">
+      <h2>Runs</h2>
+      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
+    </div>
+    <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
   <!-- Hidden while healthy (the banner above is the alert); every row is
        one active problem with what's wrong, which hook (linked), where the
        entry derives from, and how long it has been active. Rows disappear
@@ -40,10 +84,9 @@
        hook's all-clear signal); only the TMPDIR hazard needs a restart. -->
   <section id="attention-section" hidden>
     <h2>Needs attention</h2>
-    <table id="attention-table">
-      <thead><tr><th>Problem</th><th>Hook</th><th>Source</th><th>Active for</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <data-table id="attention-table" empty-text="Nothing needs attention.">
+      <p class="empty">loading…</p>
+    </data-table>
   </section>
 
   <section id="setup-section" hidden>
@@ -67,26 +110,39 @@
        server answers 409 with every reason, and only a confirmed retry
        with override:true moves the tree (recorded loudly). Hidden when no
        hooks repo is configured. -->
-  <section id="reload-section" hidden>
+  <!-- NEVER `hidden`. This panel used to start hidden and only unhide once
+       GET /reload/status answered with a usable mode — so an unreadable
+       status (a throw, a mode the page didn't recognize) left the page
+       showing setup instructions and NOTHING else, hiding every control at
+       exactly the moment the gate is stuck and an operator needs to force a
+       commit live. It renders always; a status it cannot read becomes a loud
+       line INSIDE it, never a disappearing panel. -->
+  <section id="reload-section">
     <h2>Hooks repo commit</h2>
+    <p id="reload-status-error" class="attention-line" hidden></p>
     <div id="reload-live"></div>
     <div class="reload-actions">
       <button id="reload-check" class="toggle-btn"
         title="Fetch the tip and re-evaluate now: switches only if its CI is green (gated mode) or pulls to tip (legacy mode)">Check &amp; reload now</button>
+      <button id="reload-force-tip" class="toggle-btn danger"
+        title="Go to the remote tip NOW without waiting for its CI — for a gate wedged behind a check that will not arrive">Force to tip now</button>
       <span id="reload-check-result" class="window-note"></span>
+    </div>
+    <!-- Top level, NOT inside the collapsed picker: forcing a ref live is the
+         escape hatch for a wedged gate, and an escape hatch behind a
+         <details> nobody thinks to open is not one. -->
+    <div class="reload-ref-row">
+      <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
+      <button id="reload-ref-switch" class="toggle-btn" title="Resolve the ref (fetching from origin if needed) and make it the live hooks commit">Switch to ref</button>
+      <button id="reload-ref-force" class="toggle-btn danger" title="Force this ref live NOW, overriding the CI gate — one confirmation, no gate handshake">Force live</button>
     </div>
     <details id="reload-picker">
       <summary>Recent commits — pick one to make live</summary>
       <p class="window-note">Fetched fresh from origin. "Make live" switches the serving tree to that commit; a commit that is not CI-green (unknown counts as not green) or lacks src/hooks asks for an explicit override first.</p>
-      <table id="reload-commits-table">
-        <thead><tr><th>Commit</th><th>Subject</th><th>Date</th><th>CI</th><th>src/</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <data-table id="reload-commits-table" empty-text="No commits found.">
+        <p class="empty">loading commits…</p>
+      </data-table>
       <p id="reload-commits-note" class="empty" hidden></p>
-      <div class="reload-ref-row">
-        <input id="reload-ref-input" type="text" spellcheck="false" placeholder="sha or branch/tag…">
-        <button id="reload-ref-switch" class="toggle-btn" title="Resolve the ref (fetching from origin if needed) and make it the live hooks commit">Switch to ref</button>
-      </div>
     </details>
   </section>
 
@@ -96,66 +152,87 @@
          switch (on/green = enabled; off/grey = disabled — deliveries
          rejected 503, scheduled runs skipped) that flips the hook via
          POST /hooks/{id}/disable|enable. -->
-    <table id="hooks-table">
-      <thead><tr><th>ID</th><th>Description</th><th>Mode</th><th>Status</th><th>Endpoint</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="hooks-empty" class="empty" hidden>No hooks loaded.</p>
+    <data-table id="hooks-table" searchable placeholder="filter hooks…" storage-key="whr.hooks.filter" empty-text="No hooks loaded.">
+      <p class="empty">loading hooks…</p>
+    </data-table>
+  </section>
+
+  <!-- First-class MANAGERS: persistent, single-instance watchers the
+       runner supervises as one long-lived container each. NOT runs — they
+       never appear in the runs list or the timeline; this panel (and the
+       #manager=<id> drill-down) is their surface: state, live instance,
+       restarts, inbox depth, last event/tick, the kill switch, and a
+       bounce button. -->
+  <section id="managers-section">
+    <h2>Managers</h2>
+    <data-table id="managers-table" empty-text="No managers declared.">
+      <p class="empty">loading managers…</p>
+    </data-table>
+    <div id="manager-detail" hidden>
+      <h3 id="manager-detail-title"></h3>
+      <dl id="manager-detail-meta"></dl>
+      <div class="section-head">
+        <h3>Instance output</h3>
+        <button id="manager-output-copy" class="table-toggle" type="button" title="Copy the full retained output to the clipboard">Copy log</button>
+      </div>
+      <pre id="manager-detail-output" class="manager-output"></pre>
+    </div>
   </section>
 
   <section id="images-section">
     <h2>Images</h2>
-    <table id="images-table">
-      <thead><tr><th>Hook</th><th>Current tag</th><th>State</th><th>On disk</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="images-empty" class="empty" hidden>No hooks loaded.</p>
+    <data-table id="images-table" searchable placeholder="filter images…" storage-key="whr.images.filter" empty-text="No hooks loaded.">
+      <p class="empty">loading images…</p>
+    </data-table>
   </section>
 
   <section id="concurrency-section">
-    <h2>Concurrency groups</h2>
-    <p class="window-note">Click a group to see which runs hold its slots and which are queued.</p>
+    <h2>Concurrency</h2>
+    <!-- The GLOBAL run cap: the server-wide ceiling on simultaneously
+         running hook containers (each holds a Docker bridge-network IP).
+         It is a CEILING over everything, not a replacement for group
+         limits: the groups below keep gating independently under it.
+         Override… PUTs /concurrency-global/limit; Revert DELETEs it
+         (back to the WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS / built-in
+         default). Hidden when the server predates the cap. -->
+    <div id="concurrency-global-cap" hidden>
+      <h3>Global run cap</h3>
+      <p class="window-note">Ceiling on how many hook containers run at once across ALL hooks
+        (each running container holds a Docker bridge-network IP; excess runs queue and start as
+        slots free). Per-group limits below are separate and keep applying under this ceiling —
+        raising the cap never lifts a group's own limit. Click the row for holders and queue.</p>
+      <data-table id="concurrency-global-table">
+        <p class="empty">loading…</p>
+      </data-table>
+    </div>
+    <h3>Groups</h3>
+    <p class="window-note">Declared in the hooks repo's concurrency.json; each gates its own hooks
+      independently, under the global cap. Click a group to see which runs hold its slots and
+      which are queued.</p>
     <!-- Declared = the limit in concurrency.json; Effective = what gates
          runs right now (an operator override wins and survives reloads
          and restarts). Override… PUTs /concurrency/{group}/limit; Revert
          DELETEs it. A 0 limit is rejected server-side — disable the
          group's hooks instead. -->
-    <table id="concurrency-table">
-      <thead><tr><th>Group</th><th>Declared</th><th>Effective</th><th>Active</th><th>Waiting</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="concurrency-empty" class="empty" hidden>No concurrency groups declared.</p>
+    <data-table id="concurrency-table" empty-text="No concurrency groups declared.">
+      <p class="empty">loading groups…</p>
+    </data-table>
   </section>
 
-  <section id="timeline-section">
-    <!-- The primary runs view: a realtime swimlane timeline, one lane per
-         hook (stable hue per hook). A bar runs queued→finished with the
-         queue wait as a dim lead-in; hatching = a declared wait or a
-         blocked lock, emphasis = failure, hollow + dashed border =
-         cancelled (the kill tail marked as a terminal cut), diamond pips =
-         instant runs (overlapping pips cluster into ×N markers that split
-         apart on zoom). Wheel/drag pans,
-         ctrl/cmd+wheel zooms, and dragging into the past pages history via
-         /runs?before= until retention runs out. Clicking a bar opens the
-         run modal; clicking a lane label opens that hook's page. Rendered
-         by timeline.js (generated from ts/ — see dashboard.go). The old
-         runs table below stays reachable via the toggle. -->
-    <div class="section-head">
-      <h2>Runs</h2>
-      <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
-    </div>
-    <timeline-view id="runs-timeline"></timeline-view>
-  </section>
 
   <section id="runs-section" hidden>
     <h2>Recent runs (list)</h2>
-    <!-- The first column is when the run was ACCEPTED (queued) — a run may
-         wait for a concurrency-group slot before it actually starts. -->
-    <table id="runs-table">
-      <thead><tr><th>Queued</th><th>Hook</th><th>Status</th><th>Exit</th><th>Run ID</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="runs-empty" class="empty" hidden>No runs yet.</p>
+    <!-- js-snippets' <data-table>: the columns and rows are set from
+         dashboard.js (renderRuns). The first column is when the run was
+         ACCEPTED (queued) — a run may wait for a concurrency-group slot
+         before it actually starts.
+         The child <p> is LIGHT DOM: it shows until the element upgrades,
+         so a slow (or failed) component fetch reads as "loading", not as a
+         blank panel. -->
+    <data-table id="runs-table" empty-text="No runs yet." storage-key="whr.runs.filter"
+      searchable placeholder="filter by hook, status, run id…">
+      <p class="empty">loading runs…</p>
+    </data-table>
   </section>
 
   <section id="kv-section">
@@ -165,20 +242,27 @@
          namespaces (hook removed/renamed) link there too: the app page
          still renders the browser for leftover state. -->
     <p class="window-note">Click a namespace to browse its stored keys and values.</p>
-    <table id="kv-table">
-      <thead><tr><th>Namespace (hook)</th><th>Keys</th><th>Size</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="kv-empty" class="empty" hidden>No state stored.</p>
+    <data-table id="kv-table" empty-text="No state stored.">
+      <p class="empty">loading namespaces…</p>
+    </data-table>
   </section>
 
+  <!-- The activity feed is js-snippets' <activity-feed> component, imported
+       at runtime by timeline.js (the generated bundle at the bottom of this
+       file): it owns the table, the kind badges and the filter bar, and
+       dashboard.js only feeds it entries.
+       The child <p> is LIGHT DOM: it shows until the element upgrades, so a
+       slow (or failed) component fetch reads as "loading", not as a blank
+       panel. -->
+  <!-- Run lifecycle is deliberately NOT here (the fetch passes
+       exclude=run): it has a better home in the runs table above. What is
+       left is everything that produced no run — rejected deliveries, image
+       builds, unresolved env, reload/git activity. -->
   <section id="events-section">
-    <h2>Activity</h2>
-    <table id="events-table">
-      <thead><tr><th>Time</th><th>Kind</th><th>What happened</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="events-empty" class="empty" hidden>Nothing yet.</p>
+    <h2>Activity <span class="window-note">(everything except runs — those are in the Runs table)</span></h2>
+    <activity-feed id="events-feed" empty-text="Nothing but runs so far." storage-key="whr.events.filter" family-chips>
+      <p class="empty">loading activity feed…</p>
+    </activity-feed>
   </section>
 </main>
 
@@ -218,14 +302,19 @@
 
     <section id="app-runs-section">
       <h2>Recent runs</h2>
-      <!-- Waited = queue time (accepted → container launch, live for pending
-           runs); Duration = processing time only. Kept separate so a run
-           stuck behind a concurrency group never reads as a slow run. -->
-      <table id="app-runs-table">
-        <thead><tr><th>Queued</th><th>Status</th><th>Waited</th><th>Duration</th><th>Exit</th><th>Run ID</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p id="app-runs-empty" class="empty" hidden>No runs yet.</p>
+      <!-- js-snippets' <data-table>. Its status chips are declared with
+           local:false — the filter is applied SERVER-SIDE, before the row
+           cap, so the component renders and toggles them but drops nothing
+           itself (a chip click refetches; see renderAppRunsTable). Skipped
+           runs are hidden BY DEFAULT — during a flood they drown the rows
+           that matter — and the chips carry counts from the hook's whole
+           retention window, not this page.
+           Waited = queue time (accepted → container launch, live for
+           pending runs); Duration = processing time only. Kept separate so
+           a run stuck behind a concurrency group never reads as slow. -->
+      <data-table id="app-runs-table" empty-text="No runs yet." storage-key="whr.appRuns.filter">
+        <p class="empty">loading runs…</p>
+      </data-table>
     </section>
 
     <!-- Only shown for state:true hooks. Lists the hook's KV keys (from
@@ -235,23 +324,26 @@
     <section id="app-kv-section" hidden>
       <h2>State (KV)</h2>
       <p class="window-note">Click a key to view its stored value.</p>
-      <table id="app-kv-table">
-        <thead><tr><th>Key</th><th>Size</th><th>TTL remaining</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p id="app-kv-empty" class="empty" hidden>No state stored yet.</p>
+      <data-table id="app-kv-table" searchable placeholder="filter keys…" empty-text="No state stored yet.">
+        <p class="empty">loading keys…</p>
+      </data-table>
     </section>
 
+    <!-- Same component as the overview feed, its own persisted filter, and
+         the same exclude=run: this hook's runs are in Recent runs above, so
+         the feed carries only what has no run — deliveries rejected before
+         a container existed (hook.denied / hook.disabled_rejected /
+         hook.misconfigured), image builds, env.unresolved, lock activity. -->
     <section id="app-events-section">
-      <h2>Activity</h2>
-      <table id="app-events-table">
-        <thead><tr><th>Time</th><th>Kind</th><th>What happened</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p id="app-events-empty" class="empty" hidden>Nothing yet.</p>
+      <h2>Activity <span class="window-note">(everything except runs — those are in Recent runs above)</span></h2>
+      <activity-feed id="app-events-feed" empty-text="Nothing but runs so far." storage-key="whr.appEvents.filter" family-chips>
+        <p class="empty">loading activity feed…</p>
+      </activity-feed>
     </section>
   </div>
 </main>
+</div><!-- /.content -->
+</div><!-- /.layout -->
 
 <!-- Run detail opens as a modal so output is visible immediately, without
      scrolling past the hooks/images/runs/activity tables to the page bottom. -->
@@ -279,18 +371,46 @@
   </div>
 </dialog>
 
+<!-- KV value viewer: clicking a key inside an expanded STATE (KV) namespace
+     opens the stored value here. Same modal pattern as the run detail. -->
+<dialog id="kv-detail" aria-labelledby="kv-detail-title">
+  <div class="modal-body">
+    <div class="modal-header">
+      <h2 id="kv-detail-title">Key <code id="kv-detail-key"></code></h2>
+      <button id="kv-detail-close" class="modal-close" aria-label="Close" title="Close (Esc)">&times;</button>
+    </div>
+    <dl id="kv-detail-meta"></dl>
+    <div class="output-head">
+      <h3>Value</h3>
+      <div class="output-actions">
+        <button type="button" id="kv-detail-copy" class="copy-btn" title="Copy the raw stored value to the clipboard">Copy value</button>
+      </div>
+    </div>
+    <div id="kv-detail-output"></div>
+  </div>
+</dialog>
+
 <!-- Which build is this host running? Filled from GET /version once at
-     load; the title carries the VCS revision/time when the build has them. -->
+     load, linked to that commit on GitHub; the title carries the VCS
+     revision/time when the build has them. -->
 <footer class="site-footer">webhook-runner <span id="server-version"></span></footer>
 
 <script src="dashboard.js"></script>
-<!-- timeline.js is an ES module: it imports the <timeline-view> component at
-     runtime from js-snippets' GitHub Pages (wow-look-at-my.github.io). It
-     must run AFTER dashboard.js (it reuses its globals: fetchJSON, el,
+<!-- timeline.js is the dashboard's ONLY ES module, generated by ts0 from ts/
+     (see dashboard.go). It imports BOTH js-snippets components at runtime
+     from that repo's buildhost library site: <timeline-view> (the runs
+     chart) and <activity-feed> (both Activity feeds). Every module script
+     this page runs is compiled from ts/ — do not add a hand-written
+     <script type="module"> here; put it in ts/ so it is type-checked and
+     bundled like everything else.
+
+     It must run AFTER dashboard.js (it reuses its globals: fetchJSON, el,
      fmtTime, tsPresent, showRun, …) — module scripts defer, so the classic
-     dashboard.js above has always executed first. If the Pages fetch fails,
-     the chart section shows "chart loading…" and retries on a fixed cadence
-     forever; dashboard.js's tables are unaffected. -->
+     dashboard.js above has always executed first. If a component fetch
+     fails, that component retries on a fixed cadence forever (the chart
+     section shows "chart loading…", the feeds keep their light-DOM loading
+     line) and the two are independent; dashboard.js's tables are
+     unaffected either way. -->
 <script type="module" src="timeline.js"></script>
 </body>
 </html>

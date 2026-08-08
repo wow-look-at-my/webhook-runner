@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 )
 
@@ -123,6 +124,35 @@ func TestApplyServeEnvReloadPollInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be >= 0")
 }
 
+func TestApplyServeEnvMaxConcurrentRuns(t *testing.T) {
+	parse := func(v string) (*serveOptions, error) {
+		t.Setenv("WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS", v)
+		o := &serveOptions{}
+		return o, applyServeEnv(o)
+	}
+
+	// Unset (empty) means the built-in default 64.
+	o, err := parse("")
+	require.NoError(t, err)
+	assert.Equal(t, concurrency.DefaultGlobalLimit, o.maxConcurrentRuns)
+	assert.Equal(t, 64, o.maxConcurrentRuns)
+
+	o, err = parse("128")
+	require.NoError(t, err)
+	assert.Equal(t, 128, o.maxConcurrentRuns)
+
+	// A set-but-invalid cap FAILS startup (the reload-poll rule): a typo
+	// must not silently fall back and mask a deliberately tightened limit.
+	_, err = parse("lots")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS")
+	_, err = parse("0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be >= 1")
+	_, err = parse("-2")
+	require.Error(t, err)
+}
+
 func TestValidateCommand(t *testing.T) {
 	cmd := findCommand(t, "validate")
 
@@ -134,7 +164,7 @@ func TestValidateCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"],"concurrency_group":"g"}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"],"concurrency_group":"g"}`), 0o644))
 
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
@@ -152,7 +182,7 @@ func TestValidateCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(badDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(badDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(badDir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"],"concurrency_group":"nope"}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"],"concurrency_group":"nope"}`), 0o644))
 	out.Reset()
 	errOut.Reset()
 	require.Error(t, cmd.RunE(cmd, []string{bad}))
@@ -166,7 +196,7 @@ func TestValidateCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(srcHook, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(srcHook, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(srcHook, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"]}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"]}`), 0o644))
 	writeTestHook(t, mixed, "leftover") // a top-level hook dir left behind
 	out.Reset()
 	errOut.Reset()
@@ -198,7 +228,7 @@ func TestTestCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook.json"),
-		[]byte(`{"$schema":"s","command":["x"],"tests":[["true"]]}`), 0o644))
+		[]byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","command":["x"],"tests":[["true"]]}`), 0o644))
 	out.Reset()
 	require.NoError(t, cmd.RunE(cmd, []string{root}))
 	assert.Contains(t, out.String(), "1 test command(s) passed across 1 hook(s)")
@@ -227,7 +257,7 @@ func TestNewLogger(t *testing.T) {
 
 func TestBuildReloadFuncWithoutRepo(t *testing.T) {
 	called := 0
-	fn := buildReloadFunc(nil, func() { called++ }, events.NewRecorder(10))
+	fn := buildReloadFunc(nil, func() error { called++; return nil }, events.NewRecorder(10))
 	require.NoError(t, fn())
 	assert.Equal(t, 1, called)
 }

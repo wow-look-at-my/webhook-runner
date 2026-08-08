@@ -9,6 +9,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
+	"strings"
 )
 
 func init() {
@@ -31,14 +32,48 @@ func init() {
 				errs = append(errs, cerr)
 				cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
 			}
-			refs := make(map[string]string, len(loaded))
+			// Managers validate alongside hooks: same Dockerfile/$schema/
+			// skip_if/auth rules plus reconcile_interval, a hook/manager id
+			// collision check (one id namespace), and the same
+			// concurrency-group reference rule.
+			loadedManagers, merrs := hooks.LoadManagers(layout)
+			errs = append(errs, merrs...)
+			for id := range loadedManagers {
+				if _, clash := loaded[id]; clash {
+					errs = append(errs, fmt.Errorf("manager %q: id collides with a hook of the same name (hooks and managers share one id namespace)", id))
+					delete(loadedManagers, id)
+				}
+			}
+
+			refs := make(map[string]string, len(loaded)+len(loadedManagers))
 			for id, h := range loaded {
 				refs[id] = h.ConcurrencyGroup
+			}
+			for id, m := range loadedManagers {
+				refs[id] = m.ConcurrencyGroup
 			}
 			badRef := map[string]bool{}
 			for _, re := range concurrency.CheckRefs(cfg, refs) {
 				errs = append(errs, re)
 				badRef[re.HookID] = true
+			}
+			// spawn_targets must name declared hooks — the manifest is the
+			// spawn allowlist; an undeclared target fails validation.
+			checkable := make(map[string]*hooks.Hook, len(loaded))
+			for id, h := range loaded {
+				if !badRef[id] {
+					checkable[id] = h
+				}
+			}
+			checkableManagers := make(map[string]*hooks.Manager, len(loadedManagers))
+			for id, m := range loadedManagers {
+				if !badRef[id] {
+					checkableManagers[id] = m
+				}
+			}
+			for _, se := range hooks.CheckSpawnTargets(checkable, checkableManagers) {
+				errs = append(errs, se)
+				badRef[se.ManagerID] = true
 			}
 
 			out := cmd.OutOrStdout()
@@ -59,13 +94,35 @@ func init() {
 				}
 				fmt.Fprintf(out, "ok  %s (%s)%s\n", id, tag, grp)
 			}
+			for id, m := range loadedManagers {
+				if badRef[id] {
+					continue // surfaced as an error below
+				}
+				tag, tagErr := runner.ImageTag(m.Hook)
+				if tagErr != nil {
+					tag = "?"
+				}
+				iv := "event-only"
+				if m.ReconcileIntervalRaw != "" {
+					iv = "reconcile " + m.ReconcileIntervalRaw
+				}
+				spawns := ""
+				if len(m.SpawnTargets) > 0 {
+					spawns = " [spawns: " + strings.Join(m.SpawnTargets, ",") + "]"
+				}
+				fmt.Fprintf(out, "ok  %s (manager, %s, %s)%s\n", id, tag, iv, spawns)
+			}
 			if len(errs) > 0 {
 				for _, e := range errs {
 					fmt.Fprintf(cmd.ErrOrStderr(), "ERR %v\n", e)
 				}
 				return errors.New("one or more hooks failed validation")
 			}
-			fmt.Fprintf(out, "%d hook(s) validated\n", len(loaded))
+			if len(loadedManagers) > 0 {
+				fmt.Fprintf(out, "%d hook(s) + %d manager(s) validated\n", len(loaded), len(loadedManagers))
+			} else {
+				fmt.Fprintf(out, "%d hook(s) validated\n", len(loaded))
+			}
 			return nil
 		},
 	})

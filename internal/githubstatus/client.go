@@ -27,33 +27,82 @@ const (
 	StateError   State = "error"
 )
 
-// Client posts commit-status updates. A nil token disables posting (the
-// methods become no-ops, which is convenient when no hook actually needs
-// status updates).
+// TokenFunc yields the GitHub credential for one call. Resolving per call
+// rather than once at construction is what lets the credential come from
+// secret-server: a fetch that failed at startup must not leave the process
+// permanently unable to read commit statuses, and a rotated credential must
+// heal without a redeploy. An error means "could not obtain one right now",
+// which every caller treats exactly like the no-token case -- fail closed on
+// reads, no-op on posts.
+type TokenFunc func(ctx context.Context) (string, error)
+
+// Client posts commit-status updates. A client with no credential still
+// works but every Post is a silent no-op, which is convenient when no hook
+// actually needs status updates.
 type Client struct {
-	token  string
-	http   *http.Client
-	log    *slog.Logger
-	apiURL string // override for tests; defaults to https://api.github.com
+	tokenFn    TokenFunc
+	configured bool // a credential source exists, even if a fetch can fail
+	http       *http.Client
+	log        *slog.Logger
+	apiURL     string // override for tests; defaults to https://api.github.com
 }
 
 // New returns a Client that uses the given personal-access or fine-grained
 // token. If token is empty the client still works but every Post is a
 // silent no-op.
 func New(token string, log *slog.Logger) *Client {
+	c := newClient(log)
+	if token != "" {
+		c.configured = true
+		c.tokenFn = func(context.Context) (string, error) { return token, nil }
+	}
+	return c
+}
+
+// NewFromSource returns a Client whose credential is resolved per call --
+// the secret-server path. The client counts as configured from the start:
+// a source that cannot answer yet is a failing credential, not an absent
+// one, and the difference is what turns "no GitHub token configured" into
+// an error naming the actual cause.
+func NewFromSource(fn TokenFunc, log *slog.Logger) *Client {
+	c := newClient(log)
+	if fn != nil {
+		c.configured = true
+		c.tokenFn = fn
+	}
+	return c
+}
+
+func newClient(log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Client{
-		token:  token,
 		http:   &http.Client{Timeout: 15 * time.Second},
 		log:    log,
 		apiURL: "https://api.github.com",
 	}
 }
 
-// Enabled reports whether the client will actually make HTTP calls.
-func (c *Client) Enabled() bool { return c != nil && c.token != "" }
+// token resolves the credential for one call.
+func (c *Client) token(ctx context.Context) (string, error) {
+	if c == nil || c.tokenFn == nil {
+		return "", errors.New("github_status: no GitHub credential configured (set WEBHOOK_RUNNER_GITHUB_TOKEN, or WEBHOOK_RUNNER_SECRET_SERVER_TOKEN to read PRIVATE_ORG_REPO_READ from secret-server)")
+	}
+	tok, err := c.tokenFn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("github_status: resolving the GitHub credential: %w", err)
+	}
+	if tok == "" {
+		return "", errors.New("github_status: the configured credential source returned an empty token")
+	}
+	return tok, nil
+}
+
+// Enabled reports whether the client has a credential SOURCE. It does not
+// resolve it: a source that is temporarily failing is still configured, and
+// reporting it as disabled would hide the failure behind "not set up".
+func (c *Client) Enabled() bool { return c != nil && c.configured }
 
 // SetAPIURL overrides the API base URL. Tests use it to point at an
 // httptest server.
@@ -101,13 +150,92 @@ func (c *Client) PostFinish(ctx context.Context, hook *hooks.Hook, run *runs.Run
 }
 
 func (c *Client) shouldPost(hook *hooks.Hook) bool {
-	if c == nil || c.token == "" {
+	if c == nil || !c.configured {
 		return false
 	}
 	if hook.GitHubStatus == nil || !hook.GitHubStatus.Enabled {
 		return false
 	}
 	return true
+}
+
+// PostManagerEventStart posts the "pending" status for a MANAGER delivery
+// — the per-delivery github_status mapping: managers have no per-delivery
+// runs, so statuses key on inbox-event lifecycle instead (pending on
+// acceptance; see PostManagerEventResult for the terminal pair). The repo
+// + sha come from the delivery payload exactly like a hook run's.
+func (c *Client) PostManagerEventStart(ctx context.Context, hook *hooks.Hook, payload []byte) {
+	if !c.shouldPost(hook) {
+		return
+	}
+	repo, sha := ParseRepoSHA(payload)
+	if repo == "" || sha == "" {
+		c.log.Debug("github_status: missing repo/sha, skipping", "manager", hook.ID)
+		return
+	}
+	c.postManager(ctx, hook, repo, sha, StatePending, fmt.Sprintf("Manager %s accepted the event", hook.ID))
+}
+
+// PostManagerEventResult posts the terminal status for a MANAGER delivery:
+// success when the manager finished processing the event (its next
+// /inbox/next call), error when the event was ABANDONED — dropped on inbox
+// overflow, or the instance died mid-event.
+func (c *Client) PostManagerEventResult(ctx context.Context, hook *hooks.Hook, payload []byte, completed bool) {
+	if !c.shouldPost(hook) {
+		return
+	}
+	repo, sha := ParseRepoSHA(payload)
+	if repo == "" || sha == "" {
+		return
+	}
+	state := StateSuccess
+	desc := fmt.Sprintf("Manager %s processed the event", hook.ID)
+	if !completed {
+		state = StateError
+		desc = fmt.Sprintf("Manager %s abandoned the event (instance ended or inbox overflow)", hook.ID)
+	}
+	c.postManager(ctx, hook, repo, sha, state, desc)
+}
+
+// postManager is post without a run: managers have no run row, so no
+// target_url is rendered (the template's {run_id} has no referent — the
+// Managers panel is the operator surface instead).
+func (c *Client) postManager(ctx context.Context, hook *hooks.Hook, repo, sha string, state State, desc string) {
+	url := fmt.Sprintf("%s/repos/%s/statuses/%s", c.apiURL, repo, sha)
+	body := map[string]string{
+		"state":       string(state),
+		"context":     hook.GitHubStatus.Context,
+		"description": truncate(desc, 140),
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		c.log.Error("github_status marshal", "err", err)
+		return
+	}
+	tok, err := c.token(ctx)
+	if err != nil {
+		c.log.Error("github_status token", "err", err, "repo", repo, "sha", sha)
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		c.log.Error("github_status request", "err", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.log.Error("github_status post", "err", err, "repo", repo, "sha", sha)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		c.log.Warn("github_status post rejected", "status", resp.StatusCode, "repo", repo, "sha", sha)
+	}
 }
 
 func (c *Client) post(ctx context.Context, hook *hooks.Hook, run *runs.Run, repo, sha string, state State, desc string) {
@@ -125,12 +253,17 @@ func (c *Client) post(ctx context.Context, hook *hooks.Hook, run *runs.Run, repo
 		c.log.Error("github_status marshal", "err", err)
 		return
 	}
+	tok, err := c.token(ctx)
+	if err != nil {
+		c.log.Error("github_status token", "err", err, "repo", repo, "sha", sha)
+		return
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
 	if err != nil {
 		c.log.Error("github_status request", "err", err)
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Content-Type", "application/json")

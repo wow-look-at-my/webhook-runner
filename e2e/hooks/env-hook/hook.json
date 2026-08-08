@@ -1,6 +1,9 @@
 {
-  "$schema": "https://wow-look-at-my.github.io/webhook-runner/hook.schema.json",
-  "command": ["sh", "-c", "echo id=$HOOK_ID custom=$MY_VAR"],
-  "env": {"MY_VAR": "e2e-value"},
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+  // The hook's own config arrives as a FILE (HOOK_SETTINGS_FILE), validated at
+  // load against settings.schema.json next door. Nothing hook-specific is an
+  // env var any more.
+  "command": ["sh", "settings.sh"],
+  "settings": {"my_var": "e2e-value", "retries": 2},
   "timeout": "60s"
 }
