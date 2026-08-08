@@ -7,11 +7,24 @@ import (
 	"time"
 )
 
+// The standard paths docker-updater discovers by itself, served on the admin
+// mux as aliases of /health and /restart-ready. RFC 8615 reserves
+// /.well-known/ for exactly this: a path an automated client may request
+// without prior arrangement.
+const (
+	wellKnownHealth    = "/.well-known/docker-updater/health"
+	wellKnownPreUpdate = "/.well-known/docker-updater/pre-update"
+)
+
 // The docker-updater PRE-CHECK: one GET that answers "is it safe to replace
-// this container right now?" — 200 yes, 503 no. Wire it with the container
-// label `docker-updater.pre-check.url=:9001/restart-ready` (a ":"-prefixed
-// URL resolves against the container's own bridge IP); a non-2xx makes
-// docker-updater skip that cycle and retry on the next one.
+// this container right now?" — 200 yes, 503 no. Reachable two ways: the
+// standard pre-update path above, which needs only
+// `docker-updater.well-known.port=9001` on the container so discovery knows
+// which port to probe, or the older explicit label
+// `docker-updater.pre-check.url=:9001/restart-ready` (a ":"-prefixed URL
+// resolves against the container's own bridge IP). Prefer the first: the label
+// overrides discovery entirely and marks the container "nonstandard". Either
+// way a non-2xx makes docker-updater skip that cycle and retry on the next one.
 //
 // A restart is not merely lossy, it is DESTRUCTIVE to work in flight. Runs
 // alive at shutdown are never recorded, their containers are orphaned on the

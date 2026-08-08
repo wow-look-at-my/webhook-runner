@@ -312,6 +312,10 @@ Read before changing any of these areas:
 - [docs/internals/runs-concurrency-and-overrides.md](docs/internals/runs-concurrency-and-overrides.md) -- the activity-based timeout, `skip_if`, `run_title`, concurrency groups, the global run cap, the operator kill switch, the scheduler, the run store.
 - [docs/internals/streaming-and-attention.md](docs/internals/streaming-and-attention.md) -- the SSE hub's never-block invariant, the five section-signal seams, the needs-attention surface.
 - [docs/internals/delivery-durability.md](docs/internals/delivery-durability.md) -- deploy windows: `/restart-ready`, the delivery spool and its replay, the shutdown ordering, and the port-down gap none of it covers.
+  The admin mux also serves `/.well-known/docker-updater/{health,pre-update}` as ALIASES of `/health` and `/restart-ready` --
+  the paths docker-updater discovers by itself. The image EXPOSEs both ports (metadata only, publishes nothing), and discovery
+  picks a port itself only from an image declaring exactly one -- so deploy with `docker-updater.well-known.port: "9001"`; the
+  older `docker-updater.pre-check.url` still wins where set, and marks the container "nonstandard" for as long as it is.
 - [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
 - [docs/internals/backlogs.md](docs/internals/backlogs.md) -- the batch-backlog primitive: push-as-set-union, take-removes, depths, how it differs from internal/queue, and why a hook must never build a cursor instead.
 - [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run), the push-fed admin surface, and unconditional github-state-mirror routing.
