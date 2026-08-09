@@ -138,6 +138,27 @@ the writable layer's location is a property of the daemon (`data-root`), not
 of `docker run`. `read_only_rootfs` closes the gap from the other side — by
 making the writable layer unusable rather than by moving it.
 
+**The writable layer already IS an overlayfs upper dir.** Under `overlay2`
+every container writes into `<data-root>/overlay2/<id>/diff`, with the image
+layers as lowerdirs. So "overlay the filesystem onto tmpfs" is not something to
+build on top of this — it is the arrangement docker already runs, and the only
+question is where its upperdir lives. That is also why the fields above are a
+partial substitute: they hand-mount individual paths to work around one overlay
+that already covers every path.
+
+Two consequences worth stating plainly, because both look like ways out and
+are not:
+
+- **Doing the overlay inside the container** (remounting `/usr` and friends
+  onto a tmpfs upper from the entrypoint) needs `CAP_SYS_ADMIN`. A privileged
+  hook could; an unprivileged one cannot, and unprivileged overlay needs a user
+  namespace a stock container is refused. It would also reimplement, per hook
+  and per path, what the daemon does once for everything.
+- **Running work inside a nested daemon** whose store is on the pool moves the
+  NESTED containers' layers, not the outer container's. A CI job runs in the
+  outer container unless it explicitly asks for a container step, so its own
+  writes are untouched by that.
+
 To relocate the writable layer for real, there are exactly two options, both
 host-side:
 
@@ -162,6 +183,14 @@ dataset.** Either point `data-root` at a **zvol formatted ext4 or xfs** (so
 native **`zfs` storage driver**, which requires `data-root` to be its own
 dataset and makes each layer a dataset of its own. Do not put `data-root` on
 a plain ZFS dataset and leave `overlay2` configured.
+
+**Putting `data-root` on a tmpfs** puts every overlay upper in RAM, which is
+the strongest form of "writes never touch a disk" — but it takes the IMAGE
+layers with it, since they share the same tree and docker cannot split them.
+For a fleet whose images are multi-GB that trades a disk problem for a memory
+one, and every image is re-pulled after a reboot. Pool-backed is the usual
+answer; RAM-backed only makes sense where the whole image set comfortably fits
+and losing it on restart is fine.
 
 **Or run a second daemon** rooted on the pool and launch only the runner
 containers against it. Scoped to the hooks you choose, at the cost of a
