@@ -857,3 +857,82 @@ data-table { display: block; margin-bottom: 0.5rem; }
   border-left: 2px solid var(--running);
   padding-left: 0.5rem;
 }
+
+/* ---- The per-hook settings editor (ts/settingsform.ts) -------------------
+   Built from the hook's settings.schema.json, so the controls vary per hook
+   and the styling has to be generic. The shared shape lives on the element
+   selectors here; each control adds only its delta. */
+.settings-body { display: flex; flex-direction: column; gap: 0.75rem; }
+.setting-group { display: flex; flex-direction: column; gap: 0.9rem; }
+/* A nested object's fields sit under their parent, ruled off rather than
+   boxed: nesting is usually one level and a box per level reads as noise. */
+.setting-group-nested {
+  margin-left: 0.75rem;
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--border);
+}
+.setting-row { display: flex; flex-direction: column; gap: 0.3rem; }
+.setting-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.setting-label { font-weight: 600; }
+.setting-required { color: var(--running); margin-left: 0.15rem; }
+/* Every field's own prose, straight from the schema's `description`. */
+.setting-desc { margin: 0; color: var(--muted); font-size: 0.8rem; max-width: 70ch; }
+/* The selected enum value's description. Same voice as .setting-desc but
+   indented under its control, because it explains the CHOICE, not the field. */
+.setting-choice-desc {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  max-width: 70ch;
+  border-left: 2px solid var(--border);
+  padding-left: 0.5rem;
+}
+.setting-control { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.setting-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.25rem 0.45rem;
+  font: inherit;
+  min-width: 12rem;
+}
+.setting-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.setting-json { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%; min-height: 4.5rem; }
+.setting-number-box { min-width: 6rem; }
+.setting-slider { flex: 1 1 12rem; min-width: 8rem; accent-color: var(--accent); }
+.setting-bound { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.setting-toggle-wrap { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+.setting-toggle { accent-color: var(--accent); width: 1rem; height: 1rem; }
+.setting-inline-value { color: var(--muted); font-size: 0.8rem; }
+.setting-array { align-items: stretch; flex-direction: column; }
+.setting-array-items { display: flex; flex-direction: column; gap: 0.3rem; }
+.setting-array-row { display: flex; gap: 0.4rem; align-items: center; }
+/* The small text buttons share one look; only their intent colour differs. */
+.setting-revert, .setting-reveal, .setting-array-add, .setting-array-drop {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 5px;
+}
+.setting-array-drop { color: var(--failure); border-color: var(--border); }
+/* An overridden field is marked, because the value on screen no longer
+   comes from the file the rest of the fleet is reviewed in. */
+.setting-badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+}
+/* A pin the manifest no longer declares does nothing at all -- warning
+   colours, not the ordinary override colours, so it does not read as live. */
+.setting-badge-stale { color: var(--running); border-color: var(--running); }
+.setting-status { margin: 0; font-size: 0.8rem; }
+.setting-status-ok { color: var(--success); }
+.setting-status-bad { color: var(--failure); }
+.setting-saving { opacity: 0.6; }
+.setting-orphans { border-top: 1px solid var(--border); padding-top: 0.6rem; }
+.setting-orphans h3 { margin: 0 0 0.4rem; font-size: 0.9rem; color: var(--running); }
+.setting-object-note { margin-bottom: -0.4rem; }
