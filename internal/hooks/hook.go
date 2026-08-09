@@ -142,6 +142,38 @@ type Hook struct {
 	// webhook-runner that supports it before merging a hook that sets it.
 	Dind bool `json:"dind,omitempty"`
 
+	// Scratch names absolute CONTAINER paths whose writes must land on the
+	// operator's scratch filesystem (WEBHOOK_RUNNER_SCRATCH_DIR) instead of
+	// under docker's data-root. Each listed path is bind-mounted from a
+	// per-run directory that is removed when the run ends.
+	//
+	// Declaring a path here is a REQUIREMENT, not a hint: with no scratch
+	// root configured the run fails rather than quietly writing to the disk
+	// the declaration exists to spare. A dind hook that lists
+	// /var/lib/docker gets its inner daemon's store from scratch, and the
+	// anonymous volume is not added — two mounts on one destination is a
+	// docker error.
+	//
+	// see docs/internals/scratch-dirs.md
+	Scratch []string `json:"scratch,omitempty"`
+
+	// Tmpfs names absolute CONTAINER paths backed by RAM (--tmpfs) instead of
+	// disk. The companion to Scratch: scratch takes the writes too big for
+	// memory, tmpfs takes the rest, and between them a hook can account for
+	// every path it writes to.
+	Tmpfs []string `json:"tmpfs,omitempty"`
+
+	// ReadOnlyRootfs runs the container with --read-only, so the ONLY writable
+	// locations are the mounts above. Without it, "the heavy paths are on
+	// scratch" is a claim about the paths somebody remembered to list: any
+	// other write still lands in the container's writable layer under docker's
+	// data-root, silently. With it, an unlisted write fails loudly instead.
+	//
+	// It is opt-in because it can only be proven per image — a program that
+	// writes somewhere unlisted breaks under it. Prove it in the hook's own
+	// `tests`, which run with these same flags.
+	ReadOnlyRootfs bool `json:"read_only_rootfs,omitempty"`
+
 	// Schedule, when set, makes the scheduler fire this hook on a fixed
 	// interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger. A
 	// scheduled run is dispatched through the exact same pipeline as an
@@ -529,6 +561,9 @@ func (h *Hook) validate() error {
 	if err := h.compileRunTitle(); err != nil {
 		return err
 	}
+	if err := h.validateScratch(); err != nil {
+		return err
+	}
 	if err := h.validateAuth(); err != nil {
 		return err
 	}
@@ -536,6 +571,48 @@ func (h *Hook) validate() error {
 		return errors.New("github_status.context is required when github_status.enabled is true")
 	}
 	return nil
+}
+
+// validateScratch rejects a mount entry that could not be applied, or that
+// would mount somewhere destructive. A relative path has no meaning as a mount
+// destination; "/" would replace the whole container rootfs; a destination
+// named twice — within one list or across both — is two mounts on one target,
+// which docker refuses. Catching all of it at LOAD keeps it out of a running
+// fleet entirely.
+func (h *Hook) validateScratch() error {
+	seen := make(map[string]string, len(h.Scratch)+len(h.Tmpfs))
+	for _, list := range []struct {
+		field string
+		paths []string
+	}{{"scratch", h.Scratch}, {"tmpfs", h.Tmpfs}} {
+		for i, p := range list.paths {
+			if !strings.HasPrefix(p, "/") {
+				return fmt.Errorf("%s[%d] %q must be an absolute container path", list.field, i, p)
+			}
+			clean := filepath.Clean(p)
+			if clean != p {
+				return fmt.Errorf("%s[%d] %q must be a clean path (%q)", list.field, i, p, clean)
+			}
+			if clean == "/" {
+				return fmt.Errorf("%s[%d] must not be %q", list.field, i, "/")
+			}
+			if prev, dup := seen[clean]; dup {
+				return fmt.Errorf("%s[%d] %q is already mounted by %s", list.field, i, p, prev)
+			}
+			seen[clean] = list.field
+		}
+	}
+	return nil
+}
+
+// ScratchCovers reports whether the hook declared dst as a scratch path.
+func (h *Hook) ScratchCovers(dst string) bool {
+	for _, p := range h.Scratch {
+		if p == dst {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hook) validateAuth() error {

@@ -304,6 +304,7 @@ most often, plus where to read the rest.
 - **Filter BEFORE the cap, in every listing.** `max`/limit bounds what is RETURNED, never what is EXAMINED (`/runs?exclude=`, `/events?exclude=`+`?hook=`). Page-then-filter blanks a surface on exactly the busy hooks it exists for: a burst of excluded entries fills the page, the filter empties it, and the panel reports "nothing here" while the matches sit just behind them.
 - **An image tag is a content hash, so anything derived from it is cacheable.** `imageCommand`'s `docker inspect` is memoized per (tag, command) — it used to be a full CLI + daemon round trip on every state-hook run, between slot acquisition and container launch. Never cache an inspect FAILURE: that is a daemon condition, not a property of the tag.
 - **A phase mark that is missing means UNKNOWN, never zero.** Container overhead is measured, not estimated (`internal/runs` phase marks) — but only a hook whose container reports from the inside yields an EXACT boot figure; every other hook gets an upper bound that also contains its runtime's cold start. Never let the two meet in one number.
+- **Docker has no per-container knob for the writable layer.** Its location is a daemon property (`data-root`), so `scratch`/`tmpfs` relocate MOUNTS and `read_only_rootfs` closes the rest by making the writable layer unusable — never by moving it. Declaring paths without the read-only rootfs means an unlisted write still lands on the data-root, silently.
 - **GitHub does not re-send a failed delivery.** A draining server therefore PARKS deliveries (`internal/spool`) and answers 202 — never 503 "the sender will retry". Shutdown order is load-bearing: the hook port and state socket stay up across `rn.Wait()`.
 
 Read before changing any of these areas:
@@ -316,6 +317,7 @@ Read before changing any of these areas:
   the paths docker-updater discovers by itself. The image EXPOSEs both ports (metadata only, publishes nothing), and discovery
   picks a port itself only from an image declaring exactly one -- so deploy with `docker-updater.well-known.port: "9001"`; the
   older `docker-updater.pre-check.url` still wins where set, and marks the container "nonstandard" for as long as it is.
+- [docs/internals/scratch-dirs.md](docs/internals/scratch-dirs.md) -- keeping hook writes off docker's data-root: `scratch`/`tmpfs`/`read_only_rootfs`, the per-run subtree and its sweep, and the host-side data-root move (with the ZFS/overlay2 caveat).
 - [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
 - [docs/internals/backlogs.md](docs/internals/backlogs.md) -- the batch-backlog primitive: push-as-set-union, take-removes, depths, how it differs from internal/queue, and why a hook must never build a cursor instead.
 - [docs/internals/managers-and-gateway.md](docs/internals/managers-and-gateway.md) -- managers (an instance is NOT a run), the push-fed admin surface, and unconditional github-state-mirror routing.

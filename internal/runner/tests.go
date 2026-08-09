@@ -99,7 +99,23 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	// smoke test could never run under `webhook-runner test`. --rm above
 	// auto-removes the volume when the test container exits.
 	if hook.Dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+		args = append(args, "--privileged")
+		if !hook.ScratchCovers(dindStorageDir) {
+			args = append(args, "--mount", "type=volume,dst="+dindStorageDir)
+		}
+	}
+	// Storage parity with the live-run path, which is what makes
+	// read_only_rootfs PROVABLE instead of hopeful: a hook that writes
+	// somewhere it did not declare fails its own tests, in CI, before the
+	// fleet ever runs it. `scratch` paths are backed by tmpfs here rather than
+	// the operator's scratch filesystem — a CI runner has no such filesystem,
+	// and what the test needs to establish is that every writable path IS a
+	// mount, not which disk backs it.
+	for _, p := range append(append([]string{}, hook.Scratch...), hook.Tmpfs...) {
+		args = append(args, "--tmpfs", p)
+	}
+	if hook.ReadOnlyRootfs {
+		args = append(args, "--read-only")
 	}
 	args = append(args, image)
 	args = append(args, argv...)

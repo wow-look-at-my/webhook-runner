@@ -252,6 +252,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		KV:        kvStore,
 		KVSocket:  socketPath,
 		KVShim:    shimPath,
+
+		ScratchDir: o.scratchDir,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -266,6 +268,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// bbolt flock above proves no concurrent serve process is live, and
 	// this process has started no runs yet. See runner.SweepOrphanContainers.
 	rn.SweepOrphanContainers()
+	// Same moment, same safety argument, for the per-run scratch subtrees the
+	// same dead process left on the scratch filesystem. Unswept, they are the
+	// one leak that grows without bound: a container orphan holds an IP until
+	// the next boot, a scratch orphan holds a whole job tree forever.
+	rn.SweepOrphanScratch()
 
 	// The manager supervisor: one long-lived instance per declared manager,
 	// exactly-one-fleet-wide behind the kernel-flock lease in the data dir.

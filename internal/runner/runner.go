@@ -52,6 +52,10 @@ const (
 	// HOOK_KV_URL (http://localhost:9002) to the Unix socket, then execs the
 	// hook's real command, so hooks use a plain URL with any HTTP client.
 	mountedShim = "/run/webhook-runner/whr-shim"
+	// dindStorageDir is where a dind hook's nested daemon keeps its store.
+	// It needs a real filesystem, so it is always a mount: this run's scratch
+	// subtree when the hook lists it in `scratch`, else an anonymous volume.
+	dindStorageDir = "/var/lib/docker"
 )
 
 // HookFinishedFunc is invoked once the container exits (or fails to
@@ -105,6 +109,11 @@ type Runner struct {
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
 
+	// scratchDir is the host root for per-run scratch subtrees (see
+	// scratch.go). Empty means no scratch filesystem is configured, and a
+	// hook declaring scratch paths fails rather than running without one.
+	scratchDir string
+
 	wg sync.WaitGroup
 
 	// draining is set once shutdown begins: no NEW runs may start (a run
@@ -121,10 +130,17 @@ type Options struct {
 	TmpDir   string // directory for payload/header temp files; "" = os.TempDir()
 	OnStart  HookStartedFunc
 	OnFinish HookFinishedFunc
-	Docker   string               // docker binary path; "" = "docker"
-	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
-	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
-	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
+	Docker   string // docker binary path; "" = "docker"
+
+	// ScratchDir is the host directory under which each run declaring
+	// hook.json `scratch` paths gets its own subtree, bind-mounted over
+	// those paths so the writes miss docker's data-root. "" = unconfigured,
+	// which FAILS any run whose hook declares scratch paths. See scratch.go.
+	ScratchDir string
+
+	Secrets *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
+	Events  *events.Recorder     // activity feed for the dashboard; nil drops events
+	Groups  *concurrency.Manager // named concurrency groups; nil = no group is declared
 
 	// GlobalCap bounds how many hook executions run containers at once,
 	// across ALL hooks (excess runs queue as pending). nil = no cap. See
@@ -165,6 +181,8 @@ func New(opts Options) *Runner {
 		kvSocket:  opts.KVSocket,
 		kvShim:    opts.KVShim,
 		dockerBin: opts.Docker,
+
+		scratchDir: opts.ScratchDir,
 	}
 }
 
@@ -393,6 +411,23 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	containerName := "webhook-runner-" + run.ID()
 
+	// Per-run scratch subtrees for the paths the hook declared (scratch.go).
+	// Created after the slots are held so a long queue does not park empty
+	// directories on the scratch filesystem, and torn down when execute
+	// returns — which is after the container has exited, so nothing is
+	// removed from under a live run.
+	storeArgs, scratchCleanup, err := r.storageArgs(hook, run.ID())
+	if err != nil {
+		r.events.Record("run.misconfigured", fmt.Sprintf("%s run %s: %v", hook.ID, run.ID(), err),
+			map[string]string{"hook": hook.ID, "run": run.ID()})
+		run.Finish(runs.StatusError, -1, err.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	defer scratchCleanup()
+
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
@@ -454,16 +489,25 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	if hook.Workdir != "" {
 		args = append(args, "--workdir", hook.Workdir)
 	}
+	// Storage mounts precede the dind block: a hook listing /var/lib/docker in
+	// `scratch` has already supplied that mount, and docker refuses a second
+	// mount on the same destination.
+	args = append(args, storeArgs...)
 	// Docker-in-Docker: --privileged (host-root-equivalent) grants the
-	// container the capabilities to run its own nested dockerd, and the
-	// anonymous /var/lib/docker volume gives that inner daemon container-local
-	// storage on a real filesystem — its overlay driver can't stack on the
-	// outer container's overlay rootfs. --rm above auto-removes the anonymous
-	// volume, so inner storage never leaks between runs. The host's daemon is
-	// never exposed (no socket mount). Injected before extra_docker_args and
-	// the image so a hook's raw args and command still trail.
+	// container the capabilities to run its own nested dockerd, and
+	// /var/lib/docker gives that inner daemon container-local storage on a
+	// real filesystem — its overlay driver can't stack on the outer
+	// container's overlay rootfs. That storage comes from this run's scratch
+	// subtree when the hook declared it (removed when the run ends), else from
+	// an anonymous volume --rm auto-removes; either way inner storage never
+	// leaks between runs. The host's daemon is never exposed (no socket
+	// mount). Injected before extra_docker_args and the image so a hook's raw
+	// args and command still trail.
 	if hook.Dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+		args = append(args, "--privileged")
+		if !hook.ScratchCovers(dindStorageDir) {
+			args = append(args, "--mount", "type=volume,dst="+dindStorageDir)
+		}
 	}
 	args = append(args, hook.ExtraDockerArgs...)
 	args = append(args, image)

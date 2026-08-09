@@ -98,6 +98,30 @@
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
       "description": "Go duration (e.g. \"5m\", \"1h\") to fire this hook on a fixed interval, in addition to any HTTP trigger. A scheduled run goes through the same pipeline as an HTTP-triggered one (tracked, gated by concurrency_group, KV-enabled, shown on the dashboard) with a synthetic payload marking it schedule-triggered. On startup, and whenever the schedule is newly added or its interval changes, the hook fires immediately, then every interval; the scheduler skips a tick while a previous run of the same hook is still in flight (skip-if-already-running). Omit for HTTP-triggered only."
     },
+    "scratch": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^/.+"
+      },
+      "description": "Absolute CONTAINER paths whose writes must land on the operator's scratch filesystem (WEBHOOK_RUNNER_SCRATCH_DIR) instead of under docker's data-root. Each path is bind-mounted from a directory private to this run, created before the container starts and removed when it ends; a serve boot also sweeps subtrees left by a process that died mid-run. Declare the paths that carry real volume -- a CI job's checkout tree, a nested daemon's image store at /var/lib/docker -- and pair them with tmpfs for the rest. This is a REQUIREMENT, not a hint: a run whose hook declares scratch paths on a server with no scratch directory configured FAILS, rather than quietly writing to the disk the declaration exists to spare. A dind hook listing /var/lib/docker gets its inner daemon's store from scratch and no anonymous volume is added (two mounts on one destination is a docker error). Paths must be absolute and clean, may not be \"/\", and may not repeat within scratch or across tmpfs.",
+      "default": []
+    },
+    "tmpfs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^/.+"
+      },
+      "description": "Absolute CONTAINER paths backed by RAM (--tmpfs) instead of disk. The companion to scratch: scratch takes the writes too big for memory, tmpfs takes the rest, and between them a hook can account for every path it writes to -- which is what read_only_rootfs then enforces. Contents are gone when the container exits. Same path rules as scratch, and a path may not appear in both.",
+      "default": []
+    },
+    "read_only_rootfs": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run the container with --read-only, so the ONLY writable locations are its scratch and tmpfs mounts. Without this, \"the heavy paths are on scratch\" is a claim about the paths somebody remembered to list: any other write still lands in the container's writable layer under docker's data-root, silently, which is exactly the disk the declarations exist to spare. With it, an unlisted write fails loudly instead. Opt-in because it can only be proven per image -- a program that writes somewhere unlisted breaks under it -- so prove it in the hook's own tests, which `webhook-runner test` runs with these same flags (scratch paths backed by tmpfs there, since a CI runner has no scratch filesystem). Default: false.",
+      "$comment": "Enforcement, not decoration: without it the other two fields cannot be trusted, because an undeclared path fails silently onto the data-root."
+    },
     "state": {
       "type": "boolean",
       "default": false,

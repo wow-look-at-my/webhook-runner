@@ -35,6 +35,14 @@ type serveOptions struct {
 	hookBaseURL     string
 	stateSocket     string
 	stateSecret     string
+
+	// scratchDir is the host root for per-run scratch subtrees: the
+	// filesystem that should absorb a hook's heavy writes instead of
+	// docker's data-root. Empty = unconfigured, which FAILS any run whose
+	// hook declares scratch paths (never a silent fallback to the disk the
+	// declaration exists to spare). See runner/scratch.go.
+	scratchDir string
+
 	runRetention    time.Duration
 	runRetentionMax int
 
@@ -77,6 +85,9 @@ func applyServeEnv(o *serveOptions) error {
 	}
 	if o.dataDir == "" {
 		o.dataDir = os.Getenv("WEBHOOK_RUNNER_DATA_DIR")
+	}
+	if o.scratchDir == "" {
+		o.scratchDir = os.Getenv("WEBHOOK_RUNNER_SCRATCH_DIR")
 	}
 	if o.stateSocket == "" {
 		o.stateSocket = os.Getenv("WEBHOOK_RUNNER_STATE_SOCKET")
