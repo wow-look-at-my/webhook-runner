@@ -15,16 +15,13 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -121,69 +118,6 @@ type Runner struct {
 	// docker-kill teardown). In-flight runs are unaffected — Wait drains
 	// them. See BeginShutdown.
 	draining atomic.Bool
-}
-
-// Options configure a Runner.
-type Options struct {
-	Tracker  *runs.Tracker
-	Logger   *slog.Logger
-	TmpDir   string // directory for payload/header temp files; "" = os.TempDir()
-	OnStart  HookStartedFunc
-	OnFinish HookFinishedFunc
-	Docker   string // docker binary path; "" = "docker"
-
-	// ScratchDir is the host directory under which each run declaring
-	// hook.json `scratch` paths gets its own subtree, bind-mounted over
-	// those paths so the writes miss docker's data-root. "" = unconfigured,
-	// which FAILS any run whose hook declares scratch paths. See scratch.go.
-	ScratchDir string
-
-	Secrets *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
-	Events  *events.Recorder     // activity feed for the dashboard; nil drops events
-	Groups  *concurrency.Manager // named concurrency groups; nil = no group is declared
-
-	// GlobalCap bounds how many hook executions run containers at once,
-	// across ALL hooks (excess runs queue as pending). nil = no cap. See
-	// concurrency.Global; serve always wires one (default 64).
-	GlobalCap *concurrency.Global
-
-	// KV mints per-hook state tokens; KVSocket is the host path of the KV
-	// API's Unix socket and KVShim is the host path of webhook-runner's own
-	// binary (the in-container proxy entrypoint), both bind-mounted into
-	// state-hook containers. KV nil or either path empty disables KV injection.
-	KV       KVInjector
-	KVSocket string
-	KVShim   string
-}
-
-// New constructs a Runner.
-func New(opts Options) *Runner {
-	if opts.Logger == nil {
-		opts.Logger = slog.Default()
-	}
-	if opts.Docker == "" {
-		opts.Docker = "docker"
-	}
-	if opts.TmpDir == "" {
-		opts.TmpDir = os.TempDir()
-	}
-	return &Runner{
-		tracker:   opts.Tracker,
-		log:       opts.Logger,
-		tmpDir:    opts.TmpDir,
-		onStart:   opts.OnStart,
-		onFinish:  opts.OnFinish,
-		secrets:   opts.Secrets,
-		events:    opts.Events,
-		groups:    opts.Groups,
-		globalCap: opts.GlobalCap,
-		kv:        opts.KV,
-		kvSocket:  opts.KVSocket,
-		kvShim:    opts.KVShim,
-		dockerBin: opts.Docker,
-
-		scratchDir: opts.ScratchDir,
-	}
 }
 
 // Wait blocks until all in-flight runs have finished. Useful for tests
@@ -742,31 +676,5 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// footgun for a worse one.
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
-	}
-}
-
-func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run *runs.Run, stream string) {
-	defer wg.Done()
-	scanner := bufio.NewScanner(rc)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		run.AppendOutput(line)
-		r.log.Info("hook output",
-			"hook", hookID, "run", run.ID(), "stream", stream, "line", line)
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		r.log.Warn("output scanner error",
-			"hook", hookID, "run", run.ID(), "stream", stream, "err", err)
-	}
-}
-
-func (r *Runner) killContainer(name string) {
-	cmd := exec.Command(r.dockerBin, "kill", name)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		// docker kill exits non-zero if the container is already
-		// gone; that's not interesting, so log at debug level.
-		r.log.Debug("docker kill",
-			"name", name, "err", err, "out", strings.TrimSpace(string(out)))
 	}
 }
