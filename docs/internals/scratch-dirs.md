@@ -38,7 +38,25 @@ trustworthy.
 - **`read_only_rootfs`** — `--read-only`, so the *only* writable locations
   are the mounts above.
 
-## Why read_only_rootfs is the load-bearing one
+## What no mount can reach
+
+Before reaching for either field, know the ceiling: a mount can only redirect a
+path you are willing to REPLACE. System paths fail that test. `/usr/local`
+holds the image's installed toolchain, `/usr` and `/var/lib/apt` are where
+`apt-get install` lands, and mounting over any of them takes away the very
+thing the container was built to provide. So a job that installs a package
+writes to the container's layer no matter what these fields say.
+
+`read_only_rootfs` does not rescue that case, and it is important not to read
+it as if it did: it FORBIDS the write, it does not relocate it. On a
+general-purpose CI image that means the package install fails rather than
+landing somewhere cheaper. It is the right tool for an image whose writes you
+have fully enumerated, and the wrong tool for one that runs arbitrary jobs.
+
+Relocating the writable layer itself is the only thing that covers system
+writes, and that is the host-side `data-root` move at the bottom of this file.
+
+## Why read_only_rootfs is the load-bearing one when it fits
 
 Without it, `scratch` and `tmpfs` describe the paths somebody remembered to
 list. Any write to a path nobody listed still lands in the container's
