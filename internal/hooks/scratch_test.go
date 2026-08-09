@@ -78,3 +78,31 @@ func TestScratchCovers(t *testing.T) {
 	assert.False(t, h.ScratchCovers("/var/lib/dockerx"))
 	assert.False(t, (&Hook{}).ScratchCovers("/var/lib/docker"))
 }
+
+func TestTmpfsOptionsAreParsedAndValidated(t *testing.T) {
+	h, err := parseInDir(t, `{`+scratchSchemaLine+`,"tmpfs":["/tmp:size=4g","/var/log"]}`)
+	require.Nil(t, err)
+	assert.Equal(t, []string{"/tmp:size=4g", "/var/log"}, h.Tmpfs)
+
+	// The destination is the part before the options, so a path carrying
+	// options still collides with the same path listed under scratch.
+	_, err = parseInDir(t, `{`+scratchSchemaLine+`,"scratch":["/tmp"],"tmpfs":["/tmp:size=4g"]}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already mounted by scratch")
+
+	_, err = parseInDir(t, `{`+scratchSchemaLine+`,"tmpfs":["/tmp:"]}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty option list")
+
+	_, err = parseInDir(t, `{`+scratchSchemaLine+`,"tmpfs":["tmp:size=4g"]}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be an absolute container path")
+}
+
+func TestTmpfsPath(t *testing.T) {
+	assert.Equal(t, "/tmp", TmpfsPath("/tmp:size=4g"))
+	assert.Equal(t, "/tmp", TmpfsPath("/tmp"))
+	// A trailing colon has no options after it, so there is nothing to strip;
+	// validation rejects it rather than silently mounting "/tmp:".
+	assert.Equal(t, "/tmp:", TmpfsPath("/tmp:"))
+}

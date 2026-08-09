@@ -158,9 +158,14 @@ type Hook struct {
 	Scratch []string `json:"scratch,omitempty"`
 
 	// Tmpfs names absolute CONTAINER paths backed by RAM (--tmpfs) instead of
-	// disk. The companion to Scratch: scratch takes the writes too big for
-	// memory, tmpfs takes the rest, and between them a hook can account for
-	// every path it writes to.
+	// disk. The companion to Scratch: scratch takes what must survive on a
+	// disk or is too big for memory, tmpfs takes the rest, and between them a
+	// hook can account for every path it writes to.
+	//
+	// An entry may carry docker's option suffix ("/tmp:size=4g"). SIZE IT: an
+	// unbounded tmpfs may grow to half of host RAM, and several on one
+	// container — times the concurrency limit — can take the host down. See
+	// TmpfsPath.
 	Tmpfs []string `json:"tmpfs,omitempty"`
 
 	// ReadOnlyRootfs runs the container with --read-only, so the ONLY writable
@@ -585,24 +590,46 @@ func (h *Hook) validateScratch() error {
 		field string
 		paths []string
 	}{{"scratch", h.Scratch}, {"tmpfs", h.Tmpfs}} {
-		for i, p := range list.paths {
+		for i, entry := range list.paths {
+			p := entry
+			if list.field == "tmpfs" {
+				p = TmpfsPath(entry)
+				if p == entry && strings.Contains(entry, ":") {
+					return fmt.Errorf("tmpfs[%d] %q has an empty option list after %q", i, entry, ":")
+				}
+			}
 			if !strings.HasPrefix(p, "/") {
-				return fmt.Errorf("%s[%d] %q must be an absolute container path", list.field, i, p)
+				return fmt.Errorf("%s[%d] %q must be an absolute container path", list.field, i, entry)
 			}
 			clean := filepath.Clean(p)
 			if clean != p {
-				return fmt.Errorf("%s[%d] %q must be a clean path (%q)", list.field, i, p, clean)
+				return fmt.Errorf("%s[%d] %q must be a clean path (%q)", list.field, i, entry, clean)
 			}
 			if clean == "/" {
 				return fmt.Errorf("%s[%d] must not be %q", list.field, i, "/")
 			}
 			if prev, dup := seen[clean]; dup {
-				return fmt.Errorf("%s[%d] %q is already mounted by %s", list.field, i, p, prev)
+				return fmt.Errorf("%s[%d] %q is already mounted by %s", list.field, i, entry, prev)
 			}
 			seen[clean] = list.field
 		}
 	}
 	return nil
+}
+
+// TmpfsPath returns the mount destination of a tmpfs entry, which may carry
+// docker's option suffix ("/tmp:size=4g"). Options are passed through
+// untouched — docker owns that grammar, and validating a copy of it here would
+// only reject options docker gains later.
+//
+// Sizing is not cosmetic: an unbounded tmpfs may grow to half of host RAM, and
+// several of them on one container can exhaust it. A path expected to hold
+// gigabytes should name a size.
+func TmpfsPath(entry string) string {
+	if i := strings.IndexByte(entry, ':'); i >= 0 && i < len(entry)-1 {
+		return entry[:i]
+	}
+	return entry
 }
 
 // ScratchCovers reports whether the hook declared dst as a scratch path.

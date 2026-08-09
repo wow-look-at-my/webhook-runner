@@ -387,7 +387,7 @@
         "type": "string",
         "pattern": "^/.+"
       },
-      "description": "Absolute CONTAINER paths backed by RAM (--tmpfs) instead of disk. The companion to scratch: scratch takes the writes too big for memory, tmpfs takes the rest, and between them a hook can account for every path it writes to -- which is what read_only_rootfs then enforces. Contents are gone when the container exits. Same path rules as scratch, and a path may not appear in both.",
+      "description": "Absolute CONTAINER paths backed by RAM (--tmpfs) instead of disk: writes never touch a disk at all, so they cost no device wear and vanish with the container. The companion to scratch: scratch takes what must survive on a disk or is too big for memory, tmpfs takes the rest, and between them a hook can account for every path it writes to -- which is what read_only_rootfs then enforces. An entry may carry docker's option suffix (\"/tmp:size=4g\"), passed through untouched. SIZE ANYTHING THAT COULD GROW: an unbounded tmpfs may reach half of host RAM, and several of them on one container, multiplied by the concurrency limit, can exhaust the host. Same path rules as scratch, and a path may not appear in both.",
       "default": []
     },
     "user": {
