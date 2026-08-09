@@ -140,7 +140,9 @@ function control(field: Field, commit: (v: unknown) => void, status: HTMLElement
 		case 'array':
 			return arrayControl(field, commit);
 		case 'object':
-			return objectControl(field);
+			// No control of its own: the nested group below it, ruled off,
+			// already says everything a "3 setting(s) below" line would.
+			return el('span');
 		case 'string':
 			return stringControl(field, commit);
 		default:
@@ -217,6 +219,10 @@ function numberControl(field: Field, commit: (v: unknown) => void): HTMLElement 
 			box.value = slider!.value;
 		});
 		slider.addEventListener('change', () => commit(Number(slider!.value)));
+		// Box first, then the track: the exact value is what an operator reads,
+		// and putting it after a stretching slider parks it against the far
+		// edge of the page, yards from the label it belongs to.
+		wrap.appendChild(box);
 		wrap.appendChild(el('span', { class: 'setting-bound' }, String(field.min)));
 		wrap.appendChild(slider);
 		wrap.appendChild(el('span', { class: 'setting-bound' }, String(field.max)));
@@ -230,7 +236,7 @@ function numberControl(field: Field, commit: (v: unknown) => void): HTMLElement 
 	box.addEventListener('keydown', (e) => {
 		if ((e as KeyboardEvent).key === 'Enter') box.blur();
 	});
-	wrap.appendChild(box);
+	if (!slider) wrap.appendChild(box);
 	return wrap;
 }
 
@@ -302,12 +308,6 @@ function arrayControl(field: Field, commit: (v: unknown) => void): HTMLElement {
 	return wrap;
 }
 
-/** Nested objects render as a nested group; their leaves are real fields. */
-function objectControl(field: Field): HTMLElement {
-	const wrap = el('div', { class: 'setting-control setting-object-note' });
-	wrap.appendChild(el('span', { class: 'window-note' }, `${field.children?.length ?? 0} setting(s) below`));
-	return wrap;
-}
 
 /**
  * Anything the form does not model — an array of objects, a composed schema,

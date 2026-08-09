@@ -871,8 +871,10 @@ data-table { display: block; margin-bottom: 0.5rem; }
   padding-left: 0.85rem;
   border-left: 2px solid var(--border);
 }
-.setting-row { display: flex; flex-direction: column; gap: 0.3rem; }
-.setting-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+/* Two stacks and two rows, hoisted: a label row and a control row wrap the
+   same way, and a field and a list of array entries stack the same way. */
+.setting-row, .setting-array-items { display: flex; flex-direction: column; gap: 0.3rem; }
+.setting-head, .setting-control { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .setting-label { font-weight: 600; }
 .setting-required { color: var(--running); margin-left: 0.15rem; }
 /* Every field's own prose, straight from the schema's `description`. */
@@ -887,7 +889,6 @@ data-table { display: block; margin-bottom: 0.5rem; }
   border-left: 2px solid var(--border);
   padding-left: 0.5rem;
 }
-.setting-control { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .setting-input {
   background: var(--bg);
   color: var(--fg);
@@ -900,21 +901,36 @@ data-table { display: block; margin-bottom: 0.5rem; }
 .setting-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .setting-json { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%; min-height: 4.5rem; }
 .setting-number-box { min-width: 6rem; }
-.setting-slider { flex: 1 1 12rem; min-width: 8rem; accent-color: var(--accent); }
+/* Capped, not full-width: an unbounded grow pushed the max-bound label off
+   the right edge of a wide screen, so the range lost the number that says
+   where it ends. */
+.setting-slider { flex: 0 1 20rem; min-width: 8rem; max-width: 20rem; accent-color: var(--accent); }
 .setting-bound { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
 .setting-toggle-wrap { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
 .setting-toggle { accent-color: var(--accent); width: 1rem; height: 1rem; }
 .setting-inline-value { color: var(--muted); font-size: 0.8rem; }
 .setting-array { align-items: stretch; flex-direction: column; }
-.setting-array-items { display: flex; flex-direction: column; gap: 0.3rem; }
 .setting-array-row { display: flex; gap: 0.4rem; align-items: center; }
-/* The small text buttons share one look; only their intent colour differs. */
+/* The small text buttons share one look; only their intent colour differs.
+   Ghost, not the page's primary blue: these sit BESIDE a value the operator
+   is reading, and a solid accent button next to every field turns the form
+   into a wall of buttons. align-self keeps them their own size — inside a
+   stretching flex column they would otherwise run the full width. */
 .setting-revert, .setting-reveal, .setting-array-add, .setting-array-drop {
   padding: 0.1rem 0.5rem;
   font-size: 0.75rem;
   border-radius: 5px;
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+  width: auto;
 }
-.setting-array-drop { color: var(--failure); border-color: var(--border); }
+.setting-revert:hover, .setting-reveal:hover, .setting-array-add:hover, .setting-array-drop:hover {
+  border-color: currentColor;
+  filter: none;
+}
+.setting-array-drop { color: var(--failure); line-height: 1; }
 /* An overridden field is marked, because the value on screen no longer
    comes from the file the rest of the fleet is reviewed in. */
 .setting-badge {

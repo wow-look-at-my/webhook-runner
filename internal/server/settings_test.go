@@ -97,6 +97,12 @@ func putSetting(s *Server, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func deleteSetting(s *Server, query string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/hooks/h/settings"+query, nil))
+	return rec
+}
+
 func TestSettingsGetServesSchemaAndEffectiveValues(t *testing.T) {
 	s, _, _ := settingsServer(t)
 	view := getSettings(t, s)
@@ -125,6 +131,27 @@ func TestSettingsPutPinsAFieldAndMakesItLive(t *testing.T) {
 	assert.Equal(t, "/ai/reasoning", view.Overrides[0].Pointer)
 	assert.JSONEq(t, `"auto"`, string(view.Overrides[0].Manifest), "revert would restore the manifest value")
 	assert.False(t, view.Overrides[0].Stale)
+}
+
+// The editor re-renders from whatever a write returns, so a write MUST
+// answer the same shape as a read. When it did not carry the schema, the
+// whole form vanished on the operator's first change — it read the missing
+// schema as "this hook takes no configuration". Caught in a browser, not
+// here, which is exactly why it is pinned here now.
+func TestSettingsWriteAnswersTheSameShapeAsARead(t *testing.T) {
+	s, _, _ := settingsServer(t)
+	for _, rec := range []*httptest.ResponseRecorder{
+		putSetting(s, `{"pointer":"/ai/reasoning","value":"off"}`),
+		deleteSetting(s, "?pointer=/ai/reasoning"),
+	} {
+		require.Equal(t, 200, rec.Code, rec.Body.String())
+		var view SettingsView
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &view))
+		assert.Equal(t, "h", view.Hook)
+		require.NotNil(t, view.Schema, "a write must carry the schema — the editor rebuilds the form from it")
+		assert.Contains(t, string(view.Schema), `"reasoning"`)
+		assert.NotEmpty(t, view.Effective)
+	}
 }
 
 // A value the loader would refuse must be refused HERE, while the operator

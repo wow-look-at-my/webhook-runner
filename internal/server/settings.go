@@ -90,7 +90,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such hook")
 		return
 	}
-	schema, err := h.SettingsSchemaJSON()
+	view, err := s.settingsView(h, id)
 	if err != nil {
 		// An unreadable schema is a real fault, not an empty form: the
 		// editor must never present "no configuration" for an entity whose
@@ -98,14 +98,29 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "read settings schema: "+err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// settingsView builds the ONE shape every settings endpoint answers with.
+//
+// Shared deliberately: a write used to answer a trimmed view without the
+// schema, and since the editor re-renders from whatever a write returns, the
+// entire form vanished the moment an operator changed their first value — it
+// read the missing schema as "this hook takes no configuration". A partial
+// view is not a smaller version of the full one, it is a different claim.
+func (s *Server) settingsView(h *hooks.Hook, id string) (SettingsView, error) {
+	schema, err := h.SettingsSchemaJSON()
+	if err != nil {
+		return SettingsView{}, err
+	}
 	view := SettingsView{
 		Hook:      id,
 		Schema:    schema,
 		Effective: json.RawMessage(h.SettingsJSON()),
 	}
-	for _, ptr := range sortedOverridePointers(s.overrides.SettingsOverrides(id)) {
-		stored := s.overrides.SettingsOverrides(id)[ptr]
-		field := SettingsField{Pointer: ptr, Value: stored}
+	stored := s.overrides.SettingsOverrides(id)
+	for _, ptr := range sortedOverridePointers(stored) {
+		field := SettingsField{Pointer: ptr, Value: stored[ptr]}
 		if manifest, ok := h.ManifestPointerValue(ptr); ok {
 			field.Manifest = manifest
 		} else {
@@ -113,14 +128,13 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		}
 		view.Overrides = append(view.Overrides, field)
 	}
-	// The effective document is the merged one, so a pin whose value differs
-	// from what the document holds means the merge refused this entity's
-	// overrides at the last load. Re-deriving it here (rather than caching a
-	// flag) keeps the answer true after any reload.
+	// A pin the served document does not carry means the merge refused this
+	// entity's overrides at the last load. Re-deriving it (rather than
+	// caching a flag) keeps the answer true after any reload.
 	if reason := s.settingsRejection(h, view.Overrides); reason != "" {
 		view.Rejected = reason
 	}
-	writeJSON(w, http.StatusOK, view)
+	return view, nil
 }
 
 // settingsRejection reports why the served document does not carry the
@@ -259,15 +273,10 @@ func (s *Server) applySettingsChange(w http.ResponseWriter, id string, changed b
 			"note": "the override was stored, but the entity is no longer loaded"})
 		return
 	}
-	view := SettingsView{Hook: id, Effective: json.RawMessage(h.SettingsJSON())}
-	for _, ptr := range sortedOverridePointers(s.overrides.SettingsOverrides(id)) {
-		field := SettingsField{Pointer: ptr, Value: s.overrides.SettingsOverrides(id)[ptr]}
-		if manifest, ok := h.ManifestPointerValue(ptr); ok {
-			field.Manifest = manifest
-		} else {
-			field.Stale = true
-		}
-		view.Overrides = append(view.Overrides, field)
+	view, err := s.settingsView(h, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read settings schema: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, view)
 }

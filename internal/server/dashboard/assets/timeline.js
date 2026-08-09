@@ -265,7 +265,7 @@ function control(field, commit, status) {
     case "array":
       return arrayControl(field, commit);
     case "object":
-      return objectControl(field);
+      return el("span");
     case "string":
       return stringControl(field, commit);
     default:
@@ -330,6 +330,7 @@ function numberControl(field, commit) {
       box.value = slider.value;
     });
     slider.addEventListener("change", () => commit(Number(slider.value)));
+    wrap.appendChild(box);
     wrap.appendChild(el("span", { class: "setting-bound" }, String(field.min)));
     wrap.appendChild(slider);
     wrap.appendChild(el("span", { class: "setting-bound" }, String(field.max)));
@@ -341,7 +342,7 @@ function numberControl(field, commit) {
   box.addEventListener("keydown", (e) => {
     if (e.key === "Enter") box.blur();
   });
-  wrap.appendChild(box);
+  if (!slider) wrap.appendChild(box);
   return wrap;
 }
 function stringControl(field, commit) {
@@ -406,11 +407,6 @@ function arrayControl(field, commit) {
   });
   wrap.appendChild(list);
   wrap.appendChild(add);
-  return wrap;
-}
-function objectControl(field) {
-  const wrap = el("div", { class: "setting-control setting-object-note" });
-  wrap.appendChild(el("span", { class: "window-note" }, `${field.children?.length ?? 0} setting(s) below`));
   return wrap;
 }
 function rawControl(field, commit, status) {
