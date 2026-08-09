@@ -175,20 +175,20 @@ func TestOverrideBatchIsAtomic(t *testing.T) {
 	assert.JSONEq(t, overrideSettings, string(h.SettingsJSON()), "the valid field must not have landed either")
 }
 
-func TestSettingsPointerValueReadsAndReportsMisses(t *testing.T) {
+func TestManifestPointerValueReadsAndReportsMisses(t *testing.T) {
 	h := overrideHook(t)
-	v, ok := h.SettingsPointerValue("/ai/model")
+	v, ok := h.ManifestPointerValue("/ai/model")
 	require.True(t, ok)
 	assert.JSONEq(t, `"m"`, string(v))
 
-	v, ok = h.SettingsPointerValue("/features/0")
+	v, ok = h.ManifestPointerValue("/features/0")
 	require.True(t, ok)
 	assert.JSONEq(t, `"a"`, string(v))
 
-	_, ok = h.SettingsPointerValue("/ai/gone")
+	_, ok = h.ManifestPointerValue("/ai/gone")
 	assert.False(t, ok, "a pointer with no manifest counterpart reports a miss, never a null")
 
-	_, ok = h.SettingsPointerValue("bad")
+	_, ok = h.ManifestPointerValue("bad")
 	assert.False(t, ok)
 }
 

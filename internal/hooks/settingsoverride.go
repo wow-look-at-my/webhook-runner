@@ -75,7 +75,23 @@ func (h *Hook) ApplySettingsOverrides(ptrs map[string]json.RawMessage) error {
 		h.Settings = prev
 		return err
 	}
+	// Remember what the manifest said, once: a second apply on the same
+	// Hook (the API's probe, a re-merge) must not record already-merged
+	// values as the manifest, or "revert" would restore an override.
+	if h.manifestSettings == nil {
+		h.manifestSettings = prev
+	}
 	return nil
+}
+
+// ManifestSettingsJSON is the settings document as hook.json declared it,
+// before any operator override. Identical to SettingsJSON for an entity
+// with no accepted overrides.
+func (h *Hook) ManifestSettingsJSON() []byte {
+	if len(h.manifestSettings) == 0 {
+		return h.SettingsJSON()
+	}
+	return h.manifestSettings
 }
 
 // validateSettingsAgainstSchema re-runs ONLY the schema half of the settings
@@ -128,13 +144,14 @@ func sortedPointers(ptrs map[string]json.RawMessage) []string {
 	return out
 }
 
-// SettingsPointerValue reads the value at an RFC 6901 pointer in the
-// entity's settings document. ok=false when the pointer does not resolve —
-// which is how the API reports "this override has no manifest counterpart
-// any more" instead of inventing a null.
-func (h *Hook) SettingsPointerValue(pointer string) (json.RawMessage, bool) {
+// ManifestPointerValue reads the value at an RFC 6901 pointer in the
+// entity's MANIFEST settings — what reverting this pin would restore.
+// ok=false when the pointer does not resolve, which is how the API reports
+// "this override has no manifest counterpart any more" instead of inventing
+// a null. Reading the merged document here would show the override itself.
+func (h *Hook) ManifestPointerValue(pointer string) (json.RawMessage, bool) {
 	var doc any
-	if err := json.Unmarshal(h.SettingsJSON(), &doc); err != nil {
+	if err := json.Unmarshal(h.ManifestSettingsJSON(), &doc); err != nil {
 		return nil, false
 	}
 	val, err := getAtPointer(doc, pointer)
