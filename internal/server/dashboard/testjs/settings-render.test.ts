@@ -309,9 +309,25 @@ test('a server refusal is shown on the field, not swallowed', async () => {
 	assert.match(status.textContent, /settings does not match/);
 });
 
-test('nested objects render as a nested group', () => {
+// An object is a GROUP, not a setting: it becomes a card with a header, and
+// only its leaves get rows. A row for the object itself would be a line with
+// a name and nothing to set.
+test('an object becomes a card and only leaves get rows', () => {
 	const out = render();
-	assert.notEqual(out.querySelector('.setting-group-nested'), null);
 	const pointers = out.find('.setting-row').map((r) => r.attrs['data-pointer']);
-	assert.deepEqual(pointers, ['/ai', '/ai/model', '/ai/reasoning', '/ai/retries', '/token']);
+	assert.deepEqual(pointers, ['/ai/model', '/ai/reasoning', '/ai/retries', '/token']);
+	assert.equal(out.find('.setting-card').length, 2, 'one card for the ai object, one for the loose token');
+	assert.match(out.querySelector('.setting-card-title')!.textContent, /ai/);
+});
+
+// Every row is the two-column layout: what it is on the left, the control on
+// the right. Stacking them in one column is what made the first cut read as
+// an undifferentiated list.
+test('each row splits into a text column and a control column', () => {
+	const row = render().find('.setting-row')[0];
+	assert.notEqual(row.querySelector('.setting-text'), null);
+	assert.notEqual(row.querySelector('.setting-field'), null);
+	// The description belongs with the name, the control with the value.
+	assert.notEqual(row.querySelector('.setting-text')!.querySelector('.setting-desc'), null);
+	assert.notEqual(row.querySelector('.setting-field')!.querySelector('.setting-input'), null);
 });

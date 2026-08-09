@@ -49,6 +49,15 @@ async function errorText(res: Response): Promise<string> {
 
 // ---- one field -------------------------------------------------------------
 
+/**
+ * One setting is a TWO-COLUMN row: what it is on the left (label, state,
+ * description), the control on the right. That is the layout every settings
+ * page worth copying uses, and the reason is scanning — a reader going down
+ * the left edge sees the names, and a reader going down the right edge sees
+ * the values. Stacking label, description and control in one column, as the
+ * first cut did, makes those three unrelated things look like one list and
+ * gives the eye nothing to follow.
+ */
 function fieldRow(field: Field, ctx: FormContext): HTMLElement {
 	const row = el('div', { class: 'setting-row', 'data-pointer': field.pointer });
 	const override = ctx.overrides.get(field.pointer);
@@ -74,9 +83,9 @@ function fieldRow(field: Field, ctx: FormContext): HTMLElement {
 		});
 		head.appendChild(revert);
 	}
-	row.appendChild(head);
 
-	if (field.description) row.appendChild(el('p', { class: 'setting-desc' }, field.description));
+	const text = el('div', { class: 'setting-text' }, head);
+	if (field.description) text.appendChild(el('p', { class: 'setting-desc' }, field.description));
 
 	const status = el('p', { class: 'setting-status', hidden: 'hidden' });
 	const commit = (value: unknown) => {
@@ -88,8 +97,8 @@ function fieldRow(field: Field, ctx: FormContext): HTMLElement {
 		void writeField(row, ctx, field, value);
 	};
 
-	row.appendChild(control(field, commit, status));
-	row.appendChild(status);
+	row.appendChild(text);
+	row.appendChild(el('div', { class: 'setting-field' }, control(field, commit, status), status));
 	return row;
 }
 
@@ -333,15 +342,56 @@ function rawControl(field: Field, commit: (v: unknown) => void, status: HTMLElem
 
 // ---- the section -----------------------------------------------------------
 
-function renderGroup(fields: Field[], ctx: FormContext, depth = 0): HTMLElement {
-	const group = el('div', { class: depth === 0 ? 'setting-group' : 'setting-group setting-group-nested' });
+/**
+ * Fields are grouped into CARDS: one per object in the schema, and one for
+ * each run of loose scalars between them. Grouping follows the schema's own
+ * order rather than hoisting all the scalars to the top — the schema's
+ * author chose that order, and reordering it here would make the form and
+ * the file disagree about how the config is arranged.
+ *
+ * A nested object inside a card becomes a labelled sub-group rather than a
+ * card within a card; boxes inside boxes read as chrome, not structure.
+ */
+function renderGroups(fields: Field[], ctx: FormContext): HTMLElement[] {
+	// Partition first, render second: an object opens its own card, and the
+	// loose scalars between objects collect into a card of their own.
+	const groups: Array<{ object?: Field; loose: Field[] }> = [];
 	for (const field of fields) {
-		group.appendChild(fieldRow(field, ctx));
 		if (field.kind === 'object' && field.children?.length) {
-			group.appendChild(renderGroup(field.children, ctx, depth + 1));
+			groups.push({ object: field, loose: [] });
+			continue;
 		}
+		const last = groups[groups.length - 1];
+		if (last && !last.object) last.loose.push(field);
+		else groups.push({ loose: [field] });
 	}
-	return group;
+	return groups.map((g) => {
+		if (g.object) return objectCard(g.object, ctx);
+		const card = el('section', { class: 'setting-card' });
+		const rows = el('div', { class: 'setting-rows' });
+		for (const f of g.loose) rows.appendChild(fieldRow(f, ctx));
+		card.appendChild(rows);
+		return card;
+	});
+}
+
+function objectCard(field: Field, ctx: FormContext, nested = false): HTMLElement {
+	const card = el('section', { class: nested ? 'setting-subgroup' : 'setting-card' });
+	const head = el('div', { class: 'setting-card-head' },
+		el(nested ? 'h4' : 'h3', { class: 'setting-card-title' }, field.title));
+	if (field.description) head.appendChild(el('p', { class: 'setting-desc' }, field.description));
+	card.appendChild(head);
+
+	const rows = el('div', { class: 'setting-rows' });
+	for (const child of field.children ?? []) {
+		if (child.kind === 'object' && child.children?.length) {
+			rows.appendChild(objectCard(child, ctx, true));
+			continue;
+		}
+		rows.appendChild(fieldRow(child, ctx));
+	}
+	card.appendChild(rows);
+	return card;
 }
 
 /** Build the whole section body for a view. Exported for the DOM tests. */
@@ -372,7 +422,7 @@ export function renderSettings(view: SettingsView, apply: (v: SettingsView) => v
 	body.appendChild(el('p', { class: 'window-note' },
 		'Changes are saved as you make them and take effect on the next run. ' +
 		'Each one pins a single field; everything else keeps coming from hook.json.'));
-	body.appendChild(renderGroup(fields, ctx));
+	for (const card of renderGroups(fields, ctx)) body.appendChild(card);
 
 	// A pin whose field the manifest dropped has no row to live on, so it
 	// would be invisible — and invisible is exactly how a stale override

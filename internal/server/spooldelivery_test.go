@@ -95,15 +95,10 @@ func TestNoSpoolKeepsThe503Path(t *testing.T) {
 
 // A healthy server must not spool anything — this path is shutdown-only.
 func TestHealthyServerDoesNotSpool(t *testing.T) {
-	s, reg, _, rn := newTestServer(t)
-	// Unlike its siblings above, this delivery is ACCEPTED, so it starts a
-	// real async run — and an async run deliberately uses context.Background(),
-	// so it outlives the request and the test body. Its temp dir lands under
-	// the same TMPDIR t.TempDir() is about to remove, and the cleanup then
-	// races the runner still creating it ("unlinkat ...: directory not
-	// empty", reproducible on a clean tree). Registered here, so LIFO puts
-	// this drain BEFORE the TempDir cleanups newTestServer registered.
-	t.Cleanup(rn.Wait)
+	// This delivery is ACCEPTED, unlike its siblings above, so it starts a
+	// real async run; newTestServer drains the runner before its TempDir is
+	// removed, which is what keeps that from racing the cleanup.
+	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{ID: "h", Description: "d", Command: []string{"x"}})
 	sp, err := spool.Open(filepath.Join(t.TempDir(), "spool"), nil)
 	require.NoError(t, err)

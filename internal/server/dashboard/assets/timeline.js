@@ -210,8 +210,8 @@ function fieldRow(field, ctx) {
     });
     head.appendChild(revert);
   }
-  row.appendChild(head);
-  if (field.description) row.appendChild(el("p", { class: "setting-desc" }, field.description));
+  const text = el("div", { class: "setting-text" }, head);
+  if (field.description) text.appendChild(el("p", { class: "setting-desc" }, field.description));
   const status = el("p", { class: "setting-status", hidden: "hidden" });
   const commit = (value) => {
     const problem = checkValue(field, value);
@@ -221,8 +221,8 @@ function fieldRow(field, ctx) {
     }
     void writeField(row, ctx, field, value);
   };
-  row.appendChild(control(field, commit, status));
-  row.appendChild(status);
+  row.appendChild(text);
+  row.appendChild(el("div", { class: "setting-field" }, control(field, commit, status), status));
   return row;
 }
 function showStatus(status, text, kind) {
@@ -425,15 +425,45 @@ function rawControl(field, commit, status) {
   wrap.appendChild(el("p", { class: "window-note" }, "edited as JSON \u2014 this field\u2019s schema has no simpler control"));
   return wrap;
 }
-function renderGroup(fields, ctx, depth = 0) {
-  const group = el("div", { class: depth === 0 ? "setting-group" : "setting-group setting-group-nested" });
+function renderGroups(fields, ctx) {
+  const groups = [];
   for (const field of fields) {
-    group.appendChild(fieldRow(field, ctx));
     if (field.kind === "object" && field.children?.length) {
-      group.appendChild(renderGroup(field.children, ctx, depth + 1));
+      groups.push({ object: field, loose: [] });
+      continue;
     }
+    const last = groups[groups.length - 1];
+    if (last && !last.object) last.loose.push(field);
+    else groups.push({ loose: [field] });
   }
-  return group;
+  return groups.map((g) => {
+    if (g.object) return objectCard(g.object, ctx);
+    const card = el("section", { class: "setting-card" });
+    const rows = el("div", { class: "setting-rows" });
+    for (const f of g.loose) rows.appendChild(fieldRow(f, ctx));
+    card.appendChild(rows);
+    return card;
+  });
+}
+function objectCard(field, ctx, nested = false) {
+  const card = el("section", { class: nested ? "setting-subgroup" : "setting-card" });
+  const head = el(
+    "div",
+    { class: "setting-card-head" },
+    el(nested ? "h4" : "h3", { class: "setting-card-title" }, field.title)
+  );
+  if (field.description) head.appendChild(el("p", { class: "setting-desc" }, field.description));
+  card.appendChild(head);
+  const rows = el("div", { class: "setting-rows" });
+  for (const child of field.children ?? []) {
+    if (child.kind === "object" && child.children?.length) {
+      rows.appendChild(objectCard(child, ctx, true));
+      continue;
+    }
+    rows.appendChild(fieldRow(child, ctx));
+  }
+  card.appendChild(rows);
+  return card;
 }
 function renderSettings(view, apply) {
   const body = el("div", { class: "settings-body" });
@@ -467,7 +497,7 @@ function renderSettings(view, apply) {
     { class: "window-note" },
     "Changes are saved as you make them and take effect on the next run. Each one pins a single field; everything else keeps coming from hook.json."
   ));
-  body.appendChild(renderGroup(fields, ctx));
+  for (const card of renderGroups(fields, ctx)) body.appendChild(card);
   const orphans = (view.overrides ?? []).filter((o) => valueAt(view.effective, o.pointer) === void 0 && o.stale);
   if (orphans.length) {
     const box = el("div", { class: "setting-orphans" });
