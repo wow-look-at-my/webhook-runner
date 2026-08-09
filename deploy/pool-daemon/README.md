@@ -22,16 +22,21 @@ entire contents rebuild from Dockerfiles. Losing it costs one rebuild.
 
 ## Install
 
+`daemon.json` here says `/mnt/pool/docker`. Substitute your own path and pool
+name throughout — and make the dataset's mountpoint equal `data-root`, since
+the two are set independently and nothing warns when they disagree:
+
 ```
+zfs create -o mountpoint=/mnt/pool/docker <pool>/docker   # its own dataset — the zfs driver requires it
 cp daemon.json           /etc/docker/pool-daemon.json
 cp docker-pool.service   /etc/systemd/system/
-zfs create pool/docker            # its own dataset — required by the zfs driver
 systemctl daemon-reload
 systemctl enable --now docker-pool
 docker --host unix:///var/run/docker-pool.sock info --format '{{.DockerRootDir}} {{.Driver}}'
 ```
 
-That last line must print the pool path and `zfs`.
+That last line must print your pool path and `zfs`. If it prints anything else,
+stop: the daemon built its store somewhere other than the dataset.
 
 Then point webhook-runner at it and tell it what to expect:
 
@@ -71,6 +76,24 @@ same `DOCKER_HOST` path.
 - **`live-restore: false`** — containers here are disposable and the runner
   reaps orphans at startup; keeping them alive across a daemon restart would
   strand containers no server owns.
+
+## If the store is damaged
+
+A pool with `sync=disabled` can lose recent writes on power loss, and a torn
+docker store does not always fail cleanly — the daemon may refuse to start or
+serve a half-written layer. That is an accepted cost here rather than a
+disaster, and the recovery is to throw it away:
+
+```
+systemctl stop docker-pool
+zfs destroy -r <pool>/docker && zfs create -o mountpoint=/mnt/pool/docker <pool>/docker
+systemctl start docker-pool
+```
+
+Every hook image rebuilds from its directory on the next run. Nothing in this
+store is the only copy of anything, which is the entire reason it is allowed to
+live on a filesystem tuned for losable data — and the reason the host's main
+daemon must NOT be moved here.
 
 ## What still is not on the pool
 
