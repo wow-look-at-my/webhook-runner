@@ -50,6 +50,7 @@ Configuration via environment:
   WEBHOOK_RUNNER_ADMIN_ADDR           admin port (default :9001)
   WEBHOOK_RUNNER_DATA_DIR             dir for KV state + token secret (default: hooks-dir parent)
   WEBHOOK_RUNNER_SCRATCH_DIR          host dir absorbing hook.json 'scratch' paths, off docker's data-root (unset: runs declaring scratch FAIL)
+  WEBHOOK_RUNNER_EXPECT_DATA_ROOT     path docker's store must sit under; a mismatch is a loud needs-attention entry (see deploy/pool-daemon/)
   WEBHOOK_RUNNER_STATE_SOCKET         KV API Unix socket path (default: $TMPDIR/whr-state.sock)
   WEBHOOK_RUNNER_STATE_SECRET         HMAC secret for KV tokens (default: generated + persisted)
   WEBHOOK_RUNNER_KV_MAX_KEYS          max keys per hook KV namespace (default 5000)

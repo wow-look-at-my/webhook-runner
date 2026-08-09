@@ -159,40 +159,36 @@ are not:
   outer container unless it explicitly asks for a container step, so its own
   writes are untouched by that.
 
-To relocate the writable layer for real, there are exactly two options, both
-host-side:
+Relocating it is a daemon-level change, and WHICH daemon matters:
 
-**Move the daemon's `data-root`.** Everything moves — image layers, writable
-layers, volumes — for every container on the host, not just hooks.
+**Run a second daemon whose store is on the transient filesystem, and point
+`DOCKER_HOST` at it.** This is the supported arrangement —
+`deploy/pool-daemon/` ships the config, the unit and the steps. Every docker
+command the runner shells out to inherits `DOCKER_HOST`, so build, run,
+inspect, kill and the orphan sweep all follow it; set
+`WEBHOOK_RUNNER_EXPECT_DATA_ROOT` alongside it so a typo or a dead unit raises
+a needs-attention entry instead of silently falling back to the default daemon
+(`CheckDataRoot`, dataroot.go).
 
-```jsonc
-// /etc/docker/daemon.json
-{ "data-root": "/mnt/pool/docker" }
-```
+It fits because everything this runner creates is disposable: a hook run is one
+container that exits, and its image rebuilds from the hook directory. The only
+thing on that filesystem is a store whose entire contents can be regenerated,
+so losing it costs a rebuild — which is what makes it safe to put on a pool
+tuned for losable data.
 
-```
-systemctl stop docker
-rsync -aHAX --info=progress2 /var/lib/docker/ /mnt/pool/docker/
-systemctl start docker
-docker info --format '{{.DockerRootDir}}'   # confirm before deleting the old tree
-```
+**Do NOT move the MAIN daemon's `data-root` there instead.** That is docker's
+whole store for every container on the host, including images and volumes
+belonging to things that are not reconstructible, and a filesystem configured
+for transient data (e.g. ZFS with `sync=disabled`) can lose writes on power
+loss. The second daemon exists precisely so the losable store and the durable
+one are different stores.
+
+**A tmpfs-backed store** is the strongest form of "writes never touch a disk"
+and takes the IMAGE layers with it, since docker cannot split them from the
+upper dirs. For multi-GB runner images that trades a disk problem for a memory
+one and re-pulls everything after a reboot.
 
 ZFS caveat, and it is not optional: **`overlay2` is unsupported on a ZFS
-dataset.** Either point `data-root` at a **zvol formatted ext4 or xfs** (so
-`overlay2` keeps working, which is the conservative choice), or use docker's
-native **`zfs` storage driver**, which requires `data-root` to be its own
-dataset and makes each layer a dataset of its own. Do not put `data-root` on
-a plain ZFS dataset and leave `overlay2` configured.
-
-**Putting `data-root` on a tmpfs** puts every overlay upper in RAM, which is
-the strongest form of "writes never touch a disk" — but it takes the IMAGE
-layers with it, since they share the same tree and docker cannot split them.
-For a fleet whose images are multi-GB that trades a disk problem for a memory
-one, and every image is re-pulled after a reboot. Pool-backed is the usual
-answer; RAM-backed only makes sense where the whole image set comfortably fits
-and losing it on restart is fine.
-
-**Or run a second daemon** rooted on the pool and launch only the runner
-containers against it. Scoped to the hooks you choose, at the cost of a
-second daemon to operate, and it needs a per-hook docker-host field that does
-not exist today.
+dataset.** Use docker's native **`zfs` storage driver** with `data-root` on its
+own dataset, or a **zvol formatted ext4/xfs** with `overlay2`. Do not put
+`overlay2` on a plain dataset.
