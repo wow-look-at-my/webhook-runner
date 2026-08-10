@@ -43,21 +43,11 @@ header h1 { margin: 0; font-size: 1.25rem; }
    ids) on the left. The padding is the breathing room. */
 main { padding: 1.5rem 2rem; display: grid; gap: 2rem; }
 section h2 { margin: 0 0 0.75rem; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+/* A parenthetical inside a heading is prose, not a heading: the uppercasing
+   and letter-spacing above turned every one of them into SHOUTED SMALL PRINT
+   next to the title it was meant to quietly qualify. */
+section h2 .window-note { text-transform: none; letter-spacing: normal; margin: 0; }
 section h3 { margin: 1rem 0 0.5rem; font-size: 0.875rem; color: var(--muted); }
-/* Tables size to their content: a wide table may grow up to the viewport
-   (max-width caps it there), but a sparse one must not stretch to fill it. */
-table { width: auto; max-width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 6px; overflow: hidden; }
-th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
-th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; }
-tbody tr:last-child td { border-bottom: 0; }
-/* Row hover/pointer affordances are OPT-IN: dashboard.js tags exactly the
-   rows it wires a click handler onto with class="clickable" (the runs
-   tables, and the STATE (KV) namespace/key drill-in). A blanket
-   `tbody tr:hover` rule here used to promise a click on EVERY table row and
-   needed a per-table cursor:default opt-out list below — which missed
-   #kv-table, giving the STATE rows a pointer cursor that did nothing.
-   Affordance now follows behavior: no handler, no pointer. */
-tbody tr.clickable:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
 code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }
 /* Every link on the page reads the same: accent, underlined on hover only
    (a log line full of slugs stays readable). Links that are something else
@@ -220,7 +210,7 @@ html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: 
   font-size: 0.75rem;
   cursor: pointer;
 }
-.view-toggle button:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+.view-toggle button:hover, .copy-btn:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
 .view-toggle button.active { background: var(--accent); color: #fff; }
 /* Toggle + copy button share the right side of the output header. */
 .output-actions { display: flex; align-items: center; gap: 0.5rem; }
@@ -234,7 +224,6 @@ html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: 
   font-size: 0.75rem;
   cursor: pointer;
 }
-.copy-btn:hover { filter: none; background: rgba(255, 255, 255, 0.05); color: var(--fg); }
 .copy-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .copy-btn:disabled:hover { background: transparent; color: var(--muted); }
 .copy-btn.copied { border-color: var(--success); color: var(--success); }
@@ -465,13 +454,8 @@ a.gh-slug { font: inherit; }
 /* STATE (KV) drill-in: a namespace row toggles an inset key list; a key row
    opens its value in the kv-detail modal. */
 .kv-caret { display: inline-block; width: 1.1em; color: var(--muted); font-size: 0.8em; }
-tr.kv-keys-row > td { padding: 0.4rem 0.75rem 0.75rem 1.9rem; background: rgba(1,4,9,0.35); }
-table.kv-keys-table { background: transparent; border: 1px solid var(--border); }
-table.kv-keys-table th, table.kv-keys-table td { font-size: 0.8rem; padding: 0.35rem 0.6rem; }
 .kv-keys-note { color: var(--muted); font-style: italic; font-size: 0.85rem; margin: 0.25rem 0 0; }
 .kv-expiry { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-#images-table tbody tr, #hooks-table tbody tr,
-#concurrency-table tbody tr { cursor: default; }
 
 /* Compact in-table action buttons (the concurrency Override.../Revert
    controls). */
@@ -619,26 +603,17 @@ timeline-view {
   border-radius: 6px;
 }
 
-/* Friendly run titles (feature-detected /runs field): in the run tables the
-   title leads and the full id demotes to a small muted second line; in the
-   run modal's heading the id chip reads as secondary next to the title (or
-   the plain "Run" word for untitled runs). */
-td .run-title { font-weight: 500; }
-td .run-id-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
-td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
+/* Friendly run titles (feature-detected /runs field): in the run modal's
+   heading the id chip reads as secondary next to the title (or the plain
+   "Run" word for untitled runs). The table's own title/id pair is styled in
+   RUNS_TABLE_CSS — it lives in the component's shadow root, which this sheet
+   cannot reach. */
 #run-detail-title code { font-size: 0.65em; color: var(--muted); font-weight: 400; }
 
 /* Concurrency drill-down: group rows expand into a detail row listing the
-   runs holding the group's slots and the wait queue (each a run link into
-   the modal). Group rows are genuinely clickable, so they opt back IN to
-   the pointer cursor (overriding the blanket opt-out above); the detail
-   row itself is not clickable. The global-cap table mirrors the group
-   table's behavior exactly (same columns, same drill-down). */
-#concurrency-table tbody tr, #concurrency-global-table tbody tr { cursor: pointer; }
-#concurrency-table tr.group-open td, #concurrency-global-table tr.group-open td { border-bottom: 0; }
-#concurrency-table tr.group-detail-row, #concurrency-global-table tr.group-detail-row { cursor: default; }
-#concurrency-table tr.group-detail-row:hover,
-#concurrency-global-table tr.group-detail-row:hover { background: transparent; }
+   runs holding the group's slots and the wait queue. Rows, cursors and the
+   expansion are the component's own (detailFor); what this page contributes
+   is in CONCURRENCY_TABLE_CSS, passed through styleText. */
 #concurrency-global-cap { margin-bottom: 1.1rem; }
 #concurrency-section h3 { font-size: 0.95rem; margin: 0.6rem 0 0.35rem; }
 
@@ -696,17 +671,13 @@ data-table { display: block; margin-bottom: 0.5rem; }
    clickable, so they opt out of the blanket row pointer. */
 #attention-section h2 { color: var(--failure); }
 #attention-table { border: 1px solid rgba(248, 81, 73, 0.4); }
-#attention-table td.attention-msg { max-width: 46rem; overflow-wrap: anywhere; }
-#attention-table td.attention-age { white-space: nowrap; }
-#attention-table tbody tr:hover { cursor: default; }
-#attention-table tbody tr.attention-hook-row:hover { cursor: pointer; }
 
 /* --- Hooks repo reload panel ---------------------------------------------
    The live-commit line, its held/pending sibling, and the collapsed
    recent-commits picker. Badges reuse the shared .badge palette; the
    picker table reuses the shared table styling. */
 #reload-live { display: grid; gap: 0.35rem; margin-bottom: 0.75rem; }
-.reload-live-row, .reload-pending {
+.reload-live-row, .reload-pending, .setting-head, .setting-control {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -718,9 +689,7 @@ data-table { display: block; margin-bottom: 0.5rem; }
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.reload-branch { color: var(--muted); font-size: 0.875rem; }
-.reload-subject { color: var(--muted); font-size: 0.875rem; }
-.reload-subject-inline { color: var(--muted); font-size: 0.875rem; }
+.reload-branch, .reload-subject, .reload-subject-inline { color: var(--muted); font-size: 0.875rem; }
 .reload-actions {
   display: flex;
   align-items: center;
@@ -733,12 +702,6 @@ data-table { display: block; margin-bottom: 0.5rem; }
   font-size: 0.875rem;
 }
 #reload-picker[open] summary { margin-bottom: 0.5rem; }
-#reload-commits-table td.reload-commit-subject {
-  max-width: 34rem;
-  overflow-wrap: anywhere;
-}
-#reload-commits-table tbody tr:hover { cursor: default; }
-#reload-commits-table tr.reload-live-commit { background: rgba(63, 185, 80, 0.06); }
 .reload-ref-row {
   display: flex;
   align-items: center;
@@ -869,6 +832,10 @@ data-table { display: block; margin-bottom: 0.5rem; }
    Stacking name, description and control in one column (the first cut) makes
    three unrelated things look like one list. */
 .settings-body { display: flex; flex-direction: column; gap: 1rem; }
+/* The shared .empty pad is for a placeholder sitting inside a table box; here
+   the note is a lone line under a heading, and the pad plus the column gap
+   left it floating in the middle of nothing. */
+.settings-body .empty { padding: 0; }
 
 /* A group is a card: header, then divided rows. */
 .setting-card {
@@ -904,17 +871,14 @@ data-table { display: block; margin-bottom: 0.5rem; }
   .setting-row { grid-template-columns: minmax(0, 1fr); }
 }
 
-.setting-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+/* .setting-head and .setting-control are wrapping rows on one baseline, and
+   share that rule with the reload panel's rows further up. */
 .setting-label { font-weight: 600; }
 .setting-required { color: var(--running); margin-left: 0.15rem; }
-/* Every field's own prose, straight from the schema's `description`. */
-.setting-desc { margin: 0; color: var(--muted); font-size: 0.8rem; }
-/* The selected enum value's description: under its control, in the control
-   column, because it explains the CHOICE and not the field. */
-.setting-choice-desc { margin: 0; color: var(--muted); font-size: 0.8rem; }
-
-/* Controls share one look and one width so a column of them lines up. */
-.setting-control { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+/* Every field's own prose, straight from the schema's `description` — and
+   the selected enum value's, which sits under its control (in the control
+   column) because it explains the CHOICE, not the field. */
+.setting-desc, .setting-choice-desc { margin: 0; color: var(--muted); font-size: 0.8rem; }
 .setting-input {
   background: var(--bg);
   color: var(--fg);
