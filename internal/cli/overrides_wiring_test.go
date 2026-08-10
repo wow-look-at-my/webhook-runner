@@ -207,6 +207,13 @@ func TestScheduleFireSkipsDisabledHook(t *testing.T) {
 	require.NoError(t, err)
 	rec := events.NewRecorder(50)
 	rn := runner.New(runner.Options{Tracker: tracker, Logger: testLogger(), TmpDir: dir, Docker: docker})
+	// The re-enabled ticks below dispatch REAL async runs, which use
+	// context.Background() and so outlive the test body. Their temp dirs land
+	// under the same TMPDIR t.TempDir() is about to remove, and the cleanup
+	// races the runner still creating one ("unlinkat ...: directory not
+	// empty"). Registered before the assertions so LIFO drains the runner
+	// ahead of the TempDir cleanup registered above.
+	t.Cleanup(rn.Wait)
 	fire := buildScheduleFire(reg, tracker, ov, rn, testLogger(), rec)
 
 	_, err = ov.SetHookDisabled("h", true)

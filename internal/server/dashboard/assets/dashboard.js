@@ -2022,6 +2022,26 @@ async function refreshApp(id) {
   ]);
   renderApp(detail, runs, events);
   await renderAppKV(detail.info, kvKeys);
+  renderAppSettings(detail.info.id);
+}
+
+// The settings editor is owned by the module bundle (ts/settingsform.ts);
+// this page owns the route, so it says WHICH hook and WHEN. Mounted once per
+// hook, never on every poll: the form holds live edit state, and re-mounting
+// under someone mid-edit would throw their typing away.
+let appSettingsHook = null;
+function renderAppSettings(id) {
+  const section = document.getElementById("app-settings-section");
+  const host = document.getElementById("app-settings");
+  if (!section || !host) return;
+  // timeline.js is a module and loads after this script; on the very first
+  // paint it may not have published the mount yet. Leaving the section
+  // hidden is the honest degrade — it reappears on the next navigation.
+  if (typeof window.whrMountSettings !== "function") return;
+  if (appSettingsHook === id) return;
+  appSettingsHook = id;
+  section.hidden = false;
+  window.whrMountSettings(host, id);
 }
 
 function renderAppMissing(id) {

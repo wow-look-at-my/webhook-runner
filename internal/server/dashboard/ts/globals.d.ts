@@ -59,7 +59,13 @@ declare function currentHookId(): string | null;
 // (this module never fetches /hooks — see applyHooksData):
 //   window.whrHooks               — the latest GET /hooks payload
 //   'whr:hooks-data' (window)     — CustomEvent {detail: {hooks}} per fetch
+//   window.whrMountSettings(container, hookID) — mounts the schema-driven
+//                                    settings editor into the per-hook page.
+//                                    Published by this module, CALLED by
+//                                    dashboard.js, which owns the route and
+//                                    therefore knows which hook is showing.
 declare interface Window {
 	whrStreamLive?: boolean;
 	whrHooks?: Array<{ id: string; description?: string; schedule?: string; disabled?: boolean }>;
+	whrMountSettings?: (container: HTMLElement, hookID: string) => Promise<void>;
 }

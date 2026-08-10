@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -82,15 +83,15 @@ func (h *Hook) ValidateSettings() error {
 	}
 
 	path := settingsSchemaPath(h.SourcePath)
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	raw, err := readSettingsSchema(path)
+	if err != nil {
+		return err
+	}
+	if raw == nil {
 		if len(h.Settings) > 0 {
 			return fmt.Errorf("settings is declared but %s is missing: hook configuration must ship the schema that describes it", SettingsSchemaFile)
 		}
 		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read %s: %w", SettingsSchemaFile, err)
 	}
 
 	schema, err := compileSettingsSchema(path, raw)
@@ -105,6 +106,40 @@ func (h *Hook) ValidateSettings() error {
 		return fmt.Errorf("settings does not match %s: %w", SettingsSchemaFile, err)
 	}
 	return nil
+}
+
+// readSettingsSchema reads the entity's schema file. (nil, nil) means the
+// entity ships none — distinct from an unreadable one, which is an error:
+// a contract that cannot be read must never degrade into "no contract".
+func readSettingsSchema(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", SettingsSchemaFile, err)
+	}
+	return raw, nil
+}
+
+// SettingsSchemaJSON returns the entity's raw settings.schema.json (comments
+// stripped, so it parses as JSON), or nil when it ships none. The admin API
+// serves this to the dashboard, which builds its form from it — the schema is
+// the single source of truth for types, ranges, enums and descriptions, and
+// nothing about the form is duplicated server-side.
+func (h *Hook) SettingsSchemaJSON() ([]byte, error) {
+	raw, err := readSettingsSchema(settingsSchemaPath(h.SourcePath))
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	stripped, err := io.ReadAll(stripComments(raw))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", SettingsSchemaFile, err)
+	}
+	if !json.Valid(stripped) {
+		return nil, fmt.Errorf("%s is not valid JSON", SettingsSchemaFile)
+	}
+	return stripped, nil
 }
 
 func compileSettingsSchema(path string, raw []byte) (*jsonschema.Schema, error) {

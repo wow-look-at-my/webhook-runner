@@ -161,6 +161,8 @@ import type {
 	TimelineViewElement,
 } from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
 
+import { mountSettings } from './settingsform.ts';
+
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 
 /** GET /runs list entry (internal/runs.RunState, output stripped). */
@@ -1939,5 +1941,12 @@ async function boot(): Promise<void> {
 	document.getElementById('timeline-loading')?.remove();
 	initTimeline();
 }
+
+// The settings editor lives in this bundle (typed, and testable under
+// node --test) but is driven by dashboard.js, which owns the per-hook page
+// and knows when it is showing a different hook. Published rather than
+// self-mounting for the same reason the run modal is: only the classic
+// script knows the page's current route.
+window.whrMountSettings = mountSettings;
 
 void boot();

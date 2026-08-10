@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -129,6 +130,13 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			delete(loadedManagers, se.ManagerID)
 		}
 
+		// Operator settings overrides are applied to the freshly loaded
+		// entities, AFTER the manifest passed its own validation and
+		// BEFORE anything is served. Deliberately not part of `errs`: see
+		// applySettingsOverrides for why a bad override must not be able
+		// to refuse the tree.
+		applySettingsOverrides(loaded, loadedManagers, ov, logger, rec)
+
 		for _, e := range errs {
 			logger.Error("hook reload error", "err", e)
 			rec.Record("hook.load_error", e.Error(), nil)
@@ -186,6 +194,57 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			fmt.Sprintf("%d hook(s) + %d manager(s) loaded, %d concurrency group(s), %d scheduled", len(loaded), len(loadedManagers), len(cfg.Groups), len(schedules)),
 			nil)
 		return nil
+	}
+}
+
+// applySettingsOverrides merges the operator's pinned settings fields into
+// the freshly loaded entities.
+//
+// A REJECTED OVERRIDE MUST NEVER REFUSE THE TREE. Everything else in this
+// file fails the whole load when one entity is bad, and that is right for a
+// manifest: the tree is reviewed, CI-gated, and rollback-able. An override
+// is none of those — it is a value typed into a dashboard and stored under
+// the data dir, and the tree it was valid against can move underneath it
+// (a manifest that renames the field, a schema that tightens the range).
+// If that could refuse the load, one stale override would take the entire
+// fleet down on the next reload, with the fix reachable only by hand-editing
+// overrides.json on the runner host. So the degrade is per entity: drop THAT
+// entity's overrides for this load, serve its manifest values, and be loud.
+//
+// Loud means all three surfaces an operator actually reads: the log, the
+// activity feed, and (via the settings API's `rejected` field) the editor
+// itself, which shows the exact schema error next to the field. The stored
+// override is NOT deleted — the operator may be mid-way through a manifest
+// change, and silently discarding what they typed is its own failure.
+func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[string]*hooks.Manager, ov *overrides.Store, logger *slog.Logger, rec *events.Recorder) {
+	all := ov.AllSettingsOverrides()
+	if len(all) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(all))
+	for id := range all {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		h, ok := loaded[id]
+		if !ok {
+			// A Manager embeds *Hook and shares the id namespace, so the
+			// same merge applies to both. An override for neither is
+			// orphaned, which announceOrphanedOverrides already reports.
+			m, mok := loadedManagers[id]
+			if !mok {
+				continue
+			}
+			h = m.Hook
+		}
+		if err := h.ApplySettingsOverrides(all[id]); err != nil {
+			logger.Error("settings override REJECTED — serving the manifest values for this entity",
+				"entity", id, "err", err)
+			rec.Record("settings.override_rejected",
+				fmt.Sprintf("%s: settings override rejected, serving the manifest values instead (the override is kept, not deleted): %v", id, err),
+				map[string]string{"hook": id})
+		}
 	}
 }
 
