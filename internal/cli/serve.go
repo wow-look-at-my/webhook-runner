@@ -100,18 +100,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			Message: runner.TmpDirHazardMessage,
 		})
 	}
+	// The docker binary the runner shells out to; DOCKER_HOST on this process
+	// selects WHICH daemon it reaches (inherited by every exec).
+	dockerBin := os.Getenv("WEBHOOK_RUNNER_DOCKER_BIN")
+	if dockerBin == "" {
+		dockerBin = "docker"
+	}
 	// Which filesystem this runner's containers actually write to. Routing is
 	// just DOCKER_HOST, so a typo or a daemon that failed to start silently
 	// falls back to the default one — and the whole arrangement exists to
 	// control which disk absorbs the writes. Boot-scoped like the TMPDIR
 	// verdict: neither the env nor the daemon's root changes under a running
 	// process, so it stands until a restart.
-	// The docker binary the runner shells out to; DOCKER_HOST on this process
-	// is what selects WHICH daemon it reaches (inherited by every exec).
-	dockerBin := os.Getenv("WEBHOOK_RUNNER_DOCKER_BIN")
-	if dockerBin == "" {
-		dockerBin = "docker"
-	}
 	if msg := runner.CheckDataRoot(dockerBin, os.Getenv("WEBHOOK_RUNNER_EXPECT_DATA_ROOT"), logger, rec); msg != "" {
 		agg.Report(attention.Entry{
 			Source:  attention.SourceServer,
