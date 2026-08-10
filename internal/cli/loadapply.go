@@ -68,7 +68,12 @@ import (
 // — serve-path only, exactly like the reload itself; `validate` stays
 // environment-independent. That per-reload re-derivation IS the clear
 // rule for those sources: fix the config, reload, entry gone.
-func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, sup *managers.Supervisor, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, logger *slog.Logger, rec *events.Recorder) func() error {
+//
+// ghStatusConfigured is the same environment-dependent shape: an entity
+// declaring `github_status` on a runner with no GitHub credential has its
+// statuses dropped before a request is built, so the reload names it
+// rather than letting the entity run green and publish nothing.
+func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, sup *managers.Supervisor, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, ghStatusConfigured bool, logger *slog.Logger, rec *events.Recorder) func() error {
 	// Orphan announcements are deduped per target across reloads: one event
 	// when a reload first finds an override pointing at nothing, not one
 	// per reload tick. A target that comes back is forgotten here, so a
@@ -186,6 +191,8 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 		agg.ReplaceSource(attention.SourceTreeRefused, nil)
 
 		attention.ApplyServeProbe(agg, loaded, secrets)
+		agg.ReplaceSource(attention.SourceGitHubStatus,
+			attention.GitHubStatusEntries(loaded, loadedManagers, ghStatusConfigured))
 
 		announceOrphanedOverrides(loaded, cfg, ov, &orphanMu, announced, logger, rec)
 

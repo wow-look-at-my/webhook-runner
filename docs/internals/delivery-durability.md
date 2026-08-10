@@ -109,29 +109,39 @@ drain **alive with nothing listening**. `hookSrv.Shutdown()` ran before
 run, which for a CI job is minutes. Every delivery arriving in that stretch got
 a connection refusal, which is a silent loss.
 
-`runServe`'s teardown now reads:
+The teardown lives in `gracefulShutdown` (`internal/cli/shutdown.go`), which
+takes the steps as functions so the ORDER — the only thing about it that can be
+wrong — is checked by `shutdown_test.go` rather than described in a comment:
 
 ```go
-rn.BeginShutdown()   // refuse new runs; deliveries spool from here on
-sup.Shutdown()       // managers stop first — the lease releases with the process
-srv.CloseStreams()   // SSE clients, so adminSrv.Shutdown can complete
-adminSrv.Shutdown()  // no dependents
-rn.Wait()            // drain in-flight runs — minutes, with the door still open
-hookSrv.Shutdown()   // only now
-stateSrv.Shutdown()
+refuseNewRuns()   // no new runs; deliveries spool from here on
+stopManagers()    // managers first — the lease releases with the process
+drainRuns()       // in-flight runs finish — minutes, every door still open
+closeHook()
+closeState()
+closeStreams()    // SSE clients, so the admin close can complete
+closeAdmin()
 ```
 
-Two reasons the order is what it is:
+Every listener outlives the drain, each for its own reason:
 
-- **The hook port stays up** so arriving deliveries get spooled and 202'd
-  rather than connection-refused for the whole drain.
-- **The state socket stays up** because DRAINING RUNS ARE STILL USING IT —
-  locks, `/wait`, `/title` all ride it. Closing it before `rn.Wait` pulled the
-  floor out from under the very runs being drained.
+- **The hook port**, so arriving deliveries get spooled and 202'd rather than
+  connection-refused for the whole drain.
+- **The state socket**, because DRAINING RUNS ARE STILL USING IT — locks,
+  `/wait`, `/title` all ride it. Closing it before the drain pulled the floor
+  out from under the very runs being drained.
+- **The admin port**, because the drain is precisely when an operator wants to
+  know what is still running and why the deploy is slow. It used to close
+  *before* the drain, on the theory that it had no dependents — its dependent
+  is the human. On a box whose hooks are CI jobs that meant every rolling
+  update blanked the dashboard for minutes (connection-refused through the
+  tunnel) while the logs showed hooks still executing. Nothing on this port
+  starts work: new runs are already refused and the supervisor will not restart
+  an instance once shut down.
 
-The hook/state grace context is also created **after** `rn.Wait()`. Armed
-before it, a 10s deadline would already be blown by the time it was used,
-turning a graceful close into an abrupt one.
+The grace context is created **after** the drain. Armed before it, a 10s
+deadline would already be blown by the time it was used, turning a graceful
+close into an abrupt one.
 
 ## What this does NOT cover
 

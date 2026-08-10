@@ -83,6 +83,12 @@ const (
 	// function of elapsed time, not of a tree change); clears the moment
 	// a run of that hook succeeds.
 	SourceSchedule = "schedule"
+	// SourceGitHubStatus: a loaded entity declares `github_status` while the
+	// runner holds no GitHub credential, so every status it should post is
+	// dropped. Re-derived on every reload like SourceSecrets; clears when
+	// the entity stops declaring it (the credential itself is fixed at
+	// construction, so the other direction needs a restart anyway).
+	SourceGitHubStatus = "github-status"
 )
 
 // Entry is one active problem. Identity is (Source, Hook, Key); Message is

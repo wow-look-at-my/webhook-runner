@@ -97,7 +97,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	mgr := concurrency.NewManager(nil)
 	seedManager(t, mgr, ov)
 	rec := events.NewRecorder(200)
-	loadAndApply := buildLoadAndApply(root, reg, mgr, nil, nil, ov, nil, nil, testLogger(), rec)
+	loadAndApply := buildLoadAndApply(root, reg, mgr, nil, nil, ov, nil, nil, true, testLogger(), rec)
 
 	// Initial load: the hook is registered (disabling never unloads it) and
 	// the limit override is effective on top of the declared config.
@@ -183,7 +183,7 @@ func TestOverridesSurviveRestart(t *testing.T) {
 	mgr := concurrency.NewManager(nil)
 	seedManager(t, mgr, ov2)
 	rec := events.NewRecorder(50)
-	buildLoadAndApply(root, reg, mgr, nil, nil, ov2, nil, nil, testLogger(), rec)()
+	buildLoadAndApply(root, reg, mgr, nil, nil, ov2, nil, nil, true, testLogger(), rec)()
 
 	assert.True(t, ov2.HookDisabled("h1", true), "the kill switch must survive a restart")
 	st := groupStatus(t, mgr, "g")
