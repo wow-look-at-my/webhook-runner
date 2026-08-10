@@ -48,6 +48,10 @@ const (
 	// or up-to-date), i.e. everywhere KeyReloadHeld resolves.
 	// ("reload" source, no hook.)
 	KeyReloadPoll = "poll"
+	// KeyGitHubStatus: the entity declares `github_status` but the runner
+	// has no GitHub credential, so shouldPost drops every status before it
+	// is built. ("github-status" source, per entity.)
+	KeyGitHubStatus = "github_status"
 )
 
 // Recognized activity-event kinds the standard rules subscribe to.
@@ -294,6 +298,52 @@ func ProbeHooks(loaded map[string]*hooks.Hook, secrets *hooks.SecretsLoader) []E
 				})
 			}
 		}
+	}
+	return entries
+}
+
+// GitHubStatusEntries names every loaded entity that declares
+// `github_status` while the runner holds no GitHub credential.
+//
+// Without this the failure is invisible on both sides: githubstatus's
+// shouldPost returns false before a request is ever built, so nothing is
+// logged, no run is marked, and the entity's own runs go green while the
+// commit status they exist to publish never appears. The manifest asked for
+// a status; the deployment cannot post one; that is a misconfiguration and
+// belongs on the surface an operator reads.
+//
+// configured is `(*githubstatus.Client).Enabled()` — a credential SOURCE
+// exists, not that a fetch will succeed. A source that is failing right now
+// already reports itself per call, so it is not this entry's business.
+func GitHubStatusEntries(loaded map[string]*hooks.Hook, managers map[string]*hooks.Manager, configured bool) []Entry {
+	if configured {
+		return nil
+	}
+	flat := make(map[string]*hooks.Hook, len(loaded)+len(managers))
+	kind := make(map[string]string, len(loaded)+len(managers))
+	for id, h := range loaded {
+		flat[id], kind[id] = h, "hook"
+	}
+	for id, m := range managers {
+		if m == nil || m.Hook == nil {
+			continue
+		}
+		flat[id], kind[id] = m.Hook, "manager"
+	}
+	entries := []Entry{}
+	for _, id := range sortedIDs(flat) {
+		h := flat[id]
+		if h.GitHubStatus == nil || !h.GitHubStatus.Enabled {
+			continue
+		}
+		entries = append(entries, Entry{
+			Source: SourceGitHubStatus,
+			Hook:   id,
+			Key:    KeyGitHubStatus,
+			Message: "this " + kind[id] + " declares github_status (context " + h.GitHubStatus.Context +
+				") but the runner has no GitHub credential — every commit status is dropped, and its runs still go green. " +
+				"Set WEBHOOK_RUNNER_GITHUB_TOKEN, or WEBHOOK_RUNNER_SECRET_SERVER_TOKEN to read the credential from secret-server",
+		})
 	}
 	return entries
 }

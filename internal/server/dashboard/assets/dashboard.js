@@ -1323,6 +1323,26 @@ function attentionSourceLabel(source) {
 }
 
 
+// A per-row "copy this record as JSON" control. A table cell is a curated,
+// linkified, truncated view; the JSON is the record itself, including the
+// fields no column renders — an attention entry's `key` above all, which is
+// what identifies the problem across re-derivations and is what you need
+// when reporting one. stopPropagation because these rows navigate on click.
+function copyJSONButton(value, title) {
+  const btn = el("button", { class: "toggle-btn", type: "button", title }, "Copy JSON");
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const ok = await copyToClipboard(JSON.stringify(value, null, 2));
+    btn.textContent = ok ? "Copied!" : "Copy failed";
+    btn.classList.toggle("copied", ok);
+    setTimeout(() => {
+      btn.textContent = "Copy JSON";
+      btn.classList.remove("copied");
+    }, 1500);
+  });
+  return btn;
+}
+
 // Takes the GET /attention RESPONSE OBJECT ({count, entries}), not a bare
 // array: reading `.length` off the object yielded `undefined problems need
 // attention` on a banner that could never hide, above a table with nothing
@@ -1363,6 +1383,15 @@ function renderAttention(payload) {
       text: (e) => fmtTime(e.since),
       render: (e) => el("span", { title: fmtTime(e.since) },
         fmtDuration(Date.now() - new Date(e.since)) || "0s"),
+    },
+    {
+      key: "copy",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (e) => copyJSONButton(e,
+        "Copy this problem as JSON — including its stable key and the untruncated message"),
     },
   ];
   // Entries without a hook are server-wide: they have nowhere to click
@@ -1625,10 +1654,15 @@ function groupDetailContent(g) {
 // additive /runs field older servers simply don't send) leads when present,
 // with the full run id demoted to a small muted second line; untitled runs
 // keep the plain id code exactly as before.
+// A column's render() supplies the CELL'S CONTENT — <data-table> builds the
+// <td> itself. Returning one here nested a cell inside a cell, which then
+// took the component's own td padding and bottom border: a boxed, ragged
+// run-id column that pushed every titled row out of line with its
+// neighbours.
 function runCell(r) {
   const code = el("code", null, r.id);
-  if (!r.title) return el("td", null, code);
-  return el("td", null,
+  if (!r.title) return code;
+  return el("div", null,
     el("div", { class: "run-title" }, linkifyTitle(r.title)),
     el("div", { class: "run-id-sub" }, code),
   );
@@ -1642,8 +1676,24 @@ function runCell(r) {
 // dashboard.css — the same states, drawn in two places by necessity.
 const SHARED_TABLE_CSS = `
 code { font-size: 0.9em; }
-.hook-link { color: var(--accent); text-decoration: none; }
-.hook-link:hover { text-decoration: underline; }
+/* The filter bar right-aligns its "showing N of M" with an auto margin. With
+   no count to show, that margin strands whatever follows it (the clear
+   button) against the far edge with a bar's width of nothing between. */
+.count:empty { margin-left: 0.5rem; }
+/* Run status, wherever one is drawn: the runs tables and the concurrency
+   drill-down's in-flight rows. One copy, because two drifted. */
+.status { font-weight: 500; }
+.status.success { color: var(--success); }
+.status.failure, .status.error, .status.timeout { color: var(--failure); }
+.status.running { color: var(--running); }
+.status.pending { color: var(--pending); }
+.status.skipped { color: var(--skipped); }
+/* Every link in a cell reads like every link on the page: accent, underlined
+   on hover only. The page's own rule stops at the shadow boundary, so a
+   linkified slug in a run title was falling back to the browser default —
+   a bright blue underlined string in the middle of a table row. */
+a { color: var(--accent); text-decoration: none; font: inherit; }
+a:hover { text-decoration: underline; }
 .badge { display: inline-block; padding: 0 0.4em; border-radius: 3px; font-size: 0.85em; border: 1px solid var(--border); }
 .badge.ok { color: var(--success); border-color: var(--success); }
 .badge.warn { color: var(--running); border-color: var(--running); }
@@ -1651,6 +1701,7 @@ code { font-size: 0.9em; }
 .row-actions { white-space: nowrap; }
 .toggle-btn { font: inherit; font-size: 0.85em; padding: 0.1em 0.5em; cursor: pointer; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
 .toggle-btn:hover { border-color: var(--accent); }
+.toggle-btn.copied { border-color: var(--success); color: var(--success); }
 .switch { display: inline-flex; align-items: center; cursor: pointer; }
 .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
 .switch-slider { position: relative; width: 2em; height: 1.1em; border-radius: 1em; background: var(--muted); transition: background 0.15s; }
@@ -1692,12 +1743,6 @@ const CONCURRENCY_TABLE_CSS = `
 .group-run { font-size: 0.9em; padding: 0.1em 0; }
 .group-run-title { color: var(--fg); }
 .group-run-since { color: var(--muted); }
-.status { font-weight: 500; }
-.status.success { color: var(--success); }
-.status.failure, .status.error, .status.timeout { color: var(--failure); }
-.status.running { color: var(--running); }
-.status.pending { color: var(--pending); }
-.status.skipped { color: var(--skipped); }
 `;
 
 const KV_TABLE_CSS = `
@@ -1708,8 +1753,14 @@ const KV_TABLE_CSS = `
 // Attention rows: only hook-scoped ones navigate, so only they get the
 // pointer the click promises.
 const ATTENTION_TABLE_CSS = `
-.attention-msg { font-weight: 500; }
+/* A loader error quotes the reason it failed, so the message wraps instead
+   of stretching the table off-screen. */
+.attention-msg { font-weight: 500; max-width: 46rem; overflow-wrap: anywhere; }
 .attention-age { color: var(--muted); white-space: nowrap; }
+/* Only a hook-scoped row has somewhere to click through to; a server-wide
+   entry must not wear the pointer the component gives every row of a table
+   that has a row-click listener at all. */
+tbody tr { cursor: default; }
 tbody tr.attention-hook-row { cursor: pointer; }
 `;
 
@@ -1719,24 +1770,20 @@ tbody tr.reload-live-commit { background: var(--panel); }
 .reload-commit-subject { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
-// Cell styling for the runs tables, passed INTO <data-table>'s shadow root
-// through its styleText hatch. The status pill and the wait note are
-// rendered by this file but live inside that root, where dashboard.css
-// cannot reach them; the COLORS still come from the page, because custom
-// properties do inherit through the shadow boundary. Keep these selectors
-// in sync with the .status/.wait-note rules in dashboard.css — they are the
-// same states, drawn in two places by necessity, not by choice.
-const RUNS_TABLE_CSS = `
-.status { font-weight: 500; }
-.status.success { color: var(--success); }
-.status.failure, .status.error, .status.timeout { color: var(--failure); }
-.status.running { color: var(--running); }
-.status.pending { color: var(--pending); }
-.status.skipped { color: var(--skipped); }
+// What the runs tables add on top of the shared cell styling, passed INTO
+// <data-table>'s shadow root through its styleText hatch: the cells are built
+// by this file but live inside that root, where dashboard.css cannot reach
+// them. The COLORS still come from the page — custom properties inherit
+// through the shadow boundary — so only the SELECTORS are restated here.
+const RUNS_TABLE_CSS = SHARED_TABLE_CSS + `
 .wait-note { margin-left: 0.5rem; font-weight: 400; font-style: italic; font-size: 0.85em; color: var(--muted); }
+/* A titled run leads with the title and DEMOTES its id to a second line —
+   the id is the fallback name, not the headline. */
+.run-title { font-weight: 500; }
+.run-id-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
+/* Every row here opens a run. */
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--panel); }
-code { font-size: 0.9em; }
 `;
 
 // The overview runs list, as a <data-table>. Columns declare how to SORT

@@ -122,6 +122,17 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
     must stay environment-independent — never call the probe from a CLI
     path. A hook whose sops decrypt fails gets ONE `sops` entry and no
     per-reference entries (auth/runs fail on the decrypt first).
+  - `github-status` (`attention.GitHubStatusEntries`): an entity declaring
+    `github_status` on a runner holding NO GitHub credential. STATE-derived
+    per reload beside the `secrets` probe, and for the same reason it has
+    to exist at all: `githubstatus.shouldPost` returns before a request is
+    built, so the status is dropped with no log line, no run marking and no
+    GitHub-side trace — the entity's own runs go green while the status
+    they exist to publish never appears. Covers managers too (their
+    per-delivery statuses ride the same client). Clears when the entity
+    stops declaring `github_status` or leaves the loaded set; the
+    credential itself is fixed at client construction, so acquiring one
+    needs a restart regardless.
   - `server` (the containerized-without-TMPDIR hazard,
     runner.WarnIfContainerized's verdict): BOOT-scoped — computed once at
     startup, and a running process's env can't change, so it CANNOT clear
