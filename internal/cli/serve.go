@@ -326,7 +326,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// run unbounded, and a manager id colliding with a hook is dropped
 	// loudly. Both the filesystem watcher and the admin/webhook reload path
 	// go through this one function.
-	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, sup, ovStore, agg, secrets, logger, rec)
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, sup, ovStore, agg, secrets, gh.Enabled(), logger, rec)
 
 	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, gh, rec, agg, logger)
 	if err != nil {
