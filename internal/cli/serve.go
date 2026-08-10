@@ -558,49 +558,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	logger.Info("shutting down")
-	// Refuse NEW runs immediately: a run launched by this dying process
-	// races the state-socket handover (its shim would dial a socket the
-	// next server replaces). Deliveries are not rejected though — they are
-	// PARKED (internal/spool) and answered 202, because GitHub does not
-	// re-send a failed delivery. In-flight runs drain via rn.Wait below.
-	rn.BeginShutdown()
-	// Stop manager instances gracefully (docker stop; SIGTERM + grace)
-	// BEFORE anything else winds down: the lease releases only when this
-	// process exits, so the successor process's supervisor cannot start
-	// replacement instances until ours are provably gone.
-	sup.Shutdown()
-	// Disconnect /runs/stream clients FIRST: adminSrv.Shutdown waits for
-	// in-flight handlers, and a stream handler holds its response open
-	// until its subscription closes (or its client goes away).
-	srv.CloseStreams()
-	adminCtx, cancelAdmin := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelAdmin()
-	// The admin port has no dependents — it can go now.
-	if err := adminSrv.Shutdown(adminCtx); err != nil {
-		logger.Warn("admin server shutdown", "err", err)
-	}
-	// ORDER IS THE POINT. The hook listener and the state socket stay UP
-	// across the drain:
-	//   - the hook port, because rn.Wait can take as long as the longest
-	//     run (a CI job is minutes). Stopping it first left the process
-	//     alive with nothing listening for that entire stretch, and every
-	//     delivery arriving in it got connection-refused — silently lost,
-	//     since GitHub does not retry. Now they spool and answer 202.
-	//   - the state socket, because DRAINING RUNS ARE STILL USING IT: locks,
-	//     /wait, /title all ride it. Closing it before rn.Wait pulled the
-	//     floor out from under the very runs being drained.
-	rn.Wait()
-	// Their grace window starts HERE, not before the drain — a deadline
-	// armed pre-Wait would already be blown and turn a graceful close into
-	// an abrupt one.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := hookSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("hook server shutdown", "err", err)
-	}
-	if err := stateSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("state server shutdown", "err", err)
-	}
+	gracefulShutdown(shutdownDeps{
+		refuseNewRuns: rn.BeginShutdown,
+		stopManagers:  sup.Shutdown,
+		drainRuns:     rn.Wait,
+		closeHook:     hookSrv.Shutdown,
+		closeState:    stateSrv.Shutdown,
+		closeStreams:  srv.CloseStreams,
+		closeAdmin:    adminSrv.Shutdown,
+		logger:        logger,
+	})
 	cancelWatch()
 	return nil
 }
