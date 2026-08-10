@@ -69,6 +69,13 @@ same `DOCKER_HOST` path.
   addresses. Change `bip` if it collides with something else on the host.
 - **`hosts` / `pidfile` / `exec-root`** — all distinct from the main daemon's,
   for the same reason.
+
+  A second daemon has its OWN networks, so anything a hook reached by docker
+  network NAME on the main daemon would vanish at cutover. Nothing does today:
+  no entity declares `networks`, and github-state-mirror routing is an env var
+  (`GITHUB_API_URL`) pointing at a public name, not a network. Hooks need
+  outbound NAT and nothing else, which the bridge above provides. Re-check this
+  before the cutover if an entity has since added `networks`.
 - **`RequiresMountsFor=/mnt/pool`** in the unit — without it a boot race starts
   dockerd against an empty mountpoint and it creates its store on the root
   filesystem underneath, silently, which is the failure this daemon exists to
