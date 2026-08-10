@@ -56,6 +56,14 @@ func newTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *runn
 		Logger:   logger,
 		Version:  testVersion,
 	})
+	// Drain the runner before the TempDir above is removed. An accepted
+	// delivery starts an async run on context.Background(), so it outlives
+	// the test body and keeps creating its temp dir under `dir` — which
+	// t.TempDir()'s cleanup is meanwhile trying to delete ("unlinkat ...:
+	// directory not empty"). Registered here rather than per test because it
+	// is a property of this harness, not of any one case: every test that
+	// accepts a delivery had the same race waiting for it.
+	t.Cleanup(rn.Wait)
 	return s, reg, tr, rn
 }
 
