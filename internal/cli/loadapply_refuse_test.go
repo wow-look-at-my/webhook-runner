@@ -70,7 +70,7 @@ func newRefuseHarness(t *testing.T) *refuseHarness {
 		agg:  attention.New(),
 		rec:  events.NewRecorder(200),
 	}
-	h.load = buildLoadAndApply(root, h.reg, concurrency.NewManager(nil), nil, nil, ov, h.agg, nil, testLogger(), h.rec)
+	h.load = buildLoadAndApply(root, h.reg, concurrency.NewManager(nil), nil, nil, ov, h.agg, nil, true, testLogger(), h.rec)
 	return h
 }
 

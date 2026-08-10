@@ -37,8 +37,10 @@ const (
 type TokenFunc func(ctx context.Context) (string, error)
 
 // Client posts commit-status updates. A client with no credential still
-// works but every Post is a silent no-op, which is convenient when no hook
-// actually needs status updates.
+// works, but every Post returns before a request is built — so an entity
+// that DECLARED github_status is named on the needs-attention surface at
+// load instead (attention.GitHubStatusEntries). Dropping here silently is
+// what let a hook run green while publishing nothing.
 type Client struct {
 	tokenFn    TokenFunc
 	configured bool // a credential source exists, even if a fetch can fail
