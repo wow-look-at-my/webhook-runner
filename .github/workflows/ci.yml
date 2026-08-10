@@ -326,9 +326,7 @@ jobs:
             }
 
             if (!master.ok) {
-              // The deployable state exists, it just is not master yet. Say
-              // so plainly -- and say why merging out of order is survivable,
-              // so nobody re-invents a runbook the runtime already enforces.
+              // The deployable state exists, just not on master yet. Say why the wrong order is survivable, so nobody rebuilds a runbook the runtime enforces.
               core.notice(
                 `DEPLOY ORDER: merge wow-look-at-my/webhooks@${pairedRef} FIRST. ` +
                   `This binary cannot load webhooks master (it can load the paired tree), so until that lands ` +
