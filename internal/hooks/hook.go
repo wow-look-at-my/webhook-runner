@@ -71,12 +71,18 @@ type Hook struct {
 	// shipped next to the manifest, and handed to the container as a file
 	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
 	// hook-private config into the runner's own parsed keys. See settings.go.
-	Settings        json.RawMessage     `json:"settings,omitempty"`
-	User            string              `json:"user,omitempty"`
-	Workdir         string              `json:"workdir,omitempty"`
-	TimeoutRaw      string              `json:"timeout,omitempty"`
-	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
-	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
+	Settings json.RawMessage `json:"settings,omitempty"`
+	// manifestSettings preserves the document as hook.json declared it,
+	// before any operator override was merged into Settings. The editor
+	// needs it to answer "what would revert restore?" — reading Settings
+	// there would show the override itself. Unexported and json:"-": it is
+	// derived state, never part of the manifest contract.
+	manifestSettings json.RawMessage     `json:"-"`
+	User             string              `json:"user,omitempty"`
+	Workdir          string              `json:"workdir,omitempty"`
+	TimeoutRaw       string              `json:"timeout,omitempty"`
+	ExtraDockerArgs  []string            `json:"extra_docker_args,omitempty"`
+	GitHubStatus     *GitHubStatusConfig `json:"github_status,omitempty"`
 
 	// ConcurrencyGroup, when set, names a concurrency group the hook's runs
 	// must be scheduled through: at most that group's limit run at once and
