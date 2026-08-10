@@ -65,9 +65,15 @@ type Hook struct {
 	// shipped next to the manifest, and handed to the container as a file
 	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
 	// hook-private config into the runner's own parsed keys. See settings.go.
-	Settings        json.RawMessage     `json:"settings,omitempty"`
-	User            string              `json:"user,omitempty"`
-	Workdir         string              `json:"workdir,omitempty"`
+	Settings json.RawMessage `json:"settings,omitempty"`
+	// manifestSettings preserves the document as hook.json declared it,
+	// before any operator override was merged into Settings. The editor
+	// needs it to answer "what would revert restore?" — reading Settings
+	// there would show the override itself. Unexported and json:"-": it is
+	// derived state, never part of the manifest contract.
+	manifestSettings json.RawMessage `json:"-"`
+	User             string          `json:"user,omitempty"`
+	Workdir          string          `json:"workdir,omitempty"`
 
 	// TimeoutRaw, when set, is the absolute processing ceiling: the run is
 	// killed once it has been processing this long, regardless of output.
@@ -95,25 +101,6 @@ type Hook struct {
 	// hook that sets it.
 	IdleTimeoutRaw string `json:"idle_timeout,omitempty"`
 
-	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
-	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
-	// SrcRoot is the absolute path of the hooks repo's src/ directory when
-	// this hook was loaded from the src (SDK) layout, "" for legacy hooks.
-	// Set by the loader, never by JSON. It selects the docker build context
-	// (src/ instead of the hook dir) and widens the content hash to include
-	// src/sdk — see BuildContext and ContentHash.
-	SrcRoot         string              `json:"-"`
-	Schema          string              `json:"$schema,omitempty"`
-	Description     string              `json:"description"`
-	Command         []string            `json:"command,omitempty"`
-	Script          *Script             `json:"script,omitempty"`
-	Tests           [][]string          `json:"tests,omitempty"`
-	Networks        []string            `json:"networks,omitempty"`
-	Volumes         []string            `json:"volumes,omitempty"`
-	Env             map[string]string   `json:"env,omitempty"`
-	User            string              `json:"user,omitempty"`
-	Workdir         string              `json:"workdir,omitempty"`
-	TimeoutRaw      string              `json:"timeout,omitempty"`
 	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
 	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
 

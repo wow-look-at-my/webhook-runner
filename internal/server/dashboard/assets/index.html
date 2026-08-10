@@ -317,6 +317,20 @@
       </data-table>
     </section>
 
+    <!-- The hook's OWN configuration (hook.json `settings`), rendered as a
+         form built from the settings.schema.json it ships: types, ranges,
+         enums with per-value descriptions, and the description of every
+         field. Editing pins ONE field as an operator override; everything
+         else keeps coming from the manifest, and revert puts a pinned field
+         back. Hidden for a hook that ships no schema — it takes no
+         configuration, so there is nothing to show. The form is built by
+         ts/settingsform.ts (in the timeline.js bundle) and mounted from
+         dashboard.js, which owns this page's route. -->
+    <section id="app-settings-section" hidden>
+      <h2>Settings</h2>
+      <div id="app-settings"></div>
+    </section>
+
     <!-- Only shown for state:true hooks. Lists the hook's KV keys (from
          GET /kv/{namespace}); clicking a key fetches and shows its stored
          value. The admin port deliberately exposes values — it is

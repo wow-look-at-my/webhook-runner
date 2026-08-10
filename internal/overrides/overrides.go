@@ -48,6 +48,15 @@ type Store struct {
 	// (WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS, else the built-in default).
 	globalLimit int
 	globalSet   bool
+
+	// settings holds per-entity settings overrides: entity id -> RFC 6901
+	// JSON Pointer -> the operator's value. SPARSE by construction — an
+	// override pins one field, never the whole document — so a manifest
+	// edit to any field the operator has not touched still takes effect.
+	// Storing whole documents instead would silently freeze the rest of
+	// the entity's config at whatever it was when the operator last
+	// clicked, which is the failure mode this shape exists to avoid.
+	settings map[string]map[string]json.RawMessage
 }
 
 // fileFormat is the on-disk JSON shape.
@@ -68,6 +77,11 @@ type fileFormat struct {
 	// A pointer so absent (no override) and a stored value stay distinct;
 	// old binaries ignore the unknown field on read (downgrade-safe).
 	GlobalRunLimit *int `json:"global_run_limit,omitempty"`
+	// SettingsOverrides is entity id -> JSON Pointer -> value. Unknown to
+	// older binaries, which ignore it on read: a downgrade serves the
+	// manifest values, which is the correct degrade (the manifest is
+	// always a valid document; a half-understood override might not be).
+	SettingsOverrides map[string]map[string]json.RawMessage `json:"settings_overrides,omitempty"`
 }
 
 // Open loads the overrides file at path, creating the parent directory if
@@ -86,6 +100,7 @@ func Open(path string) (*Store, error) {
 		path:       path,
 		hookEnable: map[string]bool{},
 		limits:     map[string]int{},
+		settings:   map[string]map[string]json.RawMessage{},
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -114,7 +129,24 @@ func Open(path string) (*Store, error) {
 	if f.GlobalRunLimit != nil {
 		s.globalLimit, s.globalSet = *f.GlobalRunLimit, true
 	}
+	for id, ptrs := range f.SettingsOverrides {
+		if len(ptrs) == 0 {
+			continue
+		}
+		s.settings[id] = copyPointerMap(ptrs)
+	}
 	return s, nil
+}
+
+// copyPointerMap deep-copies a pointer->value map, bytes included: a
+// json.RawMessage is a []byte, so handing the caller the stored slice would
+// let a caller's mutation reach the store's state without the mutex.
+func copyPointerMap(in map[string]json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(in))
+	for ptr, v := range in {
+		out[ptr] = append(json.RawMessage(nil), v...)
+	}
+	return out
 }
 
 // HookOverride returns the operator's explicit enable/disable override for
@@ -354,6 +386,9 @@ func (s *Store) persistLocked() error {
 	if s.globalSet {
 		limit := s.globalLimit
 		f.GlobalRunLimit = &limit
+	}
+	if len(s.settings) > 0 {
+		f.SettingsOverrides = s.settings
 	}
 	f.DisabledHooks = s.disabledLocked()
 	data, err := json.MarshalIndent(f, "", "  ")

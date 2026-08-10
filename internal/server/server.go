@@ -372,6 +372,9 @@ func (s *Server) registerRoutes() {
 	// a concurrency group's limit live. Admin-port-only by design.
 	s.adminMux.HandleFunc("POST /hooks/{id}/disable", s.handleHookDisable)
 	s.adminMux.HandleFunc("POST /hooks/{id}/enable", s.handleHookEnable)
+	s.adminMux.HandleFunc("GET /hooks/{id}/settings", s.handleSettingsGet)
+	s.adminMux.HandleFunc("PUT /hooks/{id}/settings", s.handleSettingsSet)
+	s.adminMux.HandleFunc("DELETE /hooks/{id}/settings", s.handleSettingsClear)
 	// Managers: the first-class roster (state, instance, restarts, inbox,
 	// output tail), the kill switch, and the instance bounce.
 	s.adminMux.HandleFunc("GET /managers", s.handleListManagers)
