@@ -31,7 +31,7 @@ func TestSupervisorOnChangeCoversTheAdminSurface(t *testing.T) {
 	s := New(Options{Runner: fr, Events: events.NewRecorder(50)})
 	s.SetOnChange(func() { n.Add(1) })
 
-	m := testManager(t, "m1", `{"$schema":"x","enable":true,"command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":true,"command":["run"]}`)
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	assert.Positive(t, n.Load(), "Update declares the roster: the panel changed")
 
@@ -72,7 +72,7 @@ func TestOutputSinkSignalsEveryLine(t *testing.T) {
 	var n atomic.Int64
 	s := New(Options{})
 	s.SetOnChange(func() { n.Add(1) })
-	mg := &managed{id: "m1", inbox: NewInbox(0, nil)}
+	mg := &managed{id: "m1", inbox: NewInbox()}
 	sink := s.outputSink(mg)
 	for i := 0; i < 25; i++ {
 		sink("line")
@@ -85,7 +85,7 @@ func TestOutputSinkSignalsEveryLine(t *testing.T) {
 // supervisor with no onChange must behave identically.
 func TestOnChangeIsOptional(t *testing.T) {
 	s := New(Options{})
-	mg := &managed{id: "m1", inbox: NewInbox(0, nil)}
+	mg := &managed{id: "m1", inbox: NewInbox()}
 	mg.inbox.SetOnChange(s.changed) // nil fn behind it
 	s.outputSink(mg)("line")
 	mg.inbox.PushStart()
@@ -95,7 +95,7 @@ func TestOnChangeIsOptional(t *testing.T) {
 // The inbox seam fires with ib.mu released: a callback that reads the
 // inbox back (as a naive consumer would) must not deadlock.
 func TestInboxOnChangeRunsUnlocked(t *testing.T) {
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	var depth int

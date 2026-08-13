@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,34 @@ import (
 // second reload path) keeps the registry and the set of scheduled hooks from
 // ever drifting apart.
 //
+// THE FLEET IS ALL-OR-NOTHING, AND THAT IS THE POINT.
+//
+// A load in which ANY entity failed is REFUSED: nothing is swapped, the
+// previous registry keeps serving, and the caller gets an error. It used to
+// apply the partial set, which fails OPEN in the one situation that produces
+// fleet-wide load errors -- a binary and a tree that disagree about the
+// manifest contract. Every entity using the disputed field just stopped
+// serving, silently, with a "hooks reloaded" line to match; the reload gate
+// could not roll back, because on the binary-changed side the tree never
+// moved. Recovery was manual, and the damage was invisible until someone
+// noticed webhooks had stopped arriving.
+//
+// Refusing instead makes both deploy directions safe and loud:
+//
+//   - The TREE moved (a manifest using a field this binary lacks): the gate
+//     resets to the commit that was serving and applies that, so the fleet
+//     keeps running and the deploy is HELD, not half-applied.
+//   - The BINARY moved (a field this tree still uses was removed): the
+//     startup load fails and serve exits non-zero naming the entities, so
+//     the deploy fails visibly instead of coming up serving a fraction of
+//     the fleet.
+//
+// This is only safe to make strict because a load error cannot reach a
+// gated deploy by the normal path: the reload gate requires the hooks repo's
+// own CI green, and that CI runs `validate` through this same loader and the
+// same embedded schemas. What remains is the binary/tree contract mismatch --
+// exactly the case where serving "whatever still parses" is wrong.
+//
 // Operator overrides (ov) survive every reload by construction — the
 // disable gate reads the override store at dispatch time, and the manager
 // re-applies limit overrides inside Update — so a reload can never silently
@@ -38,14 +68,19 @@ import (
 // — serve-path only, exactly like the reload itself; `validate` stays
 // environment-independent. That per-reload re-derivation IS the clear
 // rule for those sources: fix the config, reload, entry gone.
-func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, sup *managers.Supervisor, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, logger *slog.Logger, rec *events.Recorder) func() {
+//
+// ghStatusConfigured is the same environment-dependent shape: an entity
+// declaring `github_status` on a runner with no GitHub credential has its
+// statuses dropped before a request is built, so the reload names it
+// rather than letting the entity run green and publish nothing.
+func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, sup *managers.Supervisor, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, ghStatusConfigured bool, logger *slog.Logger, rec *events.Recorder) func() error {
 	// Orphan announcements are deduped per target across reloads: one event
 	// when a reload first finds an override pointing at nothing, not one
 	// per reload tick. A target that comes back is forgotten here, so a
 	// later re-orphaning is announced again.
 	var orphanMu sync.Mutex
 	announced := map[string]struct{}{}
-	return func() {
+	return func() error {
 		// Layout detection runs on EVERY reload: a hooks-repo pull can
 		// restructure the tree (legacy <-> src), and the load must follow
 		// it without a restart.
@@ -100,9 +135,34 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			delete(loadedManagers, se.ManagerID)
 		}
 
+		// Operator settings overrides are applied to the freshly loaded
+		// entities, AFTER the manifest passed its own validation and
+		// BEFORE anything is served. Deliberately not part of `errs`: see
+		// applySettingsOverrides for why a bad override must not be able
+		// to refuse the tree.
+		applySettingsOverrides(loaded, loadedManagers, ov, logger, rec)
+
 		for _, e := range errs {
 			logger.Error("hook reload error", "err", e)
 			rec.Record("hook.load_error", e.Error(), nil)
+		}
+
+		// REFUSE: apply nothing. The per-entity errors still reach the
+		// attention surface (that is how an operator sees WHICH entity and
+		// WHICH field), but the serving registry, scheduler, concurrency
+		// config and manager set are left exactly as they were.
+		if len(errs) > 0 {
+			loadEnts, zeroEnts := attention.FromLoadErrors(errs)
+			agg.ReplaceSource(attention.SourceLoad, loadEnts)
+			agg.ReplaceSource(attention.SourceZeroHooks, zeroEnts)
+			agg.ReplaceSource(attention.SourceTreeRefused,
+				attention.TreeRefusedEntries(len(errs), serving(registry)))
+
+			refusal := refusedError{errs: errs, serving: serving(registry)}
+			logger.Error("hooks tree REFUSED — keeping the previous fleet",
+				"errors", len(errs), "serving_entities", refusal.serving)
+			rec.Record("hooks.refused", refusal.Error(), nil)
+			return refusal
 		}
 
 		// Extract the per-hook schedules from the (post-rejection) set so a
@@ -124,23 +184,121 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			sup.Update(loadedManagers)
 		}
 
-		// Re-derive the state-sourced attention entries from THIS load:
-		// the retained per-hook errors above, the zero-hooks guard, and
-		// the static resolvability probe of every loaded hook. Entries
-		// whose problem persisted keep their Since; fixed ones clear.
-		loadEnts, zeroEnts := attention.FromLoadErrors(errs)
-		agg.ReplaceSource(attention.SourceLoad, loadEnts)
-		agg.ReplaceSource(attention.SourceZeroHooks, zeroEnts)
+		// A clean load clears every entry the refusal path may have left:
+		// the problem is gone precisely because this tree loaded whole.
+		agg.ReplaceSource(attention.SourceLoad, nil)
+		agg.ReplaceSource(attention.SourceZeroHooks, nil)
+		agg.ReplaceSource(attention.SourceTreeRefused, nil)
+
 		attention.ApplyServeProbe(agg, loaded, secrets)
+		agg.ReplaceSource(attention.SourceGitHubStatus,
+			attention.GitHubStatusEntries(loaded, loadedManagers, ghStatusConfigured))
 
 		announceOrphanedOverrides(loaded, cfg, ov, &orphanMu, announced, logger, rec)
 
 		logger.Info("hooks reloaded", "count", len(loaded), "managers", len(loadedManagers), "layout", layout.String(), "concurrency_groups", len(cfg.Groups), "scheduled", len(schedules))
 		rec.Record("hooks.reloaded",
-			fmt.Sprintf("%d hook(s) + %d manager(s) loaded, %d concurrency group(s), %d scheduled, %d error(s)", len(loaded), len(loadedManagers), len(cfg.Groups), len(schedules), len(errs)),
+			fmt.Sprintf("%d hook(s) + %d manager(s) loaded, %d concurrency group(s), %d scheduled", len(loaded), len(loadedManagers), len(cfg.Groups), len(schedules)),
 			nil)
+		return nil
 	}
 }
+
+// applySettingsOverrides merges the operator's pinned settings fields into
+// the freshly loaded entities.
+//
+// A REJECTED OVERRIDE MUST NEVER REFUSE THE TREE. Everything else in this
+// file fails the whole load when one entity is bad, and that is right for a
+// manifest: the tree is reviewed, CI-gated, and rollback-able. An override
+// is none of those — it is a value typed into a dashboard and stored under
+// the data dir, and the tree it was valid against can move underneath it
+// (a manifest that renames the field, a schema that tightens the range).
+// If that could refuse the load, one stale override would take the entire
+// fleet down on the next reload, with the fix reachable only by hand-editing
+// overrides.json on the runner host. So the degrade is per entity: drop THAT
+// entity's overrides for this load, serve its manifest values, and be loud.
+//
+// Loud means all three surfaces an operator actually reads: the log, the
+// activity feed, and (via the settings API's `rejected` field) the editor
+// itself, which shows the exact schema error next to the field. The stored
+// override is NOT deleted — the operator may be mid-way through a manifest
+// change, and silently discarding what they typed is its own failure.
+func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[string]*hooks.Manager, ov *overrides.Store, logger *slog.Logger, rec *events.Recorder) {
+	all := ov.AllSettingsOverrides()
+	if len(all) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(all))
+	for id := range all {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		h, ok := loaded[id]
+		if !ok {
+			// A Manager embeds *Hook and shares the id namespace, so the
+			// same merge applies to both. An override for neither is
+			// orphaned, which announceOrphanedOverrides already reports.
+			m, mok := loadedManagers[id]
+			if !mok {
+				continue
+			}
+			h = m.Hook
+		}
+		if err := h.ApplySettingsOverrides(all[id]); err != nil {
+			logger.Error("settings override REJECTED — serving the manifest values for this entity",
+				"entity", id, "err", err)
+			rec.Record("settings.override_rejected",
+				fmt.Sprintf("%s: settings override rejected, serving the manifest values instead (the override is kept, not deleted): %v", id, err),
+				map[string]string{"hook": id})
+		}
+	}
+}
+
+// serving reports how many entities the registry is currently serving —
+// zero means nothing has ever been applied, i.e. this is the startup load.
+func serving(registry *hooks.Registry) int {
+	return len(registry.All()) + len(registry.AllManagers())
+}
+
+// refusedError is what a refused load returns. It names the count and the
+// first few offending entities, because the actionable part of a
+// binary/tree mismatch is WHICH field the two disagree about.
+type refusedError struct {
+	errs    []error
+	serving int
+}
+
+// refusedErrorSamples bounds the entity list in the message: a
+// contract mismatch fails EVERY entity, and a 13-line error string buries
+// the one sentence that says what to do.
+const refusedErrorSamples = 3
+
+func (e refusedError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d entit(y/ies) failed to load, so the tree was REFUSED as a whole", len(e.errs))
+	if e.serving > 0 {
+		fmt.Fprintf(&b, " (still serving the previous %d)", e.serving)
+	}
+	b.WriteString(": ")
+	for i, err := range e.errs {
+		if i >= refusedErrorSamples {
+			fmt.Fprintf(&b, "; +%d more", len(e.errs)-refusedErrorSamples)
+			break
+		}
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(err.Error())
+	}
+	if e.serving == 0 {
+		b.WriteString(" -- this is the startup load, so there is no previous fleet to fall back to; " +
+			"a binary that cannot load the deployed tree must not serve a fraction of it")
+	}
+	return b.String()
+}
+
+func (e refusedError) Unwrap() []error { return e.errs }
 
 // announceOrphanedOverrides compares the operator overrides against the
 // freshly loaded hooks/groups and records one override.orphaned event per

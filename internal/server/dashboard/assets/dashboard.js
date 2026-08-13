@@ -46,6 +46,111 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
+// --- GitHub slugs: clickable wherever they are shown -----------------------
+//
+// Run titles, log lines, event messages, wait reasons, KV values and commit
+// subjects are full of GitHub refs like "wow-look-at-my/go-s3-server#41", and
+// every one of them is a PR/issue an operator may want to open. linkifyGH()
+// splits a plain string into text nodes plus <a> links (new tab) and returns a
+// DocumentFragment — callers keep rendering TEXT, so nothing is ever parsed as
+// HTML and no payload can inject markup.
+//
+// The "#N" form is unambiguous, so it links EVERYWHERE, raw log output
+// included. A BARE "owner/repo" links only where the text is known to be
+// GitHub-derived (run titles, manager titles): in a log line "true/false" and
+// "and/or" are indistinguishable from a repo slug, and "src/hooks/pr-minder"
+// is a path — hence the edge tests below, which reject a slug that is part of
+// a longer path, word, URL or ref.
+//
+// The link target is the ISSUES url on purpose: GitHub redirects
+// /issues/{n} to /pull/{n} when the number is a pull request, so one form
+// covers both without the dashboard having to know which it is.
+const GH_SEG = "[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?";
+const GH_SLUG_RE = new RegExp(`(${GH_SEG})/(${GH_SEG})(?:#(\\d{1,9}))?`, "g");
+const GH_EDGE_BEFORE = /[A-Za-z0-9_./@#:+-]/;
+const GH_EDGE_AFTER = /[A-Za-z0-9_/@#-]/;
+
+function ghSlugHref(owner, repo, num) {
+  const base = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  return num ? `${base}/issues/${num}` : base;
+}
+
+function ghSlugLink(label, href, title) {
+  const a = el("a", {
+    href,
+    class: "gh-slug",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    title: title || `open ${label} on GitHub`,
+  }, label);
+  // Table rows are click targets themselves (a run row opens the modal, a KV
+  // row expands): a slug click must open the link ONLY, never also fire the
+  // row behind it.
+  a.addEventListener("click", (e) => e.stopPropagation());
+  return a;
+}
+
+// Bare http(s) URLs are linked too: messages that carry one (the reload
+// gate's held-commit run-details link, for instance) are useless as plain
+// text — the whole point is to click through. Trailing sentence punctuation
+// is excluded from the match so "see https://x/y." does not swallow the dot,
+// and a URL is matched BEFORE slug scanning so the "owner/repo" inside it is
+// never separately linked.
+const URL_RE = /https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]}]/g;
+
+function urlLink(url) {
+  return ghSlugLink(url, url, `open ${url}`);
+}
+
+function linkifyGH(text, opts) {
+  const s = text == null ? "" : String(text);
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  URL_RE.lastIndex = 0;
+  for (let m; (m = URL_RE.exec(s)) !== null; ) {
+    if (m.index > last) frag.appendChild(linkifySlugs(s.slice(last, m.index), opts));
+    frag.appendChild(urlLink(m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) frag.appendChild(linkifySlugs(s.slice(last), opts));
+  return frag;
+}
+
+function linkifySlugs(text, opts) {
+  const bareRepo = !!(opts && opts.bareRepo);
+  const s = text == null ? "" : String(text);
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  GH_SLUG_RE.lastIndex = 0;
+  for (let m; (m = GH_SLUG_RE.exec(s)) !== null; ) {
+    const [match, owner, repo, num] = m;
+    if (!num && !bareRepo) continue;
+    // Both halves must contain a letter: "24/7" and "07/2026" are not repos.
+    if (!/[A-Za-z]/.test(owner) || !/[A-Za-z]/.test(repo)) continue;
+    const before = m.index > 0 ? s[m.index - 1] : "";
+    const after = s[m.index + match.length] || "";
+    if (before && GH_EDGE_BEFORE.test(before)) continue;
+    if (after && GH_EDGE_AFTER.test(after)) continue;
+    if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
+    frag.appendChild(ghSlugLink(match, ghSlugHref(owner, repo, num)));
+    last = m.index + match.length;
+  }
+  if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+  return frag;
+}
+
+// linkifyGH for a title-ish field: bare "owner/repo" links too (run_title
+// templates render GitHub payload fields, not shell paths).
+function linkifyTitle(text) {
+  return linkifyGH(text, { bareRepo: true });
+}
+
+// Replace a node's text content with the linkified form (the textContent
+// assignment's stand-in wherever slugs can appear).
+function setLinkifiedText(node, text, opts) {
+  if (node) node.replaceChildren(linkifyGH(text, opts));
+}
+
 function fmtTime(s) {
   if (!s) return "";
   const d = new Date(s);
@@ -114,6 +219,91 @@ function runDuration(r) {
   return "—";
 }
 
+// The numeric spans behind runWaited/runDuration, for SORTING. The rendered
+// strings ("1.2s", "—") are what the operator reads; sorting by them would
+// put "10s" before "9s" and file every em-dash under punctuation. null =
+// unknown, which the table parks last in both directions.
+function waitedMs(r) {
+  const queued = new Date(r.started).getTime();
+  if (isNaN(queued)) return null;
+  if (tsPresent(r.started_at)) return new Date(r.started_at).getTime() - queued;
+  if (r.status === "pending") return Date.now() - queued;
+  return null;
+}
+
+function durationMs(r) {
+  if (tsPresent(r.started_at)) {
+    const startedAt = new Date(r.started_at).getTime();
+    return (tsPresent(r.finished) ? new Date(r.finished).getTime() : Date.now()) - startedAt;
+  }
+  if (r.status === "pending") return null;
+  const ranStatuses = ["success", "failure", "timeout"];
+  if (tsPresent(r.finished) && ranStatuses.includes(r.status)) {
+    return new Date(r.finished).getTime() - new Date(r.started).getTime();
+  }
+  return null;
+}
+
+// Milliseconds at the resolution startup actually costs. fmtDuration
+// bottoms out at whole seconds, which renders every container boot as
+// "0s" — the precision this instrumentation exists to recover.
+function fmtMs(ms) {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
+}
+
+// The hook's container-boot figure. Exact samples (hooks whose containers
+// report from the inside) are docker's own cost; bounded samples include
+// the hook runtime's cold start and are labeled "≤" so nobody quotes one
+// as the other. A hook with both kinds in its window shows both.
+function overheadBoot(o) {
+  if (!o) return "—";
+  const parts = [];
+  if (o.boot_sampled) {
+    parts.push(`${fmtMs(o.boot_avg_ms)} avg · ${fmtMs(o.boot_max_ms)} max (${o.boot_sampled} runs, docker only)`);
+  }
+  if (o.bound_sampled) {
+    parts.push(`≤ ${fmtMs(o.bound_avg_ms)} avg · ≤ ${fmtMs(o.bound_max_ms)} max (${o.bound_sampled} runs, docker + runtime)`);
+  }
+  return parts.length ? parts.join(" — ") : "—";
+}
+
+// The run's container-startup breakdown from its phase marks (see the
+// runner's runs.Phase). With the in-container mark, docker's own cost is
+// separated from the hook runtime's cold start; without it only the sum is
+// knowable and the row SAYS so — an unlabeled number would be read as
+// docker's cost, the conflation that made this unanswerable before.
+// Returns null when the run carries no marks: uninstrumented must look
+// uninstrumented, not instantaneous.
+function startupDetail(r) {
+  const ph = r.phases;
+  if (!ph) return null;
+  const at = (k) => {
+    if (!ph[k] || !tsPresent(ph[k])) return null;
+    const t = new Date(ph[k]).getTime();
+    return isNaN(t) ? null : t;
+  };
+  const spawned = at("spawned");
+  if (spawned === null) return null;
+  const entry = at("container_entry");
+  const firstOut = at("first_output");
+  const parts = [];
+  if (entry !== null) {
+    parts.push(`${fmtMs(entry - spawned)} docker`);
+    if (firstOut !== null && firstOut >= entry) parts.push(`${fmtMs(firstOut - entry)} runtime start`);
+  } else if (firstOut !== null) {
+    parts.push(`≤ ${fmtMs(firstOut - spawned)} docker + runtime (not separable: no in-container mark)`);
+  } else {
+    return null;
+  }
+  const slot = at("slot_acquired");
+  const inspected = at("inspected");
+  if (slot !== null && inspected !== null && inspected >= slot) {
+    parts.push(`${fmtMs(inspected - slot)} argv inspect`);
+  }
+  return parts.join(" · ");
+}
+
 // What a run is currently paused on (r.waiting_on), rendered inline on the
 // run row. Kind "wait" is a declared sleep (POST /wait) — "waiting Ns:
 // reason", remaining time computed client-side from `until` so it counts
@@ -147,10 +337,10 @@ function waitNote(r) {
     const left = new Date(w.until) - Date.now();
     const t = left > 0 ? fmtDuration(left) : "0s";
     return el("span", { class: "wait-note" },
-      `waiting ${t}${w.reason ? ": " + w.reason : ""}`);
+      linkifyGH(`waiting ${t}${w.reason ? ": " + w.reason : ""}`));
   }
   return el("span", { class: "wait-note" },
-    `waiting${w.reason ? ": " + w.reason : w.kind ? " (" + w.kind + ")" : ""}`);
+    linkifyGH(`waiting${w.reason ? ": " + w.reason : w.kind ? " (" + w.kind + ")" : ""}`));
 }
 
 // The modal's "Waiting" row: the same facts as waitNote but with the
@@ -441,7 +631,7 @@ function renderRunOutput(view) {
             t.label && t.label !== t.role ? el("span", { class: "turn-label" }, t.label) : null,
             clock ? el("span", { class: "turn-time" }, clock) : null,
           ),
-          el("pre", { class: "turn-body" }, body || "(empty)"),
+          el("pre", { class: "turn-body" }, linkifyGH(body || "(empty)")),
         )
       );
     }
@@ -452,7 +642,7 @@ function renderRunOutput(view) {
       log.appendChild(
         el("div", { class: "log-row" },
           el("span", { class: "log-time" }, fmtClock(currentRunTimes[i])),
-          el("span", { class: "log-text" }, currentRunLines[i]),
+          el("span", { class: "log-text" }, linkifyGH(currentRunLines[i])),
         )
       );
     }
@@ -509,10 +699,20 @@ const sectionFetchers = {
   runs: async () => {
     const runsSection = document.getElementById("runs-section");
     if (!runsSection || runsSection.hidden) return;
-    renderRuns(await fetchJSON("/runs?max=50"));
+    // ?exclude= so max=50 counts fifty runs the operator can actually see:
+    // hiding a status the fleet is flooded with must not spend the cap on
+    // the rows it then removes.
+    const exclude = [...runsHiddenStatuses()].sort().join(",");
+    renderRuns(await fetchJSON(`/runs?max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`));
   },
   images: async () => renderImages(await fetchJSON("/images")),
-  events: async () => renderEvents(await fetchJSON("/events?max=100")),
+  // exclude=run: run lifecycle is the runs table's job, and it does it
+  // better (one row per run with status, timings and output, instead of
+  // three log lines). The feed keeps everything that has NO run to show —
+  // rejected deliveries, image builds, unresolved env, reload/git activity
+  // — which is what makes it worth having beside the table. Excluded
+  // server-side, before max, so a run-heavy burst can never crowd those out.
+  events: async () => renderEvents(await fetchJSON("/events?max=100&exclude=run")),
   kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
   concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
   // First-class managers: the roster (+ the open detail, when a
@@ -532,6 +732,21 @@ function stampUpdated() {
     "updated " + new Date().toLocaleTimeString();
 }
 
+// Which section each periodic fetcher feeds, so refresh() can skip the ones
+// this page does not show. `hooks` is absent deliberately: it publishes the
+// roster the KV render keys off and fills the hook nav, so it runs on every
+// page regardless of whether its own section is visible. `attention` is
+// absent for the same reason -- refresh() calls it unconditionally.
+const FETCHER_SECTIONS = {
+  runs: "runs-section",
+  managers: "managers-section",
+  images: "images-section",
+  events: "events-section",
+  kv: "kv-section",
+  concurrency: "concurrency-section",
+  reload: "reload-section",
+};
+
 async function refresh() {
   try {
     await fetchJSON("/health");
@@ -548,16 +763,18 @@ async function refresh() {
     } else {
       // hooks first: the kv render keys off the roster it publishes.
       await sectionFetchers.hooks();
-      await Promise.all([
-        sectionFetchers.attention(),
-        sectionFetchers.runs(),
-        sectionFetchers.managers(),
-        sectionFetchers.images(),
-        sectionFetchers.events(),
-        sectionFetchers.kv(),
-        sectionFetchers.concurrency(),
-        sectionFetchers.reload(),
-      ]);
+      // Only the sections this page actually shows. Every tick used to
+      // refetch all eight regardless, so sitting on the Hooks repo page
+      // pulled /events, /images, /managers, /kv and /concurrency forever --
+      // work whose results were rendered into hidden sections nobody was
+      // looking at. attention is exempt: its banner lives outside <main>
+      // and shows on every page.
+      const on = new Set(PAGE_SECTIONS[currentPage()] || PAGE_SECTIONS.overview);
+      const wanted = [sectionFetchers.attention()];
+      for (const [name, section] of Object.entries(FETCHER_SECTIONS)) {
+        if (on.has(section)) wanted.push(sectionFetchers[name]());
+      }
+      await Promise.all(wanted);
     }
     stampUpdated();
   } catch (e) {
@@ -747,24 +964,50 @@ function hookSwitch(id, disabled) {
   return sw;
 }
 
+
+// The hooks roster, as a <data-table>. Searchable because a fleet this size
+// is past scanning by eye, and the query covers the description too — which
+// is where a hook says what it is for. No row-click: the row carries a
+// link, a kill switch and a copyable endpoint, so "click anywhere" would
+// fight all three.
 function renderHooks(hooks) {
-  const tbody = document.querySelector("#hooks-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("hooks-empty").hidden = hooks.length > 0;
-  for (const h of hooks) {
-    tbody.appendChild(
-      el("tr", null,
-        // Each hook is an "app": its ID links to the per-hook drill-down.
-        el("td", null,
-          el("a", { href: hookHref(h.id), class: "hook-link" },
-            el("code", null, h.id))),
-        el("td", null, h.description || ""),
-        el("td", null, (h.synchronous ? "sync" : "async") + (h.schedule ? ` · every ${h.schedule}` : "")),
-        el("td", { class: "row-actions" }, hookSwitch(h.id, h.disabled)),
-        el("td", null, ...triggerPath(h.id)),
-      )
-    );
-  }
+  const t = document.getElementById("hooks-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "id",
+      label: "ID",
+      // Each hook is an "app": its ID links to the per-hook drill-down.
+      render: (h) => el("a", { href: hookHref(h.id), class: "hook-link" }, el("code", null, h.id)),
+    },
+    { key: "description", label: "Description", render: (h) => linkifyGH(h.description || "") },
+    {
+      key: "mode",
+      label: "Mode",
+      value: (h) => (h.synchronous ? "sync" : "async") + (h.schedule ? ` every ${h.schedule}` : ""),
+      render: (h) => (h.synchronous ? "sync" : "async") + (h.schedule ? ` \u00b7 every ${h.schedule}` : ""),
+    },
+    {
+      key: "disabled",
+      label: "Status",
+      className: "row-actions",
+      // Sorts and searches by STATE (so a disabled hook can be found); the
+      // cell itself is the live switch, which has no sortable text.
+      value: (h) => (h.disabled ? 1 : 0),
+      text: (h) => (h.disabled ? "disabled" : "enabled"),
+      render: (h) => hookSwitch(h.id, h.disabled),
+    },
+    {
+      key: "endpoint",
+      label: "Endpoint",
+      sortable: false,
+      text: (h) => `/hook/${h.id}`,
+      render: (h) => el("span", null, ...triggerPath(h.id)),
+    },
+  ];
+  t.rowId = (h) => h.id;
+  t.styleText = SHARED_TABLE_CSS;
+  t.rows = hooks || [];
 }
 
 // --- Managers: the first-class persistent-watcher roster --------------------
@@ -848,39 +1091,75 @@ function renderNavManagers(list) {
   updateNav(currentPage());
 }
 
+
+// The manager roster, as a <data-table>. The whole row navigates to the
+// manager's page — the same destination its title link carries, so a click
+// landing on either is correct — while the switch and the restart button
+// stop their own clicks from reaching the row.
 function renderManagers(list) {
   list = list || [];
   renderNavManagers(list);
-  const tbody = document.querySelector("#managers-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("managers-empty").hidden = list.length > 0;
-  document.getElementById("managers-table").hidden = list.length === 0;
-  for (const m of list) {
-    const tr = el("tr", null,
-      el("td", null,
-        el("a", { href: managerHref(m.id), class: "hook-link" },
-          el("code", null, m.title || m.id))),
-      el("td", { class: "row-actions" }, managerSwitch(m.id, m.disabled)),
-      el("td", null, managerStateChip(m)),
-      el("td", null, m.instance_id
+  const t = document.getElementById("managers-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "id",
+      label: "Manager",
+      value: (m) => m.title || m.id,
+      // Deliberately NOT linkified: this cell's whole job is the link to
+      // the manager's page (an <a> can't nest another). The drill-down's
+      // Title row carries the same text with its slugs clickable.
+      render: (m) => el("a", { href: managerHref(m.id), class: "hook-link" },
+        el("code", null, m.title || m.id)),
+    },
+    {
+      key: "disabled",
+      label: "Status",
+      className: "row-actions",
+      value: (m) => (m.disabled ? 1 : 0),
+      text: (m) => (m.disabled ? "disabled" : "enabled"),
+      render: (m) => managerSwitch(m.id, m.disabled),
+    },
+    { key: "state", label: "State", render: (m) => managerStateChip(m) },
+    {
+      key: "instance_id",
+      label: "Instance",
+      render: (m) => (m.instance_id
         ? el("code", { title: m.instance_id }, m.instance_id.slice(0, 8))
         : "—"),
-      el("td", null, String(m.restarts)),
-      el("td", null, String(m.inbox_depth)),
-      el("td", null, managerLastEvent(m)),
-      el("td", { class: "row-actions" },
-        el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart")),
-    );
-    tr.querySelector("button").addEventListener("click", (e) => {
-      e.stopPropagation();
-      restartManager(m.id);
+    },
+    { key: "restarts", label: "Restarts", align: "end", render: (m) => String(m.restarts) },
+    { key: "inbox_depth", label: "Inbox", align: "end", render: (m) => String(m.inbox_depth) },
+    { key: "last_event", label: "Last event", render: (m) => managerLastEvent(m) },
+    {
+      key: "restart",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (m) => {
+        const b = el("button", { class: "toggle-btn", title: "Gracefully stop the live instance; the supervisor starts a fresh one" }, "Restart");
+        b.addEventListener("click", (e) => {
+          // Without this the click also reaches the row and navigates away
+          // from the page the operator is acting on.
+          e.stopPropagation();
+          restartManager(m.id);
+        });
+        return b;
+      },
+    },
+  ];
+  t.rowId = (m) => m.id;
+  t.styleText = SHARED_TABLE_CSS;
+  // Bound once: the element outlives every render, so re-adding per render
+  // would stack a handler per refresh.
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) location.hash = managerHref(e.detail.id);
     });
-    tr.addEventListener("click", (ev) => {
-      if (ev.target.closest("a, label, button")) return;
-      location.hash = managerHref(m.id);
-    });
-    tbody.appendChild(tr);
   }
+  t.rows = list;
   // The drill-down only renders while its fragment is open.
   if (!currentManagerId()) document.getElementById("manager-detail").hidden = true;
 }
@@ -961,8 +1240,8 @@ function renderManagerDetail(d) {
     meta.appendChild(el("dt", null, k));
     meta.appendChild(el("dd", null, v));
   };
-  row("Description", d.description);
-  row("Title", d.title);
+  row("Description", d.description ? linkifyGH(d.description) : "");
+  row("Title", d.title ? linkifyTitle(d.title) : "");
   row("Instance", d.instance_id ? el("code", null, d.instance_id) : "none");
   if (tsPresent(d.instance_started)) {
     // Tagged so the local uptime ticker can advance it between refetches —
@@ -973,7 +1252,7 @@ function renderManagerDetail(d) {
   }
   row("Restarts since boot", String(d.restarts));
   if (d.consecutive_failures) row("Consecutive failures", String(d.consecutive_failures));
-  row("Last error", d.last_error);
+  row("Last error", d.last_error ? linkifyGH(d.last_error) : "");
   row("Last stop reason", d.last_stop_reason);
   row("Inbox depth", String(d.inbox_depth));
   if (tsPresent(d.last_delivered)) row("Last delivery", fmtTime(d.last_delivered));
@@ -988,7 +1267,9 @@ function renderManagerDetail(d) {
   // refetches on every pushed output line, and yanking a scrolled-back
   // reader to the bottom once a second would make history unreadable.
   const stick = managerOutputAtBottom(out);
-  out.textContent = managerOutputText(managerDetailOutputLines);
+  // Rendered as linkified TEXT, not innerHTML — the copy button still
+  // assembles its text from the data, so what is copied is unchanged.
+  setLinkifiedText(out, managerOutputText(managerDetailOutputLines));
   if (stick) out.scrollTop = out.scrollHeight;
 }
 
@@ -1041,8 +1322,34 @@ function attentionSourceLabel(source) {
   }
 }
 
-function renderAttention(data) {
-  const entries = (data && data.entries) || [];
+
+// A per-row "copy this record as JSON" control. A table cell is a curated,
+// linkified, truncated view; the JSON is the record itself, including the
+// fields no column renders — an attention entry's `key` above all, which is
+// what identifies the problem across re-derivations and is what you need
+// when reporting one. stopPropagation because these rows navigate on click.
+function copyJSONButton(value, title) {
+  const btn = el("button", { class: "toggle-btn", type: "button", title }, "Copy JSON");
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const ok = await copyToClipboard(JSON.stringify(value, null, 2));
+    btn.textContent = ok ? "Copied!" : "Copy failed";
+    btn.classList.toggle("copied", ok);
+    setTimeout(() => {
+      btn.textContent = "Copy JSON";
+      btn.classList.remove("copied");
+    }, 1500);
+  });
+  return btn;
+}
+
+// Takes the GET /attention RESPONSE OBJECT ({count, entries}), not a bare
+// array: reading `.length` off the object yielded `undefined problems need
+// attention` on a banner that could never hide, above a table with nothing
+// in it. An array is still accepted so a caller passing entries directly
+// (the tests do) works, but the endpoint's own shape is the contract.
+function renderAttention(payload) {
+  const entries = Array.isArray(payload) ? payload : (payload && payload.entries) || [];
   const banner = document.getElementById("attention-banner");
   banner.hidden = entries.length === 0;
   document.getElementById("attention-banner-text").textContent =
@@ -1052,28 +1359,55 @@ function renderAttention(data) {
 
   const section = document.getElementById("attention-section");
   section.hidden = entries.length === 0;
-  const tbody = document.querySelector("#attention-table tbody");
-  tbody.innerHTML = "";
-  for (const e of entries) {
-    const tr = el("tr", { class: e.hook ? "attention-hook-row" : "" },
-      el("td", { class: "attention-msg" }, e.message),
-      el("td", null, e.hook
+  const t = document.getElementById("attention-table");
+  if (!t) return;
+  t.columns = [
+    { key: "message", label: "Problem", className: "attention-msg", render: (e) => linkifyGH(e.message) },
+    {
+      key: "hook",
+      label: "Hook",
+      render: (e) => (e.hook
         ? el("a", { href: hookHref(e.hook), class: "hook-link" }, el("code", null, e.hook))
         : "—"),
-      el("td", null, attentionSourceLabel(e.source)),
+    },
+    { key: "source", label: "Source", value: (e) => attentionSourceLabel(e.source) },
+    {
+      key: "since",
+      label: "Active for",
+      className: "attention-age",
       // Age since the problem FIRST became active (stable across
-      // re-derivations while it persists); tooltip = the absolute time.
-      el("td", { class: "attention-age", title: fmtTime(e.since) },
+      // re-derivations while it persists), so sorting by it puts the
+      // longest-standing problem at one end. Sorts on the instant, not the
+      // rendered duration, which would order "9m" after "10s".
+      value: (e) => Date.parse(e.since),
+      text: (e) => fmtTime(e.since),
+      render: (e) => el("span", { title: fmtTime(e.since) },
         fmtDuration(Date.now() - new Date(e.since)) || "0s"),
-    );
-    if (e.hook) {
-      tr.addEventListener("click", (ev) => {
-        if (ev.target.closest("a")) return;
-        location.hash = hookHref(e.hook);
-      });
-    }
-    tbody.appendChild(tr);
+    },
+    {
+      key: "copy",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (e) => copyJSONButton(e,
+        "Copy this problem as JSON — including its stable key and the untruncated message"),
+    },
+  ];
+  // Entries without a hook are server-wide: they have nowhere to click
+  // through to, so only hook-scoped rows get the class the CSS marks as
+  // navigable.
+  t.rowClass = (e) => (e.hook ? "attention-hook-row" : "");
+  t.rowId = (e) => e.hook || "";
+  t.styleText = SHARED_TABLE_CSS + ATTENTION_TABLE_CSS;
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      // A server-wide entry has no id and no destination.
+      if (e.detail?.id) location.hash = hookHref(e.detail.id);
+    });
   }
+  t.rows = entries;
 }
 
 // The banner's "view" jump routes to the dedicated Attention page — the
@@ -1122,12 +1456,6 @@ async function clearLimitOverride(name, declared) {
   refresh();
 }
 
-// Which concurrency group's drill-down row is expanded (persists across the
-// poll's re-render, same pattern as appKVOpenKey).
-let concurrencyOpenGroup = null;
-// Whether the global cap's holders/queue drill-down is expanded.
-let concurrencyGlobalOpen = false;
-
 // --- The GLOBAL run cap: the ceiling over ALL runs ------------------------
 //
 // Rendered as its own labeled block ABOVE the groups so it cannot be
@@ -1174,202 +1502,475 @@ async function clearGlobalCapOverride(def) {
 }
 
 // One table row mirroring the group rows (same columns, same drill-down —
-// groupDetailRow reads holders/waiting_runs from the cap's entry too).
+// groupDetailContent reads holders/waiting_runs from the cap's entry too).
 // Hidden entirely when the server doesn't report a cap (older server).
+
+// The server-wide run cap, as a one-row <data-table>. It is a table and not
+// a definition list because it IS the same shape as a concurrency group —
+// same columns, same drill-down — and the operator reads the two together.
 function renderGlobalCap(g) {
   const wrap = document.getElementById("concurrency-global-cap");
   if (!wrap) return;
   wrap.hidden = !g;
   if (!g) return;
-  const tbody = document.querySelector("#concurrency-global-table tbody");
-  tbody.innerHTML = "";
-  const editBtn = el("button", {
-    class: "toggle-btn",
-    title: "Override the global run cap live (persists across reloads/restarts until reverted)",
-  }, "Override…");
-  editBtn.addEventListener("click", () => overrideGlobalCap(g.default, g.limit));
-  const actions = el("td", { class: "row-actions" }, editBtn);
-  if (g.overridden) {
-    const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the default cap (${g.default}) takes effect` }, "Revert");
-    revertBtn.addEventListener("click", () => clearGlobalCapOverride(g.default));
-    actions.appendChild(revertBtn);
-  }
-  const tr = el("tr", { class: concurrencyGlobalOpen ? "group-open" : "",
-    title: "click to see which runs hold global slots and which are queued" },
-    el("td", null, el("strong", null, "All runs")),
-    el("td", null, String(g.default)),
-    el("td", null,
-      String(g.limit),
-      g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-    ),
-    el("td", null, String(g.active)),
-    el("td", null, String(g.waiting)),
-    actions,
-  );
-  tr.addEventListener("click", (e) => {
-    if (e.target.closest("button")) return;
-    concurrencyGlobalOpen = !concurrencyGlobalOpen;
-    refresh();
+  const t = document.getElementById("concurrency-global-table");
+  if (!t) return;
+  t.columns = concurrencyColumns({
+    nameLabel: "Scope",
+    name: () => el("strong", null, "All runs"),
+    declaredOf: (row) => row.default,
+    onOverride: (row) => overrideGlobalCap(row.default, row.limit),
+    onRevert: (row) => clearGlobalCapOverride(row.default),
+    revertTitle: (row) => `Clear the override; the default cap (${row.default}) takes effect`,
+    overrideTitle: () => "Override the global run cap live (persists across reloads/restarts until reverted)",
   });
-  tbody.appendChild(tr);
-  if (concurrencyGlobalOpen) tbody.appendChild(groupDetailRow(g));
+  t.rowId = () => "global";
+  t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
+  if (componentSupports(t, "detailFor", "The global cap's holders/queue drill-down")) {
+    t.detailFor = (row) => groupDetailContent(row);
+  }
+  t.rows = [g];
 }
 
+// The columns shared by the global cap and the named groups: the two differ
+// only in what names the row and where its declared limit comes from, so
+// they are one declaration parameterised rather than two that drift.
+function concurrencyColumns(o) {
+  return [
+    { key: "name", label: o.nameLabel, value: (row) => row.name || "All runs", render: o.name || ((row) => el("code", null, row.name)) },
+    { key: "declared", label: "Declared", align: "end", value: o.declaredOf, render: (row) => String(o.declaredOf(row)) },
+    {
+      key: "limit",
+      label: "Effective",
+      align: "end",
+      value: (row) => row.limit,
+      text: (row) => (row.overridden ? `${row.limit} overridden` : String(row.limit)),
+      render: (row) => el("span", null,
+        String(row.limit),
+        row.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
+      ),
+    },
+    { key: "active", label: "Active", align: "end", value: (row) => row.active, render: (row) => String(row.active) },
+    { key: "waiting", label: "Waiting", align: "end", value: (row) => row.waiting, render: (row) => String(row.waiting) },
+    {
+      key: "actions",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (row) => {
+        const box = el("span", { class: "row-actions" });
+        const edit = el("button", { class: "toggle-btn", title: o.overrideTitle(row) }, "Override…");
+        // Without stopPropagation the click also toggles the row's
+        // drill-down underneath the prompt.
+        edit.addEventListener("click", (e) => { e.stopPropagation(); o.onOverride(row); });
+        box.appendChild(edit);
+        if (row.overridden) {
+          const revert = el("button", { class: "toggle-btn", title: o.revertTitle(row) }, "Revert");
+          revert.addEventListener("click", (e) => { e.stopPropagation(); o.onRevert(row); });
+          box.appendChild(revert);
+        }
+        return box;
+      },
+    },
+  ];
+}
+
+
+// The named concurrency groups, as a <data-table>. Clicking a row expands
+// the same drill-down as before — but the expansion now lives in the
+// component, so opening one no longer re-renders the whole page (which is
+// what the old concurrencyOpenGroup + refresh() dance did, losing scroll
+// position and any open prompt every time).
 function renderConcurrency(data) {
   // {global, groups} from cap-aware servers; a bare array from older ones
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
   renderGlobalCap(Array.isArray(data) ? null : data && data.global);
-  const tbody = document.querySelector("#concurrency-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("concurrency-empty").hidden = groups.length > 0;
-  for (const g of groups) {
-    const editBtn = el("button", {
-      class: "toggle-btn",
-      title: `Override the limit for ${g.name} live (persists across reloads/restarts until reverted)`,
-    }, "Override…");
-    editBtn.addEventListener("click", () => overrideLimit(g.name, g.declared, g.limit));
-    const actions = el("td", { class: "row-actions" }, editBtn);
-    if (g.overridden) {
-      const revertBtn = el("button", { class: "toggle-btn", title: `Clear the override; the declared limit (${g.declared}) takes effect` }, "Revert");
-      revertBtn.addEventListener("click", () => clearLimitOverride(g.name, g.declared));
-      actions.appendChild(revertBtn);
-    }
-    const open = concurrencyOpenGroup === g.name;
-    const tr = el("tr", { class: open ? "group-open" : "",
-      title: "click to see which runs hold this group's slots and which are queued" },
-      el("td", null, el("code", null, g.name)),
-      el("td", null, String(g.declared)),
-      el("td", null,
-        String(g.limit),
-        g.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
-      ),
-      el("td", null, String(g.active)),
-      el("td", null, String(g.waiting)),
-      actions,
-    );
-    // The whole row toggles the drill-down; the override buttons keep
-    // their own clicks.
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest("button")) return;
-      concurrencyOpenGroup = open ? null : g.name;
-      refresh();
-    });
-    tbody.appendChild(tr);
-    if (open) tbody.appendChild(groupDetailRow(g));
+  const t = document.getElementById("concurrency-table");
+  if (!t) return;
+  t.columns = concurrencyColumns({
+    nameLabel: "Group",
+    declaredOf: (row) => row.declared,
+    onOverride: (row) => overrideLimit(row.name, row.declared, row.limit),
+    onRevert: (row) => clearLimitOverride(row.name, row.declared),
+    revertTitle: (row) => `Clear the override; the declared limit (${row.declared}) takes effect`,
+    overrideTitle: (row) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
+  });
+  t.rowId = (row) => row.name;
+  t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
+  if (componentSupports(t, "detailFor", "The per-group holders/queue drill-down")) {
+    t.detailFor = (row) => groupDetailContent(row);
   }
+  t.rows = groups;
 }
 
 // The expanded row under a group: which runs hold its slots and which are
 // queued, in order — each a run link into the run modal. This is the
 // operator's self-serve answer to "the group reads 3/3 with 4 waiting;
 // WHAT is holding the slots?".
-function groupDetailRow(g) {
-  const td = el("td", { colspan: "6" });
-  const row = el("tr", { class: "group-detail-row" }, td);
+
+// The expanded detail under a group: which runs hold its slots and which
+// are queued, in order — each a run link into the run modal. This is the
+// operator's self-serve answer to "the group reads 3/3 with 4 waiting;
+// WHAT is holding the slots?".
+//
+// Returns the CONTENT only: <data-table> owns the row and the
+// column-spanning cell it goes in, so this can never disagree with the
+// table's column count the way a hardcoded colspan did.
+function groupDetailContent(g) {
+  const box = el("div", { class: "group-detail" });
   const runLine = (r, note) => el("div", { class: "group-run" },
     runLink(r.run_id),
     " ",
     r.hook_id ? el("code", null, r.hook_id) : null,
-    r.title ? el("span", { class: "group-run-title" }, " " + r.title) : null,
+    r.title ? el("span", { class: "group-run-title" }, linkifyTitle(" " + r.title)) : null,
     r.status ? el("span", { class: "status " + r.status, style: "margin-left: 0.4rem" }, r.status) : null,
     el("span", { class: "group-run-since" }, note),
   );
   const holders = g.holders || [];
   const waiting = g.waiting_runs || [];
   if (!holders.length && !waiting.length) {
-    td.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
-    return row;
+    box.appendChild(el("div", { class: "group-detail-head" }, "No runs holding or waiting."));
+    return box;
   }
   if (holders.length) {
-    td.appendChild(el("div", { class: "group-detail-head" },
+    box.appendChild(el("div", { class: "group-detail-head" },
       `Holding ${holders.length === 1 ? "the slot" : holders.length + " slots"}:`));
     for (const h of holders) {
-      td.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
+      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
     }
   }
   if (waiting.length) {
-    td.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
+    box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
     waiting.forEach((r, i) => {
-      td.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
+      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
     });
   }
-  return row;
+  return box;
 }
 
 // Run cell for the tables: the friendly title (feature-detected — an
 // additive /runs field older servers simply don't send) leads when present,
 // with the full run id demoted to a small muted second line; untitled runs
 // keep the plain id code exactly as before.
+// A column's render() supplies the CELL'S CONTENT — <data-table> builds the
+// <td> itself. Returning one here nested a cell inside a cell, which then
+// took the component's own td padding and bottom border: a boxed, ragged
+// run-id column that pushed every titled row out of line with its
+// neighbours.
 function runCell(r) {
   const code = el("code", null, r.id);
-  if (!r.title) return el("td", null, code);
-  return el("td", null,
-    el("div", { class: "run-title" }, r.title),
+  if (!r.title) return code;
+  return el("div", null,
+    el("div", { class: "run-title" }, linkifyTitle(r.title)),
     el("div", { class: "run-id-sub" }, code),
   );
 }
 
+// Cell styling shared by every converted <data-table>, passed INTO its
+// shadow root through the styleText hatch. These cells are built by this
+// file but live inside that root, where dashboard.css cannot reach them;
+// the COLORS still come from the page, because custom properties inherit
+// through the shadow boundary. Keep in sync with the matching rules in
+// dashboard.css — the same states, drawn in two places by necessity.
+const SHARED_TABLE_CSS = `
+code { font-size: 0.9em; }
+/* The filter bar right-aligns its "showing N of M" with an auto margin. With
+   no count to show, that margin strands whatever follows it (the clear
+   button) against the far edge with a bar's width of nothing between. */
+.count:empty { margin-left: 0.5rem; }
+/* Run status, wherever one is drawn: the runs tables and the concurrency
+   drill-down's in-flight rows. One copy, because two drifted. */
+.status { font-weight: 500; }
+.status.success { color: var(--success); }
+.status.failure, .status.error, .status.timeout { color: var(--failure); }
+.status.running { color: var(--running); }
+.status.pending { color: var(--pending); }
+.status.skipped { color: var(--skipped); }
+/* Every link in a cell reads like every link on the page: accent, underlined
+   on hover only. The page's own rule stops at the shadow boundary, so a
+   linkified slug in a run title was falling back to the browser default —
+   a bright blue underlined string in the middle of a table row. */
+a { color: var(--accent); text-decoration: none; font: inherit; }
+a:hover { text-decoration: underline; }
+.badge { display: inline-block; padding: 0 0.4em; border-radius: 3px; font-size: 0.85em; border: 1px solid var(--border); }
+.badge.ok { color: var(--success); border-color: var(--success); }
+.badge.warn { color: var(--running); border-color: var(--running); }
+.badge.bad { color: var(--failure); border-color: var(--failure); }
+.row-actions { white-space: nowrap; }
+.toggle-btn { font: inherit; font-size: 0.85em; padding: 0.1em 0.5em; cursor: pointer; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+.toggle-btn:hover { border-color: var(--accent); }
+.toggle-btn.copied { border-color: var(--success); color: var(--success); }
+.switch { display: inline-flex; align-items: center; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-slider { position: relative; width: 2em; height: 1.1em; border-radius: 1em; background: var(--muted); transition: background 0.15s; }
+.switch-slider::before { content: ""; position: absolute; top: 0.15em; left: 0.15em; width: 0.8em; height: 0.8em; border-radius: 50%; background: var(--panel); transition: transform 0.15s; }
+.switch input:checked + .switch-slider { background: var(--success); }
+.switch input:checked + .switch-slider::before { transform: translateX(0.9em); }
+.switch input:focus-visible + .switch-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+.images-on-disk { color: var(--muted); font-size: 0.9em; }
+`;
+
+// Feature-detect a capability on a RUNTIME-IMPORTED component, and say so
+// when it is missing.
+//
+// The components come from js-snippets' library site at master head, so this
+// page can be newer than the bundle a browser has. Assigning an unknown
+// property to a custom element does NOT fail — JS quietly creates an
+// expando — so a drill-down wired to a component that predates it would
+// simply never open: no error, no warning, a table that looks finished.
+// That is not graceful degradation, it is the page lying about what it can
+// do. Detect BEFORE assigning (assigning is what would make a later `in`
+// check pass), and put the reason on screen next to the thing that stopped
+// working.
+function componentSupports(elm, prop, what) {
+  if (prop in elm) return true;
+  const id = `${elm.id}-degraded`;
+  if (!document.getElementById(id)) {
+    elm.insertAdjacentElement("afterend", el("p", { id, class: "empty degraded-note" },
+      `${what} unavailable: the loaded <${elm.localName}> is older than this page ` +
+      `(no "${prop}"). Reload to pick up the current component; if it persists, the ` +
+      `library site is serving a stale build.`));
+  }
+  return false;
+}
+
+// The concurrency tables' drill-down and the KV value box, inside the
+// component's shadow root.
+const CONCURRENCY_TABLE_CSS = `
+.group-detail-head { color: var(--muted); font-size: 0.85em; margin: 0.3em 0 0.2em; }
+.group-run { font-size: 0.9em; padding: 0.1em 0; }
+.group-run-title { color: var(--fg); }
+.group-run-since { color: var(--muted); }
+`;
+
+const KV_TABLE_CSS = `
+.kv-value-meta { color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
+.kv-value { margin: 0; padding: 0.5em; background: var(--bg, #0d1117); border: 1px solid var(--border); border-radius: 4px; max-height: 24em; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85em; }
+`;
+
+// Attention rows: only hook-scoped ones navigate, so only they get the
+// pointer the click promises.
+const ATTENTION_TABLE_CSS = `
+/* A loader error quotes the reason it failed, so the message wraps instead
+   of stretching the table off-screen. */
+.attention-msg { font-weight: 500; max-width: 46rem; overflow-wrap: anywhere; }
+.attention-age { color: var(--muted); white-space: nowrap; }
+/* Only a hook-scoped row has somewhere to click through to; a server-wide
+   entry must not wear the pointer the component gives every row of a table
+   that has a row-click listener at all. */
+tbody tr { cursor: default; }
+tbody tr.attention-hook-row { cursor: pointer; }
+`;
+
+// The live commit is the one the operator is looking for; mark it.
+const RELOAD_TABLE_CSS = `
+tbody tr.reload-live-commit { background: var(--panel); }
+.reload-commit-subject { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+`;
+
+// What the runs tables add on top of the shared cell styling, passed INTO
+// <data-table>'s shadow root through its styleText hatch: the cells are built
+// by this file but live inside that root, where dashboard.css cannot reach
+// them. The COLORS still come from the page — custom properties inherit
+// through the shadow boundary — so only the SELECTORS are restated here.
+const RUNS_TABLE_CSS = SHARED_TABLE_CSS + `
+.wait-note { margin-left: 0.5rem; font-weight: 400; font-style: italic; font-size: 0.85em; color: var(--muted); }
+/* A titled run leads with the title and DEMOTES its id to a second line —
+   the id is the fallback name, not the headline. */
+.run-title { font-weight: 500; }
+.run-id-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
+/* Every row here opens a run. */
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--panel); }
+`;
+
+// The overview runs list, as a <data-table>. Columns declare how to SORT
+// (value), how to DISPLAY (render) and how to SEARCH (text) separately —
+// the queued column sorts by epoch millis while showing a locale string,
+// which a single accessor could not do without sorting by the rendered
+// text. Rows arrive newest-first and stay that way until a header is
+// clicked; the sort cycle's third state returns to exactly that order.
+// The fleet-wide runs table. Search and status chips here for the same
+// reason the Activity feed has them: this is the busiest surface on the
+// page, and "what failed" / "what is this hook doing" were questions you
+// could only answer by scrolling.
+//
+// The status facet is local:false and REFETCHES, exactly like the per-hook
+// table's (see "App runs table status filter"): the exclusion is applied
+// server-side via ?exclude= BEFORE the fifty-row cap, so letting the
+// component also filter locally would re-hide rows out of an already
+// filtered window. Search stays local — it is a question about the rows on
+// screen, and the component's own "showing N of M" says so.
+const RUNS_FILTER_KEY = "whr.runs.hiddenStatuses";
+
+// No default hiding here, unlike the per-hook table: that one hides skips
+// because ONE flooded hook drowns its own table, while this view is already
+// spread across the fleet and an operator opening it wants what happened.
+function runsHiddenStatuses() {
+  try {
+    const raw = localStorage.getItem(RUNS_FILTER_KEY);
+    if (raw !== null) return new Set(raw.split(",").filter(Boolean));
+  } catch {
+    /* storage unavailable: no hiding */
+  }
+  return new Set();
+}
+
+function saveRunsHiddenStatuses(hidden) {
+  try {
+    localStorage.setItem(RUNS_FILTER_KEY, [...hidden].sort().join(","));
+  } catch {
+    /* storage unavailable: the choice just doesn't persist */
+  }
+}
+
+// Every status the runner can report, so a chip is present to turn OFF even
+// when the current page happens to contain none of that status — a filter
+// you can only reach once the thing you want to hide is already on screen
+// is the wrong way round.
+const RUN_STATUSES = ["success", "failure", "error", "timeout", "running", "pending", "skipped", "cancelled"];
+
 function renderRuns(rs) {
-  const tbody = document.querySelector("#runs-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("runs-empty").hidden = rs.length > 0;
-  for (const r of rs) {
-    const tr = el("tr", { data: { runId: r.id } },
-      el("td", null, fmtTime(r.started)),
-      el("td", null, el("code", null, r.hook_id)),
-      el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
-      el("td", null, String(r.exit_code)),
-      runCell(r),
-    );
-    tr.addEventListener("click", () => showRun(r.id));
-    tbody.appendChild(tr);
+  const t = document.getElementById("runs-table");
+  if (!t) return;
+  t.columns = [
+    { key: "started", label: "Queued", value: (r) => Date.parse(r.started), render: (r) => fmtTime(r.started) },
+    { key: "hook_id", label: "Hook", render: (r) => el("code", null, r.hook_id) },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => el("span", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
+    },
+    { key: "exit_code", label: "Exit", align: "end", render: (r) => String(r.exit_code) },
+    { key: "id", label: "Run ID", render: (r) => runCell(r) },
+  ];
+  // Counts come from the LOADED PAGE, and the label says so. The per-hook
+  // table can quote whole-window totals because a hook carries
+  // stats.by_status; there is no fleet-wide equivalent, and a chip that
+  // silently reported 0 for a status the page does contain would be a lie
+  // told next to the rows that disprove it. A status excluded server-side
+  // is genuinely absent from the page, so its 0 is true of what is loaded.
+  const counts = {};
+  for (const s of RUN_STATUSES) counts[s] = 0;
+  for (const r of rs || []) counts[r.status] = (counts[r.status] || 0) + 1;
+  t.facets = [
+    {
+      key: "status",
+      label: "run(s) on this page",
+      of: (r) => r.status,
+      local: false,
+      counts,
+      always: RUN_STATUSES,
+    },
+  ];
+  t.rowId = (r) => r.id;
+  t.styleText = RUNS_TABLE_CSS;
+  // Bound once: the element outlives every render, so re-adding per render
+  // would stack a handler per refresh and open N modals on one click.
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) void showRun(e.detail.id);
+    });
+    t.addEventListener("table-filter-change", (e) => {
+      const next = new Set(e.detail?.hidden?.status || []);
+      const current = runsHiddenStatuses();
+      if (next.size === current.size && [...next].every((s) => current.has(s))) return;
+      saveRunsHiddenStatuses(next);
+      // A different filter is a different fifty rows, so this refetches
+      // rather than re-selecting what is already on screen.
+      void sectionFetchers.runs();
+    });
   }
+  t.rows = rs || [];
 }
 
+
+// Per-hook image state, as a <data-table>. Searchable: "which hook is on
+// tag abc123" and "what still needs building" are both text questions, and
+// the fleet is long enough that scrolling for them is the wrong answer.
 function renderImages(images) {
-  const tbody = document.querySelector("#images-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("images-empty").hidden = images.length > 0;
-  for (const im of images) {
-    let state;
-    if (im.error) state = el("span", { class: "badge bad" }, "error: " + im.error);
-    else if (im.built) state = el("span", { class: "badge ok" }, "built");
-    else state = el("span", { class: "badge warn" }, "will build on next run");
-    const others = (im.images || [])
-      .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
-      .join(", ");
-    tbody.appendChild(
-      el("tr", null,
-        el("td", null, el("code", null, im.hook_id)),
-        el("td", null, el("code", null, im.tag || "-")),
-        el("td", null, state),
-        el("td", { class: "images-on-disk" }, others || "none"),
-      )
-    );
-  }
+  const t = document.getElementById("images-table");
+  if (!t) return;
+  t.columns = [
+    { key: "hook_id", label: "Hook", render: (im) => el("code", null, im.hook_id) },
+    { key: "tag", label: "Current tag", render: (im) => el("code", null, im.tag || "-") },
+    {
+      key: "state",
+      label: "State",
+      // Sorted and searched by the STATE WORD, so "error" and "built" are
+      // findable; the cell is the badge.
+      value: (im) => (im.error ? "error" : im.built ? "built" : "will build"),
+      text: (im) => (im.error ? "error: " + im.error : im.built ? "built" : "will build on next run"),
+      render: (im) => {
+        if (im.error) return el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
+        if (im.built) return el("span", { class: "badge ok" }, "built");
+        return el("span", { class: "badge warn" }, "will build on next run");
+      },
+    },
+    {
+      key: "on_disk",
+      label: "On disk",
+      className: "images-on-disk",
+      value: (im) => imagesOnDisk(im),
+      render: (im) => imagesOnDisk(im) || "none",
+    },
+  ];
+  t.rowId = (im) => im.hook_id;
+  t.styleText = SHARED_TABLE_CSS;
+  t.rows = images || [];
 }
 
-// Fills an events table body; shared by the overview feed and the per-app
-// slice (same columns, different tables). events may be null (nil recorder).
-function renderEventRows(tableId, emptyId, events) {
-  const tbody = document.querySelector(`#${tableId} tbody`);
-  tbody.innerHTML = "";
-  events = events || [];
-  document.getElementById(emptyId).hidden = events.length > 0;
-  for (const ev of events) {
-    tbody.appendChild(
-      el("tr", null,
-        el("td", { class: "event-time" }, fmtTime(ev.time)),
-        el("td", null, el("span", { class: "kind " + ev.kind.replace(/\./g, "-") }, ev.kind)),
-        el("td", null, ev.msg),
-      )
-    );
-  }
+// The other content-hash images still on disk for a hook, newest-tag-first
+// as the server sent them; "*" marks the one the current content resolves
+// to.
+function imagesOnDisk(im) {
+  return (im.images || [])
+    .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .join(", ");
+}
+
+// ---------------------------------------------------------------------------
+// THE ACTIVITY FEEDS — js-snippets' <activity-feed> component.
+//
+// Both feeds (the overview Activity page and the per-hook one) are the SAME
+// control, imported at runtime from js-snippets by the module script at the
+// bottom of index.html. It owns the table, the kind badges and the filter
+// bar; this file only hands it entries and the two host-specific hooks
+// below. Fix rendering/filtering bugs upstream in js-snippets, never here.
+//
+// What moved out with it: a local render function plus a stylesheet that
+// enumerated the kinds it knew how to color. That list covered 26 of the 77
+// kinds the recorder emits, so two thirds of every feed rendered on one grey
+// pill and a real failure was indistinguishable from routine chatter. The
+// component derives severity from a kind's action half and a family hue from
+// its namespace half, so there is no list left to drift.
+//
+// Setting properties here is safe BEFORE the component module resolves: it
+// performs the standard custom-element property upgrade on connect, so an
+// element that has not upgraded yet keeps the values and renders them the
+// moment it does.
+// ---------------------------------------------------------------------------
+
+// Feeds the component. `events` may be null (nil recorder) — the element
+// treats that as empty. The two hooks make it match the rest of this
+// dashboard: GitHub slugs in messages stay clickable, and timestamps use the
+// same fmtTime as every other table.
+function renderEventsInto(elementId, events) {
+  const feed = document.getElementById(elementId);
+  if (!feed) return;
+  feed.messageRenderer = (msg) => linkifyGH(msg);
+  feed.timeFormatter = (t) => fmtTime(t);
+  // The Go side records both "hooks.reloaded" and "hook.enabled"; they are
+  // one subsystem, so they get one family (and one dot color).
+  feed.familyAliases = { hooks: "hook" };
+  feed.entries = events || [];
 }
 
 function renderEvents(events) {
-  renderEventRows("events-table", "events-empty", events);
+  renderEventsInto("events-feed", events);
 }
 
 function fmtBytes(n) {
@@ -1378,37 +1979,48 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+
+// The KV namespace roster, as a <data-table>. The whole row navigates to
+// the namespace's browser — the same destination as its link, so a click on
+// either is correct.
 function renderKV(namespaces, loadedHookIDs) {
-  const tbody = document.querySelector("#kv-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("kv-empty").hidden = namespaces.length > 0;
-  for (const ns of namespaces) {
-    // Namespace == hook ID, so each row links to that hook's app page,
-    // landed on its State (KV) key/value browser. A namespace whose hook is
-    // no longer loaded (leftover state from a removed/renamed hook) links
-    // to the SAME place: the app page detects the orphan and still renders
-    // the key/value browser — stored data must always be inspectable.
-    const orphan = !loadedHookIDs.has(ns.namespace);
-    const href = hookHref(ns.namespace, { kv: true });
-    const title = orphan
-      ? "no loaded hook with this ID — browse the namespace's stored keys and values"
-      : "browse this hook's stored keys and values";
-    const link = el("a", { href, class: "hook-link", title },
-      el("code", null, ns.namespace),
-      orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
-    );
-    const tr = el("tr", null,
-      el("td", null, link),
-      el("td", null, String(ns.keys)),
-      el("td", null, fmtBytes(ns.bytes)),
-    );
-    // The whole row is the click target (the pointer cursor promises it).
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest("a")) return; // let the real link handle itself
-      location.hash = href;
+  const t = document.getElementById("kv-table");
+  if (!t) return;
+  t.columns = [
+    {
+      key: "namespace",
+      label: "Namespace (hook)",
+      // Namespace == hook ID, so each row links to that hook's app page,
+      // landed on its State (KV) key/value browser. A namespace whose hook
+      // is no longer loaded (leftover state from a removed/renamed hook)
+      // links to the SAME place: the app page detects the orphan and still
+      // renders the browser — stored data must always be inspectable.
+      render: (ns) => {
+        const orphan = !loadedHookIDs.has(ns.namespace);
+        return el("a", {
+          href: hookHref(ns.namespace, { kv: true }),
+          class: "hook-link",
+          title: orphan
+            ? "no loaded hook with this ID — browse the namespace's stored keys and values"
+            : "browse this hook's stored keys and values",
+        },
+          el("code", null, ns.namespace),
+          orphan ? el("span", { class: "badge warn" }, "orphaned") : null,
+        );
+      },
+    },
+    { key: "keys", label: "Keys", align: "end", render: (ns) => String(ns.keys) },
+    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes, render: (ns) => fmtBytes(ns.bytes) },
+  ];
+  t.rowId = (ns) => ns.namespace;
+  t.styleText = SHARED_TABLE_CSS;
+  if (!t.dataset.rowClickBound) {
+    t.dataset.rowClickBound = "1";
+    t.addEventListener("row-click", (e) => {
+      if (e.detail?.id) location.hash = hookHref(e.detail.id, { kv: true });
     });
-    tbody.appendChild(tr);
   }
+  t.rows = namespaces || [];
 }
 
 // --- Per-app view (app == one hook) ----------------------------------------
@@ -1436,15 +2048,47 @@ async function refreshApp(id) {
     renderAppMissing(id);
     return;
   }
+  // FILTER FIRST, THEN LIMIT: the hidden statuses go to the server as
+  // ?exclude= so max=50 counts fifty runs the operator can actually see. It
+  // used to fetch the newest 50 and hide statuses here, which on a hook
+  // whose recent history is all skips (every gha-runner delivery that is
+  // not a queued job) rendered an empty table — "All 50 recent run(s) are
+  // hidden by the status filter above" — with the real runs just past the
+  // window and unreachable at any limit.
+  const exclude = [...appRunsHiddenStatuses()].sort().join(",");
   const [runs, events, kvKeys] = await Promise.all([
-    fetchJSON(`/runs?hook=${enc}&max=50`),
-    fetchJSON(`/events?hook=${enc}&max=100`),
+    fetchJSON(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
+    // Same exclusion as the overview feed: this page already has a Recent
+    // runs table two sections up, so the feed shows only what that table
+    // cannot — deliveries that produced no run at all, image builds, and
+    // this hook's misconfigurations.
+    fetchJSON(`/events?hook=${enc}&max=100&exclude=run`),
     // The KV namespace listing exists only for state:true hooks
     // (namespace == hook ID); skip the fetch entirely otherwise.
     detail.info.state ? fetchJSON(`/kv/${enc}`) : Promise.resolve(null),
   ]);
   renderApp(detail, runs, events);
   await renderAppKV(detail.info, kvKeys);
+  renderAppSettings(detail.info.id);
+}
+
+// The settings editor is owned by the module bundle (ts/settingsform.ts);
+// this page owns the route, so it says WHICH hook and WHEN. Mounted once per
+// hook, never on every poll: the form holds live edit state, and re-mounting
+// under someone mid-edit would throw their typing away.
+let appSettingsHook = null;
+function renderAppSettings(id) {
+  const section = document.getElementById("app-settings-section");
+  const host = document.getElementById("app-settings");
+  if (!section || !host) return;
+  // timeline.js is a module and loads after this script; on the very first
+  // paint it may not have published the mount yet. Leaving the section
+  // hidden is the honest degrade — it reappears on the next navigation.
+  if (typeof window.whrMountSettings !== "function") return;
+  if (appSettingsHook === id) return;
+  appSettingsHook = id;
+  section.hidden = false;
+  window.whrMountSettings(host, id);
 }
 
 function renderAppMissing(id) {
@@ -1493,7 +2137,7 @@ function renderApp(detail, runs, events) {
   document.getElementById("app-body").hidden = false;
   setAppOrphanMode(false);
   document.getElementById("app-title").textContent = info.id;
-  document.getElementById("app-desc").textContent = info.description || "";
+  setLinkifiedText(document.getElementById("app-desc"), info.description || "");
 
   // Operator kill switch for this hook: the same single switch as the
   // overview's Status column, next to the title.
@@ -1547,6 +2191,17 @@ function renderApp(detail, runs, events) {
     ["Max duration", st.completed ? fmtDuration(st.max_duration_ms) : "—"],
     ["Avg wait", st.wait_sampled ? fmtDuration(st.avg_wait_ms) : "—"],
     ["Max wait", st.wait_sampled ? fmtDuration(st.max_wait_ms) : "—"],
+    // Container overhead over the same window: what this hook pays to run
+    // at all, before it does anything. Exact and bounded samples are shown
+    // as separate rows because they are different measurements — averaging
+    // them together would produce a figure that means neither.
+    ["Container boot", overheadBoot(st.overhead)],
+    ["Runtime start", st.overhead && st.overhead.boot_sampled
+      ? `${fmtMs(st.overhead.runtime_start_avg_ms)} avg · ${fmtMs(st.overhead.runtime_start_max_ms)} max`
+      : "—"],
+    ["Argv inspect", st.overhead && st.overhead.inspect_sampled
+      ? `${fmtMs(st.overhead.inspect_avg_ms)} avg · ${fmtMs(st.overhead.inspect_max_ms)} max (${st.overhead.inspect_sampled} runs)`
+      : "—"],
     ["Last run", st.last_run
       ? [
           el("span", { class: "status " + st.last_run.status }, st.last_run.status),
@@ -1558,7 +2213,7 @@ function renderApp(detail, runs, events) {
 
   const im = detail.image;
   let state;
-  if (im.error) state = el("span", { class: "badge bad" }, "error: " + im.error);
+  if (im.error) state = el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
   else if (im.built) state = el("span", { class: "badge ok" }, "built");
   else state = el("span", { class: "badge warn" }, "will build on next run");
   const others = (im.images || [])
@@ -1570,21 +2225,33 @@ function renderApp(detail, runs, events) {
     ["On disk", others || "none"],
   ]);
 
-  renderAppRunsTable(runs);
+  // by_status covers the whole retention window, not the fetched page, so
+  // the chips can count statuses the server just filtered out.
+  bindAppRunsFilterEvents();
+  renderAppRunsTable(runs, st.by_status);
 
-  renderEventRows("app-events-table", "app-events-empty", events);
+  renderEventsInto("app-events-feed", events);
 }
 
 // --- App runs table status filter ------------------------------------------
 //
 // Skipped runs are hidden BY DEFAULT: a flooded hook's table is otherwise
 // wall-to-wall purple "skipped" rows drowning the runs that did work. Every
-// status gets a toggle chip (click to hide/show), the choice persists in
-// localStorage (the runs-table toggle precedent), and the filtering happens
-// on the DATA fed to the renderer — a pure selection over the run list,
-// never CSS-hidden rows — so what the table shows and what it counts always
-// agree. The hidden count rides the chips ("skipped ×N" dimmed), and an
-// all-hidden table says so instead of pretending there are no runs.
+// status gets a toggle chip (click to hide/show) and the choice persists in
+// localStorage (the runs-table toggle precedent).
+//
+// The filter is applied SERVER-SIDE, before the row limit (?exclude= on
+// /runs). It used to be a pure selection over the fetched page, which
+// quietly failed on exactly the hooks it was built for: hide "skipped" on a
+// hook whose newest 50 runs are all skips and the table emptied out, saying
+// "All 50 recent run(s) are hidden" while the runs that did work sat just
+// past the window — unreachable however high the limit went, because the
+// limit was spent before the filter ran. Filter first, then limit.
+//
+// Two consequences worth keeping in mind: toggling a chip REFETCHES (a
+// different filter is a different fifty rows), and the chip counts come
+// from the hook's stats.by_status over the whole retention window, since
+// the page no longer contains the hidden statuses at all.
 
 const APP_RUNS_FILTER_KEY = "whr.appRuns.hiddenStatuses";
 const APP_RUNS_FILTER_DEFAULT = ["skipped"];
@@ -1610,83 +2277,87 @@ function saveAppRunsHiddenStatuses(hidden) {
   }
 }
 
-// The pure selection the table renders: runs whose status is not hidden,
-// plus how many each hidden status filtered out (for the chip counts).
-function filterAppRuns(runs, hidden) {
-  const shown = [];
-  const hiddenCounts = new Map();
-  for (const r of runs || []) {
-    if (hidden.has(r.status)) {
-      hiddenCounts.set(r.status, (hiddenCounts.get(r.status) || 0) + 1);
-    } else {
-      shown.push(r);
-    }
-  }
-  return { shown, hiddenCounts };
-}
-
 let lastAppRuns = [];
+let lastAppStatusCounts = null;
 
-function renderAppRunsTable(runs) {
+// The per-hook runs table, as a <data-table>.
+//
+// The status chips are declared local:false — the component renders,
+// toggles and persists them but filters NOTHING itself, because the
+// exclusion is applied server-side BEFORE the row cap. Letting it filter
+// locally would undo exactly that: the page it holds is already a filtered
+// window, so a second pass would empty a table whose remaining rows all
+// sit past the cap. A chip click therefore REFETCHES rather than
+// re-selects — a different filter is a different fifty rows.
+//
+// Chip counts come from the hook's stats.by_status (the WHOLE retention
+// window), not from the page: a hidden status is simply absent from the
+// page, so a derived count would read ×0 on the very chip that needs a
+// number. "skipped ×4213" is the fact worth showing next to the toggle.
+function renderAppRunsTable(runs, statusCounts) {
   lastAppRuns = runs || [];
+  if (statusCounts) lastAppStatusCounts = statusCounts;
+  const t = document.getElementById("app-runs-table");
+  if (!t) return;
   const hidden = appRunsHiddenStatuses();
-  const { shown, hiddenCounts } = filterAppRuns(lastAppRuns, hidden);
-  renderAppRunsFilter(lastAppRuns, hidden);
 
-  const tbody = document.querySelector("#app-runs-table tbody");
-  tbody.innerHTML = "";
-  const empty = document.getElementById("app-runs-empty");
-  empty.hidden = shown.length > 0;
-  const totalHidden = [...hiddenCounts.values()].reduce((a, b) => a + b, 0);
-  empty.textContent = totalHidden > 0 && lastAppRuns.length > 0
-    ? `All ${lastAppRuns.length} recent run(s) are hidden by the status filter above.`
-    : "No runs yet.";
-  for (const r of shown) {
-    // Queued = accepted; Waited = queue time until launch (live for pending
-    // runs); Duration = processing only (live while running).
-    const tr = el("tr", null,
-      el("td", null, fmtTime(r.started)),
-      el("td", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
-      el("td", null, runWaited(r)),
-      el("td", null, runDuration(r)),
-      el("td", null, String(r.exit_code)),
-      runCell(r),
-    );
-    tr.addEventListener("click", () => showRun(r.id));
-    tbody.appendChild(tr);
-  }
+  t.columns = [
+    { key: "started", label: "Queued", value: (r) => Date.parse(r.started), render: (r) => fmtTime(r.started) },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => el("span", { class: "status " + r.status }, r.status, waitNote(r), waitersNote(r)),
+    },
+    // Waited/Duration sort by their real millisecond spans, not by the
+    // "1.2s"/"—" strings the cells show.
+    { key: "waited", label: "Waited", align: "end", value: (r) => waitedMs(r), render: (r) => runWaited(r) },
+    { key: "duration", label: "Duration", align: "end", value: (r) => durationMs(r), render: (r) => runDuration(r) },
+    { key: "exit_code", label: "Exit", align: "end", render: (r) => String(r.exit_code) },
+    { key: "id", label: "Run ID", render: (r) => runCell(r) },
+  ];
+  t.facets = [
+    {
+      key: "status",
+      label: "run(s) in this window",
+      of: (r) => r.status,
+      local: false,
+      counts: lastAppStatusCounts || {},
+      // Keep the control discoverable on a hook that has never skipped.
+      always: APP_RUNS_FILTER_DEFAULT,
+    },
+  ];
+  t.rowId = (r) => r.id;
+  t.styleText = RUNS_TABLE_CSS;
+  // An empty table means the filter matched nothing in the WHOLE window —
+  // not that the newest page happened to be all-hidden. Say which it is.
+  t.setAttribute(
+    "empty-text",
+    hidden.size > 0
+      ? `No runs in this window with the status filter above (hiding ${[...hidden].sort().join(", ")}).`
+      : "No runs yet.",
+  );
+  t.filter = { query: "", hidden: { status: [...hidden] }, sort: t.filter?.sort ?? null };
+  t.rows = lastAppRuns;
 }
 
-// One chip per status: every status present in the data, plus every hidden
-// one (its chip must stay visible while it hides), plus the default-hidden
-// "skipped" (so the control is discoverable even with zero skips). Active
-// chips hide on click; dimmed (hidden) chips show on click.
-function renderAppRunsFilter(runs, hidden) {
-  const bar = document.getElementById("app-runs-filter");
-  if (!bar) return;
-  bar.innerHTML = "";
-  const counts = new Map();
-  for (const r of runs || []) counts.set(r.status, (counts.get(r.status) || 0) + 1);
-  const statuses = new Set([...counts.keys(), ...hidden, ...APP_RUNS_FILTER_DEFAULT]);
-  for (const st of [...statuses].sort()) {
-    const n = counts.get(st) || 0;
-    const off = hidden.has(st);
-    const chip = el("button", {
-      type: "button",
-      class: `filter-chip status ${st}${off ? " filter-off" : ""}`,
-      title: off
-        ? `${n} ${st} run(s) hidden — click to show them`
-        : `click to hide ${st} runs from the table`,
-    }, `${st} ×${n}`);
-    chip.addEventListener("click", () => {
-      const next = appRunsHiddenStatuses();
-      if (next.has(st)) next.delete(st);
-      else next.add(st);
-      saveAppRunsHiddenStatuses(next);
-      renderAppRunsTable(lastAppRuns); // re-select from the same data
-    });
-    bar.appendChild(chip);
-  }
+// A chip toggle changes the SERVER-side filter, so it refetches. Bound once
+// per element; the component re-emits on every toggle.
+function bindAppRunsFilterEvents() {
+  const t = document.getElementById("app-runs-table");
+  if (!t || t.dataset.filterBound) return;
+  t.dataset.filterBound = "1";
+  t.addEventListener("table-filter-change", (e) => {
+    const next = new Set(e.detail?.hidden?.status || []);
+    const current = appRunsHiddenStatuses();
+    if (next.size === current.size && [...next].every((s) => current.has(s))) return;
+    saveAppRunsHiddenStatuses(next);
+    const id = currentHookId();
+    if (id) void refreshApp(id);
+    else renderAppRunsTable(lastAppRuns);
+  });
+  t.addEventListener("row-click", (e) => {
+    if (e.detail?.id) void showRun(e.detail.id);
+  });
 }
 
 // --- Per-app State (KV) inspection -----------------------------------------
@@ -1699,7 +2370,6 @@ function renderAppRunsFilter(runs, hidden) {
 // rendered via el()'s text nodes, so arbitrary stored bytes can never
 // inject markup.
 
-let appKVOpenKey = null; // key whose value row is expanded, or null
 let appKVHook = null; // which hook the expansion belongs to
 
 function fmtTTL(seconds) {
@@ -1728,63 +2398,70 @@ async function renderAppKV(info, listing) {
   const wantScroll = pendingKVScroll;
   pendingKVScroll = false;
   if (!info.state) return;
+  const t = document.getElementById("app-kv-table");
+  if (!t) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
+    // (The component holds the expansion now, so this clears ITS set — a
+    // key id from the previous hook would otherwise re-open a same-named
+    // key here and show the wrong hook's value.)
     appKVHook = info.id;
-    appKVOpenKey = null;
+    t.expanded = [];
   }
-  const keys = (listing && listing.keys) || [];
-  const tbody = document.querySelector("#app-kv-table tbody");
-  tbody.innerHTML = "";
-  document.getElementById("app-kv-empty").hidden = keys.length > 0;
-  for (const k of keys) {
-    const open = appKVOpenKey === k.key;
-    const tr = el("tr", { class: open ? "kv-open" : "" },
-      el("td", null, el("code", null, k.key)),
-      el("td", null, fmtBytes(k.size)),
-      el("td", null, fmtTTL(k.ttl_seconds)),
-    );
-    tr.addEventListener("click", () => {
-      appKVOpenKey = open ? null : k.key;
-      refresh();
-    });
-    tbody.appendChild(tr);
-    if (open) tbody.appendChild(await kvValueRow(info.id, k.key));
+  t.columns = [
+    { key: "key", label: "Key", render: (k) => el("code", null, k.key) },
+    { key: "size", label: "Size", align: "end", value: (k) => k.size, render: (k) => fmtBytes(k.size) },
+    {
+      key: "ttl_seconds",
+      label: "TTL remaining",
+      align: "end",
+      // No TTL is not "0 seconds left": sort it past every expiring key
+      // rather than in front of them.
+      value: (k) => (k.ttl_seconds == null ? null : k.ttl_seconds),
+      text: (k) => fmtTTL(k.ttl_seconds),
+      render: (k) => fmtTTL(k.ttl_seconds),
+    },
+  ];
+  t.rowId = (k) => k.key;
+  t.styleText = SHARED_TABLE_CSS + KV_TABLE_CSS;
+  // The value is FETCHED per key, so the detail is a promise: the component
+  // shows a placeholder and paints when it resolves, and renders the error
+  // into the row if the key expired between the listing and the click.
+  if (componentSupports(t, "detailFor", "Stored-value inspection")) {
+    t.detailFor = (k) => kvValueContent(info.id, k.key);
   }
+  t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// The expanded row under a clicked key: metadata line + the value itself.
-// A fetch failure is rendered into the row (e.g. the key expired between
-// the listing and the click), never swallowed.
-async function kvValueRow(hookId, key) {
-  const td = el("td", { colspan: "3" });
-  const row = el("tr", { class: "kv-value-row" }, td);
-  try {
-    const e = await fetchJSON(
-      `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
-    const meta = [fmtBytes(e.size)];
-    if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
-    let body;
-    if (e.value_utf8 != null) {
-      body = e.value_utf8;
-      try {
-        body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
-        meta.push("JSON");
-      } catch {
-        meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
-      }
-    } else {
-      body = e.value_base64;
-      meta.push("binary (shown base64)");
+// The expanded detail under a clicked key: metadata line + the value
+// itself. Returns the CONTENT (the component owns the row and its
+// column-spanning cell). A fetch failure is thrown, not swallowed — the
+// component paints the message into the open row, which is what the
+// operator needs when a key expires between the listing and the click.
+async function kvValueContent(hookId, key) {
+  const box = el("div", { class: "kv-value-box" });
+  const e = await fetchJSON(
+    `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
+  const meta = [fmtBytes(e.size)];
+  if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
+  let body;
+  if (e.value_utf8 != null) {
+    body = e.value_utf8;
+    try {
+      body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
+      meta.push("JSON");
+    } catch {
+      meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
     }
-    td.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
-    td.appendChild(el("pre", { class: "kv-value" }, body === "" ? "(empty value)" : body));
-  } catch (err) {
-    td.appendChild(el("div", { class: "kv-value-meta kv-value-error" },
-      `failed to load value: ${err.message}`));
+  } else {
+    body = e.value_base64;
+    meta.push("binary (shown base64)");
   }
-  return row;
+  box.appendChild(el("div", { class: "kv-value-meta" }, meta.join(" · ")));
+  box.appendChild(el("pre", { class: "kv-value" },
+    body === "" ? "(empty value)" : linkifyGH(body)));
+  return box;
 }
 
 // A run ID that opens the same output modal the runs tables use.
@@ -1903,7 +2580,7 @@ function renderRunDetail(r, openDialog) {
   // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
   // generic "Run" word otherwise; the full id always sits beside it in
   // the (small, muted) code chip.
-  document.getElementById("run-detail-name").textContent = r.title || "Run";
+  setLinkifiedText(document.getElementById("run-detail-name"), r.title || "Run", { bareRepo: true });
   document.getElementById("run-detail-id").textContent = r.id;
   const dl = document.getElementById("run-detail-meta");
   dl.innerHTML = "";
@@ -1921,6 +2598,10 @@ function renderRunDetail(r, openDialog) {
     ["Waited", runWaited(r)],
     ["Duration", runDuration(r)],
   ];
+  // What launching this run cost, split from what it then did. Absent for
+  // uninstrumented history — a missing mark means unknown, never zero.
+  const startup = startupDetail(r);
+  if (startup) rows.push(["Startup", startup]);
   // A live pause gets its own row, whatever its kind: a declared sleep, a
   // blocked lock acquire (holder linked), or a concurrency-group queue
   // wait (position + holders linked).
@@ -1930,7 +2611,7 @@ function renderRunDetail(r, openDialog) {
   // holds, each waiter a clickable run link.
   const wds = waitersDetail(r);
   if (wds) rows.push(["Held up by this run", wds]);
-  if (r.error) rows.push(["Error", r.error]);
+  if (r.error) rows.push(["Error", linkifyGH(r.error)]);
   for (const [k, v] of rows) {
     dl.appendChild(el("dt", null, k));
     dl.appendChild(el("dd", null, v));
@@ -2129,14 +2810,37 @@ async function loadConfig() {
   }
 }
 
-// One-shot footer stamp: which build is this host running? The tooltip
-// carries the VCS revision/commit time when the build has them.
+// This binary's own repo — where the footer stamp's commit lives.
+const SELF_REPO_URL = "https://github.com/wow-look-at-my/webhook-runner";
+
+// The commit the running build was made from. A stamped VCS revision is
+// authoritative; failing that, a Go pseudo-version ends in the commit's
+// 12-hex prefix, which GitHub resolves like any other sha.
+function buildCommit(v) {
+  if (v.revision) return v.revision;
+  const m = /-([0-9a-f]{12})$/.exec(v.version || "");
+  return m ? m[1] : "";
+}
+
+// One-shot footer stamp: which build is this host running? The stamp links
+// to that commit on GitHub; the tooltip carries the VCS revision/commit
+// time when the build has them.
 async function loadVersion() {
   try {
     const v = await fetchJSON("/version");
     const span = document.getElementById("server-version");
     if (!span || !v.version) return;
-    span.textContent = v.version;
+    const sha = buildCommit(v);
+    span.textContent = "";
+    span.appendChild(
+      sha
+        ? el("a", {
+            href: `${SELF_REPO_URL}/commit/${sha}`,
+            target: "_blank",
+            rel: "noopener noreferrer",
+          }, v.version)
+        : document.createTextNode(v.version)
+    );
     if (v.revision) span.title = v.revision + (v.time ? " @ " + v.time : "");
   } catch (e) {
     console.error("loadVersion:", e);
@@ -2205,15 +2909,27 @@ function reloadSrcBadge(has) {
     : el("span", { class: "badge bad", title: "the commit's tree has NO src/hooks directory — reloading from it would load zero hooks" }, "no src/hooks");
 }
 
-function renderReloadStatus(data) {
-  const section = document.getElementById("reload-section");
+function renderReloadStatus(data, statusErr) {
   const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
-  section.hidden = !usable;
   reloadMode = usable ? data.mode : null;
-  if (!usable) return;
+  // The panel stays up NO MATTER WHAT. Hiding it on an unreadable status was
+  // a silent degradation that removed the force controls from the page in
+  // the one situation they exist for; a status we cannot read is a loud line
+  // here and the controls stay usable (forcing a ref needs no status at all).
+  const errBox = document.getElementById("reload-status-error");
+  if (usable) {
+    errBox.hidden = true;
+    errBox.textContent = "";
+  } else {
+    errBox.hidden = false;
+    errBox.textContent = statusErr
+      ? `Could not read the reload gate status (${statusErr}). The controls below still work — "Force live" needs no status.`
+      : `The reload gate reported no usable mode${data && data.mode ? ` (mode: ${data.mode})` : ""}. The controls below still work — "Force live" needs no status.`;
+  }
   // Per-commit switching needs the gate; legacy mode keeps the live view
   // and the Check & reload (pull to tip) but hides the picker.
-  document.getElementById("reload-picker").hidden = data.mode !== "gated";
+  document.getElementById("reload-picker").hidden = data && data.mode === "legacy";
+  if (!usable) return;
 
   const box = document.getElementById("reload-live");
   box.innerHTML = "";
@@ -2233,17 +2949,32 @@ function renderReloadStatus(data) {
   ));
   if (live.subject) {
     box.appendChild(el("div", { class: "reload-subject" },
-      live.subject + (live.date ? " · " + fmtTime(live.date) : "")));
+      linkifyGH(live.subject + (live.date ? " · " + fmtTime(live.date) : ""))));
   }
   if (data.pending) {
     const p = data.pending;
+    // The held commit gets its OWN "Make live", and it is ONE CLICK. This row
+    // is where an operator stands when the gate is the problem, and the case
+    // that matters most is a held tree whose CI cannot go green because the
+    // fleet it fixes is down — the gate blocking its own repair. Making that
+    // operator hunt through a collapsed picker and answer two confirmations
+    // is friction charged at exactly the wrong moment: they are already
+    // looking at the row that says HELD and the reasons why. One confirm
+    // naming the commit, then override — the force is the whole point of the
+    // button, not an escalation from it.
+    const force = el("button", {
+      class: "toggle-btn",
+      title: "Force the serving hooks tree to this held commit NOW, overriding the CI gate",
+    }, "Make live");
+    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short, p.short || p.sha, p.why || ""));
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
-      p.subject ? el("span", { class: "reload-subject-inline" }, p.subject) : null,
+      p.subject ? el("span", { class: "reload-subject-inline" }, linkifyGH(p.subject)) : null,
       el("span", { class: "wait-note" }, p.why || "awaiting CI"),
       reloadCIBadge(p.ci_state),
       reloadSrcBadge(!!p.has_src),
+      force,
     ));
   }
 }
@@ -2258,37 +2989,73 @@ async function refreshReloadCommits() {
   }
 }
 
+
+// Recent origin commits, as a <data-table>. Sorting stays off the default
+// order deliberately until a header is clicked: the server sends them
+// newest-first, which is the order an operator picking "the last good one"
+// is reading in.
 function renderReloadCommits(data) {
   const commits = (data && data.commits) || [];
-  const tbody = document.querySelector("#reload-commits-table tbody");
-  tbody.innerHTML = "";
+  const t = document.getElementById("reload-commits-table");
+  if (!t) return;
+  // The note is now only for FETCH FAILURES (renderReloadCommits is not
+  // called on those); the table owns its own empty state.
   const note = document.getElementById("reload-commits-note");
-  note.textContent = "No commits found.";
-  note.hidden = commits.length > 0;
-  for (const c of commits) {
-    let action;
-    if (c.is_live) {
-      action = el("span", { class: "badge ok" }, "live");
-    } else {
-      action = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
-      action.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
-    }
-    tbody.appendChild(el("tr", { class: c.is_live ? "reload-live-commit" : "" },
-      el("td", null, el("code", { title: c.sha }, c.short)),
-      el("td", { class: "reload-commit-subject" }, c.subject || ""),
-      el("td", null, fmtTime(c.date)),
-      el("td", null, reloadCIBadge(c.ci_state)),
-      el("td", null, reloadSrcBadge(!!c.has_src)),
-      el("td", { class: "row-actions" }, action),
-    ));
-  }
+  if (note) note.hidden = true;
+  t.columns = [
+    { key: "short", label: "Commit", render: (c) => el("code", { title: c.sha }, c.short) },
+    {
+      key: "subject",
+      label: "Subject",
+      className: "reload-commit-subject",
+      render: (c) => linkifyGH(c.subject || ""),
+    },
+    { key: "date", label: "Date", value: (c) => Date.parse(c.date), text: (c) => fmtTime(c.date), render: (c) => fmtTime(c.date) },
+    { key: "ci_state", label: "CI", render: (c) => reloadCIBadge(c.ci_state) },
+    {
+      key: "has_src",
+      label: "src/",
+      value: (c) => (c.has_src ? 1 : 0),
+      text: (c) => (c.has_src ? "src" : "no src"),
+      render: (c) => reloadSrcBadge(!!c.has_src),
+    },
+    {
+      key: "action",
+      label: "",
+      sortable: false,
+      searchable: false,
+      className: "row-actions",
+      render: (c) => {
+        if (c.is_live) return el("span", { class: "badge ok" }, "live");
+        const b = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
+        b.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
+        return b;
+      },
+    },
+  ];
+  t.rowId = (c) => c.sha;
+  t.rowClass = (c) => (c.is_live ? "reload-live-commit" : "");
+  t.styleText = SHARED_TABLE_CSS + RELOAD_TABLE_CSS;
+  t.rows = commits;
 }
 
 // The section fetcher (registered in sectionFetchers as "reload"): the
 // cheap status view always; the origin-fetching commits list only while
 // the picker is open.
 async function refreshReloadPanel() {
-  renderReloadStatus(await fetchJSON("/reload/status"));
+  // A THROWN status read must never take the panel down with it: this call
+  // used to be unguarded, so a failing /reload/status left #reload-section
+  // hidden and the page showed nothing but the webhook setup instructions —
+  // no live commit, no held row, no force controls. The error belongs ON the
+  // panel, not instead of it.
+  let data = null;
+  let statusErr = "";
+  try {
+    data = await fetchJSON("/reload/status");
+  } catch (err) {
+    statusErr = err && err.message ? err.message : String(err);
+  }
+  renderReloadStatus(data, statusErr);
   if (reloadMode === "gated" && document.getElementById("reload-picker").open) {
     await refreshReloadCommits();
   }
@@ -2330,10 +3097,66 @@ async function reloadCheckNow() {
   }
 }
 
+// POST /reload: go to the REMOTE TIP, gate bypassed, recorded verified. The
+// server has always had this endpoint and the page never had a control for
+// it, so the only way to reach it was a devtools console call — which is no
+// escape hatch at all for the operator staring at a wedged gate. Distinct
+// from "Check & reload now" (/reload/check), which re-evaluates and switches
+// only on green: this one is the deliberate bypass, for the gate held behind
+// a check that is never going to arrive.
+async function reloadForceTip() {
+  const btn = document.getElementById("reload-force-tip");
+  const resultEl = document.getElementById("reload-check-result");
+  if (!confirm("Fetch the hooks repo and go to its REMOTE TIP now, bypassing the CI gate?\n\nThe serving tree switches and hooks reload. Recorded as an operator force.")) return;
+  btn.disabled = true;
+  resultEl.textContent = "forcing to tip…";
+  try {
+    const { res, data } = await postJSON("/reload", null);
+    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    resultEl.textContent = "forced to tip: " + ((data && data.status) || "reloaded");
+  } catch (err) {
+    resultEl.textContent = "force to tip failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+    void refreshReloadPanel();
+  }
+}
+
 // The informed-override flow. The server stays authoritative: the first
 // attempt NEVER carries override, and only its 409 (with the server's own
 // reasons) leads to a confirmation that quotes them verbatim; the retry —
 // and only the retry — carries override:true.
+// The one-click force, for the operator who is already looking at the reason
+// the gate is holding: ONE confirm, then override:true. No first attempt that
+// exists only to be refused, no second dialog quoting reasons already on
+// screen. The server still records it loudly (reload.forced on the activity
+// feed); what is dropped here is ceremony, not the audit trail.
+async function reloadForceTo(ref, label, why) {
+  if (reloadSwitchInFlight) return;
+  const name = label || ref;
+  const detail = why ? `\n\nThe gate is holding it: ${why}` : "";
+  if (!confirm(`Force ${name} live now, OVERRIDING the reload gate?${detail}\n\nThe serving tree switches to it and hooks reload.`)) return;
+  reloadSwitchInFlight = true;
+  const resultEl = document.getElementById("reload-check-result");
+  resultEl.textContent = `forcing ${name}…`;
+  try {
+    const { res, data } = await postJSON("/reload/switch", { ref, override: true });
+    if (!res.ok) {
+      const errMsg = (data && data.error) || `HTTP ${res.status}`;
+      alert(`Forcing ${name} failed: ${errMsg}`);
+      resultEl.textContent = "force failed";
+      return;
+    }
+    resultEl.textContent = `forced ${name} live (gate overridden)`;
+  } catch (err) {
+    alert(`Forcing ${name} failed: ${err.message}`);
+    resultEl.textContent = "force failed";
+  } finally {
+    reloadSwitchInFlight = false;
+    void refreshReloadPanel();
+  }
+}
+
 async function reloadSwitchTo(ref, label) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
@@ -2372,6 +3195,7 @@ async function reloadSwitchTo(ref, label) {
 }
 
 document.getElementById("reload-check").addEventListener("click", () => void reloadCheckNow());
+document.getElementById("reload-force-tip").addEventListener("click", () => void reloadForceTip());
 document.getElementById("reload-ref-switch").addEventListener("click", () => {
   const ref = (document.getElementById("reload-ref-input").value || "").trim();
   if (!ref) {
@@ -2382,6 +3206,17 @@ document.getElementById("reload-ref-switch").addEventListener("click", () => {
 });
 document.getElementById("reload-ref-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("reload-ref-switch").click();
+});
+// The wedged-gate escape hatch: one confirm, straight to override:true. It
+// asks the server for nothing first, so it works even when the status read
+// is failing and the panel above it is showing an error.
+document.getElementById("reload-ref-force").addEventListener("click", () => {
+  const ref = (document.getElementById("reload-ref-input").value || "").trim();
+  if (!ref) {
+    alert("Enter a commit sha or branch/tag name first.");
+    return;
+  }
+  void reloadForceTo(ref, ref, "");
 });
 // The commits list is fetched lazily: opening the picker is the operator
 // asking for it (it fetches origin and probes CI per commit).

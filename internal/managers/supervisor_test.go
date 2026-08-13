@@ -99,7 +99,7 @@ func TestSupervisorRestartsFlat(t *testing.T) {
 			attnMu.Unlock()
 		},
 	})
-	m := testManager(t, "m1", `{"$schema":"x","enable":true,"command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":true,"command":["run"]}`)
 	s.Update(map[string]*hooks.Manager{"m1": m})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,7 +150,7 @@ func TestSupervisorDefaultOnAndKillSwitch(t *testing.T) {
 			return !defaultEnabled
 		},
 	})
-	m := testManager(t, "m1", `{"$schema":"x","command":["run"]}`) // no enable → default ON
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","command":["run"]}`) // no enable → default ON
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -193,7 +193,7 @@ func TestSupervisorReplaceAndRemove(t *testing.T) {
 		Runner:        fr,
 		OnInstanceEnd: func(id string) { endedMu.Lock(); ended = append(ended, id); endedMu.Unlock() },
 	})
-	m := testManager(t, "m1", `{"$schema":"x","enable":true,"command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":true,"command":["run"]}`)
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -227,7 +227,7 @@ func TestSupervisorDeliveryBuffering(t *testing.T) {
 	shrinkCadences(t)
 	fr := newFakeRunner()
 	s := New(Options{Runner: fr})
-	m := testManager(t, "m1", `{"$schema":"x","command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","command":["run"]}`)
 	s.Update(map[string]*hooks.Manager{"m1": m}) // Run() never started: no instance is live
 
 	d := s.Deliver("m1", nil, []byte(`{"buffered":true}`))
@@ -249,7 +249,7 @@ func TestSupervisorLeaseHandover(t *testing.T) {
 	mkSup := func(fr *fakeRunner) *Supervisor {
 		return New(Options{Runner: fr, LeasePath: lease})
 	}
-	m := testManager(t, "m1", `{"$schema":"x","enable":true,"command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":true,"command":["run"]}`)
 
 	supA := mkSup(frA)
 	supA.Update(map[string]*hooks.Manager{"m1": m})
@@ -286,7 +286,7 @@ func TestSupervisorAttention(t *testing.T) {
 		Runner:      fr,
 		OnAttention: func(e []AttentionEntry) { mu.Lock(); current = e; mu.Unlock() },
 	})
-	m := testManager(t, "m1", `{"$schema":"x","enable":true,"command":["run"]}`)
+	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","enable":true,"command":["run"]}`)
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

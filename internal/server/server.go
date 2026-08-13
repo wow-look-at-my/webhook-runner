@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
+	"github.com/wow-look-at-my/webhook-runner/internal/backlog"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
@@ -20,6 +22,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
+	"github.com/wow-look-at-my/webhook-runner/internal/spool"
 )
 
 // VersionInfo identifies the running build. Version is the same string the
@@ -60,6 +63,7 @@ type Server struct {
 	hooksBranch  string
 	hookBaseURL  string
 	kv           *kv.Store
+	backlogs     *backlog.Store
 	runstore     *runstore.Store
 	overrides    *overrides.Store
 	managers     ManagerControl
@@ -72,10 +76,25 @@ type Server struct {
 	reloadControl ReloadControl
 	ciMu          sync.Mutex
 	ciCache       map[string]ciCacheEntry
+	// ciInflight dedupes the background CI refreshes reloadCIState kicks
+	// off, so a page polling every second cannot stack one GitHub call per
+	// tick on a sha whose probe is already running.
+	ciInflight map[string]bool
 
 	// stream fans run lifecycle updates out to GET /runs/stream clients;
 	// fed by the tracker's OnChange seam (wired in New). Never nil.
 	stream *streamHub
+
+	// The docker-updater pre-check (restartready.go): how long a busy
+	// fleet may hold off an update, and the continuously-blocked clock
+	// that bounds it.
+	restartMaxDefer time.Duration
+	restart         restartGate
+
+	// spool parks deliveries that arrive while the runner is draining, so a
+	// deploy window costs a webhook its latency instead of its existence
+	// (spooldelivery.go). nil keeps the old 503-and-lose behavior.
+	spool *spool.Store
 
 	hookMux  *http.ServeMux
 	adminMux *http.ServeMux
@@ -165,6 +184,11 @@ type Options struct {
 	// admin /kv view. nil disables both (the routes report no namespaces).
 	KV *kv.Store
 
+	// Backlogs is the durable batch-backlog store behind the state port's
+	// /backlog routes (internal/backlog — the drain-a-slice sibling of
+	// internal/queue's run scheduler). Nil disables them (503), like KV.
+	Backlogs *backlog.Store
+
 	// RunStore is the persisted completed-run history. When set, /runs,
 	// /runs/{id}, and /hooks/{id} serve the live tracker merged with it
 	// (deduped by run ID, newest-first); nil keeps the old memory-only
@@ -187,6 +211,17 @@ type Options struct {
 	// /version on both ports. An empty Version falls back to "dev" (the
 	// same default the version command uses).
 	Version VersionInfo
+
+	// Spool parks deliveries that arrive during shutdown drain for the next
+	// process to run. nil means a draining server answers 503 and the
+	// delivery is lost — GitHub does not re-send it.
+	Spool *spool.Store
+
+	// RestartMaxDefer bounds how long GET /restart-ready (the
+	// docker-updater pre-check) may keep answering 503 because runs are in
+	// flight. Zero uses DefaultRestartMaxDefer; negative disables the force
+	// so the check blocks for as long as the fleet stays busy.
+	RestartMaxDefer time.Duration
 }
 
 // New constructs a Server, registering routes on both muxes.
@@ -217,13 +252,21 @@ func New(opts Options) *Server {
 		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
 		kv:           opts.KV,
+		backlogs:     opts.Backlogs,
 		runstore:     opts.RunStore,
 		overrides:    opts.Overrides,
 		version:      opts.Version,
-		stream:       newStreamHub(),
-		hookMux:      http.NewServeMux(),
-		adminMux:     http.NewServeMux(),
-		stateMux:     http.NewServeMux(),
+		spool:        opts.Spool,
+		restartMaxDefer: func() time.Duration {
+			if opts.RestartMaxDefer == 0 {
+				return DefaultRestartMaxDefer
+			}
+			return opts.RestartMaxDefer
+		}(),
+		stream:   newStreamHub(),
+		hookMux:  http.NewServeMux(),
+		adminMux: http.NewServeMux(),
+		stateMux: http.NewServeMux(),
 
 		reloadRepo:    opts.ReloadRepo,
 		reloadControl: opts.ReloadControl,
@@ -312,6 +355,16 @@ func (s *Server) registerRoutes() {
 
 	// Admin port (internal, behind zero trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
+	s.adminMux.HandleFunc("GET /restart-ready", s.handleRestartReady)
+	// The same two questions at the paths docker-updater discovers by itself,
+	// with no label to configure. Aliases, not new handlers: /restart-ready
+	// already answers "may I be replaced right now", down to the max-defer
+	// valve, and a second implementation of that is a second answer that can
+	// disagree with the first. On the admin mux because that is where the
+	// existing pair lives, so nothing new is published on the tunnel-facing
+	// hook port; the deploy names it with docker-updater.well-known.port=9001.
+	s.adminMux.HandleFunc("GET "+wellKnownHealth, s.handleHealth)
+	s.adminMux.HandleFunc("GET "+wellKnownPreUpdate, s.handleRestartReady)
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
 	s.adminMux.HandleFunc("GET /hooks", s.handleListHooks)
 	s.adminMux.HandleFunc("GET /hooks/{id}", s.handleHookDetail)
@@ -319,6 +372,9 @@ func (s *Server) registerRoutes() {
 	// a concurrency group's limit live. Admin-port-only by design.
 	s.adminMux.HandleFunc("POST /hooks/{id}/disable", s.handleHookDisable)
 	s.adminMux.HandleFunc("POST /hooks/{id}/enable", s.handleHookEnable)
+	s.adminMux.HandleFunc("GET /hooks/{id}/settings", s.handleSettingsGet)
+	s.adminMux.HandleFunc("PUT /hooks/{id}/settings", s.handleSettingsSet)
+	s.adminMux.HandleFunc("DELETE /hooks/{id}/settings", s.handleSettingsClear)
 	// Managers: the first-class roster (state, instance, restarts, inbox,
 	// output tail), the kill switch, and the instance bounce.
 	s.adminMux.HandleFunc("GET /managers", s.handleListManagers)
@@ -394,11 +450,27 @@ func (s *Server) registerRoutes() {
 	// Friendly-title override: a run whose subject is only known mid-run
 	// (a fleet sweep reaching some repo) names itself (see title.go).
 	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
+	// Instrumentation: the injected shim reports the container's first
+	// instruction, the one lifecycle mark the host cannot see (see phase.go).
+	// Deliberately a single fixed route, not POST /phase/{name}: hooks must
+	// not be able to stamp arbitrary marks, or the measurement stops meaning
+	// what it says.
+	s.stateMux.HandleFunc("POST /phase/container-entry", s.withNamespace(s.handleContainerEntry))
 	// Spawn: a permitted MANAGER starts runs of ANOTHER hook through the
 	// runner itself — deny-by-default manager.json spawn_targets, normal
 	// dispatch, skip_if deliberately bypassed like scheduled fires (see
 	// spawn.go).
 	s.stateMux.HandleFunc("POST /spawn", s.withNamespace(s.handleSpawn))
+	// Durable batch backlogs: what is LEFT for a run that already exists and
+	// can only afford part of the work (internal/backlog — distinct from
+	// internal/queue, which decides WHEN to start a run). A hook run is a
+	// container that lives for one delivery, so a backlog cannot live inside
+	// it; every hook that tried built a cursor out of KV strings and stranded
+	// its tail. Push is a set union that keeps order; take REMOVES a slice.
+	s.stateMux.HandleFunc("POST /backlog/{name}/push", s.withNamespace(s.handleBacklogPush))
+	s.stateMux.HandleFunc("POST /backlog/{name}/take", s.withNamespace(s.handleBacklogTake))
+	s.stateMux.HandleFunc("GET /backlog/{name}", s.withNamespace(s.handleBacklogStat))
+	s.stateMux.HandleFunc("GET /backlogs", s.withNamespace(s.handleBacklogList))
 }
 
 // runRequestContext returns a background context derived from the server

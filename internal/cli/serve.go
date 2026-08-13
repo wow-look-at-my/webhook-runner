@@ -12,13 +12,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
+	"github.com/wow-look-at-my/webhook-runner/internal/backlog"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
-	"github.com/wow-look-at-my/webhook-runner/internal/githubstatus"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/managers"
@@ -29,6 +30,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runstore"
 	"github.com/wow-look-at-my/webhook-runner/internal/scheduler"
 	"github.com/wow-look-at-my/webhook-runner/internal/server"
+	"github.com/wow-look-at-my/webhook-runner/internal/spool"
 )
 
 func runServe(ctx context.Context, o *serveOptions) error {
@@ -64,7 +66,10 @@ func runServe(ctx context.Context, o *serveOptions) error {
 
 	registry := hooks.NewRegistry()
 	tracker := runs.NewTracker()
-	gh := githubstatus.New(o.ghToken, logger)
+	gh, err := newGitHubStatusClient(o, logger)
+	if err != nil {
+		return err
+	}
 	// The runner's OWN GitHub client (commit statuses; the reload-gate
 	// poll's status reads) rides the mirror like every container does —
 	// unconditional, no knob (see runner.GSMBaseURL).
@@ -125,6 +130,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	kvStore.StartSweeper()
 	defer kvStore.Close()
 
+	// Durable per-hook batch backlogs (internal/backlog): what a run could not
+	// get to, behind the state port's /backlog routes. Disk-backed beside the
+	// KV namespaces, because outliving the run — and the process — that filled
+	// it is the whole point.
+	backlogStore, err := backlog.New(backlog.Config{Dir: filepath.Join(dataDir, "backlogs")}, logger)
+	if err != nil {
+		return fmt.Errorf("backlog store: %w", err)
+	}
+
 	// Persistent run history: every run is written to a single bbolt file
 	// under the data dir the moment it reaches a terminal status (the
 	// tracker's OnFinish seam), and the admin read endpoints merge it behind
@@ -150,6 +164,15 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 	}()
 	tracker.SetOnFinish(server.RunFinishCallback(kvStore, runStore.Record, rec, logger))
+
+	// The shutdown delivery spool: deliveries that arrive while this process
+	// is draining are parked here and run by the NEXT one. Without it a
+	// deploy window answers 503 and the delivery is gone — GitHub does not
+	// re-send a failed one (see internal/spool).
+	spoolStore, err := spool.Open(filepath.Join(dataDir, "spool"), logger)
+	if err != nil {
+		return fmt.Errorf("delivery spool: %w", err)
+	}
 
 	// The state KV API is served on a Unix socket (no networking). It must
 	// live in the same host-shared dir the runner mounts per-run files from
@@ -276,6 +299,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
+	// The lock sweeper's liveness oracle. An expired lock may only be reaped
+	// once its holder is CERTAINLY gone — expiry alone never frees a mutex
+	// (internal/kv/lock.go) — and a holder is either a tracked run or a
+	// manager's live instance, so both are asked. Without this the store
+	// reaps nothing, which is the safe direction.
+	kvStore.SetRunLiveness(func(id string) bool {
+		if r := tracker.Get(id); r != nil && !r.Status().Terminal() {
+			return true
+		}
+		return sup.AnyCurrentInstance(id)
+	})
+
 	// Scheduler: fires hooks declaring a "schedule" interval on a timer,
 	// through the very same run pipeline (so a scheduled run is tracked,
 	// concurrency-gated, KV-enabled, and shown on the dashboard like any
@@ -291,7 +326,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// run unbounded, and a manager id colliding with a hook is dropped
 	// loudly. Both the filesystem watcher and the admin/webhook reload path
 	// go through this one function.
-	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, sup, ovStore, agg, secrets, logger, rec)
+	loadAndApply := buildLoadAndApply(o.hooksDir, registry, concurrencyMgr, sched, sup, ovStore, agg, secrets, gh.Enabled(), logger, rec)
 
 	onReload, gate, err := buildReloadPath(repo, o, dataDir, loadAndApply, gh, rec, agg, logger)
 	if err != nil {
@@ -304,26 +339,29 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	vcsRev, vcsTime := buildVCS()
 
 	srvOpts := server.Options{
-		Registry:     registry,
-		Runner:       rn,
-		Tracker:      tracker,
-		GitHub:       gh,
-		Secrets:      secrets,
-		Concurrency:  concurrencyMgr,
-		GlobalCap:    globalCap,
-		Events:       rec,
-		Attention:    agg,
-		Logger:       logger,
-		ReloadSecret: o.hooksRepoSecret,
-		OnReload:     onReload,
-		HooksRepo:    o.hooksRepo,
-		HooksBranch:  o.hooksBranch,
-		HookBaseURL:  o.hookBaseURL,
-		KV:           kvStore,
-		RunStore:     runStore,
-		Overrides:    ovStore,
-		Managers:     sup,
-		Version:      server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
+		Registry:        registry,
+		Runner:          rn,
+		Tracker:         tracker,
+		GitHub:          gh,
+		Secrets:         secrets,
+		Concurrency:     concurrencyMgr,
+		GlobalCap:       globalCap,
+		Events:          rec,
+		Attention:       agg,
+		Logger:          logger,
+		ReloadSecret:    o.hooksRepoSecret,
+		OnReload:        onReload,
+		HooksRepo:       o.hooksRepo,
+		HooksBranch:     o.hooksBranch,
+		HookBaseURL:     o.hookBaseURL,
+		KV:              kvStore,
+		Backlogs:        backlogStore,
+		RunStore:        runStore,
+		Overrides:       ovStore,
+		Managers:        sup,
+		Version:         server.VersionInfo{Version: versionString(), Revision: vcsRev, Time: vcsTime},
+		RestartMaxDefer: o.restartMaxDefer,
+		Spool:           spoolStore,
 	}
 	if repo != nil {
 		// The admin reload panel's read surface over the clone (status /
@@ -349,14 +387,64 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watchErr := make(chan error, 1)
+	// Replay parked deliveries exactly once, on the FIRST load that
+	// populates the registry — event-driven off the watcher's initial scan
+	// rather than polling for readiness, and necessarily after it, since a
+	// replay needs its hook to exist.
+	var replayOnce sync.Once
+	loadThenReplay := func() error {
+		err := loadAndApply()
+		replayOnce.Do(func() {
+			replaySpooledDeliveries(spoolStore, registry, rn, rec, logger)
+		})
+		return err
+	}
+
+	// THE STARTUP LOAD IS FATAL WHEN REFUSED. A binary that cannot load the
+	// deployed tree has exactly two options: serve a FRACTION of the fleet,
+	// or refuse to serve. The fraction is the dangerous one — it comes up
+	// answering /health, the dashboard looks alive, and the entities the
+	// binary could not parse have simply stopped existing, with no rollback
+	// available because the tree never changed (the binary did).
+	//
+	// Exiting instead makes it a FAILED DEPLOY: loud, immediate, and
+	// attributable to the image that just rolled out. This is the
+	// binary-moved half of the fail-closed rule; the tree-moved half is the
+	// reload gate's rollback (internal/reloadgate.applyOrRollbackLocked).
+	if err := loadThenReplay(); err != nil {
+		return fmt.Errorf("refusing to serve: %w", err)
+	}
 	go func() {
-		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, loadAndApply, logger)
+		watchErr <- hooks.WatchFunc(watchCtx, o.hooksDir, func() { _ = loadThenReplay() }, logger)
 	}()
 
 	// Scheduler loop runs for the lifetime of the server too; it does nothing
 	// until the watcher's initial scan populates its schedule set, then fires
 	// due hooks each tick.
 	go sched.Run(watchCtx)
+
+	// Scheduled-hook staleness watch: independent of reload (staleness is a
+	// function of elapsed time, not a tree change), so it runs on its own
+	// ticker for the server's lifetime. See attention.CheckStaleSchedules —
+	// a scheduled tick is often the reliability BACKSTOP for whatever a hook
+	// manages, and a backstop that silently stops succeeding looks, from the
+	// outside, identical to one with nothing to do.
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-t.C:
+				agg.ReplaceSource(attention.SourceSchedule, attention.CheckStaleSchedules(
+					sched.Schedules(),
+					func(hookID string) []*runs.Run { return tracker.ListByHook(hookID, 50) },
+					time.Now(),
+				))
+			}
+		}
+	}()
 
 	// The manager supervisor: acquires the single-instance lease (flat
 	// poll — during a rolling deploy the old process holds it until its
@@ -470,33 +558,17 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	logger.Info("shutting down")
-	// Refuse NEW runs immediately: a run launched by this dying process
-	// races the state-socket handover (its shim would dial a socket the
-	// next server replaces) — deliveries get a retryable 503 instead, and
-	// GitHub redelivers webhooks. In-flight runs drain via rn.Wait below.
-	rn.BeginShutdown()
-	// Stop manager instances gracefully (docker stop; SIGTERM + grace)
-	// BEFORE anything else winds down: the lease releases only when this
-	// process exits, so the successor process's supervisor cannot start
-	// replacement instances until ours are provably gone.
-	sup.Shutdown()
-	// Disconnect /runs/stream clients FIRST: adminSrv.Shutdown waits for
-	// in-flight handlers, and a stream handler holds its response open
-	// until its subscription closes (or its client goes away).
-	srv.CloseStreams()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := hookSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("hook server shutdown", "err", err)
-	}
-	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("admin server shutdown", "err", err)
-	}
-	if err := stateSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("state server shutdown", "err", err)
-	}
+	gracefulShutdown(shutdownDeps{
+		refuseNewRuns: rn.BeginShutdown,
+		stopManagers:  sup.Shutdown,
+		drainRuns:     rn.Wait,
+		closeHook:     hookSrv.Shutdown,
+		closeState:    stateSrv.Shutdown,
+		closeStreams:  srv.CloseStreams,
+		closeAdmin:    adminSrv.Shutdown,
+		logger:        logger,
+	})
 	cancelWatch()
-	rn.Wait()
 	return nil
 }
 

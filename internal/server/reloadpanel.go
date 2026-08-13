@@ -78,35 +78,67 @@ type ciCacheEntry struct {
 	at    time.Time
 }
 
-// reloadCIState reads (with a small cache) the gating context's state for
-// sha: the gate's own CIState vocabulary — "unknown" whenever it cannot be
-// read, never a guess. "unknown" itself is cached only on the live TTL so
-// a recovered credential is picked up quickly.
-func (s *Server) reloadCIState(ctx context.Context, sha string) string {
+// reloadCIState answers the gating context's state for sha: the gate's own
+// CIState vocabulary — "unknown" whenever it cannot be read, never a guess.
+//
+// An EXPIRED entry serves its stale value and refreshes behind; only a sha
+// with nothing cached blocks, once. Never put the probe back on the request
+// path: it is a GitHub call, /reload/status is polled on every dashboard
+// tick, and "unknown" — what a degraded GitHub returns — is not terminal,
+// so it expires on the live TTL and every expiry buys another 5s probe.
+// That makes the panel slowest exactly when GitHub is the thing that broke.
+func (s *Server) reloadCIState(sha string) string {
 	if s.reloadControl == nil || sha == "" {
 		return "unknown"
 	}
-	now := time.Now()
 	s.ciMu.Lock()
-	if e, ok := s.ciCache[sha]; ok {
+	if e, cached := s.ciCache[sha]; cached {
 		ttl := reloadCILiveTTL
 		switch e.state {
 		case "success", "failure", "error":
 			ttl = reloadCITerminalTTL
 		}
-		if now.Sub(e.at) < ttl {
-			s.ciMu.Unlock()
-			return e.state
+		if time.Since(e.at) >= ttl && !s.ciInflight[sha] {
+			if s.ciInflight == nil {
+				s.ciInflight = map[string]bool{}
+			}
+			s.ciInflight[sha] = true
+			go s.refreshCIState(sha)
 		}
+		s.ciMu.Unlock()
+		return e.state
 	}
 	s.ciMu.Unlock()
 
-	state := s.reloadControl.CIState(ctx, sha)
+	s.refreshCIStateSync(sha)
+	s.ciMu.Lock()
+	defer s.ciMu.Unlock()
+	return s.ciCache[sha].state
+}
+
+// refreshCIState is refreshCIStateSync plus the in-flight bookkeeping that
+// keeps concurrent polls of one sha to a single probe.
+func (s *Server) refreshCIState(sha string) {
+	defer func() {
+		s.ciMu.Lock()
+		delete(s.ciInflight, sha)
+		s.ciMu.Unlock()
+	}()
+	s.refreshCIStateSync(sha)
+}
+
+// refreshCIStateSync probes the gating status for sha and stores it. The
+// probe runs on its own context — a background refresh outlives the request
+// that triggered it — and CIState bounds itself, so it cannot run away.
+func (s *Server) refreshCIStateSync(sha string) {
+	state := s.reloadControl.CIState(context.Background(), sha)
 
 	s.ciMu.Lock()
+	defer s.ciMu.Unlock()
 	if s.ciCache == nil {
 		s.ciCache = map[string]ciCacheEntry{}
 	}
+	now := time.Now()
 	s.ciCache[sha] = ciCacheEntry{state: state, at: now}
 	// The panel's working set is tiny (live + pending + one listing); a cap
 	// keeps a long-lived process from accreting every sha it ever saw.
@@ -114,8 +146,6 @@ func (s *Server) reloadCIState(ctx context.Context, sha string) string {
 		clear(s.ciCache)
 		s.ciCache[sha] = ciCacheEntry{state: state, at: now}
 	}
-	s.ciMu.Unlock()
-	return state
 }
 
 // describeReloadCommit assembles one commit view: subject/date from local
@@ -125,7 +155,7 @@ func (s *Server) describeReloadCommit(ctx context.Context, sha, liveSHA string) 
 	c := reloadCommitJSON{
 		SHA:     sha,
 		Short:   shortSHA(sha),
-		CIState: s.reloadCIState(ctx, sha),
+		CIState: s.reloadCIState(sha),
 		IsLive:  sha != "" && sha == liveSHA,
 	}
 	if s.reloadRepo != nil && sha != "" {

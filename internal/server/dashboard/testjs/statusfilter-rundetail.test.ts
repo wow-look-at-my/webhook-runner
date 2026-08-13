@@ -45,6 +45,14 @@ function makeElement(id) {
 		style: {},
 		children: [],
 		showModalCalls: 0,
+		// Recorded handlers, so a test can fire an event the way the
+		// component does (el.listeners['table-filter-change'](ev)) instead
+		// of reaching into the renderer.
+		listeners: {},
+		// Recorded attributes: a custom element's configuration (empty-text,
+		// storage-key) is set through setAttribute and is otherwise
+		// invisible to a stub that swallows it.
+		attributes: {},
 		classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
 	};
 	return new Proxy(target, {
@@ -61,6 +69,18 @@ function makeElement(id) {
 					return (...xs) => {
 						t.children = xs;
 					};
+				case 'addEventListener':
+					return (ev, fn) => {
+						t.listeners[ev] = fn;
+					};
+				case 'setAttribute':
+					return (k, v) => {
+						t.attributes[k] = String(v);
+					};
+				case 'getAttribute':
+					return (k) => (k in t.attributes ? t.attributes[k] : null);
+				case 'hasAttribute':
+					return (k) => k in t.attributes;
 				case 'showModal':
 					return () => {
 						t.open = true;
@@ -110,11 +130,25 @@ function makeSandbox() {
 	const winTarget = new EventTarget();
 	const docTarget = new EventTarget();
 	const stored = new Map(); // localStorage backing
+	const requests = []; // every fetch URL, in order
 
 	// Canned routes; per-URL status so /runs/{id} can 404.
 	const routes = (url) => {
 		if (url.startsWith('/health')) return { status: 200, body: { status: 'ok' } };
 		if (url.startsWith('/attention')) return { status: 200, body: { count: 0, entries: [] } };
+		// One hook's app-page detail. by_status is the RETENTION-WINDOW count
+		// the filter chips read — deliberately much larger than any page.
+		if (url.startsWith('/hooks/a')) {
+			return {
+				status: 200,
+				body: {
+					info: { id: 'a', timeout: '5m', state: false },
+					disabled: false,
+					stats: { tracked: 4213, by_status: { skipped: 4200, success: 11, failure: 2 }, retention: '48h' },
+					image: { built: true },
+				},
+			};
+		}
 		if (url.startsWith('/hooks')) return { status: 200, body: [{ id: 'a' }] };
 		if (url.startsWith('/runs/live1')) {
 			return {
@@ -158,6 +192,7 @@ function makeSandbox() {
 		setInterval: () => 0,
 		clearInterval: () => {},
 		fetch: async (url) => {
+			requests.push(String(url));
 			const { status, body } = routes(url);
 			return {
 				ok: status >= 200 && status < 300,
@@ -207,7 +242,7 @@ function makeSandbox() {
 
 	vm.createContext(sandbox);
 	vm.runInContext(dashboardSrc, sandbox, { filename: 'dashboard.js' });
-	return { sandbox, elements, stored };
+	return { sandbox, elements, stored, requests };
 }
 
 const settle = async () => {
@@ -216,27 +251,25 @@ const settle = async () => {
 
 // -- 1. The status filter's pure selection ----------------------------------
 
-test('filterAppRuns hides exactly the hidden statuses and counts them', () => {
-	const { sandbox } = makeSandbox();
-	const runs = [
-		{ id: '1', status: 'success' },
-		{ id: '2', status: 'skipped' },
-		{ id: '3', status: 'skipped' },
-		{ id: '4', status: 'failure' },
-		{ id: '5', status: 'running' },
-	];
-	const out = sandbox.filterAppRuns(runs, new Set(['skipped']));
-	// join(): the returned arrays live in the vm realm, so compare values,
-	// not (cross-realm) array identity.
-	assert.equal(out.shown.map((r) => r.id).join(','), '1,4,5', 'skipped rows are filtered from the data');
-	assert.equal(out.hiddenCounts.get('skipped'), 2, 'the hidden count is preserved for the chip');
+// The rows and chips are rendered by js-snippets' <data-table>, which does
+// not exist in this stub DOM — so what is asserted here is the CONTRACT the
+// dashboard hands that component, which is the part this repo owns.
+test('the status facet is declared host-filtered, never local', async () => {
+	const { sandbox, elements } = makeSandbox();
+	sandbox.location.hash = '#hook=a';
+	await settle();
+	await sandbox.refreshApp('a');
+	await settle();
 
-	const none = sandbox.filterAppRuns(runs, new Set());
-	assert.equal(none.shown.length, 5, 'an empty hidden set shows everything');
-	assert.equal(none.hiddenCounts.size, 0);
-
-	const all = sandbox.filterAppRuns(runs, new Set(['success', 'skipped', 'failure', 'running']));
-	assert.equal(all.shown.length, 0);
+	const table = elements.get('app-runs-table');
+	const status = table.facets.find((f) => f.key === 'status');
+	assert.ok(status, 'the runs table declares a status facet');
+	// THE invariant. The rows in hand are a server-filtered window (the
+	// exclusion is applied before the row cap), so a component that also
+	// filtered locally would empty a table whose remaining rows all sit
+	// past the cap — the exact bug the server-side filter exists to fix.
+	assert.equal(status.local, false, 'the status facet must never filter client-side');
+	assert.ok(status.counts, 'a host-filtered facet must supply its own counts');
 });
 
 test('the hidden-status set defaults to skipped and round-trips persistence', () => {
@@ -300,4 +333,91 @@ test('renderConcurrency accepts the {global, groups} document and the legacy arr
 	assert.equal(elements.get('concurrency-global-cap').hidden, true);
 	sandbox.renderConcurrency([]);
 	assert.equal(elements.get('concurrency-global-cap').hidden, true);
+});
+
+// -- 4. Filter first, then limit --------------------------------------------
+//
+// The status filter is applied SERVER-SIDE now. The bug: the page fetched
+// the newest 50 runs and hid statuses locally, so a hook whose recent
+// history is all skips showed an empty table ("All 50 recent run(s) are
+// hidden by the status filter above") with its real runs just past the
+// window, unreachable at any limit.
+
+const appRunsFetches = (requests) => requests.filter((u) => u.startsWith('/runs?hook='));
+
+test('the app page sends the hidden statuses as ?exclude= so the limit counts visible runs', async () => {
+	const { sandbox, requests } = makeSandbox();
+	await settle();
+
+	// Default hidden set is {skipped}: it must reach the SERVER, not just
+	// the renderer.
+	await sandbox.refreshApp('a');
+	await settle();
+	const first = appRunsFetches(requests);
+	assert.equal(first.length, 1, 'one runs fetch per app refresh');
+	assert.match(first[0], /[?&]max=50(&|$)/);
+	assert.match(first[0], /[?&]exclude=skipped(&|$)/, 'the filter must be pushed to the server');
+
+	// Showing everything drops the parameter entirely — an unfiltered fetch,
+	// not exclude= with an empty value.
+	sandbox.saveAppRunsHiddenStatuses(new Set());
+	await sandbox.refreshApp('a');
+	await settle();
+	const second = appRunsFetches(requests);
+	assert.equal(second.length, 2);
+	assert.doesNotMatch(second[1], /exclude/, 'an empty hidden set sends no exclude at all');
+
+	// Several hidden statuses travel as one csv, sorted for a stable URL.
+	sandbox.saveAppRunsHiddenStatuses(new Set(['success', 'skipped']));
+	await sandbox.refreshApp('a');
+	await settle();
+	const third = appRunsFetches(requests);
+	assert.equal(third.length, 3);
+	assert.match(third[2], /[?&]exclude=skipped%2Csuccess(&|$)/);
+});
+
+test('a chip click refetches — a different filter is a different page of runs', async () => {
+	const { sandbox, elements, requests } = makeSandbox();
+	sandbox.location.hash = '#hook=a';
+	await settle();
+
+	await sandbox.refreshApp('a');
+	await settle();
+	const before = appRunsFetches(requests).length;
+
+	// A chip lives in the component's shadow root, so drive its public
+	// contract instead: the component emits table-filter-change with the
+	// new hidden set, and the dashboard must react by REFETCHING.
+	const table = elements.get('app-runs-table');
+	table.listeners['table-filter-change']({ detail: { query: '', hidden: { status: [] }, sort: null } });
+	await settle();
+
+	const after = appRunsFetches(requests);
+	assert.equal(after.length, before + 1, 'toggling a chip must REFETCH, not re-select the page in hand');
+	assert.doesNotMatch(after[after.length - 1], /exclude/, 'showing skipped drops the exclusion server-side');
+});
+
+test('chip counts come from the retention window, not the fetched page', async () => {
+	const { sandbox, elements } = makeSandbox();
+	await settle();
+
+	// /runs answers [] for this hook while stats.by_status reports thousands:
+	// exactly the post-filter state, where the page cannot supply the counts.
+	await sandbox.refreshApp('a');
+	await settle();
+
+	const table = elements.get('app-runs-table');
+	const counts = table.facets.find((f) => f.key === 'status').counts;
+	assert.equal(counts.skipped, 4200, `window count expected, got ${JSON.stringify(counts)}`);
+	assert.equal(counts.success, 11, `window count expected, got ${JSON.stringify(counts)}`);
+	// The default-hidden status keeps a chip even at zero, or the control
+	// is undiscoverable on a hook that has never skipped.
+	assert.ok(table.facets.find((f) => f.key === 'status').always.includes('skipped'));
+
+	// And the empty text names the filter instead of counting a page that
+	// no longer contains the hidden rows.
+	const empty = table.attributes['empty-text'];
+	assert.match(empty, /status filter/);
+	assert.match(empty, /skipped/);
+	assert.doesNotMatch(empty, /All 0 recent/);
 });

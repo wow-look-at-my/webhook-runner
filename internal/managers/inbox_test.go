@@ -2,6 +2,7 @@ package managers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,7 @@ import (
 )
 
 func TestInboxDeliverAndNext(t *testing.T) {
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	ib.BindInstance("inst-1", nil, nil, nil)
 
 	d := ib.PushDelivery(http.Header{"X-Github-Event": []string{"push"}}, []byte(`{"a":1}`))
@@ -38,7 +39,7 @@ func TestInboxDeliverAndNext(t *testing.T) {
 }
 
 func TestInboxStaleInstanceRefused(t *testing.T) {
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	ib.BindInstance("inst-2", nil, nil, nil)
 	_, _, err := ib.Next(context.Background(), "inst-1", time.Millisecond)
 	assert.ErrorIs(t, err, ErrNotSession)
@@ -48,7 +49,7 @@ func TestInboxStaleInstanceRefused(t *testing.T) {
 
 // Ticks coalesce: at most one queued at a time; consuming it re-allows one.
 func TestInboxTickCoalescing(t *testing.T) {
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
 	assert.True(t, ib.PushTick())
 	assert.False(t, ib.PushTick())
@@ -62,31 +63,43 @@ func TestInboxTickCoalescing(t *testing.T) {
 	assert.True(t, ib.PushTick(), "consumed tick re-allows one")
 }
 
-// Overflow drops the OLDEST (newest-wins), reports it, and settles its
-// delivery handle as NOT completed.
-func TestInboxOverflowDropsOldestLoudly(t *testing.T) {
-	var dropped []Event
-	ib := NewInbox(2, func(e Event) { dropped = append(dropped, e) })
+// The inbox is UNBOUNDED: a burst far past the old 256 cap keeps every
+// event, in order, and settles none of them early. The cap used to drop the
+// oldest per push, which is how a fan-out tick against a large fleet lost
+// real deliveries behind a wall of manager.inbox_dropped.
+func TestInboxKeepsEveryEventUnderABurst(t *testing.T) {
+	const burst = 1000 // ~4x the retired cap
+	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
 
-	d1 := ib.PushDelivery(nil, []byte(`{"n":1}`))
-	ib.PushDelivery(nil, []byte(`{"n":2}`))
-	ib.PushDelivery(nil, []byte(`{"n":3}`)) // overflows: drops n=1
-	require.Len(t, dropped, 1)
-	assert.JSONEq(t, `{"n":1}`, string(dropped[0].Payload))
-	<-d1.Done()
-	assert.False(t, d1.Completed())
+	handles := make([]*Delivered, 0, burst)
+	for i := range burst {
+		handles = append(handles, ib.PushDelivery(nil, fmt.Appendf(nil, `{"n":%d}`, i)))
+	}
+	assert.Equal(t, burst, ib.Depth(), "every pushed event is still queued")
 
-	ev, ok, err := ib.Next(context.Background(), "i", time.Second)
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.JSONEq(t, `{"n":2}`, string(ev.Payload))
+	// Nothing was dropped, so no handle has settled while it waits its turn.
+	for i, d := range handles {
+		select {
+		case <-d.Done():
+			t.Fatalf("event %d settled before it was ever delivered", i)
+		default:
+		}
+	}
+
+	// FIFO order survives the burst — the oldest is still first out.
+	for i := range burst {
+		ev, ok, err := ib.Next(context.Background(), "i", time.Second)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.JSONEq(t, fmt.Sprintf(`{"n":%d}`, i), string(ev.Payload))
+	}
 }
 
 // A checked-out event ABANDONS (settles not-completed) when the instance
 // dies mid-processing; the buffered backlog survives for the successor.
 func TestInboxUnbindAbandonsCheckedOut(t *testing.T) {
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
 	d := ib.PushDelivery(nil, []byte(`{}`))
 	ib.PushDelivery(nil, []byte(`{"later":true}`))
@@ -112,7 +125,7 @@ func TestInboxUnbindAbandonsCheckedOut(t *testing.T) {
 // with nobody parked and nothing checked out arms (the wedge guard).
 func TestInboxWatchdogArming(t *testing.T) {
 	var armed, disarmed atomic.Int32
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	ib.BindInstance("i", func() { armed.Add(1) }, func() { disarmed.Add(1) }, nil)
 
 	// Wedge guard: a push with no parked waiter arms.
@@ -164,7 +177,7 @@ func TestInboxWatchdogArming(t *testing.T) {
 // A long-poll Next delivers the instant a push arrives (no polling
 // latency), and an elapsed wait returns ok=false.
 func TestInboxLongPollWakesOnPush(t *testing.T) {
-	ib := NewInbox(0, nil)
+	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
 
 	got := make(chan Event, 1)

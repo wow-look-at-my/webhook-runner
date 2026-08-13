@@ -94,13 +94,21 @@ func (d *Delivered) settle(ok bool) {
 	d.mu.Unlock()
 }
 
-// DefaultInboxSize bounds each manager's event buffer. Overflow drops the
-// OLDEST entry (newest wins), loudly via the onDrop callback. 256 is far
-// beyond any healthy backlog —
-// a manager consumes events in milliseconds-to-seconds; a full inbox means
-// it is down or wedged, and the reconcile pass on its next instance start
-// re-derives whatever the drops lost.
-const DefaultInboxSize = 256
+// The inbox is UNBOUNDED, deliberately. It used to stop at 256 and drop the
+// oldest entry per push, on the reasoning that a full inbox means the manager
+// is wedged and its next reconcile re-derives whatever was lost. Both halves
+// were wrong in practice: a healthy manager under a burst (a fan-out tick
+// against a large fleet) fills 256 in seconds, and "reconcile covers the loss"
+// only holds for events a reconcile can re-derive — a delivery carrying
+// something the manager cannot reconstruct is simply gone. What the operator
+// saw was a wall of manager.inbox_dropped with real work disappearing behind
+// it, which is worse than any amount of memory: an unbounded queue drains,
+// while a dropped event never comes back.
+//
+// Growth is bounded by what the runner already bounds — deliveries arrive over
+// HTTP and ticks are one-at-a-time (tickQueued) — and a manager that stops
+// consuming is caught by the wedge guard below, which reaps and restarts it
+// rather than letting the backlog stand in for a health signal.
 
 // nextWakeInterval bounds how late Next notices its deadline or a
 // cancelled context (pushes broadcast immediately, so event latency is
@@ -132,7 +140,6 @@ type Inbox struct {
 	cond *sync.Cond
 
 	buf        []entry
-	max        int
 	tickQueued bool
 
 	instanceID string
@@ -152,7 +159,6 @@ type Inbox struct {
 	lastDelivered time.Time
 	lastTick      time.Time
 
-	onDrop func(Event) // overflow observer — nil-safe
 	// onChange is the admin-surface seam (Supervisor.SetOnChange): depth,
 	// the last-delivered/last-tick stamps, and the instance binding are all
 	// on GET /managers. Invoked with ib.mu RELEASED; nil-safe.
@@ -178,14 +184,9 @@ func (ib *Inbox) notifyChanged() {
 	}
 }
 
-// NewInbox constructs an inbox with the given capacity (<=0 =
-// DefaultInboxSize). onDrop observes each overflow-dropped event (loud —
-// the caller records the activity event); nil is safe.
-func NewInbox(size int, onDrop func(Event)) *Inbox {
-	if size <= 0 {
-		size = DefaultInboxSize
-	}
-	ib := &Inbox{max: size, onDrop: onDrop}
+// NewInbox constructs an empty, unbounded inbox.
+func NewInbox() *Inbox {
+	ib := &Inbox{}
 	ib.cond = sync.NewCond(&ib.mu)
 	return ib
 }
@@ -302,16 +303,7 @@ func (ib *Inbox) PushStart() {
 }
 
 func (ib *Inbox) push(e entry) {
-	var dropped *entry
 	ib.mu.Lock()
-	if len(ib.buf) >= ib.max {
-		victim := ib.buf[0]
-		ib.buf = append(ib.buf[:0], ib.buf[1:]...)
-		if victim.ev.Kind == KindTick {
-			ib.tickQueued = false
-		}
-		dropped = &victim
-	}
 	ib.buf = append(ib.buf, e)
 	switch e.ev.Kind {
 	case KindTick:
@@ -328,17 +320,10 @@ func (ib *Inbox) push(e entry) {
 	// checkout.)
 	arm := ib.arm
 	shouldArm := ib.parked == 0 && ib.checkedOut == nil && ib.instanceID != ""
-	onDrop := ib.onDrop
 	ib.mu.Unlock()
 
 	if shouldArm && arm != nil {
 		arm()
-	}
-	if dropped != nil {
-		dropped.d.settle(false)
-		if onDrop != nil {
-			onDrop(dropped.ev)
-		}
 	}
 	ib.cond.Broadcast()
 	ib.notifyChanged()

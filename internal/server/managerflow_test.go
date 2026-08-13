@@ -48,7 +48,7 @@ func newFakeManagers(ids ...string) *fakeManagers {
 		titles:    map[string]string{},
 	}
 	for _, id := range ids {
-		f.inboxes[id] = managers.NewInbox(0, nil)
+		f.inboxes[id] = managers.NewInbox()
 	}
 	return f
 }
@@ -176,7 +176,7 @@ func managerServer(t *testing.T, doc string) (*Server, *fakeManagers, *hooks.Man
 }
 
 const managerDoc = `{
-  "$schema": "x",
+  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json",
   "description": "coordinator",
   "enable": true,
   "secret": "hmac-secret",

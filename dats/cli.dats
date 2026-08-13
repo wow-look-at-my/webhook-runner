@@ -12,12 +12,12 @@
 # (the root command's [hooks-dir] positional); see CLAUDE.md. Tests near the
 # serve path must error before binding and carry a timeout as a hang guard.
 
-# These suites run the repo's own freshly built binary against fixtures in a
-# temp tree, and are kept docker-free and offline so they pass on a bare
-# runner (CLAUDE.md, "CLI contract tests"). dats sandboxes commands by
-# default via bubblewrap or docker; the org's default CI runner has neither,
-# so opt out here rather than make a bare runner a lie. Drop this line if the
-# runner ever grows bubblewrap.
+# SANDBOX OFF (dats `sandbox: false`). These commands need the HOST: they exec
+# the binary go-toolchain's dats phase stages under $GO_TOOLCHAIN_DATS_BUILD_DIR,
+# which is an os.MkdirTemp under /tmp — and dats' bwrap sandbox gives a command
+# a fresh /tmp, so inside it that path does not exist and every test exits 127.
+# Nothing here needs isolating anyway: docker-free, offline, secret-free tests
+# of our own freshly built CLI (see CLAUDE.md "CLI contract tests").
 sandbox: false
 
 tests:
@@ -45,6 +45,7 @@ tests:
 	  outputs:
 		stdout:
 			- webhook-runner validate <hooks-dir>
+
 	- desc: an unknown flag is an error, not a server start
 	  cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" --frobnicate'
 	  timeout: 30s
@@ -70,12 +71,39 @@ tests:
 		stderr:
 			- hooks directory required
 
+	# THE BINARY-MOVED HALF of the fail-closed rule, proven from OUTSIDE the
+	# process: a tree this binary cannot fully load must not become a running
+	# server. The tree here is one good hook plus one carrying a retired field
+	# (`env`), which is exactly the shape of a binary deployed ahead of the
+	# fleet that still declares it. Serving the one good hook would be the
+	# silent partial fleet this rule exists to prevent -- so serve exits
+	# non-zero, BEFORE binding either port (the timeout is the hang guard if
+	# that ever regresses into actually serving).
+	- desc: serve REFUSES a tree it cannot fully load, before binding anything
+	  cmd: 'env -u WEBHOOK_RUNNER_HOOKS_REPO "${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" "$(dirname "{inputs.good/hook.json}")/.."'
+	  timeout: 30s
+	  inputs:
+		files:
+			good/hook.json: |
+				{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["echo", "hi"]}
+			good/Dockerfile: |
+				FROM alpine
+			stale/hook.json: |
+				{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["echo", "hi"], "env": {"A": "b"}}
+			stale/Dockerfile: |
+				FROM alpine
+	  exit: 1
+	  outputs:
+		stderr:
+			- refusing to serve
+			- REFUSED
+
 	- desc: test on a valid tree with no declared tests reports and exits 0 (docker-free)
 	  cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" test "$(dirname "{inputs.h/hook.json}")/.."'
 	  inputs:
 		files:
 			h/hook.json: |
-				{"$schema": "s", "command": ["echo", "hi"]}
+				{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["echo", "hi"]}
 			h/Dockerfile: |
 				FROM alpine
 	  exit: 0
@@ -88,7 +116,7 @@ tests:
 	  inputs:
 		files:
 			h/hook.json: |
-				{"$schema": "s", "command": ["x"]}
+				{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json", "command": ["x"]}
 	  exit: 1
 	  outputs:
 		stderr:

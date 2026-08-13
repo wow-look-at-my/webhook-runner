@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["my_var"],
+  "properties": {
+    "my_var": {"type": "string"},
+    "retries": {"type": "integer", "minimum": 0}
+  }
+}

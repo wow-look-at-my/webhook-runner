@@ -2,6 +2,7 @@ package attention
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,9 +26,6 @@ const (
 	// shared by the probe ("secrets" source) and the request-time event
 	// rule ("event" source).
 	KeyAPIKey = "api_key"
-	// KeyEnvPrefix + <env var name>: that env value has unresolvable
-	// ${NAME} references.
-	KeyEnvPrefix = "env:"
 	// KeyReportedPrefix + <message>: a hook-emitted misconfiguration
 	// signal (the reserved future event class; see
 	// RegisterStandardEventRules).
@@ -50,6 +48,10 @@ const (
 	// or up-to-date), i.e. everywhere KeyReloadHeld resolves.
 	// ("reload" source, no hook.)
 	KeyReloadPoll = "poll"
+	// KeyGitHubStatus: the entity declares `github_status` but the runner
+	// has no GitHub credential, so shouldPost drops every status before it
+	// is built. ("github-status" source, per entity.)
+	KeyGitHubStatus = "github_status"
 )
 
 // Recognized activity-event kinds the standard rules subscribe to.
@@ -123,6 +125,29 @@ func RegisterStandardEventRules(a *Aggregator) {
 // concurrency.json problems, undeclared-group rejections) into the "load"
 // and "zero-hooks" entry sets for ReplaceSource. Hook attribution comes
 // from the typed errors the loader/concurrency checker produce.
+// KeyTreeRefused is the single refused-tree entry's key: one entry however
+// many entities failed, since the fleet-level fact is one fact.
+const KeyTreeRefused = "tree-refused"
+
+// TreeRefusedEntries is the fleet-level companion to FromLoadErrors: ONE
+// entry stating that nothing from this load was applied, and what is running
+// instead. `serving` is the entity count still being served (0 = the startup
+// load, where there is no previous fleet and serve exits instead).
+func TreeRefusedEntries(failed, serving int) []Entry {
+	if failed == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("hooks tree REFUSED: %d entit(y/ies) failed to load, so NONE of this tree was applied", failed)
+	if serving > 0 {
+		msg += fmt.Sprintf(" — still serving the previous %d entit(y/ies). Fix the entries below (a fleet-wide failure usually means the deployed binary and this tree disagree about a manifest field) and the next reload applies.", serving)
+	}
+	return []Entry{{
+		Source:  SourceTreeRefused,
+		Key:     KeyTreeRefused,
+		Message: msg,
+	}}
+}
+
 func FromLoadErrors(errs []error) (load, zero []Entry) {
 	load, zero = []Entry{}, []Entry{}
 	for _, err := range errs {
@@ -190,9 +215,11 @@ func FromLoadErrors(errs []error) (load, zero []Entry) {
 //     per-reference entries would be noise.
 //   - api_key: must expand to a non-empty value (an unresolvable ${NAME}
 //     or an empty expansion denies every delivery with a 401).
-//   - env values: every ${NAME} reference must resolve (an unset one
-//     injects an empty value into the container — the silent downstream
-//     failure env.unresolved warns about at run time).
+//
+// A hook's own `settings` are NOT probed here: they are validated against
+// the hook's settings.schema.json at LOAD, so a bad one never becomes a
+// loaded hook — it surfaces as a load error instead of a running hook with
+// quietly-wrong config.
 //
 // Clear rules applied here for the "event" source: an entry for a hook no
 // longer in the loaded set clears (any key — the hook is gone), and the
@@ -271,18 +298,52 @@ func ProbeHooks(loaded map[string]*hooks.Hook, secrets *hooks.SecretsLoader) []E
 				})
 			}
 		}
-		for _, k := range sortedKeys(h.Env) {
-			_, missing := hooks.ExpandEnvRefs(h.Env[k], lookup)
-			if len(missing) == 0 {
-				continue
-			}
-			entries = append(entries, Entry{
-				Source:  SourceSecrets,
-				Hook:    id,
-				Key:     KeyEnvPrefix + k,
-				Message: "env " + k + " references unset ${" + strings.Join(missing, "}, ${") + "} — the container gets an empty value",
-			})
+	}
+	return entries
+}
+
+// GitHubStatusEntries names every loaded entity that declares
+// `github_status` while the runner holds no GitHub credential.
+//
+// Without this the failure is invisible on both sides: githubstatus's
+// shouldPost returns false before a request is ever built, so nothing is
+// logged, no run is marked, and the entity's own runs go green while the
+// commit status they exist to publish never appears. The manifest asked for
+// a status; the deployment cannot post one; that is a misconfiguration and
+// belongs on the surface an operator reads.
+//
+// configured is `(*githubstatus.Client).Enabled()` — a credential SOURCE
+// exists, not that a fetch will succeed. A source that is failing right now
+// already reports itself per call, so it is not this entry's business.
+func GitHubStatusEntries(loaded map[string]*hooks.Hook, managers map[string]*hooks.Manager, configured bool) []Entry {
+	if configured {
+		return nil
+	}
+	flat := make(map[string]*hooks.Hook, len(loaded)+len(managers))
+	kind := make(map[string]string, len(loaded)+len(managers))
+	for id, h := range loaded {
+		flat[id], kind[id] = h, "hook"
+	}
+	for id, m := range managers {
+		if m == nil || m.Hook == nil {
+			continue
 		}
+		flat[id], kind[id] = m.Hook, "manager"
+	}
+	entries := []Entry{}
+	for _, id := range sortedIDs(flat) {
+		h := flat[id]
+		if h.GitHubStatus == nil || !h.GitHubStatus.Enabled {
+			continue
+		}
+		entries = append(entries, Entry{
+			Source: SourceGitHubStatus,
+			Hook:   id,
+			Key:    KeyGitHubStatus,
+			Message: "this " + kind[id] + " declares github_status (context " + h.GitHubStatus.Context +
+				") but the runner has no GitHub credential — every commit status is dropped, and its runs still go green. " +
+				"Set WEBHOOK_RUNNER_GITHUB_TOKEN, or WEBHOOK_RUNNER_SECRET_SERVER_TOKEN to read the credential from secret-server",
+		})
 	}
 	return entries
 }
@@ -291,15 +352,6 @@ func sortedIDs(m map[string]*hooks.Hook) []string {
 	out := make([]string, 0, len(m))
 	for id := range m {
 		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out

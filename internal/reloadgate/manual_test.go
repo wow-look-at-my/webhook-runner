@@ -158,9 +158,9 @@ func TestManualSwitchRefusedWithoutOverride(t *testing.T) {
 }
 
 func TestManualSwitchOverrideSwitchesLoudly(t *testing.T) {
-	// CI unreadable AND src missing — the fully wedged shape. The override
-	// must still work (the documented escape hatch) and be recorded loudly
-	// with every reason named.
+	// Src missing, and under override the CI state is deliberately not
+	// probed — the fully wedged shape. The override must still work (the
+	// documented escape hatch) and be recorded loudly with both named.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 	f.gate.status = statusFor(map[string]string{})
@@ -181,7 +181,7 @@ func TestManualSwitchOverrideSwitchesLoudly(t *testing.T) {
 		}
 	}
 	assert.Contains(t, forcedMsg, "OVERRIDING")
-	assert.Contains(t, forcedMsg, `"unknown"`)
+	assert.Contains(t, forcedMsg, "not probed")
 	assert.Contains(t, forcedMsg, "src/hooks")
 
 	st := readState(t, f.statePath)
@@ -200,8 +200,34 @@ func TestManualSwitchWorksWhenFetchFails(t *testing.T) {
 	out, err := f.gate.ManualSwitch(context.Background(), "A", true)
 	require.NoError(t, err)
 	assert.True(t, out.Switched)
-	assert.Equal(t, "unknown", out.CIState)
+	// An OVERRIDE does not probe CI at all — the answer changes nothing once
+	// the operator has decided, and the probe is a GitHub call that hangs
+	// when GitHub is the thing that is broken. Reported as not-probed, never
+	// as a green nobody saw.
+	assert.Equal(t, ciStateNotProbed, out.CIState)
 	assert.Equal(t, []string{"A"}, repo.resets)
+}
+
+// The force path must not depend on GitHub: an operator forces a commit live
+// precisely when the gate is stuck, which is usually because GitHub is
+// unreachable. It resolves the ref locally, skips the CI probe, and is
+// recorded as FORCED (never as a normal green switch, since no green was
+// read).
+func TestManualSwitchOverrideNeedsNoGitHub(t *testing.T) {
+	repo := &fakeRepo{fetchErr: errors.New("origin down"), commits: []string{"B", "A"},
+		known: map[string]bool{"B": true}}
+	f := servingFixture(t, repo, "A")
+	f.gate.status = nil // any CI probe would fail
+
+	out, err := f.gate.ManualSwitch(context.Background(), "B", true)
+	require.NoError(t, err)
+	assert.True(t, out.Switched, "a dead remote must not stop the force")
+	assert.Equal(t, []string{"B"}, repo.resets)
+	assert.Equal(t, ciStateNotProbed, out.CIState)
+
+	assert.Contains(t, eventKinds(f.rec), "reload.forced",
+		"an override is FORCED in the audit trail even with no reasons — we never read a green")
+	assert.NotContains(t, eventKinds(f.rec), "reload.switched")
 }
 
 func TestManualSwitchUnknownRef(t *testing.T) {

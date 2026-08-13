@@ -81,15 +81,61 @@ func TestLockReleaseOwnership(t *testing.T) {
 	require.Equal(t, ErrLockNotHeld, s.ReleaseLock("ns", "l", "run-a"))
 }
 
-func TestLockTTLBackstopExpiry(t *testing.T) {
+// Expiry alone frees NOTHING (the operator's mutex ruling): an over-budget
+// hold is still the holder's, a contender is told so by name, and only the
+// holder's own release / finish seam / an enforced takeover ends it.
+func TestLockTTLBackstopExpiryDoesNotFreeTheLock(t *testing.T) {
 	s := newStore(t)
 	_, err := s.AcquireLock("ns", "l", "run-a", 10*time.Millisecond)
 	require.NoError(t, err)
 	time.Sleep(30 * time.Millisecond)
 
-	// Expired = free: a release reports not-held...
-	require.Equal(t, ErrLockNotHeld, s.ReleaseLock("ns", "l", "run-a"))
-	// ...and another run's acquire succeeds.
+	// A contender is refused — and told WHICH condition, so it can enforce
+	// the TTL rather than assume the lock is free.
+	info, err := s.AcquireLock("ns", "l", "run-b", 0)
+	require.ErrorIs(t, err, ErrLockExpired)
+	require.Equal(t, "run-a", info.RunID, "the refusal names the over-budget holder")
+
+	// The holder itself is unaffected: it can still release its own lock...
+	require.NoError(t, s.ReleaseLock("ns", "l", "run-a"))
+	// ...and only then does the contender get it.
+	info, err = s.AcquireLock("ns", "l", "run-b", 0)
+	require.NoError(t, err)
+	require.Equal(t, "run-b", info.RunID)
+}
+
+// The live owner re-acquiring past its own expiry refreshes the backstop
+// (one continuous hold), and a contender is refused again afterwards.
+func TestExpiredOwnerReacquireRefreshesTheBackstop(t *testing.T) {
+	s := newStore(t)
+	first, err := s.AcquireLock("ns", "l", "run-a", 10*time.Millisecond)
+	require.NoError(t, err)
+	time.Sleep(30 * time.Millisecond)
+
+	again, err := s.AcquireLock("ns", "l", "run-a", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, first.AcquiredAt, again.AcquiredAt, "one continuous hold, not a new one")
+	require.True(t, again.ExpiresAt.After(first.ExpiresAt), "the backstop is refreshed")
+
+	_, err = s.AcquireLock("ns", "l", "run-b", 0)
+	require.ErrorIs(t, err, ErrLockHeld, "no longer expired — plain contention")
+}
+
+// ReapExpiredLock is the enforcement's second half, for a holder the caller
+// has CONFIRMED dead. It refuses anything else.
+func TestReapExpiredLockIsNarrow(t *testing.T) {
+	s := newStore(t)
+	_, err := s.AcquireLock("ns", "l", "run-a", 10*time.Millisecond)
+	require.NoError(t, err)
+
+	require.False(t, s.ReapExpiredLock("ns", "l", "run-a"), "not expired yet")
+	time.Sleep(30 * time.Millisecond)
+	require.False(t, s.ReapExpiredLock("ns", "l", "run-b"), "wrong holder — never reap another run's lock")
+	require.False(t, s.ReapExpiredLock("ns", "other", "run-a"), "no such lock")
+
+	require.True(t, s.ReapExpiredLock("ns", "l", "run-a"))
+	require.False(t, s.ReapExpiredLock("ns", "l", "run-a"), "idempotent — already gone")
+
 	info, err := s.AcquireLock("ns", "l", "run-b", 0)
 	require.NoError(t, err)
 	require.Equal(t, "run-b", info.RunID)
@@ -168,16 +214,36 @@ func TestLockCaps(t *testing.T) {
 	require.Equal(t, ErrBadNamespace, err)
 }
 
-func TestLockReapExpired(t *testing.T) {
+// The sweeper reaps an expired lock ONLY once its holder is certainly gone,
+// and reaps nothing at all without a liveness oracle — expiry is not
+// evidence of death, and freeing a live holder's mutex is the bug this whole
+// path exists to prevent.
+func TestLockSweeperReapsOnlyDeadHolders(t *testing.T) {
 	s := newStore(t)
 	_, err := s.AcquireLock("ns", "gone", "run-a", 10*time.Millisecond)
 	require.NoError(t, err)
 	time.Sleep(30 * time.Millisecond)
+
+	nsPresent := func() bool {
+		s.lockMu.Lock()
+		defer s.lockMu.Unlock()
+		_, ok := s.locks["ns"]
+		return ok
+	}
+
+	// No oracle: nothing is reaped, expired or not.
 	s.reapExpiredLocks()
-	s.lockMu.Lock()
-	_, nsLeft := s.locks["ns"]
-	s.lockMu.Unlock()
-	require.False(t, nsLeft, "expired lock (and its empty namespace) reaped")
+	require.True(t, nsPresent(), "an unwired store cannot tell dead from slow — it reaps nothing")
+
+	// Holder still running: the expired lock stays exactly where it is.
+	s.SetRunLiveness(func(id string) bool { return id == "run-a" })
+	s.reapExpiredLocks()
+	require.True(t, nsPresent(), "a LIVE holder's expired lock is never reaped out from under it")
+
+	// Holder gone: now the shell is reclaimed (with its empty namespace).
+	s.SetRunLiveness(func(string) bool { return false })
+	s.reapExpiredLocks()
+	require.False(t, nsPresent(), "a dead holder's expired lock (and its empty namespace) is reaped")
 }
 
 func TestLockAcquireRace(t *testing.T) {

@@ -58,20 +58,31 @@ type Hook struct {
 	// Set by the loader, never by JSON. It selects the docker build context
 	// (src/ instead of the hook dir) and widens the content hash to include
 	// src/sdk — see BuildContext and ContentHash.
-	SrcRoot         string              `json:"-"`
-	Schema          string              `json:"$schema,omitempty"`
-	Description     string              `json:"description"`
-	Command         []string            `json:"command,omitempty"`
-	Script          *Script             `json:"script,omitempty"`
-	Tests           [][]string          `json:"tests,omitempty"`
-	Networks        []string            `json:"networks,omitempty"`
-	Volumes         []string            `json:"volumes,omitempty"`
-	Env             map[string]string   `json:"env,omitempty"`
-	User            string              `json:"user,omitempty"`
-	Workdir         string              `json:"workdir,omitempty"`
-	TimeoutRaw      string              `json:"timeout,omitempty"`
-	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
-	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
+	SrcRoot     string     `json:"-"`
+	Schema      string     `json:"$schema,omitempty"`
+	Description string     `json:"description"`
+	Command     []string   `json:"command,omitempty"`
+	Script      *Script    `json:"script,omitempty"`
+	Tests       [][]string `json:"tests,omitempty"`
+	Networks    []string   `json:"networks,omitempty"`
+	Volumes     []string   `json:"volumes,omitempty"`
+	// Settings is the hook's OWN configuration: arbitrary JSON this runner
+	// never interprets, validated at load against the settings.schema.json
+	// shipped next to the manifest, and handed to the container as a file
+	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
+	// hook-private config into the runner's own parsed keys. See settings.go.
+	Settings json.RawMessage `json:"settings,omitempty"`
+	// manifestSettings preserves the document as hook.json declared it,
+	// before any operator override was merged into Settings. The editor
+	// needs it to answer "what would revert restore?" — reading Settings
+	// there would show the override itself. Unexported and json:"-": it is
+	// derived state, never part of the manifest contract.
+	manifestSettings json.RawMessage     `json:"-"`
+	User             string              `json:"user,omitempty"`
+	Workdir          string              `json:"workdir,omitempty"`
+	TimeoutRaw       string              `json:"timeout,omitempty"`
+	ExtraDockerArgs  []string            `json:"extra_docker_args,omitempty"`
+	GitHubStatus     *GitHubStatusConfig `json:"github_status,omitempty"`
 
 	// ConcurrencyGroup, when set, names a concurrency group the hook's runs
 	// must be scheduled through: at most that group's limit run at once and
@@ -307,6 +318,15 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
+	// Then the PUBLISHED schema (see schemacheck.go) -- the contract a hooks
+	// repo validates against in CI, enforced here by the same implementation.
+	// It runs LAST because the checks above produce better messages for what
+	// they cover ("invalid schedule 5 minutes" beats a pattern mismatch); what
+	// it adds is everything a Go struct cannot express -- enums, patterns,
+	// formats, minimums -- which until now was checked in CI and nowhere else.
+	if err := ValidateHookJSON(sourcePath, data); err != nil {
+		return nil, err
+	}
 	return h, nil
 }
 
@@ -317,6 +337,11 @@ func (h *Hook) resolveScript() error {
 	s := h.Script
 	if s.File == "" {
 		return errors.New("script.file is required")
+	}
+	// Checked HERE, before the args are folded into Command: the author wrote
+	// script.args, so that is the key the error must name (see shellsafe.go).
+	if err := checkNoShellSubstitution("script.args", s.Args); err != nil {
+		return err
 	}
 	if s.Interpreter == "" {
 		return errors.New("script.interpreter is required")
@@ -371,13 +396,14 @@ func (h *Hook) hasDockerfile() bool {
 // relative path + content — byte-identical to the historical algorithm
 // (existing deployments must not re-tag on upgrade).
 //
-// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND src/sdk/
-// — never sibling hook dirs — hashed as src-relative path + file mode +
-// content. An sdk edit re-tags every src-layout hook (lazy rebuild on its
-// next run, intended even for non-consumers); an edit to hook A never
-// re-tags hook B. The COPY-surface convention follows from this: an
-// SDK-layout Dockerfile may COPY only from sdk/ and its own hooks/<id>/ —
-// anything else in the src context is undefined-staleness territory
+// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every
+// SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the
+// tree has) — never sibling entity dirs — hashed as src-relative path +
+// file mode + content. A shared-code edit re-tags every src-layout entity
+// (lazy rebuild on its next run, intended even for non-consumers); an edit
+// to hook A never re-tags hook B. The COPY-surface convention follows from
+// this: an SDK-layout Dockerfile may COPY only from a shared dir and its
+// own hooks/<id>/ — a sibling entity's dir is undefined-staleness territory
 // (builds don't fail, but edits there never re-tag).
 func (h *Hook) ContentHash() (string, error) {
 	dir := h.Dir()
@@ -389,12 +415,15 @@ func (h *Hook) ContentHash() (string, error) {
 		if err := hashTree(digest, h.SrcRoot, dir, true); err != nil {
 			return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
 		}
-		// A src tree without shared code is fine: a missing sdk dir simply
-		// contributes nothing.
-		sdk := filepath.Join(h.SrcRoot, "sdk")
-		if fi, err := os.Stat(sdk); err == nil && fi.IsDir() {
-			if err := hashTree(digest, h.SrcRoot, sdk, true); err != nil {
-				return "", fmt.Errorf("hash sdk dir %s: %w", sdk, err)
+		// A src tree without shared code is fine: no shared dirs simply
+		// contribute nothing.
+		shared, err := SharedDirs(h.SrcRoot)
+		if err != nil {
+			return "", fmt.Errorf("list shared dirs under %s: %w", h.SrcRoot, err)
+		}
+		for _, sd := range shared {
+			if err := hashTree(digest, h.SrcRoot, sd, true); err != nil {
+				return "", fmt.Errorf("hash shared dir %s: %w", sd, err)
 			}
 		}
 		return hex.EncodeToString(digest.Sum(nil))[:16], nil
@@ -447,7 +476,7 @@ func hashTree(digest io.Writer, base, root string, withMode bool) error {
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
 	switch k {
-	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_ID", "HOOK_RUN_ID",
+	case "HOOK_PAYLOAD_FILE", "HOOK_HEADERS_FILE", "HOOK_SETTINGS_FILE", "HOOK_ID", "HOOK_RUN_ID",
 		"HOOK_KV_URL", "HOOK_KV_TOKEN", "HOOK_KV_SOCKET":
 		return true
 	}
@@ -457,6 +486,14 @@ func ReservedEnvKey(k string) bool {
 func (h *Hook) validate() error {
 	if h.Schema == "" {
 		return errors.New("$schema is required (point it at https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json)")
+	}
+	// The hook's OWN configuration, checked against the contract it ships
+	// (settings.schema.json). Fail closed like every other load gate: a hook
+	// configured wrongly must not run at all, because the alternative is a
+	// container that starts, finds its config missing, and reports whatever it
+	// decides to report.
+	if err := h.ValidateSettings(); err != nil {
+		return err
 	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
@@ -481,10 +518,12 @@ func (h *Hook) validate() error {
 			return fmt.Errorf("schedule must be positive, got %s", d)
 		}
 	}
-	for k := range h.Env {
-		if ReservedEnvKey(k) {
-			return fmt.Errorf("env key %q is reserved", k)
-		}
+	// A manifest is not a place to write shell (see shellsafe.go): nested
+	// command/process substitution in an argv entry is a load error. script.args
+	// is checked in resolveScript, before it becomes part of Command, so each
+	// error names the key the author actually wrote.
+	if err := checkNoShellSubstitution("command", h.Command); err != nil {
+		return err
 	}
 	// Compiles every skip_if regex too, so evaluation never compiles at
 	// request time and a bad pattern can never load.

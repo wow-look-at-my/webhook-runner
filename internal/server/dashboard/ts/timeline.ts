@@ -161,6 +161,8 @@ import type {
 	TimelineViewElement,
 } from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
 
+import { mountSettings } from './settingsform.ts';
+
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 
 /** GET /runs list entry (internal/runs.RunState, output stripped). */
@@ -181,6 +183,13 @@ interface RunState {
 	cancel_requested?: boolean;
 	/** Feature-detected: when the first cancel request arrived. */
 	cancel_requested_at?: string;
+	/** Feature-detected: lifecycle instrumentation marks (see the runner's
+	 * runs.Phase). Present only on runs from a server that stamps them, and
+	 * only for marks that run actually reached — a missing key means
+	 * UNKNOWN, never zero. `container_entry` exists only for hooks with the
+	 * shim injected; without it, boot can only be bounded from above. */
+	phases?: Record<string, string>;
+
 	/** Feature-detected: historical wait segments (closed at their REAL
 	 * end times by the server — never derived client-side). */
 	wait_history?: Array<{ kind?: string; key?: string; start: string; end?: string }>;
@@ -209,6 +218,16 @@ interface HookSummary {
 }
 
 const COMPONENT_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
+// The dashboard's second js-snippets component: <activity-feed>, behind both
+// Activity feeds. Loaded here (see loadActivityFeedForever) so every module
+// script the dashboard runs is compiled from ts/ by ts0.
+const ACTIVITY_FEED_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/activity-feed.js';
+// The third: <data-table>, behind both runs tables. <activity-feed> imports
+// it too (it IS a data-table underneath), so this load is often redundant —
+// but only often. Depending on the feed's import graph to register a tag
+// this page's runs tables need is the kind of implicit coupling that breaks
+// silently the day the feed stops using it.
+const DATA_TABLE_URL = 'https://sites.pazer.build/js-snippets/branch/library/ui/data-table.js';
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const STREAM_PATH = '/runs/stream';
 // One supervisor/fallback tick: FIXED cadence, forever. Handles both the
@@ -812,8 +831,14 @@ function runLabel(r: RunState): string {
 	return base;
 }
 
-function runToInterval(r: RunState): TimelineInterval {
-	const start = Date.parse(r.started);
+/** trimLeadIn: the run's queued time belongs to a collapsed cluster, so the
+ * span starts at LAUNCH — the lead-in is what was stacking the lane. */
+function runToInterval(r: RunState, trimLeadIn = false): TimelineInterval {
+	let start = Date.parse(r.started);
+	if (trimLeadIn && tsPresent(r.started_at)) {
+		const launched = Date.parse(r.started_at as string);
+		if (Number.isFinite(launched) && launched > start) start = launched;
+	}
 	// finished is always serialized; zero time means "not finished".
 	let end: number | null = tsPresent(r.finished) ? Date.parse(r.finished as string) : null;
 	if (end === null && isTerminal(r.status)) {
@@ -822,10 +847,12 @@ function runToInterval(r: RunState): TimelineInterval {
 		end = tsPresent(r.started_at) ? Date.parse(r.started_at as string) : start;
 	}
 	const segments: TimelineSegment[] = [];
-	if (tsPresent(r.started_at)) {
+	if (!trimLeadIn && tsPresent(r.started_at)) {
 		const launched = Date.parse(r.started_at as string);
 		if (launched > start) {
 			// Queue wait (accepted → container launch) as a dim lead-in.
+			// Only when this lane was NOT oversubscribed: otherwise every
+			// span carries the same stretch and the packer stacks them.
 			segments.push({ start, end: launched, kind: 'queued' });
 		}
 	}
@@ -837,6 +864,35 @@ function runToInterval(r: RunState): TimelineInterval {
 		if (!Number.isFinite(s0)) continue;
 		const e0 = ws.end && tsPresent(ws.end) ? Date.parse(ws.end) : null;
 		segments.push({ start: s0, end: e0, kind: 'waiting' });
+	}
+	// Container startup, drawn where it happened. The bar's leading edge
+	// after launch is not the hook working — it is the container being
+	// created and its runtime warming up, and until these segments existed
+	// nothing on this page could tell you which. 'boot' is Docker's own
+	// cost (spawn → the container's first instruction); 'starting' is the
+	// hook runtime's cold start (that instruction → first output). A hook
+	// with no shim injected has no in-container mark, so its whole
+	// spawn→first-output span is drawn as ONE 'bound' segment: honestly
+	// undifferentiated rather than a boot figure we cannot back up.
+	const ph = r.phases;
+	if (ph) {
+		const at = (k: string): number | null => {
+			const v = ph[k];
+			if (!v) return null;
+			const t = Date.parse(v);
+			return Number.isFinite(t) ? t : null;
+		};
+		const spawned = at('spawned');
+		const entry = at('container_entry');
+		const firstOut = at('first_output');
+		if (spawned !== null && entry !== null) {
+			segments.push({ start: spawned, end: entry, kind: 'boot' });
+			if (firstOut !== null && firstOut > entry) {
+				segments.push({ start: entry, end: firstOut, kind: 'starting' });
+			}
+		} else if (spawned !== null && firstOut !== null) {
+			segments.push({ start: spawned, end: firstOut, kind: 'bound' });
+		}
 	}
 	// The kill tail: the span up to the cancel request renders as the run's
 	// normal life; the request → death tail is an 'outline' segment, which
@@ -868,105 +924,225 @@ function runToInterval(r: RunState): TimelineInterval {
 // holder/waiter links (dashboard.js). The component's generic connector
 // capability is untouched upstream in js-snippets.
 
-// -- Pending-backlog collapse (the ×N queued view model) -----------------------
+// -- Queue collapse (the ×N queued view model) ---------------------------------
 //
-// A flood can queue hundreds of pending runs per hook; each one used to
-// take its own packing sub-track, growing the lane into a wall of dim
-// "not doing any work" spans (operator directive: collapse them, badge the
-// depth). The view model collapses them: per lane, ALL status=pending runs
-// (the queued backlog) render as ONE synthetic aggregate interval —
-// earliest queued start → the live edge — labeled with the "×N queued"
-// depth badge, restamped as the backlog moves. Runs actually executing
-// (running, declared waits/locks included) keep their individual spans; a
-// single pending run renders as itself (no aggregate at N=1). The DATA
-// model stays per-run — runsById and the hb truth reconcile never see the
-// aggregation, it exists only in what is FED to the component — so drops,
-// adds, clicks, and the modal all keep operating on real runs. Clicking
-// the aggregate opens the lane's hook page (a run modal cannot show N
-// runs; the hook page lists them) and its tooltip names the depth plus the
-// first few queued runs. mergeData cannot REMOVE intervals, so a lane
-// crossing the collapse boundary in either direction (a 2nd pending
-// arrives and subsumes a previously-individual span; the backlog drains
-// below 2 and the survivor re-individualizes) forces one rebuildAll — the
-// same full-replace path removals already use; within a collapsed state,
-// depth changes are plain aggregate upserts.
+// A burst queues hundreds of runs against one concurrency group. Every one
+// of them is ACCEPTED at the same instant and then waits, so every span
+// carries a lead-in covering the same stretch of time — and because the
+// packer gives overlapping intervals their own sub-tracks, a lane that can
+// only ever run N runs at once grew HUNDREDS of rows (license-check queued
+// ~480 and stacked ~480 deep, burying every other lane on the page).
+//
+// The fix is to stop letting waiting drive packing. Queued time is not the
+// run doing work, it is the lane being oversubscribed — one fact about the
+// LANE, not M facts about M runs. So per lane the adapter clusters the
+// runs' queued extents (accepted -> launched, or -> the live edge for one
+// still waiting); any cluster holding COLLAPSE_MIN or more renders as ONE
+// synthetic aggregate interval labelled with the PEAK depth, and the runs
+// inside it lose their lead-ins: a run that launched keeps its span from
+// LAUNCH, and one that never launched is withheld entirely (it has nothing
+// but wait to show). What is left overlapping is actual execution, so the
+// lane packs to the concurrency limit — N rows of real spans plus one row
+// saying how deep the queue got behind them.
+//
+// A lane that is not oversubscribed is untouched: a lone queued run keeps
+// its dim lead-in exactly as before, which is where that detail reads well.
+//
+// The DATA model stays per-run — runsById and the hb truth reconcile never
+// see the aggregation, it exists only in what is FED to the component — so
+// drops, adds, clicks, and the modal all keep operating on real runs.
+// Clicking an aggregate opens the lane's hook page (a run modal cannot show
+// N runs; the hook page lists them). mergeData cannot REMOVE intervals, so
+// any change to the SET of aggregates (a cluster opening, closing, merging)
+// forces one rebuildAll — the same full-replace path removals already use;
+// within a stable set, depth changes are plain aggregate upserts.
 
-/** Minimum backlog depth that collapses; below it real spans render. */
+/** Minimum queued-at-once depth that collapses; below it real spans render. */
 const COLLAPSE_MIN = 2;
 /** Synthetic aggregate interval id namespace. ':' can never occur in a run
  * id (26-char lowercase base32), so aggregate ids cannot collide. */
 const AGG_PREFIX = 'queued:';
 
-/** Lanes rendered collapsed as of the last full feed — the boundary
- * detector (refreshed by buildAllIntervals). */
-let collapsedLanes = new Set<string>();
+/** One run's queued extent: accepted -> launched. A run that never launched
+ * is queued to the live edge (end null). Null when it never waited. */
+function queuedExtent(r: RunState): { id: string; start: number; end: number | null } | null {
+	const start = Date.parse(r.started);
+	if (!Number.isFinite(start)) return null;
+	if (tsPresent(r.started_at)) {
+		const launched = Date.parse(r.started_at as string);
+		if (!(launched > start)) return null; // ran immediately: nothing to collapse
+		return { id: r.id, start, end: launched };
+	}
+	// No launch stamp: only 'pending' actually means WAITING. A running run
+	// without one is missing telemetry, not queued — treating it as queued
+	// collapsed ordinary bursts of live runs into a fake backlog.
+	if (r.status !== 'pending') return null;
+	return { id: r.id, start, end: null }; // still waiting
+}
 
-/** Per-lane pending backlog over the given runs, oldest first. */
-function pendingByLane(source: Iterable<RunState>): Map<string, RunState[]> {
-	const out = new Map<string, RunState[]>();
+/** A run of overlapping queued extents in one lane, with the deepest the
+ * queue got inside it. */
+interface QueueCluster {
+	lane: string;
+	start: number;
+	end: number | null; // null = still open at the live edge
+	/** Deepest the queue got anywhere inside the cluster. */
+	peak: number;
+	/** Still queued right now — only meaningful while the cluster is open. */
+	live: number;
+	ids: string[];
+}
+
+/** Cluster a lane's queued extents by overlap. Clusters below COLLAPSE_MIN
+ * are dropped: one run waiting is not oversubscription, and its lead-in
+ * reads better on the span. */
+function clusterQueued(extents: { id: string; start: number; end: number | null }[]): QueueCluster[] {
+	if (extents.length === 0) return [];
+	const sorted = [...extents].sort((a, b) => a.start - b.start);
+	const out: QueueCluster[] = [];
+	let group: typeof sorted = [];
+	let groupEnd = -Infinity;
+	const flush = (): void => {
+		if (group.length >= COLLAPSE_MIN) {
+			out.push({
+				lane: '',
+				start: group[0].start,
+				end: group.some((e) => e.end === null) ? null : Math.max(...group.map((e) => e.end as number)),
+				peak: peakDepth(group),
+				live: group.filter((e) => e.end === null).length,
+				ids: group.map((e) => e.id),
+			});
+		}
+		group = [];
+		groupEnd = -Infinity;
+	};
+	for (const e of sorted) {
+		const endOf = e.end === null ? Infinity : e.end;
+		if (group.length > 0 && e.start > groupEnd) flush();
+		group.push(e);
+		groupEnd = Math.max(groupEnd, endOf);
+	}
+	flush();
+	return out;
+}
+
+/** The most runs queued AT ONCE inside a cluster — the number the operator
+ * reads as "how oversubscribed were we", not the cluster's total membership
+ * (which would overcount a queue that drained and refilled). */
+function peakDepth(extents: { start: number; end: number | null }[]): number {
+	const events: { at: number; delta: number }[] = [];
+	for (const e of extents) {
+		events.push({ at: e.start, delta: 1 });
+		if (e.end !== null) events.push({ at: e.end, delta: -1 });
+	}
+	// Ends before starts at equal timestamps: a run launching exactly as
+	// another is accepted is a handover, not a moment of extra depth.
+	events.sort((a, b) => a.at - b.at || a.delta - b.delta);
+	let depth = 0;
+	let peak = 0;
+	for (const ev of events) {
+		depth += ev.delta;
+		if (depth > peak) peak = depth;
+	}
+	return peak;
+}
+
+/** What the collapse does to one feed: which runs vanish, which lose their
+ * lead-in, the aggregates to draw, and a signature of the aggregate SET (a
+ * change to it can only be expressed as a full replace). */
+interface CollapsePlan {
+	/** Runs withheld entirely — queued, never launched, inside a cluster. */
+	subsumed: Set<string>;
+	/** Runs drawn from LAUNCH instead of from accepted. */
+	trimmed: Set<string>;
+	clusters: QueueCluster[];
+	key: string;
+}
+
+function emptyPlan(): CollapsePlan {
+	return { subsumed: new Set(), trimmed: new Set(), clusters: [], key: '' };
+}
+
+/** The collapse plan currently rendered — the boundary detector, refreshed
+ * by buildAllIntervals. */
+let collapsePlan: CollapsePlan = emptyPlan();
+
+function computeCollapse(source: Iterable<RunState>): CollapsePlan {
+	const byLane = new Map<string, { id: string; start: number; end: number | null }[]>();
+	const runs = new Map<string, RunState>();
 	for (const r of source) {
-		if (r.status !== 'pending') continue;
-		const list = out.get(r.hook_id);
-		if (list) list.push(r);
-		else out.set(r.hook_id, [r]);
+		runs.set(r.id, r);
+		const ext = queuedExtent(r);
+		if (ext === null) continue;
+		const list = byLane.get(r.hook_id);
+		if (list) list.push(ext);
+		else byLane.set(r.hook_id, [ext]);
 	}
-	for (const list of out.values()) {
-		list.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+	const plan = emptyPlan();
+	for (const [lane, extents] of byLane) {
+		for (const cluster of clusterQueued(extents)) {
+			cluster.lane = lane;
+			plan.clusters.push(cluster);
+			for (const id of cluster.ids) {
+				const run = runs.get(id);
+				if (run && tsPresent(run.started_at)) plan.trimmed.add(id);
+				else plan.subsumed.add(id);
+			}
+		}
 	}
-	return out;
+	// Stable order so the signature is comparable across feeds.
+	plan.clusters.sort((a, b) => (a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : a.start - b.start));
+	plan.key = plan.clusters.map((c) => aggID(c)).join('|');
+	return plan;
 }
 
-function computeCollapsedLanes(pending: Map<string, RunState[]>): Set<string> {
-	const out = new Set<string>();
-	for (const [lane, list] of pending) {
-		if (list.length >= COLLAPSE_MIN) out.add(lane);
-	}
-	return out;
+/** A cluster's stable interval id: the lane plus where the cluster began.
+ * Stable while a live queue deepens (its start does not move), so a growing
+ * backlog is an upsert rather than a rebuild. */
+function aggID(c: QueueCluster): string {
+	return AGG_PREFIX + c.start + ':' + c.lane;
 }
 
-function sameLaneSet(a: Set<string>, b: Set<string>): boolean {
-	if (a.size !== b.size) return false;
-	for (const lane of a) if (!b.has(lane)) return false;
-	return true;
-}
-
-/** The lane's collapsed backlog as ONE synthetic interval: earliest queued
- * start → live edge (end null), the dim queued treatment, and a count that
- * must be UNMISTAKABLE at any width — the operator reads this row as "N
- * waiting runners", never a cryptic bar. Explicit label tiers (fullest →
- * most compact) spell the meaning out wide and keep the ×N count to the
- * narrowest fit; a component without labelTiers falls back to the base
- * label, whose 3-character clip floor is still exactly the bare ×N. */
-function aggInterval(lane: string, backlog: RunState[]): TimelineInterval {
-	const n = backlog.length;
+/** A cluster as ONE synthetic interval: the whole oversubscribed stretch,
+ * the dim queued treatment, and a depth that must be UNMISTAKABLE at any
+ * width — the operator reads this row as "N runs were waiting", never a
+ * cryptic bar. Explicit label tiers (fullest -> most compact) spell the
+ * meaning out wide and keep the ×N count to the narrowest fit; a component
+ * without labelTiers falls back to the base label, whose 3-character clip
+ * floor is still exactly the bare ×N. */
+function aggInterval(c: QueueCluster): TimelineInterval {
+	// An OPEN cluster reads as "how many are waiting right now" — the number
+	// counts down as the queue drains, which is what an operator watching a
+	// live backlog is asking. A CLOSED one reads as "how deep did it get",
+	// since nothing is waiting any more and the depth is the whole point of
+	// the row surviving in history.
+	const n = c.end === null ? c.live : c.peak;
 	return {
-		id: AGG_PREFIX + lane,
-		laneId: lane,
-		start: Date.parse(backlog[0].started), // oldest-first per pendingByLane
-		end: null,
+		id: aggID(c),
+		laneId: c.lane,
+		start: c.start,
+		end: c.end,
 		label: `×${n} waiting`,
 		labelTiers: [`×${n} waiting for a slot`, `×${n} waiting`, `×${n}`],
-		category: lane, // the lane's stable hue, like every run interval
+		category: c.lane, // the lane's stable hue, like every run interval
 		state: 'queued',
-		data: { count: n },
+		data: { count: n, peak: c.peak, lane: c.lane, ids: c.ids, live: c.end === null },
 	};
 }
 
 /** The FULL fed interval set under the collapse view model — every run
- * except collapsed-lane pendings, plus one aggregate per collapsed lane —
- * refreshing collapsedLanes (the boundary detector) as it goes. Every full
- * feed (seed, page merge, rebuild, prune) builds through here. */
+ * except the subsumed ones (lead-ins trimmed where a cluster owns them),
+ * plus one aggregate per cluster — refreshing collapsePlan (the boundary
+ * detector) as it goes. Every full feed (seed, page merge, rebuild, prune)
+ * builds through here. */
 function buildAllIntervals(source: RunState[]): TimelineInterval[] {
-	const pending = pendingByLane(source);
-	collapsedLanes = computeCollapsedLanes(pending);
+	collapsePlan = computeCollapse(source);
 	const out: TimelineInterval[] = [];
 	for (const r of source) {
-		if (r.status === 'pending' && collapsedLanes.has(r.hook_id)) continue;
-		out.push(runToInterval(r));
+		if (collapsePlan.subsumed.has(r.id)) continue;
+		out.push(runToInterval(r, collapsePlan.trimmed.has(r.id)));
 	}
-	for (const lane of collapsedLanes) {
-		out.push(aggInterval(lane, pending.get(lane) as RunState[]));
-	}
+	for (const c of collapsePlan.clusters) out.push(aggInterval(c));
 	return out;
 }
 
@@ -1039,6 +1215,57 @@ function ttRow(key: string, value: string | Node): HTMLElement {
 	return el('div', { class: 'tt-row' }, el('span', { class: 'tt-k' }, key), v);
 }
 
+/** Milliseconds, at the precision startup costs actually live in. The
+ * shared fmtDuration bottoms out at whole seconds, which renders every
+ * container boot as "0s" — the exact resolution this instrumentation
+ * exists to recover. */
+function fmtMs(ms: number): string {
+	if (ms < 1000) return `${Math.round(ms)}ms`;
+	return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
+}
+
+/** Appends the container-startup breakdown: what launching this run cost,
+ * split from what the hook then did. Absent marks print nothing at all —
+ * a run with no instrumentation must look uninstrumented, never fast. */
+function appendStartupRows(frag: DocumentFragment, r: RunState): void {
+	const ph = r.phases;
+	if (!ph) return;
+	const at = (k: string): number | null => {
+		const v = ph[k];
+		if (!v) return null;
+		const t = Date.parse(v);
+		return Number.isFinite(t) && t > 0 ? t : null;
+	};
+	const spawned = at('spawned');
+	if (spawned === null) return;
+	const entry = at('container_entry');
+	const firstOut = at('first_output');
+
+	if (entry !== null) {
+		// The measurement: container creation with no hook runtime in it.
+		frag.appendChild(ttRow('boot', `${fmtMs(entry - spawned)} (docker)`));
+		if (firstOut !== null && firstOut >= entry) {
+			frag.appendChild(ttRow('runtime start', fmtMs(firstOut - entry)));
+		}
+	} else if (firstOut !== null) {
+		// No in-container mark: say so IN the value. An unlabeled number here
+		// would be read as docker's cost, which is precisely the conflation
+		// that made this whole question unanswerable before.
+		frag.appendChild(ttRow('startup', `≤ ${fmtMs(firstOut - spawned)} (docker + runtime)`));
+	}
+
+	const slot = at('slot_acquired');
+	const inspected = at('inspected');
+	if (slot !== null && inspected !== null && inspected >= slot) {
+		frag.appendChild(ttRow('argv inspect', fmtMs(inspected - slot)));
+	}
+	const exited = at('exited');
+	if (exited !== null && tsPresent(r.finished)) {
+		const reap = Date.parse(r.finished as string) - exited;
+		if (reap >= 0) frag.appendChild(ttRow('reap', fmtMs(reap)));
+	}
+}
+
 /** Appends wait/lock rows for a live waiting run (short rows — the tooltip
  * never wraps, so the holder gets its own line instead of one long one). */
 function appendWaitingRows(frag: DocumentFragment, r: RunState): void {
@@ -1097,6 +1324,7 @@ function runTooltip(r: RunState): Node {
 	frag.appendChild(ttRow('queued', fmtTime(r.started)));
 	frag.appendChild(ttRow('waited', runWaited(r) || '—'));
 	frag.appendChild(ttRow('ran', runDuration(r) || '—'));
+	appendStartupRows(frag, r);
 	if (r.error) frag.appendChild(ttRow('error', trimText(r.error, 160)));
 	appendWaitingRows(frag, r);
 	const held = waiterIndex.get(r.id);
@@ -1132,15 +1360,26 @@ function laneTooltip(lane: TimelineLane): Node {
 	return frag;
 }
 
-/** Tooltip for a lane's collapsed queued-backlog aggregate: a first line
- * that reads like a sentence ("22 runs waiting for a gha-runner slot" when
- * the whole backlog waits on one named group; generic otherwise), then the
- * lane, the first few queued runs (oldest first), and where a click goes.
- * Recomputed from runsById per hover, so it always reads the CURRENT
- * backlog even between aggregate restamps. */
-function aggTooltip(lane: string): Node {
-	const backlog = pendingByLane(runsById.values()).get(lane) ?? [];
-	const n = backlog.length;
+/** Tooltip for a collapsed queue cluster: a first line that reads like a
+ * sentence ("22 runs waiting for a gha-runner slot" when they all wait on
+ * one named group; generic otherwise), then the lane, the first few runs
+ * (oldest first), and where a click goes. Resolved from runsById per hover,
+ * so it always reads the CURRENT state of those runs. */
+function aggTooltip(interval: TimelineInterval): Node {
+	const data = (interval.data ?? {}) as {
+		lane?: string;
+		count?: number;
+		peak?: number;
+		ids?: string[];
+		live?: boolean;
+	};
+	const lane = data.lane ?? '';
+	const live = data.live === true;
+	const backlog = (data.ids ?? [])
+		.map((id) => runsById.get(id))
+		.filter((r): r is RunState => r !== undefined)
+		.sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
+	const n = data.count ?? backlog.length;
 	// Name the slot when every queued run waits on the same group; the
 	// global run cap's display key ("global") and mixed/unknown waits get
 	// the generic wording.
@@ -1150,10 +1389,23 @@ function aggTooltip(lane: string): Node {
 	const only = keys.size === 1 ? [...keys][0] : '';
 	const what = only !== '' && only !== 'global' ? `a ${only} slot` : 'a slot to run';
 	const frag = document.createDocumentFragment();
+	// Tense follows the row: an open cluster is happening, a closed one is
+	// history and reads as what the queue DID.
 	frag.appendChild(
-		el('div', { class: 'tt-title' }, `${n} run${n === 1 ? '' : 's'} waiting for ${what}`),
+		el(
+			'div',
+			{ class: 'tt-title' },
+			live
+				? `${n} run${n === 1 ? '' : 's'} waiting for ${what}`
+				: `${n} run${n === 1 ? '' : 's'} waited for ${what}`,
+		),
 	);
 	frag.appendChild(ttRow('hook', lane));
+	// While a queue drains, the count above is what is still waiting — say
+	// how deep it got, or the row looks like it was always this shallow.
+	const peak = data.peak ?? n;
+	if (live && peak > n) frag.appendChild(ttRow('peak', `${peak} at once`));
+	frag.appendChild(ttRow('', 'lead-ins are folded into this row, so the spans below pack to what actually ran'));
 	for (const r of backlog.slice(0, 3)) {
 		frag.appendChild(ttRow('', `${runTitle(r) ?? shortRunId(r.id)} — queued ${fmtTime(r.started)}`));
 	}
@@ -1185,7 +1437,7 @@ function initTimeline(): void {
 	tl.tooltipFor = (hit: TimelineHit) => {
 		if (hit.type === 'interval') {
 			if (hit.interval.id.startsWith(AGG_PREFIX)) {
-				return aggTooltip(hit.interval.id.slice(AGG_PREFIX.length));
+				return aggTooltip(hit.interval);
 			}
 			const r = runsById.get(hit.interval.id);
 			return r ? runTooltip(r) : null;
@@ -1203,6 +1455,23 @@ function initTimeline(): void {
 	// hatch a healthy push stream between 10s-apart heartbeats.
 	if (typeof tl.markFresh === 'function') tl.staleAfterMs = STALE_AFTER_MS;
 
+	// Teach the component the startup segment kinds. They are OURS, not part
+	// of its vocabulary, so an unmerged map would draw them as plain fill and
+	// the split would be invisible. Merged over whatever the component ships
+	// so its own kinds ('queued', 'waiting', 'outline') keep their treatment.
+	// Boot is stippled and desaturated — visibly not-the-hook's-work; the
+	// runtime cold start is the same texture, lighter; the undifferentiated
+	// bound is hatched, the same "we don't know what's in here" texture the
+	// component uses for uncovered time.
+	if ('styles' in tl) {
+		tl.styles = {
+			...(tl.styles || {}),
+			boot: { pattern: 'stipple', saturationScale: 0.35, alphaScale: 0.85 },
+			starting: { pattern: 'stipple', saturationScale: 0.35, lightnessScale: 1.25, alphaScale: 0.7 },
+			bound: { pattern: 'hatch', saturationScale: 0.35, alphaScale: 0.7 },
+		};
+	}
+
 	// Teach the "?" legend panel the badge glyphs THIS adapter composes into
 	// labels (runLabel) — the component's built-in rows only cover its own
 	// vocabulary. Feature-detected: the live Pages component may predate
@@ -1211,6 +1480,8 @@ function initTimeline(): void {
 	if ('legendEntries' in tl) {
 		tl.legendEntries = [
 			{ glyph: '⧗', text: 'waiting for a concurrency-group slot (group · place in line)' },
+			{ glyph: 'stipple', text: 'container startup: the darker head is Docker creating the container, the lighter one is the hook runtime warming up — neither is the hook doing work' },
+			{ glyph: 'hatch (head)', text: 'startup that could only be bounded, not split: this hook has no in-container mark, so Docker and runtime cost are mixed together' },
 			{ glyph: '⏳N', text: 'holding a slot N queued runs are waiting on' },
 			{ glyph: '×N waiting', text: 'a collapsed queued backlog: N pending runs as one dim row (each executing run keeps its own colored bar; click opens the hook page)' },
 		];
@@ -1228,7 +1499,9 @@ function initTimeline(): void {
 		// N runs, so its click opens the lane's hook page (which lists them)
 		// — the same destination as a lane-label click.
 		if (detail.interval.id.startsWith(AGG_PREFIX)) {
-			location.hash = '#hook=' + encodeURIComponent(detail.interval.id.slice(AGG_PREFIX.length));
+			// The lane rides in data: the id also carries the cluster start.
+			const lane = ((detail.interval.data ?? {}) as { lane?: string }).lane ?? '';
+			location.hash = '#hook=' + encodeURIComponent(lane);
 			return;
 		}
 		void showRun(detail.interval.id);
@@ -1280,11 +1553,11 @@ function initTimeline(): void {
 				syncLanes(tl);
 				const oldest = rows[rows.length - 1]; // pages are newest-first
 				tl.mergeData({
-					// A history page can carry pending runs; a lane's collapsed
-					// backlog owns those — the live paths restamp its aggregate.
+					// A history page can carry runs a cluster owns; the plan
+					// says which vanish and which lose their lead-in.
 					intervals: rows
-						.filter((r) => !(r.status === 'pending' && collapsedLanes.has(r.hook_id)))
-						.map(runToInterval),
+						.filter((r) => !collapsePlan.subsumed.has(r.id))
+						.map((r) => runToInterval(r, collapsePlan.trimmed.has(r.id))),
 					coverage: { start: Date.parse(oldest.started), end: cursorMs },
 				});
 				cursor = oldest.started; // raw server string — the exact next cursor
@@ -1335,9 +1608,9 @@ function initTimeline(): void {
 		// coverageFloorMs).
 		const pageFloorMs = coverageFloorMs(page, now);
 		liveCoveredToMs = Math.max(liveCoveredToMs, now); // page claims through now
-		const prevCollapsed = collapsedLanes;
+		const prevCollapseKey = collapsePlan.key;
 		const data: TimelineData = {
-			intervals: buildAllIntervals([...runsById.values()]), // refreshes collapsedLanes
+			intervals: buildAllIntervals([...runsById.values()]), // refreshes collapsePlan
 			coverage: { start: pageFloorMs, end: now },
 		};
 		if (!seeded) {
@@ -1350,10 +1623,10 @@ function initTimeline(): void {
 			// pans/zooms and jumpToNow keep their own span from then on.
 			tl.setViewport(now - 10 * 60_000, now);
 			armBackfill(); // coverage exists now — history paging may engage
-		} else if (!sameLaneSet(collapsedLanes, prevCollapsed)) {
-			// The page moved a lane across the collapse boundary: only a
-			// full replace can retire the newly-subsumed spans or the
-			// emptied aggregate (mergeData cannot remove).
+		} else if (collapsePlan.key !== prevCollapseKey) {
+			// The page changed the SET of clusters: only a full replace can
+			// retire newly-subsumed spans, a lead-in that must now go, or an
+			// aggregate that no longer exists (mergeData cannot remove).
 			rebuildAll();
 			return;
 		} else {
@@ -1381,48 +1654,38 @@ function initTimeline(): void {
 			return;
 		}
 		// Collapse boundary first, evaluated ONCE over the batch's net state:
-		// a delta that tips a lane across the threshold (a 2nd pending
-		// arrives; a backlog drains below 2) can only be expressed as a full
-		// replace — mergeData cannot remove the newly-subsumed spans or the
-		// emptied aggregate.
-		const pending = pendingByLane(runsById.values());
-		const nowCollapsed = computeCollapsedLanes(pending);
-		if (!sameLaneSet(nowCollapsed, collapsedLanes)) {
+		// a delta that opens, closes or merges a cluster can only be
+		// expressed as a full replace — mergeData cannot remove a subsumed
+		// span, an emptied aggregate, or a lead-in that must now go.
+		const prevPlan = collapsePlan;
+		const plan = computeCollapse(runsById.values());
+		if (plan.key !== prevPlan.key) {
 			rebuildAll(); // rebuilds from runsById (whole batch) + waiter index + claims coverage
 			return;
 		}
+		collapsePlan = plan; // same cluster set, refreshed depths/membership
 		// A delta can change OTHER bars' badges: every run any delta was — or
 		// now is — waiting on gains/loses its ⏳ waiter count. Re-merge the
 		// union of every delta plus its old and new holder sets, once.
 		rebuildWaiterIndex();
 		const affected = new Set<string>();
-		const restampAgg = new Set<string>();
 		for (const { run, prev } of batch) {
 			affected.add(run.id);
 			for (const holder of holderIdsOf(prev)) affected.add(holder);
 			for (const holder of holderIdsOf(run)) affected.add(holder);
-			// Leaving a collapsed backlog (started running / went terminal)
-			// moves the lane's aggregate depth too — restamp it alongside.
-			if (prev && prev.status === 'pending' && nowCollapsed.has(prev.hook_id)) {
-				restampAgg.add(prev.hook_id);
-			}
 		}
 		const intervals: TimelineInterval[] = [];
 		for (const id of affected) {
 			const run = runsById.get(id);
 			if (run === undefined) continue;
-			if (run.status === 'pending' && nowCollapsed.has(run.hook_id)) {
-				// Subsumed into its lane's backlog aggregate — restamp the
-				// aggregate (depth badge) instead of feeding the span.
-				restampAgg.add(run.hook_id);
-				continue;
-			}
-			intervals.push(runToInterval(run));
+			// Subsumed into a cluster's aggregate: it has nothing but wait to
+			// show, and the aggregate below carries the depth.
+			if (plan.subsumed.has(id)) continue;
+			intervals.push(runToInterval(run, plan.trimmed.has(id)));
 		}
-		for (const lane of restampAgg) {
-			const backlog = pending.get(lane);
-			if (backlog && backlog.length >= COLLAPSE_MIN) intervals.push(aggInterval(lane, backlog));
-		}
+		// Aggregates are few (one per oversubscribed stretch) and cheap to
+		// upsert, so restamp them all rather than tracking which depth moved.
+		for (const c of plan.clusters) intervals.push(aggInterval(c));
 		// The batch also vouches the range since the last claim (fold the
 		// trailing-coverage extension into the merge this path already does —
 		// without it nothing extends coverage on a live stream, and the
@@ -1601,6 +1864,60 @@ async function loadComponentForever(): Promise<void> {
 	}
 }
 
+/**
+ * Load <activity-feed> — the OTHER js-snippets component this dashboard
+ * imports at runtime. It backs both Activity feeds (the overview page and
+ * the per-hook section); dashboard.js owns their data and sets `.entries`
+ * on elements that have usually not upgraded yet, which the component's
+ * connectedCallback replays.
+ *
+ * It lives in this bundle because this bundle IS the dashboard's ES-module
+ * entry point, and the alternative was worse: a hand-written <script
+ * type="module"> in index.html, i.e. uncompiled, un-type-checked JavaScript
+ * sitting outside the ts/ source tree that every other line of module code
+ * lives in. Nothing here touches the chart, and the two loads are
+ * independent — a failing feed component must never keep the timeline from
+ * booting, so this is fired and not awaited.
+ *
+ * Same never-give-up retry as the chart's: the import is cross-origin, and
+ * giving up would leave the feeds permanently on their "loading" line.
+ */
+async function loadActivityFeedForever(): Promise<void> {
+	await loadComponentModuleForever(ACTIVITY_FEED_URL, 'activity-feed');
+}
+
+/**
+ * Load <data-table> — the component behind both runs tables (the overview
+ * list and the per-hook section). dashboard.js sets `.columns`/`.rows` on
+ * elements that have usually not upgraded yet, which the component's
+ * connectedCallback replays.
+ *
+ * Independent of the chart and the feeds for the same reason they are
+ * independent of each other: one failed fetch must not take a working
+ * surface down with it.
+ */
+async function loadDataTableForever(): Promise<void> {
+	await loadComponentModuleForever(DATA_TABLE_URL, 'data-table');
+}
+
+/**
+ * The shared never-give-up loader: the imports are cross-origin, and giving
+ * up would leave a surface permanently on its "loading" line. FIXED
+ * cadence, no backoff, no attempt cap; the retry query param defeats the
+ * browser's memoization of a failed module fetch.
+ */
+async function loadComponentModuleForever(url: string, name: string): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await import(attempt === 0 ? url : `${url}?retry=${attempt}`);
+			return;
+		} catch (e) {
+			console.error(`${name}: component load failed (retry in ${COMPONENT_RETRY_MS}ms):`, e);
+			await new Promise((r) => setTimeout(r, COMPONENT_RETRY_MS));
+		}
+	}
+}
+
 async function boot(): Promise<void> {
 	// The table toggle must work even while (or if) the chart is loading —
 	// the runs table is the fallback view and depends only on this module.
@@ -1616,9 +1933,20 @@ async function boot(): Promise<void> {
 	})();
 	openStream();
 	startFeedSupervisor();
+	// Fired, never awaited: the feeds and the chart are independent, and the
+	// chart must not wait on a component it does not use.
+	void loadActivityFeedForever();
+	void loadDataTableForever();
 	await loadComponentForever();
 	document.getElementById('timeline-loading')?.remove();
 	initTimeline();
 }
+
+// The settings editor lives in this bundle (typed, and testable under
+// node --test) but is driven by dashboard.js, which owns the per-hook page
+// and knows when it is showing a different hook. Published rather than
+// self-mounting for the same reason the run modal is: only the classic
+// script knows the page's current route.
+window.whrMountSettings = mountSettings;
 
 void boot();

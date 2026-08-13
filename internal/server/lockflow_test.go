@@ -353,3 +353,130 @@ func TestStateLockWaitingOnAndWaitersJSON(t *testing.T) {
 		t.Fatal("cancel did not release the blocking acquire")
 	}
 }
+
+// ---- TTL enforcement: kill the holder, confirm it is dead, THEN hand over ----
+//
+// The operator's mutex ruling, verbatim: "never have a TTL on a mutex, that
+// doesn't make sense. Or, if you want to have a mutex TTL, you need to force
+// kill the thing that's holding it when the time is up. ONCE THAT FORCE KILL
+// COMPLETES AND THAT JOB IS CERTAIN TO BE DEAD, then the mutex would be freed
+// automatically due to the ending job, and the TTL has been enforced." These
+// tests pin exactly that sequence — and its refusals.
+
+// ttlServer is the steal test's wiring: a real tracker plus the real finish
+// seam, so a killed holder's locks free the way they do in production.
+func ttlServer(t *testing.T) (*Server, *kv.Store, *runs.Tracker, *events.Recorder) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := kv.New(kv.Config{Dir: filepath.Join(t.TempDir(), "kv")}, []byte("server-test-secret"), logger)
+	require.NoError(t, err)
+	tr := runs.NewTracker()
+	rec := events.NewRecorder(50)
+	tr.SetOnFinish(RunFinishCallback(store, func(runs.RunState) error { return nil }, rec, logger))
+	return New(Options{Logger: logger, KV: store, Tracker: tr, Events: rec}), store, tr, rec
+}
+
+// The whole sequence: a LIVE holder past its TTL is cancelled by the
+// contender's acquire, the acquire waits for it to actually die, and only
+// the finish-seam release hands the lock over.
+func TestStateLockTTLKillsHolderThenHandsOver(t *testing.T) {
+	s, store, tr, rec := ttlServer(t)
+
+	victim := tr.New("h")
+	victim.SetRunning()
+	_, err := store.AcquireLock("h", "gate", victim.ID(), time.Millisecond)
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond) // over budget
+
+	// Stand in for the runner: the container dies on the cancel signal, and
+	// the run reaches a terminal state — which is what frees the lock.
+	died := make(chan struct{})
+	go func() {
+		<-victim.Cancelled()
+		victim.Finish(runs.StatusCancelled, -1, victim.CancelReason())
+		close(died)
+	}()
+
+	contender := tr.New("h")
+	contender.SetRunning()
+	rr := stateReq(t, s, "POST", "/kv/gate/acquire", store.Token("h", contender.ID()), nil)
+	require.Equal(t, 200, rr.Code, "the lock is handed over once the holder is certainly dead")
+	require.Contains(t, rr.Body.String(), contender.ID())
+
+	select {
+	case <-died:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the over-budget holder was never killed")
+	}
+	assert.True(t, victim.Snapshot(0).CancelRequested, "the TTL is ENFORCED against the holder, not assumed")
+	assert.Contains(t, victim.CancelReason(), `lock "gate" held past its TTL`)
+	assert.Contains(t, eventKinds(rec.ListByHook("h", 20)), "lock.ttl_enforced")
+}
+
+// A holder that will not die does NOT lose its lock: the contender is
+// refused, because handing a mutex to a second live run is the failure the
+// kill exists to prevent.
+func TestStateLockTTLRefusesWhenTheKillDoesNotComplete(t *testing.T) {
+	s, store, tr, _ := ttlServer(t)
+	old := lockKillTimeout
+	lockKillTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { lockKillTimeout = old })
+
+	victim := tr.New("h")
+	victim.SetRunning()
+	_, err := store.AcquireLock("h", "gate", victim.ID(), time.Millisecond)
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond)
+
+	contender := tr.New("h")
+	contender.SetRunning()
+	rr := stateReq(t, s, "POST", "/kv/gate/acquire", store.Token("h", contender.ID()), nil)
+	require.Equal(t, 409, rr.Code)
+	assert.Contains(t, rr.Body.String(), "did not terminate")
+	assert.Contains(t, rr.Body.String(), victim.ID(), "the refusal still names the holder")
+
+	// And the lock really is still the victim's.
+	info, err := store.AcquireLock("h", "gate", "run-z", 0)
+	require.Error(t, err)
+	assert.Equal(t, victim.ID(), info.RunID)
+}
+
+// The release-path bug the backstop exists for: the holder is already gone
+// but its lock was never freed. Nothing to kill — the shell is reaped and
+// the lock handed over immediately.
+func TestStateLockTTLReapsAlreadyDeadHolder(t *testing.T) {
+	s, store, tr, rec := ttlServer(t)
+
+	ghost := tr.New("h")
+	ghost.SetRunning()
+	_, err := store.AcquireLock("h", "gate", ghost.ID(), time.Millisecond)
+	require.NoError(t, err)
+	// Terminal WITHOUT the finish seam having freed the lock (the bug).
+	ghost.Finish(runs.StatusError, 1, "boom")
+	_, err = store.AcquireLock("h", "gate", ghost.ID(), time.Millisecond)
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond)
+
+	contender := tr.New("h")
+	contender.SetRunning()
+	rr := stateReq(t, s, "POST", "/kv/gate/acquire", store.Token("h", contender.ID()), nil)
+	require.Equal(t, 200, rr.Code)
+	assert.Contains(t, eventKinds(rec.ListByHook("h", 20)), "lock.ttl_reaped")
+}
+
+// An UNEXPIRED hold is untouched by any of this: plain 409, holder alive and
+// uncancelled. TTL enforcement must never fire early.
+func TestStateLockWithinTTLIsPlainContention(t *testing.T) {
+	s, store, tr, _ := ttlServer(t)
+
+	holder := tr.New("h")
+	holder.SetRunning()
+	_, err := store.AcquireLock("h", "gate", holder.ID(), time.Minute)
+	require.NoError(t, err)
+
+	contender := tr.New("h")
+	contender.SetRunning()
+	rr := stateReq(t, s, "POST", "/kv/gate/acquire", store.Token("h", contender.ID()), nil)
+	require.Equal(t, 409, rr.Code)
+	assert.False(t, holder.Snapshot(0).CancelRequested, "a holder within its budget is never killed")
+}

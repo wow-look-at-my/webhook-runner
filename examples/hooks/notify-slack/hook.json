@@ -24,12 +24,14 @@
     { "action": { "in": ["labeled", "unlabeled"] }, "sender.type": "Bot" }
   ],
 
-  "command": [
-    "sh", "-c",
-    "curl -fsS -X POST -H 'content-type: application/json' --data-binary @$HOOK_PAYLOAD_FILE \"$SLACK_WEBHOOK_URL\""
-  ],
-  "env": {
-    "SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/replace/me"
+  // The work lives in notify.sh, baked into the image by the Dockerfile.
+  // A manifest may not carry a shell program -- command substitution in an
+  // argv entry is refused by the runner at load AND by the published schema
+  // (it cannot be checked, tested or reviewed inside a JSON string). Plain
+  // $VAR references are fine; anything with a nested command goes in a file.
+  "command": ["sh", "notify.sh"],
+  "settings": {
+    "slack_webhook_url": "https://hooks.slack.com/services/replace/me"
   },
   "timeout": "30s"
 }

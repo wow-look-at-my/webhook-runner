@@ -46,5 +46,12 @@ ENV WEBHOOK_RUNNER_ADDR=":9000" \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -q -O /dev/null "http://127.0.0.1:${WEBHOOK_RUNNER_ADDR##*:}/health" || exit 1
 
+# Metadata only -- this publishes nothing on the host. Both ports are declared
+# because both exist; the /.well-known/docker-updater/ endpoints live on the
+# admin port beside /restart-ready, so a deployment has to name it with
+# docker-updater.well-known.port: "9001" -- discovery only picks a port by
+# itself when an image declares exactly one.
+EXPOSE 9000 9001
+
 # Runs as root by default so it can talk to the bind-mounted Docker socket.
 ENTRYPOINT ["/usr/local/bin/webhook-runner"]

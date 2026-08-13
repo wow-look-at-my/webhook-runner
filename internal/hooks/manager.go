@@ -145,16 +145,16 @@ type managerJSON struct {
 	ReconcileInterval string `json:"reconcile_interval"`
 	Timeout           string `json:"timeout"`
 
-	Command         []string          `json:"command"`
-	Script          *Script           `json:"script"`
-	Tests           [][]string        `json:"tests"`
-	Networks        []string          `json:"networks"`
-	Volumes         []string          `json:"volumes"`
-	Env             map[string]string `json:"env"`
-	User            string            `json:"user"`
-	Workdir         string            `json:"workdir"`
-	ExtraDockerArgs []string          `json:"extra_docker_args"`
-	Dind            bool              `json:"dind"`
+	Command         []string        `json:"command"`
+	Script          *Script         `json:"script"`
+	Tests           [][]string      `json:"tests"`
+	Networks        []string        `json:"networks"`
+	Volumes         []string        `json:"volumes"`
+	Settings        json.RawMessage `json:"settings"`
+	User            string          `json:"user"`
+	Workdir         string          `json:"workdir"`
+	ExtraDockerArgs []string        `json:"extra_docker_args"`
+	Dind            bool            `json:"dind"`
 
 	ConcurrencyGroup string              `json:"concurrency_group"`
 	RunTitle         string              `json:"run_title"`
@@ -196,7 +196,7 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 		Tests:            mj.Tests,
 		Networks:         mj.Networks,
 		Volumes:          mj.Volumes,
-		Env:              mj.Env,
+		Settings:         mj.Settings,
 		User:             mj.User,
 		Workdir:          mj.Workdir,
 		ExtraDockerArgs:  mj.ExtraDockerArgs,
@@ -242,6 +242,12 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 		if d <= 0 {
 			return nil, fmt.Errorf("reconcile_interval must be positive, got %s", d)
 		}
+	}
+	// Same gate as hooks, and last for the same reason: the published manager
+	// schema, enforced by the implementation the hooks repo's CI runs (see
+	// schemacheck.go).
+	if err := ValidateManagerJSON(sourcePath, data); err != nil {
+		return nil, err
 	}
 	return m, nil
 }
