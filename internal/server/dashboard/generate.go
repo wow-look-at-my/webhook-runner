@@ -5,4 +5,4 @@
 // see docs/timeline-bundle-generation.md
 package dashboard
 
-//go:generate go run gen.go
+//go:generate go run ./gen

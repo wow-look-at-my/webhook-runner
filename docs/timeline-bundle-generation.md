@@ -15,9 +15,23 @@ and commit the regenerated bundle alongside the source.
 
 ## How it runs
 
-`generate.go` carries `//go:generate go run gen.go`. `gen.go` is `//go:build
-ignore`, so it is excluded from the normal build, `go test`, vet and coverage —
-its correctness is proven by the freshness gate below rather than by unit tests.
+`generate.go` carries `//go:generate go run ./gen`, and the generator is
+`gen/main.go`.
+
+It lives in its own directory on purpose. The obvious alternative — one
+`gen.go` beside `dashboard.go` carrying `//go:build ignore` — puts a
+`package main` file in a `package dashboard` directory, which fails any load
+that disregards build tags. go-toolchain vets under `ignore` among other tags,
+and the tag cannot save the file there:
+
+```
+found packages dashboard (dashboard.go) and main (gen.go) in internal/server/dashboard
+```
+
+(The standard library has the same latent conflict — `strconv/makeisprint.go`,
+`sort/gen_sort_variants.go` — which is why `-tags ignore` cannot build stdlib
+either.) A generator alone in its own package has no such conflict, needs no
+build tag, and is never imported so it never ships.
 
 What it does is the recipe from [ts0's own
 README](https://github.com/wow-look-at-my/ts0#prebuilt-ts0cjs-buildhost) for
@@ -31,14 +45,14 @@ node ts0.cjs build
 Node 22+ is the only requirement. No npm, npx, node_modules or git — ts0 fetches
 its one native piece (esbuild) into its own cache on first run.
 
-Two details worth knowing before editing `gen.go`:
+Two details worth knowing before editing `gen/main.go`:
 
 - **`ts0.cjs` is platform-neutral.** Buildhost addresses artifacts by os/arch so
   the URL parameters are required, but every supported pair returns identical
   bytes. There is nothing to branch on; the URL is a constant.
 - **The `?v=N` pin is what makes regeneration byte-reproducible.** `?branch=master`
   moves on every merge and would make the freshness gate flap. Bump `ts0Version`
-  in `gen.go` and commit the resulting bundle change in the same commit.
+  in `gen/main.go` and commit the resulting bundle change in the same commit.
 
 `WHR_TS0_CJS` points the generator at a pre-fetched bundle for offline use.
 

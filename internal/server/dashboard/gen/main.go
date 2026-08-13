@@ -1,8 +1,11 @@
-//go:build ignore
-
-// Command gen rebuilds assets/timeline.js from the TypeScript in ts/, by
-// running ts0 the way ts0's own README prescribes for build wiring: fetch the
-// pinned prebuilt bundle, run it with the local Node.
+// Command gen rebuilds the dashboard's assets/timeline.js from the TypeScript
+// in ts/, by running ts0 the way ts0's own README prescribes for build wiring:
+// fetch the pinned prebuilt bundle, run it with the local Node.
+//
+// It sits in its own directory rather than carrying //go:build ignore next to
+// the package it generates for. A `package main` file sharing a directory with
+// `package dashboard` fails any load that disregards build tags -- go-toolchain
+// vets under `ignore` among others, and the tag cannot save it there.
 //
 // see docs/timeline-bundle-generation.md
 package main

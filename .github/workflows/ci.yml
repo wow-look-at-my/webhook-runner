@@ -36,7 +36,7 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
-          generate: bc710dbd53cc
+          generate: 439e9a9e5350
 
   e2e:
     runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
