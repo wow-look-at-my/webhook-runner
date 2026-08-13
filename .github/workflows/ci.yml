@@ -11,6 +11,11 @@ permissions:
   # go-toolchain@v1's embedded no-all-builds-job guard scans the head
   # commit's check runs and fails closed without this grant.
   checks: read
+  # autorelease registers each publish as a GitHub Deployment and records the
+  # upload on the org's linked-artifacts page. Both are part of publishing and
+  # cannot be turned off, so both fail the job when ungranted.
+  deployments: write
+  artifact-metadata: write
 
 jobs:
   test:
