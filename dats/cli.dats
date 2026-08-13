@@ -12,6 +12,14 @@
 # (the root command's [hooks-dir] positional); see CLAUDE.md. Tests near the
 # serve path must error before binding and carry a timeout as a hang guard.
 
+# These suites run the repo's own freshly built binary against fixtures in a
+# temp tree, and are kept docker-free and offline so they pass on a bare
+# runner (CLAUDE.md, "CLI contract tests"). dats sandboxes commands by
+# default via bubblewrap or docker; the org's default CI runner has neither,
+# so opt out here rather than make a bare runner a lie. Drop this line if the
+# runner ever grows bubblewrap.
+sandbox: false
+
 tests:
 	- desc: version prints a version string and exits 0
 	  cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" version'
