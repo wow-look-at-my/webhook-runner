@@ -1426,16 +1426,13 @@ unskippable gate) and bundles the adapter into
 module; the component URL passes through unbundled via esbuild
 `external`).
 
-To change the timeline: edit files under `ts/`, then run
-`go generate ./internal/server/dashboard/` and commit the regenerated
-`assets/timeline.js` alongside the source. The `//go:generate` directive
-runs `gen.go`, which fetches a pinned, prebuilt ts0 from
-[buildhost](https://pazer.build) and runs it with Node 22+ — no npm, npx,
-or git. A normal build needs no Node (the committed bundle is embedded
-as-is); CI regenerates through go-toolchain and fails on any diff, so a
-stale bundle turns CI red. To bump the ts0 pin, edit `ts0Version` in
-`gen.go`. **Never edit `assets/timeline.js` by hand** — it carries a
-DO-NOT-EDIT banner; the committed bundle is what ships.
+To change the timeline: edit files under `ts/`, run
+`go generate ./internal/server/dashboard/`, and commit the regenerated
+`assets/timeline.js` alongside the source. A normal build needs no Node;
+CI regenerates and fails on any diff, so a stale bundle turns CI red. See
+[docs/timeline-bundle-generation.md](docs/timeline-bundle-generation.md).
+**Never edit `assets/timeline.js` by hand** — it carries a DO-NOT-EDIT
+banner; the committed bundle is what ships.
 
 ## Notes
 

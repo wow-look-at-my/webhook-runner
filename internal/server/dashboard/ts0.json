@@ -3,6 +3,7 @@
   "outdir": "assets",
   "target": "browser",
   "sourcemap": false,
+  "exclude": ["testjs"],
   "esbuild": {
     "format": "esm",
     "external": ["https://*"],

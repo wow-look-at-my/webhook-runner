@@ -17,18 +17,6 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      # The dashboard's embedded assets/timeline.js is generated from the
-      # TypeScript adapter in internal/server/dashboard/ts/ by ts0. go-toolchain
-      # runs the //go:generate directive in
-      # internal/server/dashboard/generate.go (approved by the `generate:` hash
-      # below), which runs gen.go: fetch a pinned, prebuilt ts0 from buildhost
-      # and run it with Node (setup-node below) — no npm/npx/git. go-toolchain
-      # then fails on a dirty working tree, so a committed bundle that is stale
-      # versus ts/ turns this job red. A normal build never needs Node: the
-      # committed bundle is embedded as-is via go:embed. Bump the ts0 pin in
-      # gen.go; the `generate:` hash below only re-keys if the directive line in
-      # generate.go is edited or moved (a bare `go-toolchain` run prints the new
-      # hash).
       # go-toolchain@v1 itself cache-uploads its build/ outputs under the
       # `go-build` name on EVERY run (its own composite "Hand off build outputs"
       # step, artifact-free; cache storage is free, artifact storage is billed).
@@ -38,13 +26,17 @@ jobs:
       # same-run upload of `go-build` would collide on the shared,
       # non-job-disambiguated key (cache-xfer-go-build-<run_id>-<run_attempt>)
       # and fail the job. Do NOT re-add an explicit `cache-upload go-build`.
+      # Node for the dashboard bundle's generate directive; `generate:` makes
+      # go-toolchain run it and then fail on a dirty tree, which is what keeps
+      # the committed bundle honest.
+      # see docs/timeline-bundle-generation.md
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
-          generate: 9ed176ced63e
+          generate: bc710dbd53cc
 
   e2e:
     runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}

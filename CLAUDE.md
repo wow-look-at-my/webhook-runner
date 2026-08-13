@@ -13,8 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regenerated via `go generate` — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (CI runs it via `node --test`)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regeneration temporarily manual — see the timeline bullet) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (authored in TypeScript, run DIRECTLY via `node --test`'s native type-stripping — no build step; CI pins Node with actions/setup-node). the convention is to author/commit `.ts` source, not generated `.mjs` (gitignored via `*.mjs`; a genuine edge-case `.mjs` can be `git add -f`'d). The one deliberately-committed generated artifact is the dashboard adapter's `assets/timeline.js` bundle — a `.js` (not caught by the `*.mjs` rule), embedded via go:embed and regenerated via ts0
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the runs-timeline adapter TypeScript that ts0 compiles into the committed assets/timeline.js (regenerate with `go generate` — see docs/timeline-bundle-generation.md) — the <timeline-view> component itself is NOT in this repo (the browser imports it at runtime from js-snippets' GitHub Pages; types via the interim shim ts/js-snippets-timeline.d.ts); testjs/ is the node-run client harness proving the push-first section feed (authored in TypeScript, run DIRECTLY via `node --test`'s native type-stripping — no build step; CI pins Node with actions/setup-node). the convention is to author/commit `.ts` source, not generated `.mjs` (gitignored via `*.mjs`; a genuine edge-case `.mjs` can be `git add -f`'d). The one deliberately-committed generated artifact is the dashboard adapter's `assets/timeline.js` bundle — a `.js` (not caught by the `*.mjs` rule), embedded via go:embed and regenerated via ts0
 internal/hooks/            hook.json + manager.json models, loader, registry, watcher, git repo
 internal/managers/         the manager entity's runtime: bounded inbox (checkout/settle handles) + supervisor (flock lease, flat restarts, output ring, attention seam)
 internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
@@ -1348,23 +1347,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   shim beyond what the adapter consumes).
   The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
   (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
-  banner — never hand-edit it, edit ts/ and regenerate). Regeneration is a
-  `//go:generate` directive (in `generate.go`) that runs the build-ignored
-  `gen.go`: it fetches a PINNED, prebuilt ts0 bundle (`ts0.cjs`, `?v=N`)
-  from buildhost and runs it with the LOCAL Node.js runtime (Node 22+ is
-  ts0's only requirement — NO npm/npx/node_modules/git; ts0 fetches its one
-  native piece, esbuild, into its own cache on first run). Run it with
-  `go generate ./internal/server/dashboard/` (or go-toolchain's approved
-  generate step) and commit the updated bundle. A normal `go build` never
-  runs Node — the committed bundle is embedded as-is (that is why it stays
-  committed). The FRESHNESS GATE is go-toolchain's own
-  generate-then-dirty-tree check: ci.yml's `test` job runs go-toolchain
-  with `generate: <hash>` (plus `actions/setup-node@v4`), which regenerates
-  the bundle and then fails CI on a dirty tree — so a committed bundle
-  stale versus ts/ turns CI red instead of drifting. Bump the ts0 pin via
-  `ts0Version` in `gen.go`; the `generate:` approval hash re-keys only when
-  the directive LINE in `generate.go` is edited or moved (a bare
-  `go-toolchain` run prints the new one — update ci.yml's `generate:` to
-  match). gen.go is `//go:build ignore`, so it is excluded from the normal
-  build, `go test`, vet, and coverage — its correctness is checked by the
-  freshness gate itself (regenerate + dirty-tree), not unit tests.
+  banner — never hand-edit it, edit ts/ and regenerate). Rebuild it with
+  `go generate ./internal/server/dashboard/` and commit the bundle with the
+  source; CI runs the same directive and fails on a dirty tree, so a stale
+  bundle is red rather than silent — docs/timeline-bundle-generation.md.
