@@ -357,15 +357,6 @@ func sortedIDs(m map[string]*hooks.Hook) []string {
 	return out
 }
 
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // oneLine collapses a (possibly multi-line sops stderr) error into one
 // bounded display line. It never contains secret values — decrypt failures
 // happen before any plaintext exists.
