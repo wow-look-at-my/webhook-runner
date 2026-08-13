@@ -62,7 +62,9 @@ examples/hooks/            sample hook configs
 ## CLI contract tests (dats/)
 
 `dats/*.dats` are black-box tests of the CLI's contract — exit codes,
-stdout/stderr, messages — run by the org's
+stdout/stderr, messages — indented with TABS (dats enforces tabs-only YAML;
+spaces align only after a tab, as in a sequence item's `\t- desc:` /
+`\t  cmd:`). Run by the org's
 [dats](https://github.com/wow-look-at-my/dats) test runner against the REAL
 built binary (unlike `internal/cli/commands_test.go`, which drives cobra
 in-process). They are deliberately docker-free, offline, and secret-free so
