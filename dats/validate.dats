@@ -11,13 +11,12 @@
 # "$(dirname "{inputs.<hook>/hook.json}")/.." (dats has no directory
 # placeholder). How to run + assertion semantics: CLAUDE.md "CLI contract tests".
 
-# SANDBOX OFF (dats `sandbox: false`). These commands need the HOST: they exec
-# the binary go-toolchain's dats phase stages under $GO_TOOLCHAIN_DATS_BUILD_DIR,
-# which is an os.MkdirTemp under /tmp — and dats' bwrap sandbox gives a command
-# a fresh /tmp, so inside it that path does not exist and every test exits 127.
-# Nothing here needs isolating anyway: docker-free, offline, secret-free tests
-# of our own freshly built CLI (see CLAUDE.md "CLI contract tests").
-sandbox: false
+# Sandboxed, like every suite. go-toolchain stages the binary under build/ --
+# inside the module root, which is the one host path a sandboxed command can
+# read -- so the tests reach it without the host. A file cannot turn its own
+# sandbox off; only `dats --no-sandbox` can, and nothing here needs it.
+sandbox:
+	network: false
 
 tests:
 	- desc: valid legacy tree (JSONC comments allowed) validates with exit 0
