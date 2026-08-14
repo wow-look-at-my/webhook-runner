@@ -37,6 +37,9 @@ func (s *Server) effectiveDisabled(id string) bool {
 	defaultEnabled := true
 	if h, ok := s.registry.Get(id); ok {
 		defaultEnabled = h.EnabledByDefault()
+	} else if m, ok := s.registry.GetManager(id); ok {
+		// Managers share the hook default: absent `enable` means enabled.
+		defaultEnabled = m.EnabledByDefault()
 	}
 	return s.overrides.HookDisabled(id, defaultEnabled)
 }
@@ -166,6 +169,86 @@ func (s *Server) handleConcurrencyOverrideClear(w http.ResponseWriter, r *http.R
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"group": group, "declared": declared, "overridden": false,
+	})
+}
+
+// handleGlobalCapOverrideSet overrides the GLOBAL run cap at runtime:
+// PUT /concurrency-global/limit with body {"limit": N}. N must be >= 1 —
+// a 0 cap would block every run on the server (disable hooks to stop work
+// entirely). Persisted first, applied live second, exactly like the group
+// override endpoint; already-queued runs feel the new cap immediately.
+func (s *Server) handleGlobalCapOverrideSet(w http.ResponseWriter, r *http.Request) {
+	if s.globalCap == nil {
+		writeError(w, http.StatusInternalServerError, "global run cap not configured")
+		return
+	}
+	var body struct {
+		Limit *int `json:"limit"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil || body.Limit == nil {
+		writeError(w, http.StatusBadRequest, `body must be {"limit": N}`)
+		return
+	}
+	limit := *body.Limit
+	if limit < 1 {
+		writeError(w, http.StatusBadRequest,
+			"limit must be >= 1 — a 0 cap would block every run on the server; to stop work entirely, disable the hooks instead")
+		return
+	}
+	if s.overrides == nil {
+		writeError(w, http.StatusInternalServerError, "override store not configured")
+		return
+	}
+	def := s.globalCap.Default()
+	changed, err := s.overrides.SetGlobalRunLimit(limit)
+	if err != nil {
+		s.overrideWriteError(w, "global run cap", err)
+		return
+	}
+	// Persisted first, then applied live: if the process dies between the
+	// two, the restart re-applies from disk — never the other way around.
+	if err := s.globalCap.SetLimitOverride(limit); err != nil {
+		writeError(w, http.StatusInternalServerError, "apply override: "+err.Error())
+		return
+	}
+	if changed {
+		s.log.Warn("global run cap overridden by operator", "limit", limit, "default", def)
+		s.events.Record("concurrency.global_overridden",
+			fmt.Sprintf("global run cap overridden to %d by operator (default %d)", limit, def), nil)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"limit": limit, "default": def, "overridden": true,
+	})
+}
+
+// handleGlobalCapOverrideClear reverts the global run cap to its
+// configured default (WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS, else the
+// built-in 64): DELETE /concurrency-global/limit. Idempotent.
+func (s *Server) handleGlobalCapOverrideClear(w http.ResponseWriter, r *http.Request) {
+	if s.globalCap == nil {
+		writeError(w, http.StatusInternalServerError, "global run cap not configured")
+		return
+	}
+	if s.overrides == nil {
+		writeError(w, http.StatusInternalServerError, "override store not configured")
+		return
+	}
+	def := s.globalCap.Default()
+	changed, err := s.overrides.ClearGlobalRunLimit()
+	if err != nil {
+		s.overrideWriteError(w, "global run cap", err)
+		return
+	}
+	s.globalCap.ClearLimitOverride()
+	if changed {
+		s.log.Info("global run cap override cleared by operator", "default", def)
+		s.events.Record("concurrency.global_override_cleared",
+			fmt.Sprintf("global run cap override cleared by operator (default %d back in effect)", def), nil)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"limit": def, "default": def, "overridden": false,
 	})
 }
 

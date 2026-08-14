@@ -8,9 +8,6 @@
 package runs
 
 import (
-	"crypto/rand"
-	"encoding/base32"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +36,18 @@ const (
 	StatusSkipped Status = "skipped"
 )
 
+// KnownStatus reports whether s is a status a run can actually hold. The
+// /runs list filter validates against it so a typo'd status is a 400 rather
+// than a silently empty page.
+func KnownStatus(s Status) bool {
+	switch s {
+	case StatusPending, StatusRunning, StatusSuccess, StatusFailure,
+		StatusTimeout, StatusError, StatusCancelled, StatusSkipped:
+		return true
+	}
+	return false
+}
+
 // Terminal reports whether the status is a final state (the run's done
 // channel is closed and no further transitions happen).
 func (s Status) Terminal() bool {
@@ -56,7 +65,11 @@ func (s Status) Terminal() bool {
 // worst case is ~MaxRunsPerHook*MaxOutputLines lines (~10-20MB) per hook.
 const MaxOutputLines = 2000
 
-// MaxRunsPerHook is the most recent finished runs retained per hook ID.
+// MaxRunsPerHook is the most recent TERMINAL runs retained per hook ID.
+// It bounds history, never truth: the trim in New evicts oldest terminal
+// runs only — a run that has not finished is CURRENT STATE and is never
+// evicted, however many pile up (a flood of queued spawns must not make
+// the tracker forget work that is genuinely still pending/running).
 const MaxRunsPerHook = 50
 
 // RunState is the value-type, mutex-free, JSON-marshalable view of a run.
@@ -73,6 +86,14 @@ type RunState struct {
 	// it). Optional and purely additive: "" means untitled, and every
 	// consumer (the dashboard feature-detects it) falls back to the id.
 	Title string `json:"title,omitempty"`
+
+	// SpawnedBy identifies the run that started this one through the state
+	// API's POST /spawn — the parent's run and hook IDs — so the dashboard
+	// and run history can answer "who started this". nil for runs started
+	// by a delivery or a schedule tick. Additive and omitempty like Title,
+	// and like Title it persists in the run store's per-run metadata blob
+	// only — never the per-hook index value format.
+	SpawnedBy *SpawnedBy `json:"spawned_by,omitempty"`
 
 	// Started is when the run was accepted and began tracking — the moment
 	// it was QUEUED, before any concurrency-group wait. The JSON name
@@ -138,6 +159,16 @@ type RunState struct {
 	// and by Finish, so a terminal run — including the snapshot persisted
 	// to the run store — is never waiting.
 	WaitingOn *WaitingOn `json:"waiting_on,omitempty"`
+
+	// Phases carries the run's lifecycle instrumentation marks (see
+	// phases.go): when the image was ready, when slots were held, when
+	// `docker run` was spawned, when the container's first instruction ran,
+	// when output first appeared, when the container was reaped. They make
+	// per-run container overhead measurable instead of estimated. Additive
+	// and feature-detected: absent for pre-upgrade history and for marks a
+	// given run never reaches; every consumer treats a missing mark as
+	// "unknown", never as zero.
+	Phases map[Phase]time.Time `json:"phases,omitempty"`
 
 	// Waiters lists the runs currently blocked on cooperative locks THIS
 	// run holds. It is DERIVED, never stored: the Run itself doesn't set
@@ -236,6 +267,12 @@ type Run struct {
 	// TouchActivity) so a waiting run counts as active, never as silent.
 	// nil until registered.
 	touch func()
+
+	// onTerminal is bookkeeping the RUNNER does about this run that must
+	// land before the run is observably finished — see SetOnTerminal. nil
+	// until registered. Read under the mutex: unlike onFinish/onChange it is
+	// registered mid-flight, not copied at New.
+	onTerminal func(RunState)
 
 	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from
 	// a pause that a newer one overlapped — cannot clear the newer pause's
@@ -348,6 +385,12 @@ func (r *Run) Snapshot(tail int) RunState {
 	cp.Output = append([]string(nil), out...)
 	cp.OutputTimes = append([]time.Time(nil), times...)
 	cp.WaitHistory = append([]WaitSegment(nil), r.state.WaitHistory...)
+	if len(r.state.Phases) > 0 {
+		cp.Phases = make(map[Phase]time.Time, len(r.state.Phases))
+		for k, v := range r.state.Phases {
+			cp.Phases[k] = v
+		}
+	}
 	if cp.WaitingOn != nil {
 		// SetWaitingOn always replaces the pointer, never mutates the
 		// pointee — but copy anyway so a snapshot can't alias live state.
@@ -356,6 +399,11 @@ func (r *Run) Snapshot(tail int) RunState {
 		w := *cp.WaitingOn
 		w.HolderRunIDs = append([]string(nil), w.HolderRunIDs...)
 		cp.WaitingOn = &w
+	}
+	if cp.SpawnedBy != nil {
+		// Immutable once set, but copy for the same no-aliasing rule.
+		sb := *cp.SpawnedBy
+		cp.SpawnedBy = &sb
 	}
 	return cp
 }
@@ -367,6 +415,12 @@ func (r *Run) AppendOutput(line string) {
 	now := time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// The first line IS the first-output mark: stamped here, under the same
+	// lock and from the same instant, so the two streams racing to produce it
+	// cannot disagree and no separate call site can drift from the buffer.
+	if len(r.state.Output) == 0 {
+		r.markAtLocked(PhaseFirstOutput, now)
+	}
 	r.state.Output = append(r.state.Output, line)
 	r.state.OutputTimes = append(r.state.OutputTimes, now)
 	if len(r.state.Output) > MaxOutputLines {
@@ -376,10 +430,26 @@ func (r *Run) AppendOutput(line string) {
 	}
 }
 
-// Finish records the terminal state and closes the done channel. Calling
-// Finish more than once on the same run is a no-op for the second call —
-// which is also what guarantees the tracker's OnFinish observer fires
-// exactly once per run.
+// Finish records the terminal state, settles every terminal side effect,
+// and only THEN closes the done channel. Calling Finish more than once on
+// the same run is a no-op for the second call — which is also what
+// guarantees the OnTerminal and OnFinish observers fire exactly once.
+//
+// THE ORDERING IS THE CONTRACT. Everything an observer could reach for must
+// already be in place when the channel closes, so that <-run.Done() is a
+// sufficient barrier on its own:
+//
+//	onTerminal  the runner's own bookkeeping (the run.finished activity line)
+//	onFinish    the run-store write, lock release
+//	notifyChange the /runs/stream terminal delta
+//	close(done) ← observers unblock here, with all of the above settled
+//
+// Closing first would make Done() mean only "the status field flipped",
+// and every caller would need a second, separate barrier to see the rest.
+// That is exactly the trap this ordering exists to remove: three tests
+// raced these writes before the close moved to the end. Do not hoist it
+// back up, and register new terminal work through SetOnTerminal rather
+// than running it after Finish returns.
 func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -398,8 +468,13 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	// close its wait-history segment at the same instant.
 	r.state.WaitingOn = nil
 	r.closeOpenWaitSegmentLocked(r.state.Finished)
+	// Captured under the lock: unlike onFinish/onChange, onTerminal is
+	// registered mid-flight by the runner.
+	onTerminal := r.onTerminal
 	r.mu.Unlock()
-	close(r.done)
+	if onTerminal != nil {
+		onTerminal(r.Snapshot(-1))
+	}
 	if r.onFinish != nil {
 		r.onFinish(r.Snapshot(-1))
 	}
@@ -408,6 +483,7 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	// a client reacting to the delta (e.g. fetching /runs/{id}) sees the
 	// persisted state too.
 	r.notifyChange()
+	close(r.done)
 }
 
 // SetTitle records the run's friendly display title (trimmed; the empty
@@ -474,6 +550,27 @@ func (r *Run) StartedAt() time.Time {
 func (r *Run) SetActivityTouch(fn func()) {
 	r.mu.Lock()
 	r.touch = fn
+	r.mu.Unlock()
+}
+
+// SetOnTerminal registers work that must land BEFORE the run is observably
+// finished. Finish invokes fn once the terminal state is set and BEFORE it
+// closes the done channel, so a <-run.Done() observer never sees a run
+// whose bookkeeping is still in flight.
+//
+// It exists because some terminal work belongs to the RUNNER, not the run
+// — recording the run.finished activity line needs the image name and the
+// spawn note, which RunState does not carry. Doing that work after Finish
+// returns is what put it on the far side of the close: three tests raced
+// it and had to bolt on a second barrier (Runner.Wait) to read the feed.
+// Register it here instead and Done() stays the one barrier anyone needs.
+//
+// fn runs on the finishing goroutine, outside the run mutex, and must not
+// block: it delays every Done() observer. Exactly-once is inherited from
+// Finish's own once-guard.
+func (r *Run) SetOnTerminal(fn func(RunState)) {
+	r.mu.Lock()
+	r.onTerminal = fn
 	r.mu.Unlock()
 }
 
@@ -571,152 +668,4 @@ func (r *Run) LastLines(n int) []string {
 	out := make([]string, n)
 	copy(out, r.state.Output[len(r.state.Output)-n:])
 	return out
-}
-
-// Tracker is a concurrency-safe registry of runs.
-type Tracker struct {
-	mu        sync.RWMutex
-	byID      map[string]*Run
-	byHook    map[string][]*Run
-	maxByHook int
-	onFinish  func(RunState)
-	onChange  func(RunState)
-}
-
-// NewTracker returns an empty tracker.
-func NewTracker() *Tracker {
-	return &Tracker{
-		byID:      make(map[string]*Run),
-		byHook:    make(map[string][]*Run),
-		maxByHook: MaxRunsPerHook,
-	}
-}
-
-// SetOnFinish registers fn to be invoked exactly once per run — with a full
-// terminal snapshot, synchronously on the finishing goroutine — when the run
-// reaches a terminal status. Set it before the first New: runs created
-// earlier never see it. This is the persistence seam (the run store's
-// write-once-at-terminal hook) without the runs package knowing about disk.
-func (t *Tracker) SetOnFinish(fn func(RunState)) {
-	t.mu.Lock()
-	t.onFinish = fn
-	t.mu.Unlock()
-}
-
-// SetOnChange registers fn to be invoked after every observable lifecycle
-// mutation of runs created AFTER the call — creation, pending→running,
-// title set, waiting_on set/cleared, cancel requested, and the terminal
-// transition (after OnFinish) — each time with an output-stripped snapshot,
-// synchronously on the mutating goroutine. This is the live-stream seam
-// (the /runs/stream fan-out) without the runs package knowing about HTTP;
-// like OnFinish, set it before the first New. fn must be fast and must
-// never block: it runs on runner/state-API goroutines (the server's stream
-// hub only does a non-blocking channel send). nil disables notifications
-// (the events.Recorder nil-safety convention).
-func (t *Tracker) SetOnChange(fn func(RunState)) {
-	t.mu.Lock()
-	t.onChange = fn
-	t.mu.Unlock()
-}
-
-// New starts tracking a fresh run for the given hook ID. The run begins
-// in StatusPending; call SetRunning when the container actually starts.
-func (t *Tracker) New(hookID string) *Run {
-	r := &Run{
-		state: RunState{
-			ID:      newID(),
-			HookID:  hookID,
-			Started: time.Now().UTC(),
-			Status:  StatusPending,
-		},
-		done:   make(chan struct{}),
-		cancel: make(chan struct{}),
-	}
-	t.mu.Lock()
-	r.onFinish = t.onFinish
-	r.onChange = t.onChange
-	t.byID[r.state.ID] = r
-	t.byHook[hookID] = append(t.byHook[hookID], r)
-	if extra := len(t.byHook[hookID]) - t.maxByHook; extra > 0 {
-		for _, old := range t.byHook[hookID][:extra] {
-			delete(t.byID, old.state.ID)
-		}
-		t.byHook[hookID] = append(t.byHook[hookID][:0], t.byHook[hookID][extra:]...)
-	}
-	t.mu.Unlock()
-	// The creation notification: a fresh pending run is a lifecycle event
-	// too (the dashboard shows queued runs the moment they are accepted).
-	r.notifyChange()
-	return r
-}
-
-// HasActive reports whether the hook currently has a run that has not reached
-// a terminal status (pending or running). The scheduler uses it for
-// skip-if-already-running overlap protection so a sweep that outlasts its
-// interval cannot stack on itself. Lock ordering is tracker-then-run
-// (consistent with the rest of the package), so this can't deadlock.
-func (t *Tracker) HasActive(hookID string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	for _, r := range t.byHook[hookID] {
-		if !r.Status().Terminal() {
-			return true
-		}
-	}
-	return false
-}
-
-// Get returns the run with the given ID, or nil if absent or evicted.
-func (t *Tracker) Get(id string) *Run {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.byID[id]
-}
-
-// ListByHook returns the retained runs for a hook, newest-first.
-func (t *Tracker) ListByHook(hookID string, max int) []*Run {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	src := t.byHook[hookID]
-	out := make([]*Run, len(src))
-	copy(out, src)
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].state.Started.After(out[j].state.Started)
-	})
-	if max > 0 && len(out) > max {
-		out = out[:max]
-	}
-	return out
-}
-
-// ListAll returns all retained runs across hooks, newest-first.
-func (t *Tracker) ListAll(max int) []*Run {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	out := make([]*Run, 0, len(t.byID))
-	for _, r := range t.byID {
-		out = append(out, r)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].state.Started.After(out[j].state.Started)
-	})
-	if max > 0 && len(out) > max {
-		out = out[:max]
-	}
-	return out
-}
-
-// newID returns 16 random bytes encoded as lowercase base32 without
-// padding (26 ASCII characters), giving 128 bits of entropy.
-func newID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand never returns an error in practice; fall back to
-		// a timestamp-based ID rather than panic in this hot path.
-		t := time.Now().UnixNano()
-		for i := range b {
-			b[i] = byte(t >> (i % 8 * 8))
-		}
-	}
-	return strings.ToLower(strings.TrimRight(base32.StdEncoding.EncodeToString(b[:]), "="))
 }

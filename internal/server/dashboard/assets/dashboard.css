@@ -50,8 +50,21 @@ table { width: auto; max-width: 100%; border-collapse: collapse; background: var
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
 th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; }
 tbody tr:last-child td { border-bottom: 0; }
-tbody tr:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
+/* Row hover/pointer affordances are OPT-IN: dashboard.js tags exactly the
+   rows it wires a click handler onto with class="clickable" (the runs
+   tables, and the STATE (KV) namespace/key drill-in). A blanket
+   `tbody tr:hover` rule here used to promise a click on EVERY table row and
+   needed a per-table cursor:default opt-out list below — which missed
+   #kv-table, giving the STATE rows a pointer cursor that did nothing.
+   Affordance now follows behavior: no handler, no pointer. */
+tbody tr.clickable:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
 code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }
+/* Every link on the page reads the same: accent, underlined on hover only
+   (a log line full of slugs stays readable). Links that are something else
+   -- a button, a nav entry, a <code> chip -- override this below; a plain
+   link needs no rule of its own. */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
 .badge {
   display: inline-block;
   padding: 0.1rem 0.6rem;
@@ -108,10 +121,10 @@ button, .btn {
 }
 button:hover, .btn:hover { filter: brightness(1.1); }
 
-/* Run detail modal: a large centered popup so output is readable without
-   scrolling the whole page. Native <dialog> gives us the backdrop, Escape
-   key, focus trapping and centering for free. */
-dialog#run-detail {
+/* Detail modals (run output, KV value): a large centered popup so content is
+   readable without scrolling the whole page. Native <dialog> gives us the
+   backdrop, Escape key, focus trapping and centering for free. */
+dialog#run-detail, dialog#kv-detail {
   width: min(92vw, 1100px);
   height: min(88vh, 900px);
   max-width: 92vw;
@@ -123,17 +136,33 @@ dialog#run-detail {
   color: var(--fg);
   box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
 }
-dialog#run-detail::backdrop {
+/* A KV value is usually small (64 KiB cap), so its modal sizes to content —
+   still capped so a big value scrolls inside its box, not the page. Must be
+   fit-content, not auto: the UA's dialog:modal style pins both block insets
+   to 0, so an auto height stretches to the max instead of shrink-wrapping. */
+dialog#kv-detail { height: fit-content; width: min(92vw, 900px); }
+dialog#kv-detail .modal-body { height: auto; max-height: calc(88vh - 2px); }
+dialog#run-detail::backdrop, dialog#kv-detail::backdrop {
   background: rgba(1, 4, 9, 0.7);
 }
 /* Lock the page behind the modal while it's open. showModal() makes the
    background inert but does NOT stop it from scrolling on its own. */
-html:has(dialog#run-detail[open]) { overflow: hidden; }
+html:has(dialog#run-detail[open]), html:has(dialog#kv-detail[open]) { overflow: hidden; }
 .modal-body {
   display: flex;
   flex-direction: column;
   height: 100%;
   padding: 1.25rem 1.5rem 1.5rem;
+}
+/* The metadata block must never starve the log. "Held up by this run" is the
+   one row with no bound — a run holding a busy concurrency group lists every
+   waiter — and as a content-sized flex item it pushed #run-detail-output
+   (flex-basis 0) to zero height, so the operator could not see the output at
+   all. Capped and scrolled inside itself, the log keeps the rest. */
+#run-detail-meta {
+  max-height: 35%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .modal-header {
   display: flex;
@@ -215,7 +244,14 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
    stacks one card per turn; the raw view is a single <pre>. */
 #run-detail-output {
   flex: 1;
-  min-height: 0;
+  /* A FLOOR, not the usual min-height:0. Zero says "may shrink to nothing",
+     which is what let a run holding a busy concurrency group list every
+     waiter above and squeeze the log down to its title bar. The floor is
+     still below content height, so the pane keeps scrolling internally; it
+     just can never be squeezed out of existence. Capping #run-detail-meta is
+     the other half -- either alone leaves the log at the mercy of a row with
+     no bound. */
+  min-height: 8rem;
   overflow: auto;
   /* Keep wheel/touch scrolling inside this box -- don't chain to the page
      behind the modal when reaching the top/bottom of the output. */
@@ -223,6 +259,14 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  margin: 0;
+}
+/* KV value box: same contained scrolling, but content-sized (the modal-body's
+   max-height bounds it, so an oversized value shrinks this and scrolls). */
+#kv-detail-output {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   margin: 0;
 }
 /* Raw view. Self-sufficient box styling (background/border/padding) because
@@ -316,8 +360,6 @@ html:has(dialog#run-detail[open]) { overflow: hidden; }
   word-break: break-word;
 }
 #setup-section #setup-repo { font-size: 0.9rem; margin: 0 0 0.5rem; }
-#setup-section a:not(.btn) { color: var(--accent); text-decoration: none; }
-#setup-section a:not(.btn):hover { text-decoration: underline; }
 #setup-section dl { margin: 0.75rem 0; }
 .copyable { user-select: all; }
 details#setup-details {
@@ -331,8 +373,6 @@ details#setup-details summary { cursor: pointer; color: var(--muted); }
 details#setup-details[open] summary { margin-bottom: 0.5rem; }
 /* Per-app (per-hook) drill-down view. */
 .crumbs { margin: 0; font-size: 0.875rem; }
-.crumbs a { color: var(--accent); text-decoration: none; }
-.crumbs a:hover { text-decoration: underline; }
 #app-head h2 {
   text-transform: none;
   letter-spacing: normal;
@@ -382,20 +422,24 @@ td { overflow-wrap: anywhere; }
    shrinks below its widest unbreakable content, so the id column just
    claims its width and the prose columns (Description, event messages,
    on-disk lists) absorb the squeeze by wrapping instead. Timestamps in
-   the runs tables get the same pin the activity feed's .event-time
-   already has -- a date broken mid-number reads just as badly. */
+   the runs tables get the same pin the activity feed gives its own time
+   column -- a date broken mid-number reads just as badly. */
 td code { white-space: nowrap; }
 #runs-table td:first-child, #app-runs-table td:first-child { white-space: nowrap; }
 .window-note { color: var(--muted); font-size: 0.75rem; margin: -0.4rem 0 0.5rem; }
 a.hook-link { text-decoration: none; }
 a.hook-link code { color: var(--accent); }
 a.hook-link:hover code { background: rgba(47, 129, 247, 0.2); }
-a.run-link { text-decoration: none; }
+/* A run-id chip reads as body text until hovered, so it opts out of the
+   base link color rather than turning every id in every table blue. */
+a.run-link { color: inherit; text-decoration: none; }
 a.run-link:hover code { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
-/* Plain-text jump link (the Info card's State (KV) summary): no <code>
-   child, so it carries the link color itself. */
-a.kv-jump { color: var(--accent); text-decoration: none; }
-a.kv-jump:hover { text-decoration: underline; }
+/* GitHub slugs found in rendered text (run titles, log lines, event
+   messages, KV values, commit subjects) -- "wow-look-at-my/webhooks#41"
+   opens the PR/issue in a new tab. Underlined only on hover so a log line
+   full of slugs stays readable, and inheriting the surrounding font so a
+   slug inside a <pre> stays monospaced and in-line. */
+a.gh-slug { font: inherit; }
 /* The overview State (KV) rows link into the per-hook KV browser; the
    orphaned badge rides inside the link without picking up link styling. */
 #kv-table a.hook-link .badge { margin-left: 0.5rem; }
@@ -408,46 +452,53 @@ a.kv-jump:hover { text-decoration: underline; }
    port/hostname, not this admin page's origin. */
 .port-note { color: var(--muted); font-size: 0.8em; }
 
-.kind {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-family: monospace;
-  background: rgba(255,255,255,0.06);
-  color: var(--muted);
-  white-space: nowrap;
-}
-.kind.image-built, .kind.hooks-reloaded, .kind.git-pulled, .kind.server-started, .kind.hook-enabled, .kind.concurrency-override_cleared { background: rgba(63,185,80,0.15); color: var(--success); }
-.kind.image-build_failed, .kind.hook-load_error, .kind.reload-failed, .kind.git-pull_failed, .kind.reload-denied, .kind.hook-denied, .kind.hook-unknown, .kind.hook-misconfigured, .kind.env-unresolved, .kind.server-misconfigured, .kind.kv-write_failed, .kind.hook-disabled_rejected, .kind.override-write_failed, .kind.override-invalid { background: rgba(248,81,73,0.15); color: var(--failure); }
-.kind.github-push, .kind.reload-requested { background: rgba(47,129,247,0.15); color: var(--accent); }
-/* Operator kill-switch activity: amber — deliberate operator state, not
-   an error, but worth spotting in the feed. */
-.kind.hook-disabled, .kind.concurrency-overridden, .kind.override-orphaned { background: rgba(210,153,34,0.15); color: var(--running); }
-.kind.run-skipped { background: rgba(163,113,247,0.15); color: var(--skipped); }
-.event-time { white-space: nowrap; color: var(--muted); }
+/* The kind badge, the feed table and the filter chips are the <activity-feed>
+   component's SHADOW DOM (js-snippets/ui/activity-feed.js) — styled there,
+   themed from here. The component reads --activity-* first and falls back to
+   the generic --fg/--muted/--border/--panel/--accent + --failure/--running/
+   --success/--skipped this file already defines, so the feeds inherit this
+   palette with no configuration. What used to live here — a .kind rule per
+   known event kind — is exactly the drift the component's derived severity/
+   family classes removed; do not reintroduce it. */
 .images-on-disk { color: var(--muted); font-size: 0.8rem; }
-#events-table tbody tr, #images-table tbody tr, #hooks-table tbody tr,
-#app-events-table tbody tr, #concurrency-table tbody tr { cursor: default; }
 
-/* Compact in-table action buttons (the concurrency Override…/Revert
+/* STATE (KV) drill-in: a namespace row toggles an inset key list; a key row
+   opens its value in the kv-detail modal. */
+.kv-caret { display: inline-block; width: 1.1em; color: var(--muted); font-size: 0.8em; }
+tr.kv-keys-row > td { padding: 0.4rem 0.75rem 0.75rem 1.9rem; background: rgba(1,4,9,0.35); }
+table.kv-keys-table { background: transparent; border: 1px solid var(--border); }
+table.kv-keys-table th, table.kv-keys-table td { font-size: 0.8rem; padding: 0.35rem 0.6rem; }
+.kv-keys-note { color: var(--muted); font-style: italic; font-size: 0.85rem; margin: 0.25rem 0 0; }
+.kv-expiry { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#images-table tbody tr, #hooks-table tbody tr,
+#concurrency-table tbody tr { cursor: default; }
+
+/* Compact in-table action buttons (the concurrency Override.../Revert
    controls). */
 .toggle-btn {
   padding: 0.15rem 0.6rem;
   font-size: 0.75rem;
   border-radius: 5px;
 }
+/* An override control: it does the thing the gate is refusing, so it reads
+   as consequential rather than hiding among the ordinary actions. Only the
+   delta from .toggle-btn — colour — lives here. */
+.toggle-btn.danger { border-color: var(--failure); color: var(--failure); }
+.toggle-btn.danger:hover { background: rgba(248, 81, 73, 0.12); }
+/* The reload panel's own error line: what it could not read, stated where
+   the controls are, never a vanished panel. */
+.attention-line { margin: 0 0 0.5rem; color: var(--failure); font-size: 0.875rem; }
 .row-actions { white-space: nowrap; }
 .row-actions .badge, .row-actions .toggle-btn { margin-right: 0.4rem; }
 .row-actions :last-child { margin-right: 0; }
 
-/* Operator kill switch: ONE control per hook — a slider switch that is
+/* Operator kill switch: ONE control per hook -- a slider switch that is
    both the state display and the flip (replacing the old status pill +
    Enable/Disable button pair). On/green = enabled; off/grey = disabled
    (deliveries rejected 503, scheduled runs skipped). Flipping it calls
    POST /hooks/{id}/disable|enable. The real checkbox is transparent on
-   top of the track — it keeps focus, role="switch", and click semantics
-   for keyboards and screen readers — while .switch-slider draws the
+   top of the track -- it keeps focus, role="switch", and click semantics
+   for keyboards and screen readers -- while .switch-slider draws the
    track + knob. */
 .switch {
   position: relative;
@@ -581,11 +632,26 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
    runs holding the group's slots and the wait queue (each a run link into
    the modal). Group rows are genuinely clickable, so they opt back IN to
    the pointer cursor (overriding the blanket opt-out above); the detail
-   row itself is not clickable. */
-#concurrency-table tbody tr { cursor: pointer; }
-#concurrency-table tr.group-open td { border-bottom: 0; }
-#concurrency-table tr.group-detail-row { cursor: default; }
-#concurrency-table tr.group-detail-row:hover { background: transparent; }
+   row itself is not clickable. The global-cap table mirrors the group
+   table's behavior exactly (same columns, same drill-down). */
+#concurrency-table tbody tr, #concurrency-global-table tbody tr { cursor: pointer; }
+#concurrency-table tr.group-open td, #concurrency-global-table tr.group-open td { border-bottom: 0; }
+#concurrency-table tr.group-detail-row, #concurrency-global-table tr.group-detail-row { cursor: default; }
+#concurrency-table tr.group-detail-row:hover,
+#concurrency-global-table tr.group-detail-row:hover { background: transparent; }
+#concurrency-global-cap { margin-bottom: 1.1rem; }
+#concurrency-section h3 { font-size: 0.95rem; margin: 0.6rem 0 0.35rem; }
+
+/* The runs tables are js-snippets' <data-table>, which renders its rows and
+   status chips inside its own shadow root — out of reach of this sheet.
+   Custom properties DO inherit through the boundary, so the component is
+   themed rather than styled: it reads --table-*, each falling back to the
+   generic --fg/--muted/--border/--panel/--accent this page already defines,
+   which is why there is nothing to set here. Cell-level styling the page
+   owns (the status pill) is passed in through the element's styleText.
+   The old hand-rolled .runs-filter/.filter-chip rules are gone with the
+   hand-rolled chips they styled. */
+data-table { display: block; margin-bottom: 0.5rem; }
 .group-detail-head {
   color: var(--muted);
   font-size: 0.7rem;
@@ -689,4 +755,105 @@ td .run-id-sub code { font-size: 0.9em; background: none; padding: 0; }
   font-size: 0.85rem;
   min-width: 22rem;
   max-width: 100%;
+}
+
+/* --- Layout: persistent sidebar + paged sections ------------------------ */
+/* The long single scroll became pages: the sidebar is the map, #page=<x>
+   fragments pick one section (the bare # hash is the chart-first
+   overview). .page-off is the ROUTER's visibility switch — a class, never
+   the `hidden` attribute, so it composes with every section's own
+   data-driven hidden logic (attention hides when healthy, the runs table
+   behind its toggle, setup only with a repo configured). */
+.layout {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 0 1.25rem;
+  align-items: start;
+}
+#sidebar {
+  position: sticky;
+  top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.5rem 0.4rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  font-size: 0.92rem;
+}
+#sidebar .nav-link {
+  display: block;
+  padding: 0.32rem 0.55rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+#sidebar .nav-link:hover { background: rgba(128, 128, 128, 0.12); }
+#sidebar .nav-link.active {
+  background: rgba(88, 132, 255, 0.16);
+  font-weight: 600;
+}
+#sidebar .nav-sub { display: flex; flex-direction: column; }
+#sidebar .nav-sub a {
+  display: block;
+  padding: 0.16rem 0.55rem 0.16rem 1.4rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.85;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sidebar .nav-sub a:hover { background: rgba(128, 128, 128, 0.12); }
+#sidebar .nav-sub a.active { background: rgba(88, 132, 255, 0.16); }
+.page-off { display: none !important; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  #sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+  }
+  #sidebar .nav-sub { display: none; }
+}
+
+/* --- Managers panel ----------------------------------------------------- */
+#manager-detail {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #2a2f3a);
+  padding-top: 0.75rem;
+}
+.manager-output {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.6rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.state-chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border, #2a2f3a);
+}
+.state-chip.running { color: #3fb950; border-color: #3fb950; }
+.state-chip.disabled { opacity: 0.6; }
+.state-chip.restart-wait, .state-chip.starting { color: #d29922; border-color: #d29922; }
+.state-chip.waiting-lease { color: #58a6ff; border-color: #58a6ff; }
+
+/* A runtime-imported component turned out to be older than this page and a
+   feature is missing. Styled as a WARNING, not as a quiet note: the whole
+   point is that a silently absent feature is indistinguishable from a
+   finished one. */
+.degraded-note {
+  color: var(--running);
+  border-left: 2px solid var(--running);
+  padding-left: 0.5rem;
 }

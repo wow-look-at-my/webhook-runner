@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,7 @@ func testsHook(t *testing.T, dir string, tests [][]string) *hooks.Hook {
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
 		Command:    []string{"node", "/app/x.ts"},
-		Env:        map[string]string{"HOOK_ONLY_SECRET": "live-runs-only"},
+		Settings:   json.RawMessage(`{"live_runs_only":true}`),
 		Tests:      tests,
 	}
 }
@@ -48,12 +49,14 @@ func TestRunHookTestsDockerInvocation(t *testing.T) {
 		assert.Contains(t, got, want)
 	}
 	// Live-run plumbing must not leak into test containers: no payload or
-	// headers, no code mount, no hook.json env, and not the hook's own
-	// command.
+	// headers, no code mount, no settings, and not the hook's own command.
 	assert.NotContains(t, got, "HOOK_PAYLOAD_FILE")
 	assert.NotContains(t, got, "HOOK_HEADERS_FILE")
+	// Tests are self-contained by contract: no payload, no secrets, and no
+	// settings either -- a suite must never depend on deployed configuration.
+	assert.NotContains(t, got, "HOOK_SETTINGS_FILE")
+	assert.NotContains(t, got, "live_runs_only")
 	assert.NotContains(t, got, "HOOK_RUN_ID")
-	assert.NotContains(t, got, "HOOK_ONLY_SECRET")
 	assert.NotContains(t, got, "arg=-v")
 	assert.NotContains(t, got, "x.ts\n")
 	assert.Contains(t, got, "passed")

@@ -8,17 +8,133 @@ permissions:
   contents: write
   packages: write
   actions: read
+  # go-toolchain@v1's embedded no-all-builds-job guard scans the head
+  # commit's check runs and fails closed without this grant.
+  checks: read
+  # go-toolchain@v1's publish step registers each release: a GitHub Deployment,
+  # and a record on the org's linked artifacts page. Both were warnings until
+  # recently and are now hard failures ("Resource not accessible by
+  # integration" / HTTP 404), so a build cannot finish without these.
+  deployments: write
+  artifact-metadata: write
 
 jobs:
-  test:
+  # Every CLAUDE.md is inlined into an agent's context VERBATIM the moment it
+  # works in that directory, and nothing truncates it: Claude Code's only hard
+  # cap skips a file over 4 MiB outright, and the "limit" the CLI mentions is a
+  # warning threshold that changes nothing about what gets sent — and renders
+  # only in the terminal UI, so it reaches neither the web surface nor the
+  # model. An oversized CLAUDE.md is simply re-billed on every request. Keep
+  # them indexes: depth goes to docs/ VERBATIM behind a pointer.
+  claude-md-budget:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      # The dashboard's committed assets/timeline.js is authoritative and
-      # embedded as-is — the npx //go:generate directive that rebuilt it via
-      # ts0 was removed (no node/npm/npx anywhere in this build). Regeneration
-      # is temporarily a manual step; a buildhost-served prebuilt ts0 binary
-      # driven by a small Go bootstrap is landing next.
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const BUDGET = 40000;
+            const found: string[] = [];
+            const walk = (dir: string): void => {
+              for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (e.name === '.git' || e.name === 'node_modules') continue;
+                const p = path.join(dir, e.name);
+                if (e.isDirectory()) walk(p);
+                else if (e.name === 'CLAUDE.md') found.push(p);
+              }
+            };
+            walk('.');
+            const over: string[] = [];
+            for (const file of found.sort()) {
+              const chars = fs.readFileSync(file, 'utf-8').length;
+              core.info(`${file}: ${chars} chars`);
+              if (chars > BUDGET) over.push(`${file}: ${chars} chars (${chars - BUDGET} over)`);
+            }
+            if (over.length) {
+              core.setFailed(
+                `Over the ${BUDGET}-char CLAUDE.md budget. Move the depth into docs/ VERBATIM ` +
+                  `and leave a one-line pointer — extraction, never summarization:\n` +
+                  over.join('\n'),
+              );
+            }
+
+  # The dashboard's generated bundle, regenerated from source and compared to
+  # what is committed. assets/timeline.js is embedded via go:embed and is
+  # authoritative for the Go build, so it stays committed — this job exists so
+  # it can no longer silently DRIFT from ts/. Editing ts/ and forgetting to
+  # regenerate used to ship a stale dashboard with a green build; now it is a
+  # red one, with the exact command to fix it.
+  #
+  # ts0 comes from buildhost as the prebuilt platform-neutral ts0.cjs — stock
+  # Node and nothing else: no npm, no node_modules, no git (the same shape as
+  # the dats job's prebuilt download below). This is what the "landing next"
+  # note in the test job used to promise.
+  #
+  # PIN: ?v=N is an immutable release; ?branch=master moves on every ts0 merge
+  # and would make this gate flap. v=10 is the current master build — verified
+  # to regenerate the committed bundle byte-for-byte. Newer version NUMBERS
+  # exist (11, 12) but are builds of ts0 feature branches, not master, so do
+  # not bump to a number just because it is higher: resolve
+  # "https://dl.pazer.build/ts0?branch=master&os=linux&arch=amd64" and read the
+  # v= it redirects to, then re-run this job to confirm the bundle is unchanged.
+  #
+  # Slim fleet on purpose: this needs Node, curl and network — no docker, no
+  # bubblewrap, so none of the dind reasoning below applies.
+  dashboard-assets:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Saved as .cjs deliberately: the bundle is CommonJS, and a .js file
+      # would be mis-parsed as ESM if it landed in a "type": "module" package.
+      # No smoke-test step here — ts0 has no `version` subcommand (it prints
+      # "Unknown command" and exits 0, so such a step proves nothing); the
+      # build below is the check that it runs.
+      - name: Install ts0 (prebuilt, from buildhost)
+        run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
+      # Type-checks ts/ (testjs/ is excluded — it is run by node's
+      # type-stripping runner, which never type-checks, so it has never been
+      # under a checker) and rebuilds assets/timeline.js in place.
+      - name: Regenerate dashboard bundle
+        run: node /tmp/ts0.cjs build
+        working-directory: internal/server/dashboard
+      - name: Check the committed bundle is up to date
+        run: |
+          if ! git diff --quiet -- internal/server/dashboard/assets/timeline.js; then
+            echo "::error::assets/timeline.js is stale — it does not match a fresh ts0 build of ts/."
+            echo "Regenerate and commit it:"
+            echo "  curl -fSL 'https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64' -o /tmp/ts0.cjs"
+            echo "  (cd internal/server/dashboard && node /tmp/ts0.cjs build)"
+            echo "Diff:"
+            git --no-pager diff -- internal/server/dashboard/assets/timeline.js
+            exit 1
+          fi
+          echo "assets/timeline.js matches its source."
+
+  # wow-dind, not wow-linux: go-toolchain runs a .dats phase (it bootstraps
+  # dats and executes dats/*.dats as part of this job -- "Running dats
+  # suites" in the log), and dats SANDBOXES TEST COMMANDS BY DEFAULT, failing
+  # a run outright when no backend is usable. The slim fleet can provide
+  # neither backend: docker is deleted from that image by design, and
+  # bubblewrap needs an unprivileged user namespace a stock container is
+  # refused (measured inside a real wow-linux runner: unshare -U blocked,
+  # Seccomp: 2, CapEff: 0). Making it work there would cost
+  # seccomp=unconfined + CAP_SYS_ADMIN -- most of --privileged, on the image
+  # whose whole point is being locked down -- so the operator's ruling
+  # (2026-07-26) is that dats jobs come here instead, where bubblewrap is
+  # installed and measured working. See the webhooks repo,
+  # src/hooks/gha-runner/CLAUDE.md.
+  test:
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      # The dashboard's committed assets/timeline.js is authoritative here and
+      # embedded as-is: this job needs no node/npm/npx. Regeneration is no
+      # longer an unchecked manual step — the dashboard-assets job above
+      # rebuilds it with the prebuilt ts0 from buildhost and fails if the
+      # committed bytes drifted from ts/.
       # go-toolchain@v1 itself cache-uploads its build/ outputs under the
       # `go-build` name on EVERY run (its own composite "Hand off build outputs"
       # step, artifact-free; cache storage is free, artifact storage is billed).
@@ -39,11 +155,17 @@ jobs:
       - uses: actions/checkout@v4
       # Dashboard client harnesses: drive the real committed assets
       # (dashboard.js — the push-first section feed; timeline.js — the
-      # stream-vouched trailing-coverage claims) in vm sandboxes. The shell
-      # glob picks up every testjs/*.test.mjs (node's bare-directory form
-      # is not portable across 22.x). Plain `node --test`, no dependencies.
+      # stream-vouched trailing-coverage claims) in vm sandboxes. Authored in
+      # TypeScript and run DIRECTLY via node's native type-stripping — no
+      # build step, and no committed generated .mjs (see .gitignore; the repo
+      # commits .ts source only). The shell glob picks up every
+      # testjs/*.test.ts (node's bare-directory form is not portable across
+      # 22.x). setup-node pins a Node new enough to strip types.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Dashboard client harness
-        run: node --test internal/server/dashboard/testjs/*.test.mjs
+        run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
       # Restore the binary go-toolchain@v1 handed off in the test job through
       # the actions cache (its central `go-build` upload — go-toolchain uploads
       # its build/ dir as `go-build`, so the contents restore into build/ here;
@@ -67,6 +189,154 @@ jobs:
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/e2e.test.ts
+
+  # Black-box CLI-contract tests (dats/*.dats, run by the org's dats test
+  # runner) against the real built binary — docker-free, offline, no
+  # secrets; see CLAUDE.md "CLI contract tests".
+  # wow-dind for the same reason as the test job above: dats sandboxes by
+  # default and the slim fleet can supply no backend.
+  dats:
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      # Restore the binary go-toolchain@v1 handed off in the test job (the
+      # same central `go-build` upload the e2e job restores).
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      # The suites exec "${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner";
+      # that env var is unset here, so they fall back to build/. The hand-off
+      # carries the platform-suffixed build name, so stage the unsuffixed name
+      # beside it.
+      - name: Stage CLI binary
+        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
+      # dats prebuilt binary from buildhost (public download). Installed into
+      # build/ so the single PATH prepend below covers both binaries — no
+      # sudo, works on any runner.
+      - name: Install dats
+        run: |
+          curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o build/dats
+          chmod +x build/dats
+          build/dats version
+      - name: Run CLI contract tests
+        run: PATH="$PWD/build:$PATH" dats test dats
+
+  # Would deploying THIS binary break the fleet that is actually running?
+  #
+  # It checks TWO trees, because a manifest contract has two sides and a
+  # coordinated change moves both:
+  #
+  #   - webhooks MASTER, the tree deployed right now. A binary that cannot
+  #     load it is not deployable ON ITS OWN.
+  #   - the webhooks branch with THIS BRANCH'''S NAME, when one exists: the
+  #     tree this change is paired with. webhooks CI already builds the
+  #     runner from its own matching branch, so this is the same convention
+  #     read from the other end, and it is what a coordinated pair is
+  #     actually going to be after both merge.
+  #
+  # THE GATE: the paired tree must load. If master does not, that is reported
+  # as the deploy ORDER (merge webhooks first), not as breakage -- because the
+  # runtime now makes the wrong order SAFE rather than catastrophic:
+  #
+  #   - a binary that cannot load the deployed tree REFUSES TO START
+  #     (internal/cli.buildLoadAndApply returns an error and serve exits
+  #     non-zero), so the image rollout fails visibly and the previous
+  #     container keeps serving. It never comes up serving a fraction.
+  #   - a tree the running binary cannot load is REFUSED and ROLLED BACK
+  #     (internal/reloadgate.applyOrRollbackLocked), so the fleet keeps
+  #     running the commit it was running and the deploy is held.
+  #
+  # That is why this job no longer has to be red to keep the fleet safe. It
+  # used to be the ONLY thing standing between a contract change and a silent
+  # fleet-wide outage, so it had to red every coordinated pair until the other
+  # repo merged -- which meant shipping red PRs with a merge-order runbook
+  # attached. The runtime owns that safety now; this job'''s job is to tell you
+  # what you are about to deploy, and to fail when NOTHING can serve the
+  # change.
+  fleet-compat:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      - uses: wow-look-at-my/actions@secret-server#latest
+      # Unentitled callers get HTTP 200 + {} from secret-server, so an absent
+      # token exports as empty rather than erroring. Skipping the check there
+      # would turn "could not verify" into a green tick -- the deceptive pass
+      # this gate exists to prevent. Fail instead.
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            if (!process.env.PRIVATE_ORG_REPO_READ) {
+              core.setFailed(
+                'PRIVATE_ORG_REPO_READ is empty, so the deployed hooks tree cannot be read. ' +
+                  'This job passing without checking would claim the binary is safe to deploy ' +
+                  'when nothing verified it.',
+              );
+            }
+      - uses: actions/checkout@v4
+        with:
+          repository: wow-look-at-my/webhooks
+          ref: master
+          path: _webhooks_master
+          token: ${{ env.PRIVATE_ORG_REPO_READ }}
+      # The paired tree, when this change has one. A missing branch is the
+      # normal case (a runner-only change) and is not an error.
+      - uses: actions/checkout@v4
+        id: paired
+        continue-on-error: true
+        with:
+          repository: wow-look-at-my/webhooks
+          ref: ${{ github.ref_name }}
+          path: _webhooks_paired
+          token: ${{ env.PRIVATE_ORG_REPO_READ }}
+      # validate is docker-free: it loads and checks manifests, builds nothing.
+      - uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const bin = 'build/webhook-runner_linux_amd64';
+            const check = async (dir: string) => {
+              const r = await $`${bin} validate ${dir}`.silent().nothrow();
+              return { ok: r.exitCode === 0, out: `${r.stdout}\n${r.stderr}`.trim() };
+            };
+
+            const master = await check('_webhooks_master');
+            const pairedRef = ${{ toJSON(steps.paired.outcome == 'success') }} ? '${{ github.ref_name }}' : null;
+            const paired = pairedRef ? await check('_webhooks_paired') : null;
+
+            core.info(`webhooks master: ${master.ok ? 'LOADS' : 'REFUSED'}`);
+            if (!master.ok) core.info(master.out);
+            if (paired) core.info(`webhooks@${pairedRef}: ${paired.ok ? 'LOADS' : 'REFUSED'}`);
+            if (paired && !paired.ok) core.info(paired.out);
+
+            // The gate: SOMETHING this change ships with must be servable.
+            if (paired ? !paired.ok : !master.ok) {
+              const which = paired ? `its paired tree webhooks@${pairedRef}` : 'webhooks master';
+              core.setFailed(
+                `This binary cannot load ${which}. Nothing this change ships with can be served by it, ` +
+                  `so there is no order in which it becomes deployable. Fix the manifests or the loader.\n` +
+                  (paired ? paired.out : master.out),
+              );
+              return;
+            }
+
+            if (!master.ok) {
+              // The deployable state exists, it just is not master yet. Say
+              // so plainly -- and say why merging out of order is survivable,
+              // so nobody re-invents a runbook the runtime already enforces.
+              core.notice(
+                `DEPLOY ORDER: merge wow-look-at-my/webhooks@${pairedRef} FIRST. ` +
+                  `This binary cannot load webhooks master (it can load the paired tree), so until that lands ` +
+                  `a deploy of this image REFUSES TO START rather than serving a partial fleet — the previous ` +
+                  `container keeps serving and the failed rollout is visible. Merging in either order is safe; ` +
+                  `this order is simply the one with no failed deploy in it.`,
+              );
+            }
 
   # Builds the Dockerfile from the go-build hand-off (the reusable workflow
   # cache-downloads `go-build` into build/) and pushes

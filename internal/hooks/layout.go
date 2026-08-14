@@ -73,14 +73,40 @@ func (l Layout) SrcDir() string {
 	return ""
 }
 
-// SDKDir is the shared-code directory hashed into every src-layout hook's
-// content tag (<root>/src/sdk), or "" under the legacy layout. It need not
-// exist — a src tree without shared code is fine.
-func (l Layout) SDKDir() string {
-	if l.SDK {
-		return filepath.Join(l.Root, "src", "sdk")
+// SharedDirs lists the shared-code directories hashed into every
+// src-layout entity's content tag: every immediate child of <root>/src
+// except the two entity trees (hooks/, managers/), lexically ordered so the
+// hash is deterministic. Empty under the legacy layout, and a src tree with
+// no shared code at all is fine.
+//
+// It is EVERY such directory, not just src/sdk, because a shared directory
+// the tag does not cover is worse than no sharing at all: editing it changes
+// no image, so every consumer keeps running the old copy with nothing
+// anywhere to notice. That rule is also what lets shared code be organized
+// by what it IS (src/sdk = generic infrastructure, src/actions-runner =
+// the runner-fleet domain) instead of everything piling into src/sdk to be
+// hash-covered.
+func (l Layout) SharedDirs() ([]string, error) { return SharedDirs(l.SrcDir()) }
+
+func SharedDirs(srcRoot string) ([]string, error) {
+	if srcRoot == "" {
+		return nil, nil
 	}
-	return ""
+	entries, err := os.ReadDir(srcRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries { // os.ReadDir sorts by filename
+		if !e.IsDir() || e.Name() == "hooks" || e.Name() == "managers" {
+			continue
+		}
+		out = append(out, filepath.Join(srcRoot, e.Name()))
+	}
+	return out, nil
 }
 
 // ConcurrencyPath is where the central concurrency-groups file lives for
@@ -90,4 +116,17 @@ func (l Layout) ConcurrencyPath() string {
 		return filepath.Join(l.Root, "cfg", "concurrency.json")
 	}
 	return filepath.Join(l.Root, "concurrency.json")
+}
+
+// ManagersDir is the directory whose immediate children are scanned for
+// manager.json folders (<root>/src/managers), or "" under the legacy
+// layout: managers are an SDK-layout-only entity — a legacy tree is never
+// scanned for them, so a pre-manager runner and a legacy tree are both
+// structurally incapable of loading one (the deploy-first hazard that bit
+// every new hook.json field cannot exist for managers).
+func (l Layout) ManagersDir() string {
+	if l.SDK {
+		return filepath.Join(l.Root, "src", "managers")
+	}
+	return ""
 }

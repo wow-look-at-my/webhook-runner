@@ -125,43 +125,6 @@ func TestTriggerRejectionsRecordEvents(t *testing.T) {
 	assert.Contains(t, misconfigured, "${WHR_TEST_UNSET_REF_X9}")
 }
 
-// An env value whose ${NAME} reference resolves to nothing makes the
-// container run with an empty value — invisible from outside while every
-// run fails downstream. The runner must surface it in the activity feed.
-func TestRunRecordsEnvUnresolved(t *testing.T) {
-	dir := t.TempDir()
-	docker := writeMockDocker(t, dir)
-	reg := hooks.NewRegistry()
-	hookDir := filepath.Join(dir, "e")
-	require.NoError(t, os.MkdirAll(hookDir, 0o755))
-	reg.Set(&hooks.Hook{
-		ID:          "e",
-		Command:     []string{"x"},
-		Env:         map[string]string{"X": "${WHR_TEST_UNSET_ENV_X9}"},
-		Synchronous: true,
-		SourcePath:  filepath.Join(hookDir, "hook.json"),
-	})
-	tr := runs.NewTracker()
-	rec := events.NewRecorder(20)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker, Events: rec})
-	s := New(Options{Registry: reg, Runner: rn, Tracker: tr, Logger: logger, Events: rec})
-
-	w := httptest.NewRecorder()
-	hook(s).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/hook/e", strings.NewReader("{}")))
-	require.Equal(t, http.StatusOK, w.Code)
-
-	unresolved := ""
-	for _, e := range rec.List(0) {
-		if e.Kind == "env.unresolved" {
-			unresolved = e.Msg
-		}
-	}
-	require.NotEmpty(t, unresolved, "expected an env.unresolved event")
-	assert.Contains(t, unresolved, "${WHR_TEST_UNSET_ENV_X9}")
-	assert.Contains(t, unresolved, "env X")
-}
-
 func TestDescribePush(t *testing.T) {
 	body := []byte(`{"ref":"refs/heads/master","after":"abcdef1234567890","repository":{"full_name":"o/r"},"pusher":{"name":"alice"},"commits":[{"message":"fix things\n\ndetails"}]}`)
 	msg := describePush(body)

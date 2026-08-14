@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -33,11 +33,73 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleVersion identifies the running build (same string the `version`
-// command prints, plus the VCS revision/time when the build has them).
-// Registered on both ports so the deployed build is checkable from either
-// side of the tunnel.
+// command prints, plus the VCS revision/time when the build has them) AND
+// which hooks tree it is serving: the reload gate's state rides along as
+// hooks_tree, so "which hooks commit is deployed?" is answerable without
+// probing hook 404s. Registered on both ports so the deployed build is
+// checkable from either side of the tunnel — which deliberately exposes
+// the served hooks-tree commit sha on the public hook port (an explicit
+// operator request; the hooks repo itself stays private).
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.version)
+	writeJSON(w, http.StatusOK, struct {
+		VersionInfo
+		HooksTree hooksTreeState `json:"hooks_tree"`
+	}{VersionInfo: s.version, HooksTree: s.hooksTreeState()})
+}
+
+// hooksTreeState is /version's hooks_tree object: which hooks tree this
+// runner is serving, per the reload gate. state discriminates:
+//
+//   - "serving": the tree is at serving_sha; nothing newer is held.
+//   - "held": pending_sha is fetched but not switched to — pending_state
+//     carries the gating context's last known CI state for it, and reason
+//     spells the hold out ("awaiting all-builds" / "all-builds failure").
+//   - "unknown": a gate is tracking but has no serving commit recorded
+//     (the boot HEAD read failed and nothing has settled since).
+//   - "untracked": no gate tracks the tree — mode names why (no hooks
+//     repo, or the CI-gate-disabled legacy reload flow).
+//
+// serving_sha is omitted rather than sent as an ambiguous empty string
+// when it is unknown; verified is present exactly when a gate is
+// tracking (states other than "untracked").
+type hooksTreeState struct {
+	State        string `json:"state"`
+	ServingSHA   string `json:"serving_sha,omitempty"`
+	Verified     *bool  `json:"verified,omitempty"`
+	PendingSHA   string `json:"pending_sha,omitempty"`
+	PendingState string `json:"pending_state,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+}
+
+// hooksTreeState renders the reload gate's snapshot (a pure in-memory
+// read — no git, no GitHub) into the /version hooks_tree shape.
+func (s *Server) hooksTreeState() hooksTreeState {
+	if s.treeState == nil {
+		mode := "local hooks dir (no hooks repo)"
+		if s.hooksRepo != "" {
+			mode = "ci gate disabled (legacy reload)"
+		}
+		return hooksTreeState{State: "untracked", Mode: mode}
+	}
+	ts := s.treeState()
+	out := hooksTreeState{ServingSHA: ts.ServingSHA, Verified: &ts.Verified}
+	switch {
+	case ts.PendingSHA != "":
+		out.State = "held"
+		out.PendingSHA = ts.PendingSHA
+		out.PendingState = ts.PendingState
+		if ts.PendingState == "failure" || ts.PendingState == "error" {
+			out.Reason = ts.Context + " " + ts.PendingState
+		} else {
+			out.Reason = "awaiting " + ts.Context
+		}
+	case ts.ServingSHA == "":
+		out.State = "unknown"
+	default:
+		out.State = "serving"
+	}
+	return out
 }
 
 // hookListEntry is one row of GET /hooks: the registry summary plus the
@@ -62,6 +124,14 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
 	if !ok {
+		// Managers share the endpoint (and the id namespace): a delivery
+		// for a manager id lands in its inbox instead of booting a
+		// container — same auth, same skip_if, same kill switch. See
+		// managers.go.
+		if mgr, isManager := s.registry.GetManager(id); isManager {
+			s.handleManagerTrigger(w, r, mgr)
+			return
+		}
 		// Rejected requests are activity too: a caller hitting a wrong URL or
 		// a stale key is exactly the misconfiguration the dashboard must be
 		// able to answer "did you receive anything?" about.
@@ -138,11 +208,32 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A draining server must not LOSE the delivery. GitHub does not re-send
+	// a failed one — the hooks repo's delivery-gap replay SDK exists exactly
+	// because deliveries are consumed-and-lost during downtime — so the 503
+	// the drain gate used to answer was an error AND a dropped webhook. Park
+	// it instead and let the next process run it. Checked BEFORE Start so a
+	// parked delivery leaves no errored run record: it did not fail, it is
+	// waiting. By here it has passed auth and skip_if, so the spool never
+	// holds an unauthenticated body.
+	if s.runner.Draining() {
+		if id, ok := s.spoolDelivery(hook.ID, title, r.Header, body); ok {
+			writeJSON(w, http.StatusAccepted, map[string]string{
+				"spooled":  id,
+				"status":   "spooled",
+				"detail":   "server is restarting; this delivery is parked and will run on the next start",
+				"hook":     hook.ID,
+				"received": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		// No spool, or the spool is full: fall through to Start, whose drain
+		// refusal gives the honest 503 + error run rather than pretending
+		// the delivery is safe.
+	}
+
 	run, err := s.runner.Start(s.runRequestContext(), hook, body, r.Header, title)
 	if err != nil {
-		// A draining server is a RETRYABLE condition, not a hook failure:
-		// answer 503 so the sender (GitHub redelivers webhooks) tries the
-		// restarted server instead of recording a permanent failure.
 		code := http.StatusInternalServerError
 		if errors.Is(err, runner.ErrDraining) {
 			code = http.StatusServiceUnavailable
@@ -257,173 +348,6 @@ func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
 		"run_id": run.ID(),
 		"status": "cancelling",
 	})
-}
-
-func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	tail := -1
-	if t := r.URL.Query().Get("tail"); t != "" {
-		if n, err := strconv.Atoi(t); err == nil {
-			tail = n
-		}
-	}
-	if run := s.tracker.Get(id); run != nil {
-		st := []runs.RunState{run.Snapshot(tail)}
-		s.attachWaiters(st)
-		writeJSON(w, http.StatusOK, st[0])
-		return
-	}
-	// The tracker window is bounded; fall back to the persisted history for
-	// runs it has evicted (or that finished before a restart).
-	if s.runstore != nil {
-		if snap, ok := s.runstore.Get(id); ok {
-			tailOutput(&snap, tail)
-			writeJSON(w, http.StatusOK, snap)
-			return
-		}
-	}
-	writeError(w, http.StatusNotFound, "no such run")
-}
-
-// tailOutput trims a persisted state's output to the requested tail length
-// (negative = full), the same contract as Run.Snapshot.
-func tailOutput(st *runs.RunState, tail int) {
-	if tail < 0 || tail >= len(st.Output) {
-		return
-	}
-	st.Output = st.Output[len(st.Output)-tail:]
-	if tail < len(st.OutputTimes) {
-		st.OutputTimes = st.OutputTimes[len(st.OutputTimes)-tail:]
-	}
-}
-
-func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	max := 100
-	if m := r.URL.Query().Get("max"); m != "" {
-		if n, err := strconv.Atoi(m); err == nil && n > 0 {
-			max = n
-		}
-	}
-	// ?before= pages into history: only runs queued STRICTLY before the
-	// instant (RFC3339, fractional seconds optional). Clients page by
-	// passing the oldest `started` they already hold. Omitted = no bound.
-	var before time.Time
-	if b := r.URL.Query().Get("before"); b != "" {
-		t, err := time.Parse(time.RFC3339Nano, b)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid before=%q: want an RFC3339 timestamp", b))
-			return
-		}
-		before = t
-	}
-	writeJSON(w, http.StatusOK, s.mergedRuns(r.URL.Query().Get("hook"), before, max))
-}
-
-// mergedRuns is the /runs read path: live tracker runs (active + recent)
-// merged with the persisted completed history, deduped by run ID (the live
-// copy wins — for the same run it can never be older than the persisted
-// one), newest-first, capped at max. A non-zero before keeps only runs
-// queued strictly before it (the page cursor); zero means unbounded. Output
-// is never shipped in the list view; clients fetch /runs/{id} for that.
-func (s *Server) mergedRuns(hookID string, before time.Time, max int) []runs.RunState {
-	// With a cursor the newest-max live window may sit entirely at-or-after
-	// it, hiding older live runs behind the cap — list uncapped (the tracker
-	// is bounded anyway) and let the filter plus the final cap do the work.
-	liveMax := max
-	if !before.IsZero() {
-		liveMax = 0
-	}
-	var live []*runs.Run
-	if hookID != "" {
-		live = s.tracker.ListByHook(hookID, liveMax)
-	} else {
-		live = s.tracker.ListAll(liveMax)
-	}
-	out := make([]runs.RunState, 0, len(live))
-	seen := make(map[string]struct{}, len(live))
-	for _, r := range live {
-		snap := r.Snapshot(0)
-		if !before.IsZero() && !snap.Started.Before(before) {
-			continue
-		}
-		snap.Output = nil
-		snap.OutputTimes = nil
-		out = append(out, snap)
-		seen[snap.ID] = struct{}{}
-	}
-	if s.runstore != nil {
-		var persisted []runs.RunState
-		if hookID != "" {
-			persisted = s.runstore.ListByHookBefore(hookID, before, max)
-		} else {
-			persisted = s.runstore.ListAllBefore(before, max)
-		}
-		for _, st := range persisted {
-			if _, dup := seen[st.ID]; dup {
-				continue
-			}
-			out = append(out, st)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Started.After(out[j].Started)
-	})
-	if max > 0 && len(out) > max {
-		out = out[:max]
-	}
-	s.attachWaiters(out)
-	return out
-}
-
-// attachWaiters decorates run snapshots with the runs currently blocked on
-// resources each of them holds — the holder-side view the dashboard shows
-// ("N runs waiting on this run"). DERIVED, never stored: a blocked acquire
-// stamps its own run's WaitingOn with the holder(s) it is waiting on
-// (re-stamped as holders change), so the live tracker already contains the
-// whole graph and one pass inverts it. Two kinds contribute: a lock wait
-// names its single holder (Key = the lock key), and a concurrency-group
-// wait names every current slot holder (Key = "group:<name>", so renderers
-// can tell the two apart). Waiter lists are sorted for stable JSON.
-// Terminal/persisted runs never hold locks or slots, so they simply never
-// match.
-func (s *Server) attachWaiters(states []runs.RunState) {
-	if s.tracker == nil || len(states) == 0 {
-		return
-	}
-	var byHolder map[string][]runs.Waiter
-	add := func(holderID string, waiter runs.Waiter) {
-		if holderID == "" {
-			return
-		}
-		if byHolder == nil {
-			byHolder = make(map[string][]runs.Waiter)
-		}
-		byHolder[holderID] = append(byHolder[holderID], waiter)
-	}
-	for _, r := range s.tracker.ListAll(0) {
-		snap := r.Snapshot(0)
-		w := snap.WaitingOn
-		if w == nil {
-			continue
-		}
-		switch w.Kind {
-		case runs.WaitingOnLock:
-			add(w.HolderRunID, runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: w.Key})
-		case runs.WaitingOnGroup:
-			for _, h := range w.HolderRunIDs {
-				add(h, runs.Waiter{RunID: snap.ID, HookID: snap.HookID, Key: groupWaiterKey(w.Key)})
-			}
-		}
-	}
-	if byHolder == nil {
-		return
-	}
-	for _, ws := range byHolder {
-		sort.Slice(ws, func(i, j int) bool { return ws[i].RunID < ws[j].RunID })
-	}
-	for i := range states {
-		states[i].Waiters = byHolder[states[i].ID]
-	}
 }
 
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>
@@ -564,6 +488,14 @@ func describePush(body []byte) string {
 
 // handleEvents returns the activity feed, newest first (admin port).
 // ?hook={id} narrows it to one hook's slice, same convention as /runs.
+// ?exclude=run[,image,…] drops whole kind FAMILIES (the segment before the
+// dot). The dashboard passes exclude=run on both feeds: run lifecycle
+// belongs to the runs table, which shows each run as one row with its
+// status, timings and output instead of three log lines.
+//
+// Both narrowings are applied by the recorder BEFORE max — see
+// events.ListFiltered. A page-then-filter implementation would blank the
+// feed on exactly the busy hooks it matters for.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	max := 200
 	if m := r.URL.Query().Get("max"); m != "" {
@@ -571,11 +503,25 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	if hookID := r.URL.Query().Get("hook"); hookID != "" {
-		writeJSON(w, http.StatusOK, s.events.ListByHook(hookID, max))
-		return
+	f := events.Filter{Hook: r.URL.Query().Get("hook")}
+	if ex := r.URL.Query().Get("exclude"); ex != "" {
+		for _, fam := range strings.Split(ex, ",") {
+			fam = strings.TrimSpace(fam)
+			if fam == "" {
+				continue
+			}
+			// A FAMILY, never a full kind: "run", not "run.started".
+			// Accepting a kind here would silently match nothing and read as
+			// "the filter did not work".
+			if strings.Contains(fam, ".") {
+				writeError(w, http.StatusBadRequest,
+					"exclude takes kind families, not kinds: use "+events.Family(fam)+" to drop "+fam)
+				return
+			}
+			f.ExcludeFamilies = append(f.ExcludeFamilies, fam)
+		}
 	}
-	writeJSON(w, http.StatusOK, s.events.List(max))
+	writeJSON(w, http.StatusOK, s.events.ListFiltered(f, max))
 }
 
 // handleImages reports per-hook image state — the tag the hook's current

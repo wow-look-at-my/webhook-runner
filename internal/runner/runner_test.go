@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -42,7 +43,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --rm)
       shift ;;
-    --name|-v|-e|--network|--user|--workdir)
+    --name|-v|-e|--network|--user|--workdir|--label)
       shift; shift ;;
     --cap-add=*|-*)
       shift ;;
@@ -298,10 +299,13 @@ func TestRunnerCancelImmediately(t *testing.T) {
 	assert.Equal(t, runs.StatusCancelled, run.Status())
 }
 
-func TestRunnerExpandsEnv(t *testing.T) {
+// The hook's own configuration reaches the container as a FILE, never as
+// environment: it is mounted read-only and pointed at by HOOK_SETTINGS_FILE.
+// A hook that declares none still gets a readable document ({}), so reading
+// config never has a "file missing" branch to guess around.
+func TestRunnerMountsSettings(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeArgDumpDocker(t, dir)
-	t.Setenv("WHR_TEST_SECRET", "s3cret")
 
 	hookDir := filepath.Join(dir, "myhook")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
@@ -318,25 +322,66 @@ func TestRunnerExpandsEnv(t *testing.T) {
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
 		Command:    []string{"x"},
-		Env: map[string]string{
-			"TOKEN":   "${WHR_TEST_SECRET}",
-			"MISSING": "${WHR_TEST_UNSET_VAR}",
-			"PLAIN":   "v",
-		},
+		Settings:   json.RawMessage(`{"app_id":"42","nested":{"n":1}}`),
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 
 	out := run.Snapshot(-1).Output
-	assert.Contains(t, out, "arg=TOKEN=s3cret")
-	assert.Contains(t, out, "arg=MISSING=")
-	assert.Contains(t, out, "arg=PLAIN=v")
-	// Code is never mounted: only the per-run payload/headers files are.
+	assert.Contains(t, out, "arg=HOOK_SETTINGS_FILE="+mountedSettings)
+	mounted := false
+	for _, line := range out {
+		if strings.HasSuffix(line, ":"+mountedSettings+":ro") {
+			mounted = true
+		}
+	}
+	assert.True(t, mounted, "settings.json must be mounted read-only: %v", out)
+
+	// Code is never mounted: only the per-run payload/headers/settings files.
 	for _, line := range out {
 		assert.NotContains(t, line, hookDir+":")
 		assert.NotContains(t, line, "HOOK_DIR")
 	}
+}
+
+// A hook with no settings still gets an empty object, not a missing file.
+func TestRunnerMountsEmptySettingsByDefault(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeArgDumpDocker(t, dir)
+	hookDir := filepath.Join(dir, "myhook")
+	require.NoError(t, os.MkdirAll(hookDir, 0o755))
+
+	r := New(Options{Tracker: runs.NewTracker(), Logger: newSilentLogger(), TmpDir: dir, Docker: docker})
+	hook := &hooks.Hook{ID: "myhook", SourcePath: filepath.Join(hookDir, "hook.json"), Command: []string{"x"}}
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
+	require.NoError(t, err)
+	r.Wait()
+
+	assert.Contains(t, run.Snapshot(-1).Output, "arg=HOOK_SETTINGS_FILE="+mountedSettings)
+}
+
+// What actually lands on disk for the container to read. Asserted straight off
+// writeTempFiles: by the time a run finishes, its temp dir is already gone.
+func TestWriteTempFilesWritesTheSettingsDocument(t *testing.T) {
+	dir := t.TempDir()
+	r := New(Options{Tracker: runs.NewTracker(), Logger: newSilentLogger(), TmpDir: dir, Docker: "/bin/true"})
+
+	_, _, settingsPath, cleanup, err := r.writeTempFiles("run1", []byte("p"), http.Header{}, []byte(`{"app_id":"42","nested":{"n":1}}`))
+	require.NoError(t, err)
+	defer cleanup()
+	b, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"app_id":"42","nested":{"n":1}}`, string(b))
+	assert.Equal(t, "settings.json", filepath.Base(settingsPath))
+
+	// A hook that declares none still gets a readable, parseable document.
+	_, _, emptyPath, cleanup2, err := r.writeTempFiles("run2", []byte("p"), http.Header{}, (&hooks.Hook{ID: "h"}).SettingsJSON())
+	require.NoError(t, err)
+	defer cleanup2()
+	b2, err := os.ReadFile(emptyPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{}`, string(b2))
 }
 
 // writeBuildAwareDocker drops a mock docker that understands the image
@@ -473,10 +518,6 @@ func TestRunnerInjectsSopsSecrets(t *testing.T) {
 		ID:         "myhook",
 		SourcePath: filepath.Join(hookDir, "hook.json"),
 		Command:    []string{"x"},
-		Env: map[string]string{
-			"OVERRIDDEN": "env-version",                           // explicit env beats the injected secret
-			"COMBINED":   "${REFERENCED}/${WHR_RUNNER_HOST_ONLY}", // ${NAME} sees secrets, then host env
-		},
 	}
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -484,24 +525,12 @@ func TestRunnerInjectsSopsSecrets(t *testing.T) {
 
 	out := run.Snapshot(-1).Output
 	require.Equal(t, runs.StatusSuccess, run.Status())
+	// secrets.sops.env entries are still injected as environment; they are the
+	// runner's own mechanism, not hook config (which now rides settings.json).
 	assert.Contains(t, out, "arg=INJECTED=from-sops")
-	assert.Contains(t, out, "arg=COMBINED=ref-value/host-val")
+	assert.Contains(t, out, "arg=OVERRIDDEN=secret-version")
+	// A secret may never shadow a key the runner sets itself.
 	assert.NotContains(t, out, "arg=HOOK_ID=evil")
-
-	// Both OVERRIDDEN values are passed, with the hook.json one last so
-	// docker's last-wins semantics give it precedence.
-	secretIdx, envIdx := -1, -1
-	for i, line := range out {
-		switch line {
-		case "arg=OVERRIDDEN=secret-version":
-			secretIdx = i
-		case "arg=OVERRIDDEN=env-version":
-			envIdx = i
-		}
-	}
-	require.GreaterOrEqual(t, secretIdx, 0)
-	require.GreaterOrEqual(t, envIdx, 0)
-	assert.Greater(t, envIdx, secretIdx)
 }
 
 func TestRunnerSecretsDecryptFailureFailsRun(t *testing.T) {
