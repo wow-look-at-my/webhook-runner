@@ -480,3 +480,6 @@ func TestStateLockWithinTTLIsPlainContention(t *testing.T) {
 	require.Equal(t, 409, rr.Code)
 	assert.False(t, holder.Snapshot(0).CancelRequested, "a holder within its budget is never killed")
 }
+
+// Manager-instance lock blocking is covered in lockflow_manager_test.go —
+// see that file's header for why it lives separately.
