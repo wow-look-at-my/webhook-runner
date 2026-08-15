@@ -80,25 +80,26 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
 stdout/stderr, messages — run by the org's
 [dats](https://github.com/wow-look-at-my/dats) test runner against the REAL
 built binary (unlike `internal/cli/commands_test.go`, which drives cobra
-in-process). They are deliberately docker-free, offline, and secret-free so
-they pass on a bare runner: `validate`'s full gate contract (plus a drift
+in-process). They are deliberately docker-free, offline, and secret-free —
+they need a sandbox backend and nothing else of the host: `validate`'s full
+gate contract (plus a drift
 gate that `validate examples/hooks` stays green), `test`'s docker-free
 paths, and version/help/argument/flag errors — the authoritative case list
 is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
 dashboard need Docker/network and stay in `e2e/`.
 
-**The suites declare `sandbox: false`, and must keep doing so.** dats
-SANDBOXES commands BY DEFAULT (bubblewrap, falling back to docker), and its
-bwrap sandbox gives a command a FRESH /tmp — while go-toolchain's dats phase
-stages the binaries the suites exec under an `os.MkdirTemp` there. Inside the
-sandbox that path does not exist, so every test exits 127 (all 23, the moment
-dats v49 turned sandboxing on). Nothing here needs isolating: these are
-docker-free, offline, secret-free tests of our own freshly built CLI. The
-opt-out also means the suites need NO sandbox backend at all — dats probes
-lazily — so the dind pinning below is now belt-and-braces rather than load-bearing.
+**The suites are SANDBOXED and a file cannot opt out.** dats sandboxes
+commands BY DEFAULT (bubblewrap, falling back to docker); a file-level
+`sandbox:` block only NARROWS, and `sandbox: false` is a parse error that
+stops the suite loading at all. Only `--no-sandbox` on the run disables it,
+which is the caller's decision, not the suite's. Both files declare
+`network: false` and nothing else — these tests are offline by
+construction. The binaries they exec stay reachable because go-toolchain's
+dats phase stages them under `build/`, inside the module root, which is the
+one host path a sandboxed command can read.
 
-**dats itself is not runner-free** (the ruling that put these jobs on dind):
-without the opt-out it fails a run outright when neither backend is usable. The slim
+**dats needs a working sandbox backend, which is the ruling that put these
+jobs on dind:** it fails a run outright when neither backend is usable. The slim
 `wow-linux` fleet can supply neither — docker is deleted from that image by
 design, and bubblewrap needs an unprivileged user namespace a stock container
 is refused — so **both jobs that run dats (`dats`, and `test` via
