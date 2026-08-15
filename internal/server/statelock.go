@@ -195,28 +195,86 @@ func (s *Server) acquireLock(ns, key, runID string, ttl time.Duration, pinned bo
 	return s.kv.AcquireLock(ns, key, runID, ttl)
 }
 
+// lockWaiter is blockOnLock's ONLY seam between a RUN and a MANAGER
+// INSTANCE blocking on a contended lock. There is one blocking algorithm —
+// poll, touch, take, or give up — because there is no meaningful difference
+// between the two callers: both are just "something webhook-runner is
+// running that wants a lock another live thing holds". Before this, the two
+// were separate hand-written retry loops (blockOnLock and
+// managerBlockOnLock) that had already drifted in small ways no test caught
+// — the manager path had zero coverage.
+type lockWaiter interface {
+	// label names the caller in events and messages: "run" or "instance".
+	label() string
+	// touch credits one poll's worth of activity toward the caller's idle
+	// watchdog and reports whether it is still the entity this wait should
+	// keep running for. A run always answers true — its liveness is tracked
+	// separately via done()/cancelled() — while a manager instance's
+	// liveness IS this check (TouchInstance), since it has no other signal.
+	touch() bool
+	// setWaitingOn/clearWaitingOn mirror the hold onto a run row's dashboard
+	// badge. A manager instance has no row; both are no-ops there.
+	setWaitingOn(runs.WaitingOn) uint64
+	clearWaitingOn(seq uint64)
+	// done/cancelled fire when the caller is torn down out from under the
+	// wait. A manager instance has neither concept (its termination IS
+	// touch() going false), so both return nil — and a select on a nil
+	// channel simply never fires, which is exactly "no such signal", not a
+	// workaround.
+	done() <-chan struct{}
+	cancelled() <-chan struct{}
+}
+
+type runLockWaiter struct{ run *runs.Run }
+
+func (w runLockWaiter) label() string { return "run" }
+func (w runLockWaiter) touch() bool {
+	w.run.TouchActivity()
+	return true
+}
+func (w runLockWaiter) setWaitingOn(wo runs.WaitingOn) uint64 { return w.run.SetWaitingOn(wo) }
+func (w runLockWaiter) clearWaitingOn(seq uint64)             { w.run.ClearWaitingOn(seq) }
+func (w runLockWaiter) done() <-chan struct{}                 { return w.run.Done() }
+func (w runLockWaiter) cancelled() <-chan struct{}            { return w.run.Cancelled() }
+
+type managerLockWaiter struct {
+	s  *Server
+	ns string
+	id string
+}
+
+func (w managerLockWaiter) label() string                      { return "instance" }
+func (w managerLockWaiter) touch() bool                        { return w.s.managers.TouchInstance(w.ns, w.id) }
+func (w managerLockWaiter) setWaitingOn(runs.WaitingOn) uint64 { return 0 }
+func (w managerLockWaiter) clearWaitingOn(uint64)              {}
+func (w managerLockWaiter) done() <-chan struct{}              { return nil }
+func (w managerLockWaiter) cancelled() <-chan struct{}         { return nil }
+
 // blockOnLock is the held half of a blocking acquire: the first attempt was
-// contended (holder describes it); keep retrying until acquired, timed out,
-// or the run is gone.
-func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, runID string, ttl time.Duration, req lockRequest, holder kv.LockInfo) {
-	if s.tracker == nil {
-		writeError(w, http.StatusServiceUnavailable, "run tracking not configured")
-		return
+// contended (holder describes it); determine who is asking — a run or a
+// manager instance — and keep retrying on their behalf until acquired,
+// timed out, or they are gone.
+//
+// The run tracker is consulted first, but its ABSENCE no longer refuses a
+// manager instance's block: a prior version 503'd here whenever s.tracker
+// was nil, before ever checking whether the caller was a manager — wrong,
+// since a manager instance's liveness (TouchInstance) has nothing to do
+// with the run tracker at all.
+func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, id string, ttl time.Duration, req lockRequest, holder kv.LockInfo) {
+	var waiter lockWaiter
+	if s.tracker != nil {
+		if run := s.tracker.Get(id); run != nil && run.HookID() == ns && !run.Status().Terminal() {
+			waiter = runLockWaiter{run: run}
+		}
 	}
-	run := s.tracker.Get(runID)
-	if run == nil || run.HookID() != ns || run.Status().Terminal() {
-		// Manager instances are not runs (first-class identity): they get
-		// the same blocking retry loop, feeding the INSTANCE watchdog and
-		// ending when the instance stops being current — minus the
-		// run-row waiting_on badge (there is no run row).
-		if s.managerCaller(ns, runID) {
-			s.managerBlockOnLock(w, r, ns, key, runID, ttl, req, holder)
+	if waiter == nil {
+		if !s.managerCaller(ns, id) {
+			// Same rule as /wait: nothing to attribute the hold to — refuse
+			// rather than blocking a connection nobody owns.
+			writeError(w, http.StatusConflict, "run is not active")
 			return
 		}
-		// Same rule as /wait: nothing to attribute the hold to — refuse
-		// rather than blocking a connection nobody owns.
-		writeError(w, http.StatusConflict, "run is not active")
-		return
+		waiter = managerLockWaiter{s: s, ns: ns, id: id}
 	}
 
 	blockTimeout := time.Duration(maxWaitSeconds) * time.Second
@@ -225,12 +283,12 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 	}
 	deadline := time.Now().Add(blockTimeout)
 
-	seq := run.SetWaitingOn(waitingOnLock(key, deadline, holder))
-	defer func() { run.ClearWaitingOn(seq) }()
-	run.TouchActivity()
+	seq := waiter.setWaitingOn(waitingOnLock(key, deadline, holder))
+	defer func() { waiter.clearWaitingOn(seq) }()
+	waiter.touch()
 	s.events.Record("lock.waiting",
-		fmt.Sprintf("%s run %s waiting on lock %q held by run %s", ns, runID, key, holder.RunID),
-		map[string]string{"hook": ns, "run": runID})
+		fmt.Sprintf("%s %s %s waiting on lock %q held by run %s", ns, waiter.label(), id, key, holder.RunID),
+		map[string]string{"hook": ns, "run": id})
 
 	// Retry + watchdog-touch cadence: the touch interval a /wait would use,
 	// tightened to the lock retry interval so handoff stays snappy.
@@ -246,10 +304,13 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 	for {
 		select {
 		case <-tick.C:
-			run.TouchActivity()
-			info, err := s.takeLock(r.Context(), ns, key, runID, ttl, req.Pinned)
+			if !waiter.touch() {
+				writeError(w, http.StatusConflict, fmt.Sprintf("not the current %s", waiter.label()))
+				return
+			}
+			info, err := s.takeLock(r.Context(), ns, key, id, ttl, req.Pinned)
 			if err == nil {
-				run.TouchActivity()
+				waiter.touch()
 				writeJSON(w, http.StatusOK, info)
 				return
 			}
@@ -265,69 +326,9 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, ru
 			}
 			if info.RunID != holder.RunID {
 				// The lock changed hands (release+re-acquire, or a steal)
-				// and we lost the race: re-stamp who we're waiting on.
-				holder = info
-				seq = run.SetWaitingOn(waitingOnLock(key, deadline, holder))
-			}
-		case <-giveUp.C:
-			writeJSON(w, http.StatusConflict, lockConflict{
-				Error:  fmt.Sprintf("lock still held after %s", blockTimeout),
-				HeldBy: &holder,
-			})
-			return
-		case <-run.Done():
-			writeJSON(w, http.StatusConflict, lockConflict{Error: "interrupted: run finished", HeldBy: &holder})
-			return
-		case <-run.Cancelled():
-			writeJSON(w, http.StatusConflict, lockConflict{Error: "interrupted: run cancelled", HeldBy: &holder})
-			return
-		case <-r.Context().Done():
-			// Client hung up; the deferred ClearWaitingOn tidies the state.
-			return
-		}
-	}
-}
-
-// managerBlockOnLock is blockOnLock for a manager instance: the same flat
-// retry loop against the same acquire (pin request included), feeding the
-// instance's idle watchdog, aborting when the instance stops being current.
-func (s *Server) managerBlockOnLock(w http.ResponseWriter, r *http.Request, ns, key, instanceID string, ttl time.Duration, req lockRequest, holder kv.LockInfo) {
-	blockTimeout := time.Duration(maxWaitSeconds) * time.Second
-	if req.BlockTimeoutSeconds != nil {
-		blockTimeout = time.Duration(*req.BlockTimeoutSeconds) * time.Second
-	}
-	s.events.Record("lock.waiting",
-		fmt.Sprintf("%s instance %s waiting on lock %q held by run %s", ns, instanceID, key, holder.RunID),
-		map[string]string{"hook": ns})
-
-	interval := s.waitTouchInterval(ns)
-	if interval > lockRetryInterval {
-		interval = lockRetryInterval
-	}
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-	giveUp := time.NewTimer(blockTimeout)
-	defer giveUp.Stop()
-
-	for {
-		select {
-		case <-tick.C:
-			if !s.managers.TouchInstance(ns, instanceID) {
-				writeError(w, http.StatusConflict, "not the current manager instance")
-				return
-			}
-			info, err := s.takeLock(r.Context(), ns, key, instanceID, ttl, req.Pinned)
-			if err == nil {
-				s.managers.TouchInstance(ns, instanceID)
-				writeJSON(w, http.StatusOK, info)
-				return
-			}
-			if errors.Is(err, context.Canceled) {
-				return // client hung up mid-enforcement
-			}
-			if !errors.Is(err, kv.ErrLockHeld) && !errors.Is(err, kv.ErrLockExpired) {
-				s.writeKVError(w, ns, err)
-				return
+				// and we lost the race: re-stamp who we're waiting on (a
+				// no-op for a manager waiter, which has no dashboard row).
+				seq = waiter.setWaitingOn(waitingOnLock(key, deadline, info))
 			}
 			holder = info
 		case <-giveUp.C:
@@ -336,7 +337,14 @@ func (s *Server) managerBlockOnLock(w http.ResponseWriter, r *http.Request, ns, 
 				HeldBy: &holder,
 			})
 			return
+		case <-waiter.done():
+			writeJSON(w, http.StatusConflict, lockConflict{Error: "interrupted: run finished", HeldBy: &holder})
+			return
+		case <-waiter.cancelled():
+			writeJSON(w, http.StatusConflict, lockConflict{Error: "interrupted: run cancelled", HeldBy: &holder})
+			return
 		case <-r.Context().Done():
+			// Client hung up; the deferred clearWaitingOn tidies the state.
 			return
 		}
 	}
