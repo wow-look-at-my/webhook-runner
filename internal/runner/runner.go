@@ -15,16 +15,13 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -227,46 +224,9 @@ func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte,
 	return run, nil
 }
 
-// Skip records a first-class "no work was done" run for a delivery matched
-// by one of the hook's skip_if conditions. It is the whole pipeline for a
-// skip: a real, tracked run that goes terminal immediately with status
-// "skipped" — its output names the matched condition, its Finish drives the
-// tracker's OnFinish seam exactly like any other run (so the skip persists
-// to run history), and a run.skipped event lands on the activity feed. What
-// it deliberately does NOT do is any work: no temp files, no secrets
-// decrypt, no image build, no concurrency-group slot, and above all NO
-// container. The onStart/onFinish callbacks (GitHub commit statuses) are
-// not invoked either — they report container work, and none happened.
-// Cancellation and timeout cannot apply: the run is terminal on return.
-//
-// title carries the run's friendly display title like Start's — set BEFORE
-// Finish, so the terminal snapshot the OnFinish seam persists is titled: a
-// skip should still say which PR it was about.
-func (r *Runner) Skip(hook *hooks.Hook, reason, title string) *runs.Run {
-	run := r.tracker.New(hook.ID)
-	run.SetTitle(title)
-	run.AppendOutput("skipped: " + reason)
-	run.Finish(runs.StatusSkipped, 0, "")
-	r.log.Info("hook skipped", "hook", hook.ID, "run", run.ID(), "reason", reason)
-	r.events.Record("run.skipped", fmt.Sprintf("%s run %s skipped: %s", hook.ID, runRef(run), reason),
-		map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(runs.StatusSkipped)})
-	return run
-}
-
-// runRef names a run for the activity feed: the id, plus the friendly
-// title when one is set — `abc… (wow-look-at-my/go-toolchain#47)` — so the
-// feed's run-scoped lines are readable without a lookup. The id stays
-// first: it is the stable handle everything else (logs, /runs/{id},
-// container names) keys on.
-func runRef(run *runs.Run) string {
-	if t := run.Title(); t != "" {
-		return run.ID() + " (" + t + ")"
-	}
-	return run.ID()
-}
-
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath, settingsPath string) {
-	timeout := hook.Timeout()
+	timeout := hook.Timeout()         // 0 = no absolute ceiling
+	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -390,6 +350,14 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// (argv assembly, and for state hooks the imageCommand inspect), with no
 	// queueing left in it.
 	run.Mark(runs.PhaseSlotAcquired)
+
+	// The timeout clock starts now — we hold a slot and are about to launch
+	// — so it bounds only real container processing, never the time spent
+	// decrypting secrets, building the image, or queued behind other runs.
+	// A hook with no timeout gets NO deadline at all: the run is bounded
+	// only by its idle_timeout (if set) or by the container exiting.
+	ctx, cancel := runContext(parent, timeout)
+	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()
 
@@ -551,17 +519,18 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.SetRunning()
 
 	timedOut := make(chan struct{})
+	deadlineExceeded := make(chan struct{})
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
 
-	// The timeout watchdog arms NOW — only after the concurrency slot was
+	// The idle watchdog arms NOW — only after the concurrency slot was
 	// acquired and the container actually launched, so a queued run never
 	// ticks — and any output byte on either stream resets it via the
-	// touchReader wrappers. The timeout is activity-based: it fires only
-	// after `timeout` of NO output, so a run that keeps logging progress
-	// runs as long as it needs (there is no absolute wall-clock ceiling),
-	// while one that has gone silent is killed.
-	wd := newIdleWatchdog(timeout, time.Now)
+	// touchReader wrappers. It fires only after `idle_timeout` of NO
+	// output, so a run that keeps logging progress runs as long as it
+	// needs; `timeout` (via ctx below) is the separate, optional absolute
+	// wall-clock ceiling.
+	wd := newIdleWatchdog(idleTimeout, time.Now)
 	wd.Arm()
 	// Declared waits (the state API's POST /wait) count as activity: hand
 	// the run a handle to this watchdog so an in-flight wait keeps touching
@@ -577,18 +546,24 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	go r.streamPipe(&streamWG, stdout, hook.ID, run, "stdout")
 	go r.streamPipe(&streamWG, stderr, hook.ID, run, "stderr")
 
-	// Watch for the no-output timeout, parent-context cancellation, and
-	// explicit cancel requests in parallel with cmd.Wait. Any one kills the
-	// container by name. A cancel requested before this goroutine started
-	// selects immediately (the channel is already closed), so the pre-start
-	// race is covered.
+	// Watch for the no-output idle timeout, the absolute `timeout`
+	// deadline (or the parent context tearing down), and explicit cancel
+	// requests in parallel with cmd.Wait. Any one kills the container by
+	// name. A cancel requested before this goroutine started selects
+	// immediately (the channel is already closed), so the pre-start race
+	// is covered.
 	go func() {
 		select {
 		case <-silent:
 			close(timedOut)
-		case <-parent.Done():
-			// Parent cancelled (e.g. the caller tearing down): kill the
-			// container and let cmd.Wait's error shape the terminal status.
+		case <-ctx.Done():
+			// ctx wraps parent with the hook's absolute timeout, if any:
+			// DeadlineExceeded means the ceiling fired; anything else
+			// (Canceled) means the parent itself tore down, and
+			// cmd.Wait's error shapes the terminal status for that case.
+			if ctx.Err() == context.DeadlineExceeded {
+				close(deadlineExceeded)
+			}
 		case <-run.Cancelled():
 			close(cancelled)
 		case <-stopWatcher:
@@ -651,12 +626,21 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		if exitCode == 0 {
 			exitCode = -1
 		}
-		// The message names the activity semantics: the run died for going
-		// silent, not for running long.
-		errMsg = fmt.Sprintf("timed out after %s (no output)", timeout)
+		// Distinguishable from the absolute-ceiling message below: the run
+		// died for going silent, not for running long.
+		errMsg = fmt.Sprintf("idle timeout after %s (no output)", idleTimeout)
 	default:
 	}
-	// Checked after the timeout so an explicit cancel takes precedence when
+	select {
+	case <-deadlineExceeded:
+		status = runs.StatusTimeout
+		if exitCode == 0 {
+			exitCode = -1
+		}
+		errMsg = fmt.Sprintf("timed out after %s", timeout)
+	default:
+	}
+	// Checked after the timeouts so an explicit cancel takes precedence when
 	// both raced to kill the container.
 	select {
 	case <-cancelled:
@@ -698,31 +682,5 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// footgun for a worse one.
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
-	}
-}
-
-func (r *Runner) streamPipe(wg *sync.WaitGroup, rc io.Reader, hookID string, run *runs.Run, stream string) {
-	defer wg.Done()
-	scanner := bufio.NewScanner(rc)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		run.AppendOutput(line)
-		r.log.Info("hook output",
-			"hook", hookID, "run", run.ID(), "stream", stream, "line", line)
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		r.log.Warn("output scanner error",
-			"hook", hookID, "run", run.ID(), "stream", stream, "err", err)
-	}
-}
-
-func (r *Runner) killContainer(name string) {
-	cmd := exec.Command(r.dockerBin, "kill", name)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		// docker kill exits non-zero if the container is already
-		// gone; that's not interesting, so log at debug level.
-		r.log.Debug("docker kill",
-			"name", name, "err", err, "out", strings.TrimSpace(string(out)))
 	}
 }

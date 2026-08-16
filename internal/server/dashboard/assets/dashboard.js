@@ -2153,7 +2153,8 @@ function renderApp(detail, runs, events) {
     ["Mode", info.synchronous ? "sync" : "async"],
     ["Schedule", info.schedule ? `every ${info.schedule}` : "—"],
     ["Concurrency group", info.concurrency_group ? el("code", null, info.concurrency_group) : "—"],
-    ["Timeout", `${info.timeout} without output`],
+    ["Timeout", info.timeout || "none (no absolute ceiling)"],
+    ["Idle timeout", info.idle_timeout ? `${info.idle_timeout} without output` : "—"],
     ["Skip conditions", info.skip_conditions
       ? `${info.skip_conditions} — matched deliveries answer without a container`
       : "none"],

@@ -82,14 +82,15 @@ graph LR
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
-- **Activity-based timeout**: `timeout` kills a run only after it has
-  produced no output for that long (any output byte resets the clock) —
-  so long-but-chatty work survives while hung work is reaped. See
+- **Two kinds of timeout, both optional**: `timeout` is the absolute
+  processing ceiling (omit it for none); `idle_timeout` kills a run only
+  when it stops producing output (any output byte resets it) — so
+  long-but-chatty work survives while hung work is reaped. See
   [Timeouts](#timeouts).
 - **First-class waits**: a state hook that wants to pause declares it —
   `POST /wait {"seconds": N, "reason": "..."}` on its state API blocks
   server-side, shows live on the dashboard as `waiting Ns: reason`, and
-  counts as **activity** for the idle `timeout` — so hooks just sleep
+  counts as **activity** for `idle_timeout` — so hooks just sleep
   in-process instead of deferring work to a later run. See
   [Timeouts](#timeouts). Lock contention gets the same treatment: a
   contended acquire names its holder, can block (`{"block": true}`,
@@ -843,27 +844,44 @@ the run id demoted to a small secondary label.
 
 ## Timeouts
 
-One per-hook knob, `timeout` (default `5m`), and it is **activity-based,
-not wall-clock**: the run is killed only once its container has produced
-**no output** (stdout or stderr) for that long. Any output byte resets the
-clock, so a hook that keeps logging progress runs as long as it needs —
-there is **no absolute processing ceiling** — while one that has gone
-silent is reaped within `timeout` of its last output. The kill goes through
-`docker kill`, ends the run with status `timeout`, and carries the error
-message `timed out after <d> (no output)` (in `/runs/{id}` and the
-activity feed).
+Two per-hook knobs, both optional:
 
-This semantics exists because wall-clock ceilings kill healthy work: a
+- **`timeout`** (omit for no absolute ceiling) — the **absolute processing
+  ceiling**: the run is killed once it has been processing this long,
+  regardless of what it is doing. Error message: `timed out after <d>`.
+- **`idle_timeout`** (omit for no idle limit) — the **progress-aware
+  limit**: the run is killed only once the container has produced **no
+  output** (stdout or stderr) for this long. Any output byte resets the
+  idle clock, so a hook that keeps logging progress can run as long as it
+  needs, while one that has gone silent is reaped quickly. Error message:
+  `idle timeout after <d> (no output)` — distinguishable from the
+  total-timeout kill in `/runs/{id}` and the activity feed.
+
+The idle semantics exist because wall-clock ceilings kill healthy work: a
 47-part map-reduce hook that logged every ≤45s was cut down mid-progress
 by its 15-minute total timeout, while a genuinely hung run and a healthy
 long run are indistinguishable by wall clock alone. Silence is the actual
-failure signal — so `"timeout": "15m"` now means "kill it after 15 minutes
-of no activity", which lets the long healthy run finish and still reaps a
-hung one promptly.
+failure signal — so `idle_timeout` lets the long healthy run finish and
+still reaps a hung one promptly. `timeout` remains available as an
+absolute ceiling for work whose healthy runtime is bounded.
 
 The clock arms **at container launch**: never while the run is queued
 behind a [concurrency group](#concurrency-groups), decrypting secrets, or
-building its image — a queued run cannot time out.
+building its image. For long-but-chatty work — e.g. a model-calling hook
+that logs every few seconds but whose total runtime scales with input size —
+the recommended shape is idle-only: omit `timeout` and set
+`"idle_timeout": "15m"`, which kills a hung run within 15 minutes without
+ever cutting down a healthy one mid-progress, no matter how long it
+legitimately takes. A hook that omits **both** runs until it exits — that is
+the operator's call, not a validation error.
+
+> **Deploy-first:** like `state`/`concurrency_group`/`schedule`,
+> `idle_timeout` is a newer `hook.json` field, so an older `webhook-runner`
+> binary rejects a hook that sets it — deploy a runner that supports it
+> before merging such a hook. Omitting `timeout`, by contrast, has always
+> validated — but a binary older than this change caps a timeout-less hook
+> at its former `5m` default instead of leaving it uncapped, so deploy
+> first anyway when the uncapped semantics matter.
 
 Silence a hook *chose* doesn't count either: a [state hook](#stateful-hooks-kv-store)
 that needs to pause (a settle window, a retry backoff, polling an external
@@ -881,7 +899,9 @@ hook's `timeout` value also serves as the default bound on how long the
 server holds the HTTP response open. That hold is necessarily wall-clock —
 a response can't wait on activity — and it bounds only the **response**,
 never the run: a run that outlives it degrades to the async `202` and
-keeps running in the background.
+keeps running in the background. When the hook omits `timeout`, the hold
+falls back to a 5-minute default (`defaultSyncHold`) — again bounding only
+the response, never the run.
 
 ## Concurrency groups
 
@@ -1489,35 +1509,42 @@ The dashboard's runs timeline is TypeScript under
 `internal/server/dashboard/ts/` — `timeline.ts`, the webhook-runner
 **adapter** only. The generic `<timeline-view>` component itself is NOT part
 of this repo: the browser imports it at **runtime** from
-[js-snippets](https://github.com/wow-look-at-my/js-snippets)' buildhost
-library site
-(`https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`,
-live at master head — the org's standard js-snippets consumption model;
-replaced the quota-dead GitHub Pages deploy), so component fixes reach
-this dashboard on js-snippets merge with no webhook-runner change. Fix
-component bugs upstream in js-snippets. The chart therefore needs the
-viewer's browser to reach `sites.pazer.build`; if that fetch fails, the
-Runs section shows a "chart loading…" note and retries on a fixed 5s
-cadence forever while the rest of the dashboard works normally. Types for
-the URL import come from `ts/js-snippets-timeline.d.ts` — an interim
-hand-maintained shim, slated to be replaced by declarations fetched
-mechanically at generate time (the library site already serves a `.d.ts`
-next to every `.js`).
+[js-snippets](https://github.com/wow-look-at-my/js-snippets)' GitHub Pages
+(`https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`, live at
+master head — the org's standard js-snippets consumption model), so
+component fixes reach this dashboard on js-snippets merge with no
+webhook-runner change. Fix component bugs upstream in js-snippets. The
+chart therefore needs the viewer's browser to reach
+`wow-look-at-my.github.io`; if that fetch fails, the Runs section shows a
+"chart loading…" note and retries on a fixed 5s cadence forever while the
+rest of the dashboard works normally. Types for the component come from
+`ts/js-snippets/` — the component's real `.d.ts` pair, published to Pages
+by js-snippets and fetched verbatim at generate time (committed, so a
+clone type-checks offline; CI regenerates and fails on any diff, so an
+upstream component API change turns CI red instead of drifting).
 [ts0](https://github.com/wow-look-at-my/ts0) type-checks (strict `tsc`, an
 unskippable gate) and bundles the adapter into
 `internal/server/dashboard/assets/timeline.js` per `ts0.json` (an ES
 module; the component URL passes through unbundled via esbuild
 `external`).
 
-To change the timeline: edit files under `ts/`, run ts0 yourself to
-rebuild the bundle, and commit the regenerated `assets/timeline.js`
-together with the source. Regeneration is **temporarily manual**: the
-`//go:generate` npx directive was removed so the build needs no
-node/npm/npx anywhere; a prebuilt ts0 binary served from
-[buildhost](https://pazer.build), fetched by a small Go bootstrap, is
-landing next to re-automate it. **Never edit `assets/timeline.js` by
-hand** — it carries a DO-NOT-EDIT banner; the committed bundle is what
-ships.
+To change the timeline: edit files under `ts/`, then run the
+`//go:generate` in `internal/server/dashboard/dashboard.go` (it invokes
+`generate-timeline.sh` from that directory) —
+`go-toolchain --generate <hash>` (a bare `go-toolchain` run prints the
+current hash), or `go generate ./internal/server/dashboard/` directly —
+and commit the regenerated `assets/timeline.js` (plus any changed
+`ts/js-snippets/` declarations) together with the source. The script
+just curls: a pinned ts0 build from [buildhost](https://pazer.build)
+(the `?v=N` in `generate-timeline.sh`) and the component `.d.ts` pair from
+js-snippets' Pages, then runs `node ts0.cjs build`. It needs curl and
+Node 22+ — no npm, no npx, no git auth. To bump the ts0 pin, change
+`?v=N` in `generate-timeline.sh` — the directive line is untouched by a
+pin bump, and the go-toolchain approval hash re-keys only when the
+directive line itself is edited or moved (the bare run prints the new
+one; `generate:` in `ci.yml` must carry the matching hash).
+**Never edit `assets/timeline.js` by hand** — it carries a
+DO-NOT-EDIT banner; the committed bundle is what ships.
 
 ## Notes
 

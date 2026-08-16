@@ -58,6 +58,43 @@ func TestParseMinimal(t *testing.T) {
 	assert.Empty(t, h.Command)
 }
 
+func TestParseTimeoutAbsentMeansNoCeiling(t *testing.T) {
+	// timeout is optional: a hook that omits it passes validation and has
+	// NO absolute run ceiling — Timeout() == 0, which runner.execute reads
+	// as "arm no deadline" (the run is bounded only by idle_timeout, if
+	// set, or by the container exiting).
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.Timeout())
+}
+
+func TestParseIdleTimeoutValid(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5m","timeout":"90m"}`)
+	require.Nil(t, err)
+	assert.Equal(t, "5m", h.IdleTimeoutRaw)
+	assert.Equal(t, 5*time.Minute, h.IdleTimeout())
+	// Independent knobs: the total ceiling is untouched by the idle limit.
+	assert.Equal(t, 90*time.Minute, h.Timeout())
+}
+
+func TestParseIdleTimeoutEmptyMeansNoIdleLimit(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
+	require.Nil(t, err)
+	assert.Equal(t, time.Duration(0), h.IdleTimeout())
+}
+
+func TestParseIdleTimeoutInvalidDuration(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5 minutes"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "invalid idle_timeout")
+}
+
+func TestParseIdleTimeoutMustBePositive(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema":"s","idle_timeout":"-1s"}`)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "idle_timeout must be positive")
+}
+
 // dind is a plain opt-in bool (like state): Parse round-trips it, and it
 // defaults to false when omitted. (An unknown field is still rejected — see
 // the "unknown field" case in TestParseRejects.)
@@ -89,12 +126,12 @@ func TestParseEnableDefault(t *testing.T) {
 	assert.False(t, h.EnabledByDefault(), "enable:false must load the hook disabled by default")
 }
 
-// Omitting timeout falls back to DefaultTimeout — every hook keeps hang
-// protection (5 minutes of silence) by default.
-func TestTimeoutDefaultsWhenOmitted(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
+// Omitting timeout means no absolute ceiling — the run is bounded only
+// by idle_timeout (if set) or by the container exiting.
+func TestTimeoutOmittedMeansNoCeiling(t *testing.T) {
+	h, err := parseInDir(t, `{"$schema":"s"}`)
 	require.Nil(t, err)
-	assert.Equal(t, DefaultTimeout, h.Timeout())
+	assert.Equal(t, time.Duration(0), h.Timeout())
 }
 
 func TestParseScheduleValid(t *testing.T) {

@@ -23,19 +23,23 @@
 //
 // assets/timeline.js is GENERATED — never edit it. Its TypeScript source
 // lives in ts/ (the runs-timeline ADAPTER only — the <timeline-view>
-// component itself is imported at runtime as described above) and is
-// compiled by ts0 (type-check + bundle, config in ts0.json; both component
-// URLs pass through unbundled). The committed bundle stays authoritative and
-// embedded as-is — the Go build must not need node/npm/npx — so after
-// editing ts/ you regenerate it yourself and commit the result:
-//
-//	curl -fSL 'https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64' -o /tmp/ts0.cjs
-//	(cd internal/server/dashboard && node /tmp/ts0.cjs build)
-//
-// That is stock Node and nothing else (no npm, no node_modules). Forgetting
-// it is no longer silent: ci.yml's dashboard-assets job runs the same two
-// commands and fails when the committed bytes differ from a fresh build of
-// ts/.
+// component itself is imported by the browser at runtime from
+// js-snippets' buildhost library site, never shipped here) and is
+// compiled by ts0 (type-check + bundle, config in ts0.json; the component
+// URL passes through unbundled) via the //go:generate below, which runs
+// generate-timeline.sh (this directory, cwd = this package dir): curl a
+// pinned ts0 build from buildhost, curl the component's published .d.ts
+// pair from the library site into the committed ts/js-snippets/ (the types
+// the adapter type-imports, instead of the live URL — see ts/timeline.ts),
+// run `node ts0.cjs build`. Needs curl and Node 22+ —
+// no npm, no npx, no git auth. The bundle and the fetched declarations are
+// committed (a fresh clone builds and embeds without Node); CI regenerates
+// both and fails on any diff, so the bundle can't go stale and an upstream
+// component API change turns CI red instead of drifting. To bump ts0:
+// change ?v=N in generate-timeline.sh. The go-toolchain approval hash
+// covers the directive line itself — it re-keys only when that line is
+// edited or moved (a bare go-toolchain run prints the new one; update
+// ci.yml's generate: input to match).
 package dashboard
 
 import (
@@ -44,6 +48,8 @@ import (
 	"embed"
 	"encoding/hex"
 )
+
+//go:generate sh generate-timeline.sh
 
 //go:embed assets/*
 var assets embed.FS
