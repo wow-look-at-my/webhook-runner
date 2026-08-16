@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -126,15 +127,15 @@ func TestApplyServeProbeSettlesEventEntries(t *testing.T) {
 	ApplyServeProbe(a, loaded, loader)
 
 	left := a.Snapshot()
-	byID := map[string]bool{}
+	byID := set.New[string]()
 	for _, e := range left {
-		byID[e.Source+"/"+e.Hook+"/"+e.Key] = true
+		byID.Add(e.Source + "/" + e.Hook + "/" + e.Key)
 	}
-	assert.False(t, byID[SourceEvent+"/fixed/"+KeyAPIKey], "probe-clean hook's event entry clears")
-	assert.False(t, byID[SourceEvent+"/removed/"+KeyAPIKey], "unloaded hook's event entry clears")
-	assert.True(t, byID[SourceEvent+"/still-broken/"+KeyAPIKey], "still-broken hook's event entry survives")
-	assert.True(t, byID[SourceSecrets+"/still-broken/"+KeyAPIKey], "and the probe reports it as state too")
-	assert.True(t, byID[SourceEvent+"/reporter/reported:permission missing: contents write"],
+	assert.False(t, byID.Contains(SourceEvent+"/fixed/"+KeyAPIKey), "probe-clean hook's event entry clears")
+	assert.False(t, byID.Contains(SourceEvent+"/removed/"+KeyAPIKey), "unloaded hook's event entry clears")
+	assert.True(t, byID.Contains(SourceEvent+"/still-broken/"+KeyAPIKey), "still-broken hook's event entry survives")
+	assert.True(t, byID.Contains(SourceSecrets+"/still-broken/"+KeyAPIKey), "and the probe reports it as state too")
+	assert.True(t, byID.Contains(SourceEvent+"/reporter/reported:permission missing: contents write"),
 		"hook-reported entries survive reloads while the hook stays loaded (a reload cannot fix a runtime problem)")
 
 	// The reporter hook is removed on the next reload: its reported

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -132,16 +133,16 @@ func (s *Server) mergedStats(hookID string) runs.HookRunStats {
 	}
 	live := s.tracker.ListByHook(hookID, 0)
 	states := make([]runs.RunState, 0, len(live))
-	seen := make(map[string]struct{}, len(live))
+	seen := set.New[string](len(live))
 	for _, r := range live {
 		snap := r.Snapshot(0)
 		snap.Output = nil
 		snap.OutputTimes = nil
 		states = append(states, snap)
-		seen[snap.ID] = struct{}{}
+		seen.Add(snap.ID)
 	}
 	for _, st := range s.runstore.SummariesByHook(hookID) {
-		if _, dup := seen[st.ID]; dup {
+		if seen.Contains(st.ID) {
 			continue
 		}
 		states = append(states, st)
