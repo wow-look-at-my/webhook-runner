@@ -7,10 +7,12 @@ import (
 )
 
 // idleWatchdog fires when a run's container produces no output for longer
-// than a configured limit. It is what implements the hook `timeout`, which
-// is activity-based: a hook that keeps logging is making forward progress
-// and may run indefinitely (there is no absolute wall-clock ceiling); one
-// that has gone silent for the whole limit is stuck and gets killed.
+// than a configured limit. It is what implements the hook `idle_timeout`:
+// a hook that keeps logging is making forward progress and may run
+// indefinitely under this watchdog alone (the separate `timeout` field
+// bounds total wall-clock time, if set); one that has gone silent for the
+// whole limit is stuck and gets killed. A limit of zero means no idle
+// limit — the watchdog never fires.
 //
 // Like the scheduler, the decision logic is pure and takes an injected clock
 // (now), so it is unit-testable without sleeping: Arm/Touch/check hold every
@@ -78,11 +80,12 @@ func (w *idleWatchdog) Disarm() {
 func (w *idleWatchdog) check() (wait time.Duration, fire bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// limit <= 0 means no idle limit at all (a hook that omits `timeout`
-	// runs uncapped) — never fire. Without this, idle >= w.limit below is
-	// vacuously true the instant the watchdog is armed (idle can never be
-	// negative), so every run without an explicit timeout would time out
-	// immediately instead of running until it exits.
+	// limit <= 0 means no idle limit at all (a hook that omits
+	// `idle_timeout` runs uncapped) — never fire. Without this,
+	// idle >= w.limit below is vacuously true the instant the watchdog is
+	// armed (idle can never be negative), so every run without an idle
+	// limit would time out immediately instead of running until it exits.
+	// Re-check on a long interval rather than busy-looping on a zero wait.
 	if w.limit <= 0 {
 		return noIdleLimitRecheck, false
 	}

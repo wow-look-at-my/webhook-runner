@@ -136,9 +136,9 @@ func TestRunnerFailure(t *testing.T) {
 	assert.Equal(t, 3, run.ExitCode())
 }
 
-// A run producing no output for longer than its timeout is killed —
-// `timeout` is activity-based, so this silent sleeper dies at 100ms even
-// though nothing bounds its total runtime.
+// A run producing no output for longer than its idle_timeout is killed —
+// this silent sleeper dies at 100ms even though nothing bounds its total
+// runtime (no `timeout` is set).
 func TestRunnerTimeout(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
@@ -152,9 +152,9 @@ func TestRunnerTimeout(t *testing.T) {
 	})
 
 	hook := diskHook(t, dir, &hooks.Hook{
-		ID:         "h",
-		Command:    []string{"SLEEP_30"},
-		TimeoutRaw: "100ms",
+		ID:             "h",
+		Command:        []string{"SLEEP_30"},
+		IdleTimeoutRaw: "100ms",
 	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -168,75 +168,6 @@ func TestRunnerTimeout(t *testing.T) {
 
 	assert.Equal(t, runs.StatusTimeout, run.Status())
 	assert.Contains(t, run.Error(), "no output")
-}
-
-// A hook with no timeout must not get a deadline at all: runContext is the
-// seam execute() bounds container processing through, and for 0 it returns a
-// plain cancellable context — the run is uncapped (bounded only by
-// idle_timeout, an explicit cancel, or the container exiting).
-func TestRunContextZeroTimeoutHasNoDeadline(t *testing.T) {
-	ctx, cancel := runContext(context.Background(), 0)
-	defer cancel()
-
-	_, hasDeadline := ctx.Deadline()
-	assert.False(t, hasDeadline, "no timeout must mean no deadline — an uncapped run has no absolute ceiling")
-	select {
-	case <-ctx.Done():
-		t.Fatal("uncapped run context must not be done")
-	default:
-	}
-}
-
-func TestRunContextPositiveTimeoutArmsDeadline(t *testing.T) {
-	ctx, cancel := runContext(context.Background(), time.Minute)
-	defer cancel()
-
-	_, hasDeadline := ctx.Deadline()
-	assert.True(t, hasDeadline, "a set timeout must arm the total-timeout deadline")
-}
-
-// Parent cancellation still propagates to an uncapped run's context, so
-// shutdown paths tied to the parent keep killing the container.
-func TestRunContextZeroTimeoutFollowsParentCancel(t *testing.T) {
-	parent, cancelParent := context.WithCancel(context.Background())
-	ctx, cancel := runContext(parent, 0)
-	defer cancel()
-
-	cancelParent()
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("parent cancellation did not propagate to the uncapped run context")
-	}
-}
-
-// End-to-end through execute(): a hook that omits timeout runs and finishes
-// normally. (An absent timeout used to mean a 5m default ceiling; it now
-// means no absolute ceiling at all.)
-func TestRunnerNoTimeoutRunsToCompletion(t *testing.T) {
-	dir := t.TempDir()
-	docker := writeMockDocker(t, dir)
-
-	tracker := runs.NewTracker()
-	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
-	})
-
-	hook := diskHook(t, dir, &hooks.Hook{
-		ID:      "uncapped",
-		Command: []string{"hello"},
-	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
-	require.NoError(t, err)
-	r.Wait()
-
-	snap := run.Snapshot(-1)
-	assert.Equal(t, runs.StatusSuccess, snap.Status)
-	assert.Equal(t, 0, snap.ExitCode)
-	assert.Contains(t, snap.Output, "hello")
 }
 
 func TestRunnerStartHookCallback(t *testing.T) {
@@ -651,11 +582,11 @@ func waitStatus(t *testing.T, run *runs.Run, want runs.Status, timeout time.Dura
 
 // TestRunnerConcurrencyGroupQueuesAndDefersTimeout is the heart of the
 // feature: a second run sharing a limit-1 group queues behind the first
-// (staying "pending", not "running") and its timeout clock only starts once
-// it actually runs — so it does not time out while waiting in the queue.
-// This is also the integration proof of the watchdog arming rule: the
-// (activity-based) timeout arms only at container launch, so a queued run
-// never ticks.
+// (staying "pending", not "running") and its absolute `timeout` deadline
+// only starts once the slot is acquired — so it does not time out while
+// waiting in the queue. This is also the integration proof of the ctx
+// arming rule: runContext is created only after the concurrency-group
+// slot is acquired, so a queued run's ceiling never ticks.
 func TestRunnerConcurrencyGroupQueuesAndDefersTimeout(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
@@ -754,57 +685,4 @@ func TestRunnerCancelWhileQueued(t *testing.T) {
 	// Free the runner: cancel A so r.Wait returns promptly.
 	runA.RequestCancel()
 	r.Wait()
-}
-
-// The runner registers each run's watchdog reset via SetActivityTouch when
-// it arms the watchdog — the seam the state API's declared waits (/wait)
-// use. While something keeps calling TouchActivity, a completely silent run
-// outlives an idle timeout far shorter than its silence; the identical
-// untouched run dies (TestRunnerTimeout above proves the control case).
-func TestRunnerTouchActivityDefersIdleTimeout(t *testing.T) {
-	dir := t.TempDir()
-	docker := writeMockDocker(t, dir)
-
-	tracker := runs.NewTracker()
-	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
-	})
-
-	hook := diskHook(t, dir, &hooks.Hook{
-		ID:         "h",
-		Command:    []string{"SLEEP_1"},
-		TimeoutRaw: "300ms",
-	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
-	require.NoError(t, err)
-
-	// Stand in for an in-flight declared wait: touch well inside the limit.
-	stop := make(chan struct{})
-	go func() {
-		tick := time.NewTicker(100 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			select {
-			case <-run.Done():
-				return
-			case <-stop:
-				return
-			case <-tick.C:
-				run.TouchActivity()
-			}
-		}
-	}()
-
-	select {
-	case <-run.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not finish")
-	}
-	close(stop)
-	r.Wait()
-
-	assert.Equal(t, runs.StatusSuccess, run.Status())
 }

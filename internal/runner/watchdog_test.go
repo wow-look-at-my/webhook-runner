@@ -147,11 +147,11 @@ func TestIdleWatchdogWatchLoop(t *testing.T) {
 
 // --- Runner-level integration (mock docker; helpers from runner_test.go) ---
 //
-// `timeout` is activity-based: these tests drive the watchdog through the
-// hook's one timeout field. The queued-run case (a pending run must never
-// tick) is covered by TestIdleWatchdogNeverFiresBeforeArm above (the pure
-// arming invariant) and TestRunnerConcurrencyGroupQueuesAndDefersTimeout in
-// runner_test.go (the same integration, timeout-driven).
+// These tests drive the watchdog through the hook's `idle_timeout` field.
+// The queued-run case (a pending run must never tick) is covered by
+// TestIdleWatchdogNeverFiresBeforeArm above (the pure arming invariant) and
+// TestRunnerConcurrencyGroupQueuesAndDefersTimeout in runner_test.go (the
+// same integration, for the separate absolute `timeout` field).
 
 // A run that goes silent for longer than timeout is killed with status
 // timeout and an error message naming the no-output semantics.
@@ -168,9 +168,9 @@ func TestRunnerTimeoutKillsSilentRun(t *testing.T) {
 	})
 
 	hook := diskHook(t, dir, &hooks.Hook{
-		ID:         "h",
-		Command:    []string{"one-line-then-silence", "SLEEP_30"},
-		TimeoutRaw: "200ms",
+		ID:             "h",
+		Command:        []string{"one-line-then-silence", "SLEEP_30"},
+		IdleTimeoutRaw: "200ms",
 	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -183,7 +183,7 @@ func TestRunnerTimeoutKillsSilentRun(t *testing.T) {
 	r.Wait()
 
 	assert.Equal(t, runs.StatusTimeout, run.Status())
-	assert.Contains(t, run.Error(), "timed out after 200ms")
+	assert.Contains(t, run.Error(), "idle timeout after 200ms")
 	assert.Contains(t, run.Error(), "no output")
 }
 
@@ -204,13 +204,13 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 		Docker:  docker,
 	})
 
-	// A line every ~1s for ~4s of runtime, against a 3s timeout: every
+	// A line every ~1s for ~4s of runtime, against a 3s idle_timeout: every
 	// silent gap stays well under the limit while the total runtime
-	// exceeds it — under the old wall-clock semantics this run died.
+	// exceeds it — under a naive wall-clock semantics this run would die.
 	hook := diskHook(t, dir, &hooks.Hook{
-		ID:         "h",
-		Command:    []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
-		TimeoutRaw: "3s",
+		ID:             "h",
+		Command:        []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
+		IdleTimeoutRaw: "3s",
 	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -243,4 +243,58 @@ func TestTouchReaderTouchesOnBytes(t *testing.T) {
 	got := touches
 	_, _ = tr.Read(buf) // pure EOF read
 	assert.Equal(t, got, touches, "a zero-byte read must not reset the idle clock")
+}
+
+// The runner registers each run's watchdog reset via SetActivityTouch when
+// it arms the watchdog — the seam the state API's declared waits (/wait)
+// use. While something keeps calling TouchActivity, a completely silent run
+// outlives an idle timeout far shorter than its silence; the identical
+// untouched run dies (TestRunnerTimeoutKillsSilentRun above proves the
+// control case).
+func TestRunnerTouchActivityDefersIdleTimeout(t *testing.T) {
+	dir := t.TempDir()
+	docker := writeMockDocker(t, dir)
+
+	tracker := runs.NewTracker()
+	r := New(Options{
+		Tracker: tracker,
+		Logger:  newSilentLogger(),
+		TmpDir:  dir,
+		Docker:  docker,
+	})
+
+	hook := diskHook(t, dir, &hooks.Hook{
+		ID:             "h",
+		Command:        []string{"SLEEP_1"},
+		IdleTimeoutRaw: "300ms",
+	})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
+	require.NoError(t, err)
+
+	// Stand in for an in-flight declared wait: touch well inside the limit.
+	stop := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-run.Done():
+				return
+			case <-stop:
+				return
+			case <-tick.C:
+				run.TouchActivity()
+			}
+		}
+	}()
+
+	select {
+	case <-run.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not finish")
+	}
+	close(stop)
+	r.Wait()
+
+	assert.Equal(t, runs.StatusSuccess, run.Status())
 }

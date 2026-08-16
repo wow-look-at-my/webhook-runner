@@ -1166,11 +1166,6 @@ The companion repo is `wow-look-at-my/webhooks`.
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
 - The dashboard timeline splits in two: the **`<timeline-view>` component
-  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
-  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
-  (live at master head; the org's standard js-snippets consumption model,
-  NEVER vendored copies) — while this repo ships only the runner-specific
-  adapter. Component fixes deploy to this dashboard on js-snippets merge
   is consumed at RUNTIME from js-snippets' buildhost library site** — the
   browser imports
   `https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`
@@ -1184,7 +1179,6 @@ The companion repo is `wow-look-at-my/webhooks`.
   (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
   loaded via `<script type="module">` (after dashboard.js — modules defer,
   so its globals are always ready); the admin dashboard's chart therefore
-  needs reach to wow-look-at-my.github.io at page load. A failed component
   needs reach to sites.pazer.build at page load. A failed component
   fetch degrades softly and NEVER parks: the adapter module still runs,
   shows a "chart loading…" note in the Runs section, and retries the
@@ -1192,7 +1186,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   because browsers can memoize a failed module fetch; no backoff, no
   attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
   are untouched and the runs-table toggle keeps working. TypeScript types
-  for the component come from the committed `ts/js-snippets/` — the
+  for the URL import come from the committed `ts/js-snippets/` — the
   component's REAL `.d.ts` pair (timeline-view + timeline-view-math),
   fetched VERBATIM from Pages at generate time; the adapter type-imports
   `./js-snippets/timeline-view.js` directly (type-only, erased — do NOT
@@ -1219,21 +1213,6 @@ The companion repo is `wow-look-at-my/webhooks`.
   untouched by a pin bump, and the approval hash re-keys only when the
   directive line itself is edited or moved (the bare run prints the new
   one).
-  for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
-  hand-maintained ambient shim (types only) — temporary until the generate
-  step fetches js-snippets' published declarations mechanically (the
-  library site already serves a .d.ts next to every .js; do not grow the
-  shim beyond what the adapter consumes).
-  The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
-  (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
-  banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
-  **temporarily manual**: the npx `//go:generate` directive (and with it
-  ci.yml's `generate:` approval hash, setup-node, ts0 git-auth, and the
-  assets freshness gate) was removed so the build uses the committed
-  bundle as-is with NO node/npm/npx anywhere; run ts0 yourself after
-  editing ts/ and commit the regenerated bundle. A prebuilt ts0 binary
-  served from buildhost, fetched by a small Go bootstrap, is landing next
-  to re-automate regeneration.
 The long-form gotchas moved to `docs/internals/` -- unchanged, each
 authoritative for its area. What stays here is the short list that bites
 most often, plus where to read the rest.

@@ -249,11 +249,11 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 	hookDir := filepath.Join(dir, "napper")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
 	h := &hooks.Hook{
-		ID:         "napper",
-		SourcePath: filepath.Join(hookDir, "hook.json"),
-		Command:    []string{"x"},
-		State:      true,
-		TimeoutRaw: "500ms", // idle limit far below the 1.5s of silence
+		ID:             "napper",
+		SourcePath:     filepath.Join(hookDir, "hook.json"),
+		Command:        []string{"x"},
+		State:          true,
+		IdleTimeoutRaw: "500ms", // idle limit far below the 1.5s of silence
 	}
 	reg.Set(h)
 

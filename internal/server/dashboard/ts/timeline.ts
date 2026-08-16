@@ -8,20 +8,23 @@
  * started_at vs finished, terminal statuses, waiting_on/waiters) and
  * translates them into the component's generic lanes/intervals model
  * (deliberately NO connectors — wait indication lives on the spans; see
- * runLabel). The component itself is NOT part of this repo: the browser imports
- * it at runtime from js-snippets' GitHub Pages (live at master head — the
- * org's standard js-snippets consumption model), so component fixes reach
- * this dashboard on js-snippets merge with no runner change. Fix component
- * bugs upstream in js-snippets; only adapter logic lives here. The import's
- * types come from js-snippets-timeline.d.ts (an INTERIM hand-maintained
- * shim — see its header).
+ * runLabel). The component itself is NOT part of this repo: the browser
+ * imports it at runtime from js-snippets' buildhost library site (live at
+ * master head — the org's standard js-snippets consumption model), so
+ * component fixes reach this dashboard on js-snippets merge with no runner
+ * change. Fix component bugs upstream in js-snippets; only adapter logic
+ * lives here. The type import below points at the committed
+ * ts/js-snippets/timeline-view.d.ts pair instead of the live URL — a
+ * type-only import is erased at build time, so it never needs to resolve
+ * at runtime, and go:generate keeps the committed pair fresh against
+ * upstream (see generate-timeline.sh).
  *
  * Built by ts0 (see ../ts0.json) into assets/timeline.js — an ES module
  * (the component URL passes through unbundled) loaded via
  * <script type="module"> AFTER dashboard.js (module scripts defer; the
  * classic dashboard.js has long executed) and reusing its globals
  * (fetchJSON, el, fmtTime, tsPresent, showRun, … — declared in
- * globals.d.ts). If the Pages fetch fails, the chart section shows
+ * globals.d.ts). If the library site fetch fails, the chart section shows
  * "chart loading…" and the load retries on a fixed cadence forever (see
  * boot() at the bottom); dashboard.js's tables are never affected either
  * way.
@@ -145,13 +148,16 @@
  *     2026-07-15 full-window-crosshatch-over-live-bars incident.)
  */
 
-// Types only — erased at compile time. The component itself is loaded at
-// RUNTIME by loadComponentForever() below (a dynamic import of the same URL,
-// kept verbatim in the built bundle via esbuild `external`); the browser
-// fetches it (and its sibling chunk imports) from js-snippets' buildhost
-// library site (which replaced its quota-dead GitHub Pages deploy). Deliberately
-// NOT a static side-effect import: a static import that fails would kill
-// this whole module, and the load must retry forever instead.
+// Types only — erased at compile time, so this import resolves against the
+// committed ts/js-snippets/timeline-view.d.ts pair (fetched from upstream by
+// generate-timeline.sh) rather than the live URL below: TypeScript never
+// fetches an https:// specifier to type-check it. The component itself is
+// loaded at RUNTIME by loadComponentForever() below (a dynamic import of
+// COMPONENT_URL, kept verbatim in the built bundle via esbuild `external`);
+// the browser fetches it (and its sibling chunk imports) from js-snippets'
+// buildhost library site. Deliberately NOT a static side-effect import: a
+// static import that fails would kill this whole module, and the load must
+// retry forever instead.
 import type {
 	TimelineData,
 	TimelineHit,
@@ -159,7 +165,7 @@ import type {
 	TimelineLane,
 	TimelineSegment,
 	TimelineViewElement,
-} from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
+} from './js-snippets/timeline-view.d.ts';
 
 import { mountSettings } from './settingsform.ts';
 
