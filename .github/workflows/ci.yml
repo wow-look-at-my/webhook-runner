@@ -157,12 +157,6 @@ jobs:
         with:
           autorelease: true
           generate: 5496b38bd135
-          # Native binaries per platform, NOT the default single fat APE:
-          # bbolt memory-maps the run store and does not build against the
-          # cosmopolitan libc (undefined: unix.Mmap, syscall.MADV_RANDOM).
-          # Setting os or arch is what switches the APE back off.
-          os: linux,darwin,windows
-          arch: amd64,arm64
       - name: Generated assets are fresh
         run: git diff --exit-code -- internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/
 
