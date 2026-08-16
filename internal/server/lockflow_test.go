@@ -170,11 +170,11 @@ func TestStateLockBlockingFeedsWatchdog(t *testing.T) {
 	hookDir := filepath.Join(dir, "locker")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
 	h := &hooks.Hook{
-		ID:         "locker",
-		SourcePath: filepath.Join(hookDir, "hook.json"),
-		Command:    []string{"x"},
-		State:      true,
-		TimeoutRaw: "500ms", // idle limit far below the 1.5s of silence
+		ID:             "locker",
+		SourcePath:     filepath.Join(hookDir, "hook.json"),
+		Command:        []string{"x"},
+		State:          true,
+		IdleTimeoutRaw: "500ms", // idle limit far below the 1.5s of silence
 	}
 	reg.Set(h)
 

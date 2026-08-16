@@ -355,6 +355,7 @@ func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
 // HTTP connection indefinitely, so after this long the request degrades to a
 // background-running 202 (the run itself is untouched). ?timeout= overrides.
 const defaultSyncHold = 5 * time.Minute
+
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>
 // query parameters and merges them with the hook's Synchronous setting.
 //
