@@ -583,6 +583,15 @@ func (h *Hook) validate() error {
 			return fmt.Errorf("timeout must be positive, got %s", d)
 		}
 	}
+	if h.IdleTimeoutRaw != "" {
+		d, err := time.ParseDuration(h.IdleTimeoutRaw)
+		if err != nil {
+			return fmt.Errorf("invalid idle_timeout %q: %w", h.IdleTimeoutRaw, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("idle_timeout must be positive, got %s", d)
+		}
+	}
 	if h.Schedule != "" {
 		d, err := time.ParseDuration(h.Schedule)
 		if err != nil {

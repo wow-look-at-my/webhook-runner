@@ -135,9 +135,9 @@ func TestRunnerFailure(t *testing.T) {
 	assert.Equal(t, 3, run.ExitCode())
 }
 
-// A run producing no output for longer than its timeout is killed —
-// `timeout` is activity-based, so this silent sleeper dies at 100ms even
-// though nothing bounds its total runtime.
+// A run producing no output for longer than its idle_timeout is killed —
+// this silent sleeper dies at 100ms even though nothing bounds its total
+// runtime (no `timeout` is set).
 func TestRunnerTimeout(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
@@ -151,9 +151,9 @@ func TestRunnerTimeout(t *testing.T) {
 	})
 
 	hook := diskHook(t, dir, &hooks.Hook{
-		ID:         "h",
-		Command:    []string{"SLEEP_30"},
-		TimeoutRaw: "100ms",
+		ID:             "h",
+		Command:        []string{"SLEEP_30"},
+		IdleTimeoutRaw: "100ms",
 	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -167,75 +167,6 @@ func TestRunnerTimeout(t *testing.T) {
 
 	assert.Equal(t, runs.StatusTimeout, run.Status())
 	assert.Contains(t, run.Error(), "no output")
-}
-
-// A hook with no timeout must not get a deadline at all: runContext is the
-// seam execute() bounds container processing through, and for 0 it returns a
-// plain cancellable context — the run is uncapped (bounded only by
-// idle_timeout, an explicit cancel, or the container exiting).
-func TestRunContextZeroTimeoutHasNoDeadline(t *testing.T) {
-	ctx, cancel := runContext(context.Background(), 0)
-	defer cancel()
-
-	_, hasDeadline := ctx.Deadline()
-	assert.False(t, hasDeadline, "no timeout must mean no deadline — an uncapped run has no absolute ceiling")
-	select {
-	case <-ctx.Done():
-		t.Fatal("uncapped run context must not be done")
-	default:
-	}
-}
-
-func TestRunContextPositiveTimeoutArmsDeadline(t *testing.T) {
-	ctx, cancel := runContext(context.Background(), time.Minute)
-	defer cancel()
-
-	_, hasDeadline := ctx.Deadline()
-	assert.True(t, hasDeadline, "a set timeout must arm the total-timeout deadline")
-}
-
-// Parent cancellation still propagates to an uncapped run's context, so
-// shutdown paths tied to the parent keep killing the container.
-func TestRunContextZeroTimeoutFollowsParentCancel(t *testing.T) {
-	parent, cancelParent := context.WithCancel(context.Background())
-	ctx, cancel := runContext(parent, 0)
-	defer cancel()
-
-	cancelParent()
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("parent cancellation did not propagate to the uncapped run context")
-	}
-}
-
-// End-to-end through execute(): a hook that omits timeout runs and finishes
-// normally. (An absent timeout used to mean a 5m default ceiling; it now
-// means no absolute ceiling at all.)
-func TestRunnerNoTimeoutRunsToCompletion(t *testing.T) {
-	dir := t.TempDir()
-	docker := writeMockDocker(t, dir)
-
-	tracker := runs.NewTracker()
-	r := New(Options{
-		Tracker: tracker,
-		Logger:  newSilentLogger(),
-		TmpDir:  dir,
-		Docker:  docker,
-	})
-
-	hook := diskHook(t, dir, &hooks.Hook{
-		ID:      "uncapped",
-		Command: []string{"hello"},
-	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
-	require.NoError(t, err)
-	r.Wait()
-
-	snap := run.Snapshot(-1)
-	assert.Equal(t, runs.StatusSuccess, snap.Status)
-	assert.Equal(t, 0, snap.ExitCode)
-	assert.Contains(t, snap.Output, "hello")
 }
 
 func TestRunnerStartHookCallback(t *testing.T) {
@@ -428,3 +359,4 @@ func TestRunnerMountsEmptySettingsByDefault(t *testing.T) {
 
 	assert.Contains(t, run.Snapshot(-1).Output, "arg=HOOK_SETTINGS_FILE="+mountedSettings)
 }
+

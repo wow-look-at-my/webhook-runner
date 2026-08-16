@@ -209,10 +209,6 @@
           "type": "string",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$"
         },
-        "idle_timeout": {
-          "type": "string",
-          "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$"
-        },
         "user": {
           "type": "string"
         },
@@ -327,6 +323,11 @@
     "github_status": {
       "description": "GitHub commit status updates for this hook's runs: when a delivery's payload carries a repo + head SHA, the runner posts 'pending' as the run starts and 'success'/'error' when it finishes. A run with no commit to point at posts nothing."
     },
+    "idle_timeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
+      "description": "Go duration (e.g. \"5m\"): kill the run once the container has produced no output (stdout or stderr) for this long. Any output byte resets the idle clock. Arms at container launch -- after the concurrency-group slot is acquired -- so a queued run never idles out. Independent of timeout (the absolute ceiling); both may be set, and whichever fires first ends the run with status \"timeout\" (an idle kill carries a distinguishable \"idle timeout ... (no output)\" error message). Omit for no idle limit."
+    },
     "networks": {
       "description": "Docker networks to attach the container to."
     },
@@ -384,9 +385,6 @@
     },
     "timeout": {
       "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"): the absolute processing ceiling, counted from container launch regardless of output. Omit for no absolute ceiling; pair with idle_timeout so a hung run still dies (a hook that omits both runs until it exits)."
-    },
-    "idle_timeout": {
-      "description": "Go duration (e.g. \"5m\"): kill the run once the container has produced no output (stdout or stderr) for this long. Any output byte resets the idle clock. Arms at container launch — after the concurrency-group slot is acquired — so a queued run never idles out. Independent of timeout (the absolute ceiling); both may be set, and whichever fires first ends the run with status \"timeout\" (an idle kill carries a distinguishable \"idle timeout ... (no output)\" error message). Omit for no idle limit."
     },
     "tmpfs": {
       "type": "array",

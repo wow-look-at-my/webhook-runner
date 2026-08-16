@@ -24,13 +24,14 @@
 // assets/timeline.js is GENERATED — never edit it. Its TypeScript source
 // lives in ts/ (the runs-timeline ADAPTER only — the <timeline-view>
 // component itself is imported by the browser at runtime from
-// wow-look-at-my/js-snippets' GitHub Pages, never shipped here) and is
+// js-snippets' buildhost library site, never shipped here) and is
 // compiled by ts0 (type-check + bundle, config in ts0.json; the component
 // URL passes through unbundled) via the //go:generate below, which runs
 // generate-timeline.sh (this directory, cwd = this package dir): curl a
 // pinned ts0 build from buildhost, curl the component's published .d.ts
-// pair from Pages into the committed ts/js-snippets/ (the types the adapter
-// compiles against), run `node ts0.cjs build`. Needs curl and Node 22+ —
+// pair from the library site into the committed ts/js-snippets/ (the types
+// the adapter type-imports, instead of the live URL — see ts/timeline.ts),
+// run `node ts0.cjs build`. Needs curl and Node 22+ —
 // no npm, no npx, no git auth. The bundle and the fetched declarations are
 // committed (a fresh clone builds and embeds without Node); CI regenerates
 // both and fails on any diff, so the bundle can't go stale and an upstream

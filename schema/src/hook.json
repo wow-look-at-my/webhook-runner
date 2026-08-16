@@ -87,7 +87,7 @@
     "skip_if": "Declarative skip conditions. An authenticated delivery matching any condition (entries are ORed) is SKIPPED: answered immediately, recorded as a first-class run with status 'skipped' naming the matched condition, and given NO container (no image build, no concurrency slot, no docker run). Keys within one condition are ANDed. A key is a dotted path into the parsed JSON payload (\"action\", \"workflow_run.conclusion\", array elements by numeric index) or a request header via the \"header:\" prefix (\"header:x-github-event\", name case-insensitive). Comparisons are over stringified scalar leaves (numbers as their JSON literal, true/false/null as those words); objects/arrays are not leaves, and a missing path does not match \u2014 evaluation is total and fails toward running the hook. Evaluated only AFTER authentication. Malformed conditions (unknown operator, non-compiling regex, empty condition) are a load/validation error.",
     "synchronous": "When true, the server holds the HTTP response open until the container exits. Default: false (returns 202 immediately).",
     "tests": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's built image, so tests exercise exactly the baked code (copy test files into the image and set WORKDIR so relative paths resolve). Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered.",
-    "timeout": "Kill the run after this long with no container output; any output resets the clock. Applied per run after its concurrency slot is acquired. Default: 5m.",
+    "timeout": "Go duration for the container timeout (e.g. \"5m\", \"30s\"): the absolute processing ceiling, counted from container launch regardless of output. Omit for no absolute ceiling; pair with idle_timeout so a hung run still dies (a hook that omits both runs until it exits).",
     "user": "User/UID to run the container as (--user flag).",
     "volumes": "Volume mounts passed as -v flags (e.g. \"/host:/container:ro\").",
     "workdir": "Working directory inside the container (--workdir flag)."
@@ -126,6 +126,11 @@
       "type": "boolean",
       "default": false,
       "description": "When true, opt the hook into the persistent KV store. The runner injects HOOK_KV_URL (http://localhost:9002) and HOOK_KV_TOKEN (a per-hook bearer token whose namespace is this hook's ID), and a proxy shim entrypoint, so the hook reaches the state API at a plain localhost URL with any HTTP client (no networking, no published port). The hook's data persists across its runs and across server restarts, isolated from other hooks. Default: false (no KV access)."
+    },
+    "idle_timeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
+      "description": "Go duration (e.g. \"5m\"): kill the run once the container has produced no output (stdout or stderr) for this long. Any output byte resets the idle clock. Arms at container launch -- after the concurrency-group slot is acquired -- so a queued run never idles out. Independent of timeout (the absolute ceiling); both may be set, and whichever fires first ends the run with status \"timeout\" (an idle kill carries a distinguishable \"idle timeout ... (no output)\" error message). Omit for no idle limit."
     }
   },
   "$comment": "GENERATED FILE -- do not edit. Source: schema/src/common.json (the 24 property constraints shared with the sibling schema, declared once) plus schema/src/hook.json (this entity's own properties and prose). Regenerate: go test ./schema -update"
