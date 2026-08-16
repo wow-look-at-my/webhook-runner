@@ -32,6 +32,11 @@ type idleWatchdog struct {
 	fired chan struct{}
 }
 
+// noIdleLimitRecheck is the wait check() returns for a limit-less watchdog.
+// It can never fire, so the exact value only bounds how promptly Watch's
+// loop notices its stop channel closing — a day is plenty.
+const noIdleLimitRecheck = 24 * time.Hour
+
 // newIdleWatchdog constructs an unarmed watchdog. now defaults to time.Now.
 func newIdleWatchdog(limit time.Duration, now func() time.Time) *idleWatchdog {
 	if now == nil {
@@ -75,10 +80,14 @@ func (w *idleWatchdog) Disarm() {
 func (w *idleWatchdog) check() (wait time.Duration, fire bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// limit <= 0 means no idle limit at all (a hook that omits
+	// `idle_timeout` runs uncapped) — never fire. Without this,
+	// idle >= w.limit below is vacuously true the instant the watchdog is
+	// armed (idle can never be negative), so every run without an idle
+	// limit would time out immediately instead of running until it exits.
+	// Re-check on a long interval rather than busy-looping on a zero wait.
 	if w.limit <= 0 {
-		// No idle limit configured: never fires. Re-check hourly rather
-		// than busy-looping on a zero wait.
-		return time.Hour, false
+		return noIdleLimitRecheck, false
 	}
 	if !w.armed {
 		return w.limit, false

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -58,7 +60,31 @@ func runKVForward(_ *cobra.Command, args []string) error {
 	// output, and exit with its status. The proxy lives only as long as it.
 	child := exec.Command(args[0], args[1:]...) //nolint:gosec // argv is the hook's own command
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = child.Run()
+	if err := child.Start(); err != nil {
+		return err
+	}
+
+	// This shim is the container's PID 1 (webhook-runner sets it as the
+	// state hook's entrypoint), and the child is a genuine subprocess, not a
+	// process-replace — so a signal sent to the container reaches THIS
+	// process, not the hook, unless forwarded explicitly. Without this, the
+	// runner's graceful stop (SIGTERM, a grace period, then SIGKILL — see
+	// runner.stopContainer) reaches no one: PID 1 silently ignores a signal
+	// it has no handler for, so the hook would get the exact same outcome
+	// as a hard kill, just runCancelGraceSeconds later, with no chance to
+	// notice and no chance to matter. Forward it so the grace period is a
+	// real grace period for the hook process itself.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		for sig := range sigCh {
+			_ = child.Process.Signal(sig)
+		}
+	}()
+
+	err = child.Wait()
+	signal.Stop(sigCh)
+	close(sigCh)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		os.Exit(exitErr.ExitCode())
