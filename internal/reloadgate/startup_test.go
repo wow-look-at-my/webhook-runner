@@ -12,13 +12,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 )
 
 func TestStartupRestoresLastGood(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
 	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
-	repo := &fakeRepo{head: "Z", known: map[string]bool{"A": true}}
+	repo := &fakeRepo{head: "Z", known: set.Of("A")}
 	f := newFixtureAt(t, repo, statePath)
 
 	f.gate.Startup()
@@ -46,7 +47,7 @@ func TestStartupNormalRestartIsQuiet(t *testing.T) {
 func TestStartupVanishedShaFallsToTipUnverified(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
 	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
-	repo := &fakeRepo{head: "Z", tip: "T", commits: []string{"T"}, known: map[string]bool{}}
+	repo := &fakeRepo{head: "Z", tip: "T", commits: []string{"T"}, known: set.New[string]()}
 	f := newFixtureAt(t, repo, statePath)
 
 	f.gate.Startup()

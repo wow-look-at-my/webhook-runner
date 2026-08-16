@@ -41,6 +41,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/wow-look-at-my/go-containers/set"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -214,13 +215,13 @@ func (s *Store) Push(ns, name string, items []string) (PushResult, error) {
 		return PushResult{}, ErrTooManyQueues
 	}
 
-	present := make(map[string]struct{}, len(q))
+	present := set.New[string](len(q))
 	for _, it := range q {
-		present[it] = struct{}{}
+		present.Add(it)
 	}
 	res := PushResult{}
 	for _, it := range items {
-		if _, dup := present[it]; dup {
+		if present.Contains(it) {
 			res.Duplicates++
 			continue
 		}
@@ -229,7 +230,7 @@ func (s *Store) Push(ns, name string, items []string) (PushResult, error) {
 			continue
 		}
 		q = append(q, it)
-		present[it] = struct{}{}
+		present.Add(it)
 		res.Queued++
 	}
 	qs[name] = q

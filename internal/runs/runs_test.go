@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 func TestRunOutputBounded(t *testing.T) {
@@ -22,14 +23,14 @@ func TestRunOutputBounded(t *testing.T) {
 }
 
 func TestNewIDUniqueAndShape(t *testing.T) {
-	seen := make(map[string]struct{})
+	seen := set.New[string]()
 	for i := 0; i < 1000; i++ {
 		id := newID()
 		require.Equal(t, 26, len(id))
 		assert.False(t, strings.ContainsAny(id, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-		_, dup := seen[id]
+		dup := seen.Contains(id)
 		assert.False(t, dup)
-		seen[id] = struct{}{}
+		seen.Add(id)
 	}
 }
 
