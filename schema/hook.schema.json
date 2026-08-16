@@ -209,6 +209,10 @@
           "type": "string",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$"
         },
+        "idle_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$"
+        },
         "user": {
           "type": "string"
         },
@@ -379,7 +383,10 @@
       "description": "Test commands for the hook's scripts. Each entry is an argv array that `webhook-runner test` runs in the hook's built image, so tests exercise exactly the baked code (copy test files into the image and set WORKDIR so relative paths resolve). Tests run without the hook's env, secrets, or payload and must be self-contained; they never run when the hook is triggered."
     },
     "timeout": {
-      "description": "Kill the run after this long with no container output; any output resets the clock. Applied per run after its concurrency slot is acquired. Default: 5m."
+      "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"): the absolute processing ceiling, counted from container launch regardless of output. Omit for no absolute ceiling; pair with idle_timeout so a hung run still dies (a hook that omits both runs until it exits)."
+    },
+    "idle_timeout": {
+      "description": "Go duration (e.g. \"5m\"): kill the run once the container has produced no output (stdout or stderr) for this long. Any output byte resets the idle clock. Arms at container launch — after the concurrency-group slot is acquired — so a queued run never idles out. Independent of timeout (the absolute ceiling); both may be set, and whichever fires first ends the run with status \"timeout\" (an idle kill carries a distinguishable \"idle timeout ... (no output)\" error message). Omit for no idle limit."
     },
     "tmpfs": {
       "type": "array",

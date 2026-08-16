@@ -53,11 +53,14 @@ type HookInfo struct {
 	// daemon). Surfaced so an operator can see this host-root-equivalent
 	// capability on the hook's drill-down page.
 	Dind bool `json:"dind,omitempty"`
-	// Timeout is the effective run timeout (hook.json's or the default) —
-	// the no-output kill limit: the run dies only after this long with no
-	// container output, never for running long while it keeps logging.
-	Timeout string `json:"timeout"`
-	APIKey  bool   `json:"api_key"`
+	// Timeout is the absolute run ceiling, when the hook sets one (empty =
+	// no absolute ceiling; the run is bounded by idle_timeout, if set, or
+	// runs until it exits).
+	Timeout string `json:"timeout,omitempty"`
+	// IdleTimeout is the no-output kill limit, when the hook sets one
+	// (empty = no idle limit; only the total timeout applies, if any).
+	IdleTimeout string `json:"idle_timeout,omitempty"`
+	APIKey      bool   `json:"api_key"`
 	// SettingsKeys are the TOP-LEVEL keys of the hook's own settings object
 	// (hook.json `settings`, validated at load against the hook's
 	// settings.schema.json). Keys only, never values: this port is
@@ -79,9 +82,15 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		ConcurrencyGroup: h.ConcurrencyGroup,
 		State:            h.State,
 		Dind:             h.Dind,
-		Timeout:          h.Timeout().String(),
+		APIKey:           h.APIKey != "",
 		APIKey:           h.APIKey != "",
 		SkipConditions:   len(h.SkipIf),
+	}
+	if d := h.Timeout(); d > 0 {
+		info.Timeout = d.String()
+	}
+	if d := h.IdleTimeout(); d > 0 {
+		info.IdleTimeout = d.String()
 	}
 	var settings map[string]json.RawMessage
 	if err := json.Unmarshal(h.SettingsJSON(), &settings); err == nil {

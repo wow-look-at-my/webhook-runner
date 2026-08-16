@@ -179,6 +179,18 @@ func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte,
 	return run, nil
 }
 
+// runContext returns the context bounding container processing: the parent
+// with the hook's absolute timeout applied, or — when the hook sets no
+// timeout (0) — a plain cancellable child with NO deadline, so an uncapped
+// run is bounded only by its idle_timeout (if set), an explicit cancel, or
+// the container exiting. Parent cancellation still propagates either way.
+func runContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
+}
+
 // Skip records a first-class "no work was done" run for a delivery matched
 // by one of the hook's skip_if conditions. It is the whole pipeline for a
 // skip: a real, tracked run that goes terminal immediately with status
@@ -218,7 +230,8 @@ func runRef(run *runs.Run) string {
 }
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath, settingsPath string) {
-	timeout := hook.Timeout()
+	timeout := hook.Timeout()         // 0 = no absolute ceiling
+	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -342,6 +355,14 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// (argv assembly, and for state hooks the imageCommand inspect), with no
 	// queueing left in it.
 	run.Mark(runs.PhaseSlotAcquired)
+
+	// The timeout clock starts now — we hold a slot and are about to launch
+	// — so it bounds only real container processing, never the time spent
+	// decrypting secrets, building the image, or queued behind other runs.
+	// A hook with no timeout gets NO deadline at all: the run is bounded
+	// only by its idle_timeout (if set) or by the container exiting.
+	ctx, cancel := runContext(parent, timeout)
+	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()
 

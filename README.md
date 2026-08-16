@@ -82,14 +82,15 @@ graph LR
 - **Cancellation**: `POST /hook/{id}/cancel/{run}` kills an in-flight
   run's container (authenticated like the hook itself), so async callers
   can supersede stale work.
-- **Activity-based timeout**: `timeout` kills a run only after it has
-  produced no output for that long (any output byte resets the clock) —
-  so long-but-chatty work survives while hung work is reaped. See
+- **Two kinds of timeout, both optional**: `timeout` is the absolute
+  processing ceiling (omit it for none); `idle_timeout` kills a run only
+  when it stops producing output (any output byte resets it) — so
+  long-but-chatty work survives while hung work is reaped. See
   [Timeouts](#timeouts).
 - **First-class waits**: a state hook that wants to pause declares it —
   `POST /wait {"seconds": N, "reason": "..."}` on its state API blocks
   server-side, shows live on the dashboard as `waiting Ns: reason`, and
-  counts as **activity** for the idle `timeout` — so hooks just sleep
+  counts as **activity** for `idle_timeout` — so hooks just sleep
   in-process instead of deferring work to a later run. See
   [Timeouts](#timeouts). Lock contention gets the same treatment: a
   contended acquire names its holder, can block (`{"block": true}`,
@@ -843,27 +844,44 @@ the run id demoted to a small secondary label.
 
 ## Timeouts
 
-One per-hook knob, `timeout` (default `5m`), and it is **activity-based,
-not wall-clock**: the run is killed only once its container has produced
-**no output** (stdout or stderr) for that long. Any output byte resets the
-clock, so a hook that keeps logging progress runs as long as it needs —
-there is **no absolute processing ceiling** — while one that has gone
-silent is reaped within `timeout` of its last output. The kill goes through
-`docker kill`, ends the run with status `timeout`, and carries the error
-message `timed out after <d> (no output)` (in `/runs/{id}` and the
-activity feed).
+Two per-hook knobs, both optional:
 
-This semantics exists because wall-clock ceilings kill healthy work: a
+- **`timeout`** (omit for no absolute ceiling) — the **absolute processing
+  ceiling**: the run is killed once it has been processing this long,
+  regardless of what it is doing. Error message: `timed out after <d>`.
+- **`idle_timeout`** (omit for no idle limit) — the **progress-aware
+  limit**: the run is killed only once the container has produced **no
+  output** (stdout or stderr) for this long. Any output byte resets the
+  idle clock, so a hook that keeps logging progress can run as long as it
+  needs, while one that has gone silent is reaped quickly. Error message:
+  `idle timeout after <d> (no output)` — distinguishable from the
+  total-timeout kill in `/runs/{id}` and the activity feed.
+
+The idle semantics exist because wall-clock ceilings kill healthy work: a
 47-part map-reduce hook that logged every ≤45s was cut down mid-progress
 by its 15-minute total timeout, while a genuinely hung run and a healthy
 long run are indistinguishable by wall clock alone. Silence is the actual
-failure signal — so `"timeout": "15m"` now means "kill it after 15 minutes
-of no activity", which lets the long healthy run finish and still reaps a
-hung one promptly.
+failure signal — so `idle_timeout` lets the long healthy run finish and
+still reaps a hung one promptly. `timeout` remains available as an
+absolute ceiling for work whose healthy runtime is bounded.
 
 The clock arms **at container launch**: never while the run is queued
 behind a [concurrency group](#concurrency-groups), decrypting secrets, or
-building its image — a queued run cannot time out.
+building its image. For long-but-chatty work — e.g. a model-calling hook
+that logs every few seconds but whose total runtime scales with input size —
+the recommended shape is idle-only: omit `timeout` and set
+`"idle_timeout": "15m"`, which kills a hung run within 15 minutes without
+ever cutting down a healthy one mid-progress, no matter how long it
+legitimately takes. A hook that omits **both** runs until it exits — that is
+the operator's call, not a validation error.
+
+> **Deploy-first:** like `state`/`concurrency_group`/`schedule`,
+> `idle_timeout` is a newer `hook.json` field, so an older `webhook-runner`
+> binary rejects a hook that sets it — deploy a runner that supports it
+> before merging such a hook. Omitting `timeout`, by contrast, has always
+> validated — but a binary older than this change caps a timeout-less hook
+> at its former `5m` default instead of leaving it uncapped, so deploy
+> first anyway when the uncapped semantics matter.
 
 Silence a hook *chose* doesn't count either: a [state hook](#stateful-hooks-kv-store)
 that needs to pause (a settle window, a retry backoff, polling an external
@@ -881,7 +899,9 @@ hook's `timeout` value also serves as the default bound on how long the
 server holds the HTTP response open. That hold is necessarily wall-clock —
 a response can't wait on activity — and it bounds only the **response**,
 never the run: a run that outlives it degrades to the async `202` and
-keeps running in the background.
+keeps running in the background. When the hook omits `timeout`, the hold
+falls back to a 5-minute default (`defaultSyncHold`) — again bounding only
+the response, never the run.
 
 ## Concurrency groups
 
