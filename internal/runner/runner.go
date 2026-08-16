@@ -310,7 +310,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// — so it bounds only real container processing, never the time spent
 	// decrypting secrets, building the image, or queued behind other runs.
 	// A hook with no timeout gets NO deadline at all: the run is bounded
-	// only by its idle_timeout (if set) or by the container exiting.
+	// only by its idle_timeout (if set) or by the container exiting. ctx
+	// itself is only watched below (ctx.Done()/ctx.Err()) to distinguish the
+	// absolute-ceiling case from an ordinary parent teardown; the actual
+	// kill still goes through exec.Command + docker kill/stop by name, since
+	// SIGKILLing the docker CLI can leave the container itself running.
 	ctx, cancel := runContext(parent, timeout)
 	defer cancel()
 
@@ -536,7 +540,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	go func() {
 		select {
 		case <-silent:
+			// Already produced no output for the full timeout: there is
+			// nothing to wait out. Hard kill, same as always.
 			close(timedOut)
+			r.killContainer(containerName)
 		case <-ctx.Done():
 			// ctx wraps parent with the hook's absolute timeout, if any:
 			// DeadlineExceeded means the ceiling fired; anything else
@@ -545,12 +552,24 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			if ctx.Err() == context.DeadlineExceeded {
 				close(deadlineExceeded)
 			}
+			r.killContainer(containerName)
 		case <-run.Cancelled():
 			close(cancelled)
+			// Graceful: SIGTERM, grace, then docker's own SIGKILL — the same
+			// stopContainer a manager instance gets on a supervisor-requested
+			// stop. Blocking is fine, this goroutine has nothing else to do,
+			// and cmd.Wait unblocks the moment the container dies. This path
+			// is explicit cancellation: an operator's Cancel button, a lock
+			// steal, or the KV lock's own TTL-expiry enforcement killing a
+			// still-live holder — exactly the case where the holder can be
+			// seconds from finishing real work (a publish, a settle-window
+			// confirm) that a hard SIGKILL would throw away and force a
+			// contender to redo. A hook that ignores the signal gets no worse
+			// than the hard-kill outcome, just runCancelGraceSeconds later.
+			r.stopContainer(containerName, runCancelGraceSeconds)
 		case <-stopWatcher:
 			return
 		}
-		r.killContainer(containerName)
 		killTimer := time.AfterFunc(2*time.Second, func() {
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
@@ -665,3 +684,13 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		r.onFinish(hook, run, payload)
 	}
 }
+
+// runCancelGraceSeconds is how long an explicitly-cancelled run's container
+// gets between SIGTERM and docker's own SIGKILL (see stopContainer, defined
+// alongside the manager analog in managersession.go — one implementation,
+// two callers). Shorter than managerStopGraceSeconds: a run is normally a
+// short request/response pass, not a long-lived service, so a stuck cancel
+// should not make an operator wait as long as a manager's graceful restart.
+// A hook that never installs a SIGTERM handler is unaffected either way — it
+// still dies, just up to this many seconds later than a hard kill would have.
+const runCancelGraceSeconds = 10

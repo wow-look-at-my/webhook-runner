@@ -72,6 +72,25 @@ func TestIdleWatchdogFiresOnSilence(t *testing.T) {
 	assert.Equal(t, time.Duration(0), wait)
 }
 
+// REGRESSION: a zero limit (a hook that omits `timeout` — "no absolute
+// ceiling") must never fire, armed or not, however much time passes. Without
+// the limit<=0 guard in check(), idle >= w.limit is vacuously true (idle can
+// never be negative), so an armed watchdog fired on its very first check —
+// every hook without an explicit timeout timed out immediately instead of
+// running until it exits.
+func TestIdleWatchdogZeroLimitNeverFires(t *testing.T) {
+	clock := newFakeClock()
+	w := newIdleWatchdog(0, clock.Now)
+	w.Arm()
+
+	_, fire := w.check()
+	assert.False(t, fire, "a zero limit must mean no idle limit, not an already-elapsed one")
+
+	clock.Advance(24 * time.Hour)
+	_, fire = w.check()
+	assert.False(t, fire, "no amount of silence fires a zero-limit watchdog")
+}
+
 // Output resets the idle clock: as long as something arrives within every
 // limit-sized window, the watchdog never fires — however long the run lasts.
 func TestIdleWatchdogResetsOnOutput(t *testing.T) {
