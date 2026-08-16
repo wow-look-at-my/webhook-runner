@@ -13,7 +13,7 @@ come from a local directory or be cloned from a Git repository.
 cmd/webhook-runner/        binary entry point (calls into internal/cli)
 internal/cli/              cobra commands (root = run server, validate, test, version)
 internal/server/           HTTP handlers + routing (two muxes: hook + admin)
-internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the dashboard's module TypeScript that ts0 compiles into the committed assets/timeline.js — the page's ONLY ES module, so a new module script goes in ts/, never hand-written into index.html. Regenerate with the prebuilt ts0 (`curl -fSL 'https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64' -o /tmp/ts0.cjs` then `cd internal/server/dashboard && node /tmp/ts0.cjs build` — stock Node, no npm); ci.yml's `dashboard-assets` job runs the same build and FAILS if the committed bundle drifted from ts/ — THREE js-snippets components are NOT in this repo and are imported by the browser at runtime from js-snippets' buildhost library site: <timeline-view> (the runs chart; types via the interim shim ts/js-snippets-timeline.d.ts), <activity-feed> (BOTH Activity feeds — the overview page and the per-hook section — owning their table, kind badges and filter bar) and <data-table> (EVERY table on the page — all eleven: runs ×2, hooks, managers, images, attention, kv ×2, concurrency ×2, reload commits — owning rows, sorting, chips, empty states and expandable detail. There are ZERO hand-rolled `<table>`s left, and adding one is a regression: the component is where table behavior lives. The per-hook runs status facet is declared `local: false` because that filter is applied SERVER-SIDE before the row cap, so the component must never re-apply it; the concurrency tables and the per-hook KV browser use `detailFor` for their drill-downs, KV's asynchronously since a key's value is fetched on expand). All three are loaded by ts/timeline.ts and fed by dashboard.js, which passes cell CSS into the shadow root via the element's styleText. Fix component bugs upstream in js-snippets, never here; testjs/ is the node-run client harness proving the push-first section feed (authored in TypeScript, run DIRECTLY via `node --test`'s native type-stripping — no build step; CI pins Node with actions/setup-node). the convention is to author/commit `.ts` source, not generated `.mjs` (gitignored via `*.mjs`; a genuine edge-case `.mjs` can be `git add -f`'d). The one deliberately-committed generated artifact is the dashboard adapter's `assets/timeline.js` bundle — a `.js` (not caught by the `*.mjs` rule), embedded via go:embed and regenerated via ts0
+internal/server/dashboard/ embedded HTML dashboard (read views + the operator kill-switch controls); ts/ holds the dashboard's module TypeScript that dashboard.go's `//go:generate sh generate-timeline.sh` compiles via ts0 into the committed assets/timeline.js — the page's ONLY ES module, so a new module script goes in ts/, never hand-written into index.html. The generate (same directory, cwd = the package dir) curls a PINNED ts0 build from buildhost + the component's published `.d.ts` pair from js-snippets' Pages into the committed `ts/js-snippets/`, then runs `node ts0.cjs build` — stock Node 22+, no npm/npx, no git auth; run it as `go-toolchain --generate <hash>` (bare `go-toolchain` prints the hash; ci.yml's `generate:` input carries the same one). ci.yml's freshness gate (`git diff --exit-code -- internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/`) FAILS on any drift, so the bundle and the fetched declarations can't go stale and an upstream component API change turns CI red instead of drifting — THREE js-snippets components are NOT in this repo and are imported by the browser at runtime from js-snippets' buildhost library site: <timeline-view> (the runs chart; types via the interim shim ts/js-snippets-timeline.d.ts, to be superseded by the generate-fetched real `.d.ts` pair), <activity-feed> (BOTH Activity feeds — the overview page and the per-hook section — owning their table, kind badges and filter bar) and <data-table> (EVERY table on the page — all eleven: runs ×2, hooks, managers, images, attention, kv ×2, concurrency ×2, reload commits — owning rows, sorting, chips, empty states and expandable detail. There are ZERO hand-rolled `<table>`s left, and adding one is a regression: the component is where table behavior lives. The per-hook runs status facet is declared `local: false` because that filter is applied SERVER-SIDE before the row cap, so the component must never re-apply it; the concurrency tables and the per-hook KV browser use `detailFor` for their drill-downs, KV's asynchronously since a key's value is fetched on expand). All three are loaded by ts/timeline.ts and fed by dashboard.js, which passes cell CSS into the shadow root via the element's styleText. Fix component bugs upstream in js-snippets, never here; testjs/ is the node-run client harness proving the push-first section feed (authored in TypeScript, run DIRECTLY via `node --test`'s native type-stripping — no build step; CI pins Node with actions/setup-node). the convention is to author/commit `.ts` source, not generated `.mjs` (gitignored via `*.mjs`; a genuine edge-case `.mjs` can be `git add -f`'d). The one deliberately-committed generated artifact is the dashboard adapter's `assets/timeline.js` bundle — a `.js` (not caught by the `*.mjs` rule), embedded via go:embed and regenerated via the go:generate
 internal/hooks/            hook.json + manager.json models, loader, registry, watcher, git repo
 internal/managers/         the manager entity's runtime: unbounded inbox (checkout/settle handles) + supervisor (flock lease, flat restarts, output ring, attention seam)
 internal/reloadgate/       hooks-repo reload CI gate: /_reload event handling (push records, status switches), last-good persistence, admin-force bypass
@@ -535,6 +535,43 @@ The companion repo is `wow-look-at-my/webhooks`.
   webhooks repo's `Dockerfile.common` base ships bash/node/tsx). An
   explicit `command` wins over `script`. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule`/`concurrency_group`.
+- The run `timeout` is **activity-based, not wall-clock**: it kills a run
+  only when the container has produced **no output** (stdout or stderr) for
+  that long — "time out after N minutes of no activity". There is **no
+  absolute processing ceiling anymore**: a run that keeps logging runs as
+  long as it needs (the semantics exists because a healthy 47-part
+  map-reduce run logging every ≤45s was killed by its 15m wall-clock
+  `timeout`, while silence — not runtime — is the actual failure signal).
+  Any output **byte** resets the clock: the runner wraps the pipe read side
+  in a `touchReader` (internal/runner/watchdog.go), so even a long line
+  without a newline counts. `DefaultTimeout` (5m) still applies when a hook
+  omits `timeout` — now meaning 5 minutes of *silence*, so every hook keeps
+  hang protection by default. The implementing `idleWatchdog` keeps the old
+  arming rule: `Arm()` is called only after secrets decrypt, image build,
+  and (crucially) the concurrency-group slot acquisition, once `cmd.Start`
+  succeeded — a queued run stays `pending` with no clock ticking, and an
+  unarmed watchdog never fires (that invariant is unit-tested; keep it).
+  A timeout kill reuses the docker-kill-by-name path and ends the run as
+  status `timeout` with error `timed out after <d> (no output)`; the
+  `run.finished` event message carries that reason. `run.SetRunning()`
+  (pending→running) still fires only once the container launches, so the
+  dashboard shows queued runs as `pending` — and it stamps
+  `RunState.StartedAt`, the queue-wait/processing split point (`started` in
+  JSON stays the QUEUED/accepted instant for compatibility; waited =
+  StartedAt−Started, duration = Finished−StartedAt, and a zero StartedAt
+  means the run never started). The **sync hold** is the one place
+  `hook.Timeout()` is still read as wall clock (`parseWaitParams` /
+  `handleTrigger` in internal/server/handlers.go): a held HTTP response
+  can't wait on activity, so the hold is a *response* bound, never a run
+  bound — a chatty run legitimately outlives it and the response degrades
+  to the async 202 while the run continues. (The short-lived `idle_timeout`
+  field from #30 is REMOVED — `timeout` itself is the idle limit now, and
+  `DisallowUnknownFields` means a hook.json still setting `idle_timeout`
+  fails to load; nothing merged ever set it.) **Declared waits count as
+  activity too**: while a state hook's `POST /wait` is in flight, the wait
+  handler keeps touching the run's watchdog (see the wait bullet below), so
+  an announced in-process sleep is never reaped as silence — only
+  *undeclared* silence times out.
 - Declarative skips (`skip_if` in hook.json, `internal/hooks/skip.go`):
   conditions over the request HEADERS (`"header:x-github-event"` keys,
   name case-insensitive) and the parsed JSON payload (dotted paths,
@@ -1051,6 +1088,21 @@ The companion repo is `wow-look-at-my/webhooks`.
   rule as usual: older runners 404 `/wait` (hooks should fall back to a
   plain sleep — they lose the badge and the activity credit, nothing else).
 - Spawn (`POST /spawn` on the state API, `internal/server/spawn.go`): a
+  permitted state hook starts `count` runs of ANOTHER hook through the
+  runner itself — the runner-native replacement for a coordinator hook
+  POSTing HMAC-signed synthetic webhooks at the public endpoints. The
+  CALLER (parent hook + run) comes from the verified bearer token, never
+  the body. Authorization is DENY-BY-DEFAULT and RUNNER-side:
+  `WEBHOOK_RUNNER_SPAWN_ALLOW` maps parent→targets
+  (`parent=target,target;...`; unset/empty = nothing may spawn, a
+  malformed value FAILS STARTUP — the reload-poll rule), deliberately
+  NEVER a hook.json field, so the published hook schema stays untouched
+  and consumer hooks need zero new fields. Pre-validation is
+  all-or-nothing BEFORE anything starts — 400/413 bounds (count 1..100,
+  payload a JSON object ≤256KiB, optional `event` ≤100 chars), 409
+  parent run not active (the /wait rule), 404 unknown target, 403 not
+  allowlisted, 409 target effectively disabled (the SAME
+  effective-disabled state handleTrigger and buildScheduleFire read) —
   MANAGER starts `count` runs of ANOTHER hook through the runner
   itself — the runner-native replacement for a coordinator POSTing
   HMAC-signed synthetic webhooks at the public endpoints. The CALLER
@@ -1090,6 +1142,9 @@ The companion repo is `wow-look-at-my/webhooks`.
   value format, byte-asserted in runstore tests), and the
   run.started/run.finished event MESSAGES carry ", spawned by <hook> run
   <id>" (runRef style — no event-schema change). Deploy-first rule:
+  this primitive deploys BEFORE any hook calling it — older runners 404
+  `/spawn`, and callers must fail LOUD on 404/405 ("primitive
+  unavailable"), never silently skip their fan-out.
   a runner with manifest-spawn support deploys BEFORE any manager
   declaring `spawn_targets` merges (older manager-capable runners fail
   the manager's load on the unknown field; pre-manager runners 404
@@ -1112,6 +1167,11 @@ The companion repo is `wow-look-at-my/webhooks`.
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
 - The dashboard timeline splits in two: the **`<timeline-view>` component
+  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
+  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
+  (live at master head; the org's standard js-snippets consumption model,
+  NEVER vendored copies) — while this repo ships only the runner-specific
+  adapter. Component fixes deploy to this dashboard on js-snippets merge
   is consumed at RUNTIME from js-snippets' buildhost library site** — the
   browser imports
   `https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`
@@ -1125,6 +1185,7 @@ The companion repo is `wow-look-at-my/webhooks`.
   (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
   loaded via `<script type="module">` (after dashboard.js — modules defer,
   so its globals are always ready); the admin dashboard's chart therefore
+  needs reach to wow-look-at-my.github.io at page load. A failed component
   needs reach to sites.pazer.build at page load. A failed component
   fetch degrades softly and NEVER parks: the adapter module still runs,
   shows a "chart loading…" note in the Runs section, and retries the
@@ -1132,6 +1193,33 @@ The companion repo is `wow-look-at-my/webhooks`.
   because browsers can memoize a failed module fetch; no backoff, no
   attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
   are untouched and the runs-table toggle keeps working. TypeScript types
+  for the component come from the committed `ts/js-snippets/` — the
+  component's REAL `.d.ts` pair (timeline-view + timeline-view-math),
+  fetched VERBATIM from Pages at generate time; the adapter type-imports
+  `./js-snippets/timeline-view.js` directly (type-only, erased — do NOT
+  try an ambient `declare module '<url>'` bridge re-exporting the relative
+  files, that's TS2439), and the runtime dynamic import of COMPONENT_URL
+  needs no module declaration (its specifier is a widened string). The
+  adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
+  (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
+  banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
+  dashboard.go's `//go:generate sh generate-timeline.sh` — the script
+  (same directory, run with cwd = the package dir) curls a PINNED ts0
+  build from buildhost (`?v=N`, never branch=latest) + the two `.d.ts`
+  from Pages, then runs `node .cache/ts0.cjs build` (.cache/ is
+  gitignored). It
+  needs curl and Node 22+ — deliberately NO npm/npx and NO git auth (the
+  previous npx pipeline and a Go-bootstrap rewrite were both scrapped for
+  exactly that). Run it as `go-toolchain --generate <hash>` (bare
+  `go-toolchain` prints the hash; ci.yml's `generate:` input carries the
+  same one, with setup-node@v4/node 22 before the toolchain step and the
+  freshness gate `git diff --exit-code -- internal/server/dashboard/assets/
+  internal/server/dashboard/ts/js-snippets/` after — a stale bundle, stale
+  fetched types, or upstream component API drift all fail CI). To bump the
+  ts0 pin: change `?v=N` in generate-timeline.sh — the directive line is
+  untouched by a pin bump, and the approval hash re-keys only when the
+  directive line itself is edited or moved (the bare run prints the new
+  one).
   for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
   hand-maintained ambient shim (types only) — temporary until the generate
   step fetches js-snippets' published declarations mechanically (the

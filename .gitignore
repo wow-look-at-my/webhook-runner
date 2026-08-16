@@ -32,6 +32,9 @@ go.work.sum
 # .vscode/
 /build/
 
+# ts0 fetched by the dashboard go:generate script (see internal/server/dashboard/generate-timeline.sh)
+/internal/server/dashboard/.cache/
+
 # Generated JS: we author and commit TypeScript, never generated .mjs/.js.
 # The dashboard client-harness tests (internal/server/dashboard/testjs) are
 # .ts run directly via `node --test` (native type-stripping); the dashboard
