@@ -53,6 +53,11 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   `github.com/wow-look-at-my/secret-server/client`.
 - **No CGO.** `CGO_ENABLED=0` is enforced by the Dockerfile build stage.
 - **No Docker SDK.** Shell out to `docker` via `os/exec`.
+- **A set is `go-containers/set.Set`,** never `map[K]bool` or
+  `map[K]struct{}`. go-toolchain's vet analyzer FAILS the build on the
+  first form and warns on the second, and there is no per-line exemption.
+  A `map[K]bool` whose false values carry meaning is a real map — keep it,
+  and keep its literals from being all-true.
 - **Cobra subcommands** live one-per-file in `internal/cli/` and self-register
   via `init()`.
 - **HTTP routing** uses Go 1.22+ `http.ServeMux` patterns (`POST /hook/{id}`).
@@ -461,6 +466,45 @@ The companion repo is `wow-look-at-my/webhooks`.
   semantics — `Parse` uses `DisallowUnknownFields` and old binaries
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
+- The run `timeout` bounds **only container processing**. In
+  `runner.execute` the timeout context (`runContext`) is created *after*
+  secrets decrypt, image build, and (crucially) after the concurrency-group
+  slot is acquired — never at the top. A run waiting in a group's queue
+  stays `pending` with no timeout running; if you move the context creation
+  back up, queued runs start timing out while they wait, which is the exact
+  bug this avoids. `run.SetRunning()` (pending→running) still fires only
+  once the container launches, so the dashboard shows queued runs as
+  `pending` — and it stamps `RunState.StartedAt`, the queue-wait/processing
+  split point (`started` in JSON stays the QUEUED/accepted instant for
+  compatibility; waited = StartedAt−Started, duration = Finished−StartedAt,
+  and a zero StartedAt means the run never started). `timeout` is
+  **optional with no default**: omitted means NO absolute ceiling —
+  `runContext` arms no deadline (a plain cancellable child, so parent
+  cancellation still kills), and the run is bounded only by `idle_timeout`,
+  if set. A hook that omits both runs until it exits — deliberately the
+  operator's call, no nanny validation. Older binaries applied a 5m
+  `DefaultTimeout` to a timeout-less hook (they still *validate* it fine —
+  absence was always legal — they just cap the run), so deploy the runner
+  first when the uncapped semantics matter. `parseWaitParams` separately
+  bounds the synchronous HTTP hold at `defaultSyncHold` (5m) for uncapped
+  hooks — that degrades the *response* to a 202, never kills the run.
+- `idle_timeout` (optional, independent of `timeout`) kills a run only when
+  its container produces **no output** (stdout or stderr) for that long —
+  the progress-aware timeout for hooks whose healthy runtime varies (added
+  after a 47-part map-reduce run logging every ≤45s was killed by a 15m
+  wall-clock `timeout`). Any output **byte** resets the clock: the runner
+  wraps the pipe read side in a `touchReader` (internal/runner/watchdog.go),
+  so even a long line without a newline counts. The `idleWatchdog` follows
+  the **same arming rule** as `timeout`: `Arm()` is called only after the
+  concurrency slot is acquired and `cmd.Start` succeeded — a queued run must
+  never idle out, and an unarmed watchdog never fires (that invariant is
+  unit-tested; keep it). An idle kill reuses the docker-kill-by-name path and
+  ends the run as status `timeout` with the distinguishable error
+  `idle timeout after <d> (no output)` (the total ceiling says "timed out
+  after <d>"); the `run.finished` event message carries that reason. Like
+  `state`/`concurrency_group`/`schedule`, `idle_timeout` is a newer hook.json
+  field — old binaries reject it (`DisallowUnknownFields`), so deploy
+  webhook-runner before any hook sets it.
 - `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
   EXACTLY two docker-run flags — `--privileged` and
   `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
@@ -490,43 +534,6 @@ The companion repo is `wow-look-at-my/webhooks`.
   webhooks repo's `Dockerfile.common` base ships bash/node/tsx). An
   explicit `command` wins over `script`. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule`/`concurrency_group`.
-- The run `timeout` is **activity-based, not wall-clock**: it kills a run
-  only when the container has produced **no output** (stdout or stderr) for
-  that long — "time out after N minutes of no activity". There is **no
-  absolute processing ceiling anymore**: a run that keeps logging runs as
-  long as it needs (the semantics exists because a healthy 47-part
-  map-reduce run logging every ≤45s was killed by its 15m wall-clock
-  `timeout`, while silence — not runtime — is the actual failure signal).
-  Any output **byte** resets the clock: the runner wraps the pipe read side
-  in a `touchReader` (internal/runner/watchdog.go), so even a long line
-  without a newline counts. `DefaultTimeout` (5m) still applies when a hook
-  omits `timeout` — now meaning 5 minutes of *silence*, so every hook keeps
-  hang protection by default. The implementing `idleWatchdog` keeps the old
-  arming rule: `Arm()` is called only after secrets decrypt, image build,
-  and (crucially) the concurrency-group slot acquisition, once `cmd.Start`
-  succeeded — a queued run stays `pending` with no clock ticking, and an
-  unarmed watchdog never fires (that invariant is unit-tested; keep it).
-  A timeout kill reuses the docker-kill-by-name path and ends the run as
-  status `timeout` with error `timed out after <d> (no output)`; the
-  `run.finished` event message carries that reason. `run.SetRunning()`
-  (pending→running) still fires only once the container launches, so the
-  dashboard shows queued runs as `pending` — and it stamps
-  `RunState.StartedAt`, the queue-wait/processing split point (`started` in
-  JSON stays the QUEUED/accepted instant for compatibility; waited =
-  StartedAt−Started, duration = Finished−StartedAt, and a zero StartedAt
-  means the run never started). The **sync hold** is the one place
-  `hook.Timeout()` is still read as wall clock (`parseWaitParams` /
-  `handleTrigger` in internal/server/handlers.go): a held HTTP response
-  can't wait on activity, so the hold is a *response* bound, never a run
-  bound — a chatty run legitimately outlives it and the response degrades
-  to the async 202 while the run continues. (The short-lived `idle_timeout`
-  field from #30 is REMOVED — `timeout` itself is the idle limit now, and
-  `DisallowUnknownFields` means a hook.json still setting `idle_timeout`
-  fails to load; nothing merged ever set it.) **Declared waits count as
-  activity too**: while a state hook's `POST /wait` is in flight, the wait
-  handler keeps touching the run's watchdog (see the wait bullet below), so
-  an announced in-process sleep is never reaped as silence — only
-  *undeclared* silence times out.
 - Declarative skips (`skip_if` in hook.json, `internal/hooks/skip.go`):
   conditions over the request HEADERS (`"header:x-github-event"` keys,
   name case-insensitive) and the parsed JSON payload (dotted paths,
@@ -933,6 +940,84 @@ The companion repo is `wow-look-at-my/webhooks`.
   carry a derived `waiters` list ("N waiting on this run's locks") —
   computed by `server.attachWaiters` from live runs' `waiting_on` at READ
   time, never stored; don't add waiter state to the lock table.
+- Lock pinning (`internal/kv/lock.go` `pinned` + `internal/server/state.go`
+  pin/unpin routes): a lock HOLDER can flip its lock not-stealable
+  (`POST /kv/{key}/pin`) and back (`/unpin`), or take-and-pin atomically
+  (`{"pinned":true}` on acquire — honored mid-blocking-retry too). A
+  steal of a live pinned lock mutates NOTHING: 409 with
+  `held_by.pinned:true` + a `lock.steal_refused` event, and the refused
+  contender's correct fallback is a blocking acquire (which still wins on
+  release — latest-event-wins survives, it just waits out the pinned
+  critical section instead of interrupting it). Owner-only in both
+  directions (409 otherwise), idempotent, `ErrLockPinned` maps to 409.
+  THE INVARIANT: a pin NEVER outlives its run — the finish-seam
+  `ReleaseRunLocks` and the TTL backstop apply to pinned locks unchanged
+  (pinning restricts STEALING, never releasing), and a re-acquire by the
+  same run preserves an existing pin. The single-instance manager lease
+  is deliberately NOT built on an always-pinned lock — it stays the
+  separate kernel-flock layer (operator ruling; composition argument in
+  docs/manager-entity-design.md 10b).
+- MANAGERS (`internal/managers` + `internal/hooks/manager.go` +
+  `internal/runner/managersession.go` + `internal/server/managers.go`):
+  persistent, single-instance watchers as a first-class SIBLING entity to
+  hooks — declared at `src/managers/<id>/manager.json` (+ mandatory
+  Dockerfile; SDK layout only, legacy trees never scanned; ids share ONE
+  namespace with hooks, collision = loud load error). The things to hold
+  straight: (1) an INSTANCE IS NOT A RUN (operator ruling) — it never
+  touches the tracker, /runs, the timeline, or the runstore; it carries
+  an instance id in the run-id alphabet so `kv.Token(managerID,
+  instanceID)`, locks (incl. pinning), /wait, /title, and /spawn reuse
+  verbatim, with the supervisor's `OnInstanceEnd` as the finish-seam
+  analog (lock release + `lock.released_on_finish`); spawned WORKER runs
+  stay normal tracked runs. (2) Deliveries feed a BOUNDED INBOX (256,
+  drop-oldest loudly — `manager.inbox_dropped`), never boot containers;
+  dispatch order is kill switch → auth → skip_if → inbox (a skip_if
+  match answers 200 skipped + `manager.skipped`, no run record); the
+  manager consumes via long-poll `POST /inbox/next`, and CALLING NEXT
+  AGAIN is the ack — it settles the previous event as processed, which
+  is what completes `synchronous` delivery holds (200 processed;
+  drop/abandon = 500; timeout-degrade to 202 per the hook sync rule) and
+  per-delivery `github_status` (pending on accept, success/error on
+  settle; ticks post nothing). (3) The WATCHDOG arms only while an event
+  is checked out or queued unconsumed — an idle parked long-poll is
+  healthy FOREVER; /wait and output bytes touch it (`TouchInstance`).
+  (4) Single-instance = kernel flock on `<data-dir>/managers.lock` (flat
+  2s poll, fail-closed on errors) + deterministic container name
+  `webhook-runner-mgr-<id>` + orphan `docker rm -f` before every start;
+  restart is FLAT 10s forever (no backoff, no give-up), with failures on
+  the attention seam (`manager` source) until an instance holds.
+  (5) `enable` defaults TRUE exactly like hooks (features ship enabled
+  and working, never dormant-gated — the org-wide shipping rule; the
+  dashboard switch is an emergency control). (6) Full hook field parity, manager-shaped:
+  `concurrency_group` = the instance holds one slot for its LIFETIME;
+  `run_title` = instance panel title; `dind` = same two flags; plus the
+  manager-ONLY `spawn_targets` (the /spawn grant — see the spawn
+  bullet); only
+  `state` (implied) and `schedule` (superseded by `reconcile_interval` —
+  coalesced flat ticks + one `start` event per instance; omitted =
+  event-only, first-class) are REJECTED at parse. (7) Reloads: a
+  content-hash change supersedes the live instance ("superseded by
+  reload"); managers reload atomically with hooks/groups/schedules
+  through the same `buildLoadAndApply` (internal/cli/loadapply.go) —
+  don't fork a second reload path. Deploy-first rule as usual: old
+  binaries never scan `src/managers/`, so the runner deploys before the
+  first manager directory merges.
+- The enforced-GitHub gateway (`internal/runner/managersession.go`
+  `gsmArgs`/`GSMConfig`, wired in runner.execute + runOneTest +
+  RunManagerSession): with `WEBHOOK_RUNNER_GSM_URL` set, every
+  hook/manager/test container EXCEPT the `WEBHOOK_RUNNER_GITHUB_DIRECT`
+  csv exemptions gets `--add-host api.github.com:0.0.0.0` (fail-closed
+  blackhole) + a `GITHUB_API_URL` env DEFAULT pointing at the gateway
+  (injected BEFORE hook env, so a hook's own value wins — the blackhole,
+  not the env var, is the enforcement). Unset (the default) = ZERO
+  docker args, byte-identical behavior — the knob is an operator
+  infrastructure flip gated on the gsm caching fixes (PR B), not a
+  feature gate. The runner's OWN GitHub calls (githubstatus posts, the
+  reload poll) follow the knob via `gh.SetAPIURL` —
+  `WEBHOOK_RUNNER_GITHUB_API_URL` overrides that separately. Run+test
+  parity is load-bearing (the dind precedent): both paths inject the
+  same args, so a hook's `tests` see the same network posture as its
+  runs.
 - First-class waits (`internal/server/wait.go`, `POST /wait` on the state
   socket): a hook that wants to pause SLEEPS IN-PROCESS by declaring it —
   `{"seconds": 1..600, "reason": "..."}`, both required (waits must be
@@ -965,21 +1050,28 @@ The companion repo is `wow-look-at-my/webhooks`.
   rule as usual: older runners 404 `/wait` (hooks should fall back to a
   plain sleep — they lose the badge and the activity credit, nothing else).
 - Spawn (`POST /spawn` on the state API, `internal/server/spawn.go`): a
-  permitted state hook starts `count` runs of ANOTHER hook through the
-  runner itself — the runner-native replacement for a coordinator hook
-  POSTing HMAC-signed synthetic webhooks at the public endpoints. The
-  CALLER (parent hook + run) comes from the verified bearer token, never
-  the body. Authorization is DENY-BY-DEFAULT and RUNNER-side:
-  `WEBHOOK_RUNNER_SPAWN_ALLOW` maps parent→targets
-  (`parent=target,target;...`; unset/empty = nothing may spawn, a
-  malformed value FAILS STARTUP — the reload-poll rule), deliberately
-  NEVER a hook.json field, so the published hook schema stays untouched
-  and consumer hooks need zero new fields. Pre-validation is
+  MANAGER starts `count` runs of ANOTHER hook through the runner
+  itself — the runner-native replacement for a coordinator POSTing
+  HMAC-signed synthetic webhooks at the public endpoints. The CALLER
+  (parent + run/instance id) comes from the verified bearer token, never
+  the body. Authorization is DENY-BY-DEFAULT and MANIFEST-SOURCED: the
+  caller's own manager.json `spawn_targets` array names the hook ids it
+  may spawn (absent/empty = spawns nothing), loaded from the hooks tree
+  like every other declaration — granting a spawn is a hooks-repo
+  change, never host env. Entries must name declared HOOKS: an entry
+  naming an unknown id or a manager fails load/validation and DROPS the
+  manager (fail closed, the undeclared-concurrency-group rule —
+  `hooks.CheckSpawnTargets`, run against the post-rejection sets in
+  BOTH `buildLoadAndApply` and `validate`, so hooks-repo CI catches it).
+  Only managers carry the field — the published hook schema stays
+  frozen, so a hook-run caller is 403'd outright, and managers are never
+  spawnable targets. Pre-validation is
   all-or-nothing BEFORE anything starts — 400/413 bounds (count 1..100,
   payload a JSON object ≤256KiB, optional `event` ≤100 chars), 409
-  parent run not active (the /wait rule), 404 unknown target, 403 not
-  allowlisted, 409 target effectively disabled (the SAME
-  effective-disabled state handleTrigger and buildScheduleFire read) —
+  parent run/instance not active (the /wait rule), 404 unknown target,
+  403 caller not a manager or target not in its spawn_targets, 409
+  target effectively disabled (the SAME effective-disabled state
+  handleTrigger and buildScheduleFire read) —
   each denial a loud `spawn.denied` event. A spawned run is a NORMAL run
   dispatched the scheduler-Fire way (`runner.StartSpawned` with
   context.Background() + a synthetic payload/headers pair — the target's
@@ -997,9 +1089,11 @@ The companion repo is `wow-look-at-my/webhooks`.
   value format, byte-asserted in runstore tests), and the
   run.started/run.finished event MESSAGES carry ", spawned by <hook> run
   <id>" (runRef style — no event-schema change). Deploy-first rule:
-  this primitive deploys BEFORE any hook calling it — older runners 404
-  `/spawn`, and callers must fail LOUD on 404/405 ("primitive
-  unavailable"), never silently skip their fan-out.
+  a runner with manifest-spawn support deploys BEFORE any manager
+  declaring `spawn_targets` merges (older manager-capable runners fail
+  the manager's load on the unknown field; pre-manager runners 404
+  `/spawn`), and callers must fail LOUD on 404/405 ("primitive
+  unavailable") and 403 (no grant), never silently skip their fan-out.
 - State hooks reach the KV API at a plain `http://localhost:9002` URL, NOT over
   networking — Docker has no native TCP→unix-socket forward, so webhook-runner
   runs the proxy itself. The KV server listens on a Unix socket at
@@ -1017,25 +1111,27 @@ The companion repo is `wow-look-at-my/webhooks`.
   the hook's own networking intact (no netns sharing) and publishes no port.
   `WEBHOOK_RUNNER_STATE_SOCKET` overrides the socket path (must stay host-shared).
 - The dashboard timeline splits in two: the **`<timeline-view>` component
-  is consumed at RUNTIME from js-snippets' GitHub Pages** — the browser
-  imports `https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js`
-  (live at master head; the org's standard js-snippets consumption model,
-  NEVER vendored copies) — while this repo ships only the runner-specific
-  adapter. Component fixes deploy to this dashboard on js-snippets merge
+  is consumed at RUNTIME from js-snippets' buildhost library site** — the
+  browser imports
+  `https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`
+  (live at master head — republished on every js-snippets master push;
+  replaced the quota-dead GitHub Pages deploy 2026-07-20; the org's
+  standard js-snippets consumption model, NEVER vendored copies) — while
+  this repo ships only the runner-specific adapter. Component fixes deploy to this dashboard on js-snippets merge
   with no runner change; fix component bugs upstream in js-snippets, full
   stop. Consequences to keep straight: `assets/timeline.js` is a small
   ES-module adapter bundle whose component import passes through UNBUNDLED
   (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
   loaded via `<script type="module">` (after dashboard.js — modules defer,
   so its globals are always ready); the admin dashboard's chart therefore
-  needs reach to wow-look-at-my.github.io at page load. A failed component
+  needs reach to sites.pazer.build at page load. A failed component
   fetch degrades softly and NEVER parks: the adapter module still runs,
   shows a "chart loading…" note in the Runs section, and retries the
   dynamic import on a FIXED 5s cadence forever (cache-busted `?retry=N`,
   because browsers can memoize a failed module fetch; no backoff, no
   attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
   are untouched and the runs-table toggle keeps working. TypeScript types
-  for the component come from the committed `ts/js-snippets/` — the
+  for the URL import come from the committed `ts/js-snippets/` — the
   component's REAL `.d.ts` pair (timeline-view + timeline-view-math),
   fetched VERBATIM from Pages at generate time; the adapter type-imports
   `./js-snippets/timeline-view.js` directly (type-only, erased — do NOT
