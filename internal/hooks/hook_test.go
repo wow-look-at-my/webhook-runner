@@ -63,13 +63,13 @@ func TestParseTimeoutAbsentMeansNoCeiling(t *testing.T) {
 	// NO absolute run ceiling — Timeout() == 0, which runner.execute reads
 	// as "arm no deadline" (the run is bounded only by idle_timeout, if
 	// set, or by the container exiting).
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema":"https://s"}`)
 	require.Nil(t, err)
 	assert.Equal(t, time.Duration(0), h.Timeout())
 }
 
 func TestParseIdleTimeoutValid(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5m","timeout":"90m"}`)
+	h, err := parseInDir(t, `{"$schema":"https://s","idle_timeout":"5m","timeout":"90m"}`)
 	require.Nil(t, err)
 	assert.Equal(t, "5m", h.IdleTimeoutRaw)
 	assert.Equal(t, 5*time.Minute, h.IdleTimeout())
@@ -78,19 +78,19 @@ func TestParseIdleTimeoutValid(t *testing.T) {
 }
 
 func TestParseIdleTimeoutEmptyMeansNoIdleLimit(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema":"https://s"}`)
 	require.Nil(t, err)
 	assert.Equal(t, time.Duration(0), h.IdleTimeout())
 }
 
 func TestParseIdleTimeoutInvalidDuration(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","idle_timeout":"5 minutes"}`)
+	_, err := parseInDir(t, `{"$schema":"https://s","idle_timeout":"5 minutes"}`)
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error(), "invalid idle_timeout")
 }
 
 func TestParseIdleTimeoutMustBePositive(t *testing.T) {
-	_, err := parseInDir(t, `{"$schema":"s","idle_timeout":"-1s"}`)
+	_, err := parseInDir(t, `{"$schema":"https://s","idle_timeout":"-1s"}`)
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error(), "idle_timeout must be positive")
 }
@@ -129,7 +129,7 @@ func TestParseEnableDefault(t *testing.T) {
 // Omitting timeout means no absolute ceiling — the run is bounded only
 // by idle_timeout (if set) or by the container exiting.
 func TestTimeoutOmittedMeansNoCeiling(t *testing.T) {
-	h, err := parseInDir(t, `{"$schema":"s"}`)
+	h, err := parseInDir(t, `{"$schema":"https://s"}`)
 	require.Nil(t, err)
 	assert.Equal(t, time.Duration(0), h.Timeout())
 }
@@ -187,16 +187,12 @@ func TestParseRejectsBadDocs(t *testing.T) {
 		"empty test command":         `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","tests":[["ok"],[]]}`,
 		"bad timeout":                `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","timeout":"banana"}`,
 		"negative timeout":           `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","timeout":"-1s"}`,
-		// idle_timeout was removed when timeout itself became activity-based;
-		// DisallowUnknownFields makes a hook.json that still sets it fail to
-		// load (acceptable: nothing merged ever set it).
-		"idle_timeout removed":    `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","idle_timeout":"5m"}`,
-		"github_status nocontext": `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","github_status":{"enabled":true}}`,
-		"unknown field":           `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","frobnicate":true}`,
-		"api_key+secret":          `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","api_key":"k","secret":"s"}`,
-		"public_key+secret":       `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","public_key":"k","secret":"s"}`,
-		"api_key+public_key":      `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","api_key":"k","public_key":"k"}`,
-		"bad public_key":          `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","public_key":"not-a-key"}`,
+		"github_status nocontext":    `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","github_status":{"enabled":true}}`,
+		"unknown field":              `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","frobnicate":true}`,
+		"api_key+secret":             `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","api_key":"k","secret":"s"}`,
+		"public_key+secret":          `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","public_key":"k","secret":"s"}`,
+		"api_key+public_key":         `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","api_key":"k","public_key":"k"}`,
+		"bad public_key":             `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","public_key":"not-a-key"}`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

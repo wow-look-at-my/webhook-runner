@@ -25,35 +25,45 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   is consumed at RUNTIME from js-snippets' buildhost library site** — the
   browser imports
   `https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js`
-  (live at master head — republished on every js-snippets master push;
-  replaced the quota-dead GitHub Pages deploy 2026-07-20; the org's
-  standard js-snippets consumption model, NEVER vendored copies) — while
-  this repo ships only the runner-specific adapter. Component fixes deploy to this dashboard on js-snippets merge
-  with no runner change; fix component bugs upstream in js-snippets, full
-  stop. Consequences to keep straight: `assets/timeline.js` is a small
-  ES-module adapter bundle whose component import passes through UNBUNDLED
-  (ts0.json: esbuild `format: "esm"` + `external: ["https://*"]`) and is
-  loaded via `<script type="module">` (after dashboard.js — modules defer,
-  so its globals are always ready); the admin dashboard's chart therefore
-  needs reach to sites.pazer.build at page load. A failed component
-  fetch degrades softly and NEVER parks: the adapter module still runs,
-  shows a "chart loading…" note in the Runs section, and retries the
-  dynamic import on a FIXED 5s cadence forever (cache-busted `?retry=N`,
-  because browsers can memoize a failed module fetch; no backoff, no
-  attempt cap — see boot() in ts/timeline.ts), while dashboard.js's tables
-  are untouched and the runs-table toggle keeps working. TypeScript types
-  for the URL import come from `ts/js-snippets-timeline.d.ts`, an INTERIM
-  hand-maintained ambient shim (types only) — temporary until the generate
-  step fetches js-snippets' published declarations mechanically (the
-  library site already serves a .d.ts next to every .js; do not grow the
-  shim beyond what the adapter consumes).
-  The adapter is compiled by ts0 into the COMMITTED `assets/timeline.js`
-  (go:embed needs it on a fresh clone; the bundle carries a DO-NOT-EDIT
-  banner — never hand-edit it, edit ts/ and regenerate). Regeneration is
-  **temporarily manual**: the npx `//go:generate` directive (and with it
-  ci.yml's `generate:` approval hash, setup-node, ts0 git-auth, and the
-  assets freshness gate) was removed so the build uses the committed
-  bundle as-is with NO node/npm/npx anywhere; run ts0 yourself after
-  editing ts/ and commit the regenerated bundle. A prebuilt ts0 binary
-  served from buildhost, fetched by a small Go bootstrap, is landing next
-  to re-automate regeneration.
+  (live at master head — republished on every js-snippets master push; the
+  org's standard js-snippets consumption model, NEVER vendored copies) —
+  while this repo ships only the runner-specific adapter. Component fixes
+  deploy to this dashboard on js-snippets merge with no runner change; fix
+  component bugs upstream in js-snippets, full stop. Consequences to keep
+  straight: `assets/timeline.js` is a small ES-module adapter bundle whose
+  component import passes through UNBUNDLED (ts0.json: esbuild
+  `format: "esm"` + `external: ["https://*"]`) and is loaded via
+  `<script type="module">` (after dashboard.js — modules defer, so its
+  globals are always ready); the admin dashboard's chart therefore needs
+  reach to sites.pazer.build at page load. A failed component fetch
+  degrades softly and NEVER parks: the adapter module still runs, shows a
+  "chart loading…" note in the Runs section, and retries the dynamic
+  import on a FIXED 5s cadence forever (cache-busted `?retry=N`, because
+  browsers can memoize a failed module fetch; no backoff, no attempt cap —
+  see boot() in ts/timeline.ts), while dashboard.js's tables are untouched
+  and the runs-table toggle keeps working.
+  TypeScript types for the runtime import come from the committed
+  `ts/js-snippets/timeline-view.d.ts` pair, NOT from the live URL: a
+  type-only import is erased at build time, so it resolves against a real
+  local file rather than needing TypeScript to fetch an `https://`
+  specifier (it never will). `ts/timeline.ts` type-imports
+  `./js-snippets/timeline-view.d.ts` directly; the separate runtime
+  `import()` in `loadComponentForever()` still targets `COMPONENT_URL`,
+  the live buildhost URL — the two specifiers are deliberately different,
+  and that is fine, because the type import is gone by the time any code
+  runs. Regeneration is `dashboard.go`'s
+  `//go:generate sh generate-timeline.sh` (this package's directory,
+  cwd = the package dir): curl a PINNED ts0 build from buildhost (`?v=N`,
+  never `branch=latest`) into `.cache/` (gitignored), curl the two
+  `.d.ts` siblings from the library site into the committed
+  `ts/js-snippets/`, then `node ts0.cjs build`. Needs curl and Node 22+ —
+  deliberately no npm/npx and no git auth. The bundle and the fetched
+  `.d.ts` pair are committed (go:embed needs the bundle on a fresh clone,
+  and it carries a DO-NOT-EDIT banner — never hand-edit it, edit `ts/`
+  and regenerate); ci.yml's `generate:` input carries the approval hash
+  (a bare `go-toolchain` run prints the new one after any directive-line
+  edit), and the freshness gate
+  (`git diff --exit-code -- internal/server/dashboard/assets/
+  internal/server/dashboard/ts/js-snippets/`) fails CI on any drift, so a
+  stale bundle, stale fetched types, or upstream component API change all
+  turn CI red instead of shipping silently stale.
