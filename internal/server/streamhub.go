@@ -68,6 +68,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -90,7 +91,7 @@ var streamHeartbeat = 10 * time.Second
 // streamHub fans runs.RunState updates out to the connected SSE clients.
 type streamHub struct {
 	mu     sync.Mutex
-	subs   map[*streamSub]struct{}
+	subs   set.Set[*streamSub]
 	closed bool
 }
 
@@ -102,7 +103,7 @@ type streamSub struct {
 	// A set + non-blocking wake coalesces bursts and is drop-proof by
 	// construction — see the package comment.
 	mu    sync.Mutex
-	dirty map[string]struct{}
+	dirty set.Set[string]
 	kick  chan struct{}
 }
 
@@ -111,20 +112,17 @@ type streamSub struct {
 func (sub *streamSub) drainSections() []string {
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
-	if len(sub.dirty) == 0 {
+	if sub.dirty.IsEmpty() {
 		return nil
 	}
-	out := make([]string, 0, len(sub.dirty))
-	for s := range sub.dirty {
-		out = append(out, s)
-	}
-	clear(sub.dirty)
+	out := sub.dirty.Values()
+	sub.dirty.Clear()
 	sort.Strings(out)
 	return out
 }
 
 func newStreamHub() *streamHub {
-	return &streamHub{subs: map[*streamSub]struct{}{}}
+	return &streamHub{subs: set.New[*streamSub]()}
 }
 
 // subscribe registers a new client. On a hub that has been closed (server
@@ -133,14 +131,14 @@ func newStreamHub() *streamHub {
 func (h *streamHub) subscribe() *streamSub {
 	sub := &streamSub{
 		ch:    make(chan runs.RunState, streamClientBuffer),
-		dirty: map[string]struct{}{},
+		dirty: set.New[string](),
 		kick:  make(chan struct{}, 1),
 	}
 	h.mu.Lock()
 	if h.closed {
 		close(sub.ch)
 	} else {
-		h.subs[sub] = struct{}{}
+		h.subs.Add(sub)
 	}
 	h.mu.Unlock()
 	return sub
@@ -149,8 +147,8 @@ func (h *streamHub) subscribe() *streamSub {
 // unsubscribe removes a client (idempotent; safe after a drop).
 func (h *streamHub) unsubscribe(sub *streamSub) {
 	h.mu.Lock()
-	if _, ok := h.subs[sub]; ok {
-		delete(h.subs, sub)
+	if h.subs.Contains(sub) {
+		h.subs.Remove(sub)
 		close(sub.ch)
 	}
 	h.mu.Unlock()
@@ -161,11 +159,11 @@ func (h *streamHub) unsubscribe(sub *streamSub) {
 // closes happen under h.mu, so a send can never race a close.
 func (h *streamHub) publish(st runs.RunState) {
 	h.mu.Lock()
-	for sub := range h.subs {
+	for sub := range h.subs.All() {
 		select {
 		case sub.ch <- st:
 		default:
-			delete(h.subs, sub)
+			h.subs.Remove(sub)
 			close(sub.ch)
 		}
 	}
@@ -182,10 +180,10 @@ func (h *streamHub) signal(sections ...string) {
 		return
 	}
 	h.mu.Lock()
-	for sub := range h.subs {
+	for sub := range h.subs.All() {
 		sub.mu.Lock()
 		for _, name := range sections {
-			sub.dirty[name] = struct{}{}
+			sub.dirty.Add(name)
 		}
 		sub.mu.Unlock()
 		select {
@@ -244,8 +242,8 @@ func sectionsForEvent(kind string) []string {
 func (h *streamHub) closeAll() {
 	h.mu.Lock()
 	h.closed = true
-	for sub := range h.subs {
-		delete(h.subs, sub)
+	for sub := range h.subs.All() {
+		h.subs.Remove(sub)
 		close(sub.ch)
 	}
 	h.mu.Unlock()
@@ -255,7 +253,7 @@ func (h *streamHub) closeAll() {
 func (h *streamHub) clients() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.subs)
+	return h.subs.Len()
 }
 
 // CloseStreams disconnects every /runs/stream client. Call it at shutdown

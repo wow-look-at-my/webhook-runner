@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
@@ -33,7 +34,7 @@ import (
 // event may carry several sections and several events may split them.
 func waitChangedCovering(t *testing.T, ch <-chan sseEvent, want ...string) {
 	t.Helper()
-	got := map[string]bool{}
+	got := set.New[string]()
 	for {
 		ev := nextEvent(t, ch, "changed event covering "+strings.Join(want, ","))
 		if ev.name != "changed" {
@@ -45,11 +46,11 @@ func waitChangedCovering(t *testing.T, ch <-chan sseEvent, want ...string) {
 		require.NoError(t, json.Unmarshal([]byte(ev.data), &payload), "changed payload must be JSON")
 		require.NotEmpty(t, payload.Sections, "a changed event must name at least one section")
 		for _, s := range payload.Sections {
-			got[s] = true
+			got.Add(s)
 		}
 		covered := true
 		for _, w := range want {
-			if !got[w] {
+			if !got.Contains(w) {
 				covered = false
 			}
 		}

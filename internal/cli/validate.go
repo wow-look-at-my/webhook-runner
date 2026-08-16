@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/runner"
@@ -52,28 +53,28 @@ func init() {
 			for id, m := range loadedManagers {
 				refs[id] = m.ConcurrencyGroup
 			}
-			badRef := map[string]bool{}
+			badRef := set.New[string]()
 			for _, re := range concurrency.CheckRefs(cfg, refs) {
 				errs = append(errs, re)
-				badRef[re.HookID] = true
+				badRef.Add(re.HookID)
 			}
 			// spawn_targets must name declared hooks — the manifest is the
 			// spawn allowlist; an undeclared target fails validation.
 			checkable := make(map[string]*hooks.Hook, len(loaded))
 			for id, h := range loaded {
-				if !badRef[id] {
+				if !badRef.Contains(id) {
 					checkable[id] = h
 				}
 			}
 			checkableManagers := make(map[string]*hooks.Manager, len(loadedManagers))
 			for id, m := range loadedManagers {
-				if !badRef[id] {
+				if !badRef.Contains(id) {
 					checkableManagers[id] = m
 				}
 			}
 			for _, se := range hooks.CheckSpawnTargets(checkable, checkableManagers) {
 				errs = append(errs, se)
-				badRef[se.ManagerID] = true
+				badRef.Add(se.ManagerID)
 			}
 
 			out := cmd.OutOrStdout()
@@ -81,7 +82,7 @@ func init() {
 				fmt.Fprintf(out, "group %s (limit %d)\n", name, cfg.Limit(name))
 			}
 			for id, h := range loaded {
-				if badRef[id] {
+				if badRef.Contains(id) {
 					continue // surfaced as an error below
 				}
 				tag, tagErr := runner.ImageTag(h)
@@ -95,7 +96,7 @@ func init() {
 				fmt.Fprintf(out, "ok  %s (%s)%s\n", id, tag, grp)
 			}
 			for id, m := range loadedManagers {
-				if badRef[id] {
+				if badRef.Contains(id) {
 					continue // surfaced as an error below
 				}
 				tag, tagErr := runner.ImageTag(m.Hook)
