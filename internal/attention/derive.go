@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -236,12 +237,12 @@ func ApplyServeProbe(a *Aggregator, loaded map[string]*hooks.Hook, secrets *hook
 	entries := ProbeHooks(loaded, secrets)
 	a.ReplaceSource(SourceSecrets, entries)
 
-	apiKeyBroken := map[string]bool{}
+	apiKeyBroken := set.New[string]()
 	for _, e := range entries {
 		if e.Key == KeyAPIKey || e.Key == KeySops {
 			// A failed decrypt leaves the api_key unresolvable too (auth
 			// fails closed on it), so it keeps the event entry alive.
-			apiKeyBroken[e.Hook] = true
+			apiKeyBroken.Add(e.Hook)
 		}
 	}
 	a.mu.Lock()
@@ -253,7 +254,7 @@ func ApplyServeProbe(a *Aggregator, loaded map[string]*hooks.Hook, secrets *hook
 		if _, ok := loaded[e.Hook]; !ok {
 			return true // the hook is gone; nothing left to fix
 		}
-		return e.Key == KeyAPIKey && !apiKeyBroken[e.Hook]
+		return e.Key == KeyAPIKey && !apiKeyBroken.Contains(e.Hook)
 	})
 	a.notifyLocked(changed)
 }

@@ -139,7 +139,9 @@ func TestHookOverrideTriState(t *testing.T) {
 	enabled, ok = s3.HookOverride("h")
 	require.True(t, ok)
 	assert.True(t, enabled)
-	assert.Equal(t, map[string]bool{"h": true}, s3.HookOverrides())
+	overrides := s3.HookOverrides()
+	assert.Len(t, overrides, 1, "the enable is the only override left")
+	assert.True(t, overrides["h"])
 }
 
 func TestSetConcurrencyLimitValidatesAndIsIdempotent(t *testing.T) {

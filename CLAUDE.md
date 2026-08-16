@@ -53,6 +53,11 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   `github.com/wow-look-at-my/secret-server/client`.
 - **No CGO.** `CGO_ENABLED=0` is enforced by the Dockerfile build stage.
 - **No Docker SDK.** Shell out to `docker` via `os/exec`.
+- **A set is `go-containers/set.Set`,** never `map[K]bool` or
+  `map[K]struct{}`. go-toolchain's vet analyzer FAILS the build on the
+  first form and warns on the second, and there is no per-line exemption.
+  A `map[K]bool` whose false values carry meaning is a real map — keep it,
+  and keep its literals from being all-true.
 - **Cobra subcommands** live one-per-file in `internal/cli/` and self-register
   via `init()`.
 - **HTTP routing** uses Go 1.22+ `http.ServeMux` patterns (`POST /hook/{id}`).

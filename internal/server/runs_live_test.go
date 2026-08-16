@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -42,9 +43,9 @@ func getRuns(t *testing.T, s *Server, target string) []runs.RunState {
 // absence as termination).
 func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
 	s, _, tr, _ := newTestServer(t)
-	activeIDs := map[string]bool{}
+	activeIDs := set.New[string]()
 	for i := 0; i < 5; i++ {
-		activeIDs[tr.New("flood").ID()] = true
+		activeIDs.Add(tr.New("flood").ID())
 	}
 	for i := 0; i < 6; i++ {
 		tr.New("flood").Finish(runs.StatusSkipped, 0, "")
@@ -60,7 +61,7 @@ func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
 			assert.Equal(t, runs.StatusSkipped, st.Status)
 		} else {
 			gotActive++
-			assert.True(t, activeIDs[st.ID], "unexpected active row %s", st.ID)
+			assert.True(t, activeIDs.Contains(st.ID), "unexpected active row %s", st.ID)
 		}
 	}
 	assert.Equal(t, 5, gotActive, "every active run must be returned no matter how small max is")
@@ -119,22 +120,22 @@ func TestListRunsLiveParam(t *testing.T) {
 	done := tr.New("h")
 	done.Finish(runs.StatusFailure, 1, "boom")
 
-	ids := func(states []runs.RunState) map[string]bool {
-		out := map[string]bool{}
+	ids := func(states []runs.RunState) set.Set[string] {
+		out := set.New[string]()
 		for _, st := range states {
 			assert.False(t, st.Status.Terminal(), "live view leaked terminal run %s", st.ID)
 			assert.Empty(t, st.Output, "list-shaped rows never carry output")
-			out[st.ID] = true
+			out.Add(st.ID)
 		}
 		return out
 	}
 
 	got := ids(getRuns(t, s, "/runs?live=1"))
-	assert.Equal(t, map[string]bool{a.ID(): true, b.ID(): true, c.ID(): true}, got)
+	assert.Equal(t, set.Of(a.ID(), b.ID(), c.ID()), got)
 
 	// ?hook= narrows; max/before don't apply (the active set IS the answer).
 	got = ids(getRuns(t, s, "/runs?live=1&hook=h&max=1"))
-	assert.Equal(t, map[string]bool{a.ID(): true, b.ID(): true}, got)
+	assert.Equal(t, set.Of(a.ID(), b.ID()), got)
 
 	// live=0 (and garbage) keep the ordinary merged view.
 	all := getRuns(t, s, "/runs?live=0")
