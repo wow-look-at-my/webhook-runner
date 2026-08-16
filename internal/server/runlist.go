@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
@@ -189,7 +190,7 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude ma
 	// active stays non-nil so an empty merge still serializes as [].
 	active := make([]runs.RunState, 0, len(live))
 	var capped []runs.RunState
-	seen := make(map[string]struct{}, len(live))
+	seen := set.New[string](len(live))
 	for _, r := range live {
 		snap := r.Snapshot(0)
 		if paged && !snap.Started.Before(before) {
@@ -200,7 +201,7 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude ma
 		}
 		snap.Output = nil
 		snap.OutputTimes = nil
-		seen[snap.ID] = struct{}{}
+		seen.Add(snap.ID)
 		if !paged && !snap.Status.Terminal() {
 			active = append(active, snap)
 		} else {
@@ -217,7 +218,7 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude ma
 			persisted = s.runstore.ListAllBeforeFiltered(before, max, keeper(exclude))
 		}
 		for _, st := range persisted {
-			if _, dup := seen[st.ID]; dup {
+			if seen.Contains(st.ID) {
 				continue
 			}
 			capped = append(capped, st)
