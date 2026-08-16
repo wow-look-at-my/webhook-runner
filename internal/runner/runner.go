@@ -355,14 +355,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// — so it bounds only real container processing, never the time spent
 	// decrypting secrets, building the image, or queued behind other runs.
 	// A hook with no timeout gets NO deadline at all: the run is bounded
-	// only by its idle_timeout (if set) or by the container exiting.
-	// The returned context is not watched directly here (see the top-of-file
-	// comment: exec.Command, not exec.CommandContext, deliberately — a
-	// SIGKILLed docker CLI can leave the container running, so the explicit
-	// select below on silent/parent.Done()/run.Cancelled() is the real
-	// cancellation-observation path). cancel() is still needed to release
-	// the context's own resources.
-	_, cancel := runContext(parent, timeout)
+	// only by its idle_timeout (if set) or by the container exiting. ctx
+	// itself is only watched below (ctx.Done()/ctx.Err()) to distinguish the
+	// absolute-ceiling case from an ordinary parent teardown; the actual
+	// kill still goes through exec.Command + docker kill/stop by name, since
+	// SIGKILLing the docker CLI can leave the container itself running.
+	ctx, cancel := runContext(parent, timeout)
 	defer cancel()
 
 	containerName := "webhook-runner-" + run.ID()
