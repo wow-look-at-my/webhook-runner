@@ -229,7 +229,7 @@ func TestRunnerNoTimeoutRunsToCompletion(t *testing.T) {
 		ID:      "uncapped",
 		Command: []string{"hello"},
 	})
-	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{})
+	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	r.Wait()
 

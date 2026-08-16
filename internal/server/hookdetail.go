@@ -83,7 +83,6 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		State:            h.State,
 		Dind:             h.Dind,
 		APIKey:           h.APIKey != "",
-		APIKey:           h.APIKey != "",
 		SkipConditions:   len(h.SkipIf),
 	}
 	if d := h.Timeout(); d > 0 {
