@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 )
@@ -29,8 +30,8 @@ type fakeRepo struct {
 	head    string
 	tip     string
 	commits []string // newest first, as of the next fetch
-	known   map[string]bool
-	srcAt   map[string]bool
+	known   set.Set[string]
+	srcAt   set.Set[string]
 	resolve map[string]string
 
 	headErr, fetchErr, recentErr, resetErr error
@@ -76,14 +77,14 @@ func (f *fakeRepo) ResetTo(sha string) error {
 
 func (f *fakeRepo) FetchSHA(sha string, depth int) error {
 	f.fetchSHACalls++
-	if !f.known[sha] {
+	if !f.known.Contains(sha) {
 		return fmt.Errorf("sha %s not on origin", sha)
 	}
 	return nil
 }
 
 func (f *fakeRepo) TreeHasDir(sha, path string) bool {
-	return f.srcAt[sha]
+	return f.srcAt.Contains(sha)
 }
 
 func (f *fakeRepo) ResolveRef(ref string) (string, error) {
@@ -92,7 +93,7 @@ func (f *fakeRepo) ResolveRef(ref string) (string, error) {
 		return sha, nil
 	}
 	// Any sha the fake knows about resolves to itself.
-	if f.known[ref] || ref == f.tip || ref == f.head {
+	if f.known.Contains(ref) || ref == f.tip || ref == f.head {
 		return ref, nil
 	}
 	for _, c := range f.commits {

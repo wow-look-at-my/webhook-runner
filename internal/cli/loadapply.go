@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
@@ -79,7 +80,7 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 	// per reload tick. A target that comes back is forgotten here, so a
 	// later re-orphaning is announced again.
 	var orphanMu sync.Mutex
-	announced := map[string]struct{}{}
+	announced := set.New[string]()
 	return func() error {
 		// Layout detection runs on EVERY reload: a hooks-repo pull can
 		// restructure the tree (legacy <-> src), and the load must follow
@@ -306,7 +307,7 @@ func (e refusedError) Unwrap() []error { return e.errs }
 // `announced` across reloads (targets that return are forgotten so a later
 // re-orphaning is announced again). Orphaned overrides are never removed:
 // they stay stored and re-apply if the hook/group comes back.
-func announceOrphanedOverrides(loaded map[string]*hooks.Hook, cfg *concurrency.Config, ov *overrides.Store, mu *sync.Mutex, announced map[string]struct{}, logger *slog.Logger, rec *events.Recorder) {
+func announceOrphanedOverrides(loaded map[string]*hooks.Hook, cfg *concurrency.Config, ov *overrides.Store, mu *sync.Mutex, announced set.Set[string], logger *slog.Logger, rec *events.Recorder) {
 	type orphan struct {
 		msg    string
 		fields map[string]string
@@ -335,16 +336,16 @@ func announceOrphanedOverrides(loaded map[string]*hooks.Hook, cfg *concurrency.C
 	mu.Lock()
 	defer mu.Unlock()
 	for key, o := range current {
-		if _, seen := announced[key]; seen {
+		if announced.Contains(key) {
 			continue
 		}
-		announced[key] = struct{}{}
+		announced.Add(key)
 		logger.Warn("operator override is orphaned", "target", key)
 		rec.Record("override.orphaned", o.msg, o.fields)
 	}
-	for key := range announced {
+	for key := range announced.All() {
 		if _, still := current[key]; !still {
-			delete(announced, key)
+			announced.Remove(key)
 		}
 	}
 }

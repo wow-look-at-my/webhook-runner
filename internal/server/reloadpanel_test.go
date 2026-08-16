@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 	"github.com/wow-look-at-my/webhook-runner/internal/reloadgate"
@@ -35,7 +36,7 @@ type fakePanelRepo struct {
 	tip      string
 	commits  []string
 	subjects map[string]string
-	srcAt    map[string]bool
+	srcAt    set.Set[string]
 	fetches  int
 }
 
@@ -53,7 +54,7 @@ func (f *fakePanelRepo) RecentCommits(max int) ([]string, error) {
 func (f *fakePanelRepo) CommitInfo(sha string) (string, time.Time, error) {
 	return f.subjects[sha], time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC), nil
 }
-func (f *fakePanelRepo) TreeHasDir(sha, path string) bool { return f.srcAt[sha] }
+func (f *fakePanelRepo) TreeHasDir(sha, path string) bool { return f.srcAt.Contains(sha) }
 
 // fakeReloadControl scripts the gate's manual-control surface.
 type fakeReloadControl struct {
@@ -154,7 +155,7 @@ func TestReloadStatusGated(t *testing.T) {
 	repo := &fakePanelRepo{
 		head:     "aaaa",
 		subjects: map[string]string{"aaaa": "the live one", "cccc": "the held one"},
-		srcAt:    map[string]bool{"aaaa": true},
+		srcAt:    set.Of("aaaa"),
 	}
 	control := &fakeReloadControl{
 		status: reloadgate.GateStatus{
@@ -191,7 +192,7 @@ func TestReloadStatusGated(t *testing.T) {
 }
 
 func TestReloadStatusLegacy(t *testing.T) {
-	repo := &fakePanelRepo{head: "bbbb", subjects: map[string]string{"bbbb": "legacy head"}, srcAt: map[string]bool{"bbbb": true}}
+	repo := &fakePanelRepo{head: "bbbb", subjects: map[string]string{"bbbb": "legacy head"}, srcAt: set.Of("bbbb")}
 	s := newReloadPanelServer(t, repo, nil, nil, events.NewRecorder(16))
 
 	out := adminJSON(t, s, http.MethodGet, "/reload/status", "", http.StatusOK)
@@ -218,7 +219,7 @@ func TestReloadCommits(t *testing.T) {
 		tip:      "cccc",
 		commits:  []string{"cccc", "bbbb", "aaaa"},
 		subjects: map[string]string{"cccc": "newest", "bbbb": "serving", "aaaa": "oldest"},
-		srcAt:    map[string]bool{"cccc": true, "bbbb": true},
+		srcAt:    set.Of("cccc", "bbbb"),
 	}
 	control := &fakeReloadControl{
 		status: reloadgate.GateStatus{ServingSHA: "bbbb", Branch: "master", Context: "all-builds"},
