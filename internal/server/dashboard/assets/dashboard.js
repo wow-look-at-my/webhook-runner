@@ -2099,6 +2099,7 @@ function renderAppMissing(id) {
   missing.hidden = false;
   document.getElementById("app-body").hidden = true;
   document.getElementById("app-switch").hidden = true;
+  document.getElementById("app-diagnostics-link").hidden = true;
 }
 
 // The app page for a namespace whose hook is gone (orphaned state): the
@@ -2144,6 +2145,12 @@ function renderApp(detail, runs, events) {
   const switchSlot = document.getElementById("app-switch");
   switchSlot.hidden = false;
   switchSlot.replaceChildren(hookSwitch(info.id, detail.disabled));
+
+  // The server sets Content-Disposition: attachment on this response, so a
+  // plain click downloads it — no blob/JS assembly needed.
+  const diagLink = document.getElementById("app-diagnostics-link");
+  diagLink.hidden = false;
+  diagLink.href = "/hooks/" + encodeURIComponent(info.id) + "/diagnostics";
 
   fillDl(document.getElementById("app-info"), [
     ["Trigger path", triggerPath(info.id)],

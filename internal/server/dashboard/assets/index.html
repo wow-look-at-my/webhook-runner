@@ -276,6 +276,12 @@
     <div class="app-title-row">
       <h2 id="app-title"></h2>
       <span id="app-switch" hidden></span>
+      <!-- One downloadable bundle for this hook: config, image/KV/stats,
+           concurrency-group state, recent runs WITH output, activity events,
+           and active needs-attention entries — what to hand over for
+           debugging an incident instead of copying five panels by hand. -->
+      <a id="app-diagnostics-link" class="btn toggle-btn" download hidden
+         title="Download a JSON bundle of this hook's config, recent runs (with output), activity, and needs-attention state">Download diagnostics</a>
     </div>
     <p id="app-desc"></p>
     <p id="app-missing" class="empty" hidden>No such hook.</p>
