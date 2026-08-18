@@ -37,7 +37,22 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   count — plus image state, KV namespace stats, and run stats over the live
   tracker window merged with the persisted run history; `stats.retention`
   labels that window and `stats.skipped` is the skip bucket — see the
-  skip_if bullet under "Things easy to get wrong"),
+  skip_if bullet under "Things easy to get wrong"), `/hooks/{id}/diagnostics`
+  (one downloadable JSON bundle — `Content-Disposition: attachment` — for
+  handing an incident to someone debugging it: the same config summary as
+  `/hooks/{id}` plus hooks-tree state, the hook's concurrency-group state,
+  its most recent runs newest-first WITH FULL OUTPUT (`?runs=`, default 50
+  max 500; `?tail=`, default 500 lines, `-1` = full transcript — the one
+  deliberate widening past the rest of this file's value-free contract,
+  because `/runs/{id}` already serves output in full to admin-port callers
+  and a diagnostic bundle without the logs misses the point of an incident
+  bundle), its activity events (`?events=`, default 300 max 2000, every
+  kind — not `exclude=run` like the dashboard feeds), and every currently
+  ACTIVE needs-attention entry scoped to the hook or server-wide, even for
+  an effectively-disabled hook (unlike `/attention`'s dashboard-banner
+  view, which drops those — a bundle FOR a disabled hook is exactly where
+  an operator wants to see why it got disabled). See
+  `internal/server/diagnostics.go`.),
   `/runs` (`?hook=` filters; live + persisted history, deduped by run ID,
   newest-first; `?exclude=<csv of statuses>` drops those runs BEFORE `?max=`
   applies — FILTER FIRST, THEN LIMIT, so a hook whose newest 50 runs are all
