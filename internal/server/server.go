@@ -375,6 +375,12 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /hooks/{id}/settings", s.handleSettingsGet)
 	s.adminMux.HandleFunc("PUT /hooks/{id}/settings", s.handleSettingsSet)
 	s.adminMux.HandleFunc("DELETE /hooks/{id}/settings", s.handleSettingsClear)
+	// One downloadable incident bundle: config summary, image/KV/stats,
+	// concurrency-group state, recent runs WITH output, activity events, and
+	// active needs-attention entries (see diagnostics.go) — what an operator
+	// would otherwise gather by hand across five panels to hand off for
+	// debugging.
+	s.adminMux.HandleFunc("GET /hooks/{id}/diagnostics", s.handleHookDiagnostics)
 	// Managers: the first-class roster (state, instance, restarts, inbox,
 	// output tail), the kill switch, and the instance bounce.
 	s.adminMux.HandleFunc("GET /managers", s.handleListManagers)
