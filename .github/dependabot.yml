@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # go-toolchain's own auto-updater owns wow-look-at-my-org deps (see
+      # claude_snippets/go-toolchain-branch-tracking.md); a second bot bumping
+      # the same require lines would fight it.
+      - dependency-name: "github.com/wow-look-at-my/*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
