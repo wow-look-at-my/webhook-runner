@@ -845,7 +845,7 @@ are the only off switches.
 
 There are no field cuts (ruling 8): every hook field is supported with
 manager-shaped semantics -- carried identically: `script`/`command`,
-`user`, `workdir`, `networks`, `volumes`, `extra_docker_args`,
+`user`, `workdir`, `networks`, `volumes`,
 `api_key_header`, `signature_header`, `env`, `tests`, `skip_if`, the auth
 trio; manager-shaped:
 

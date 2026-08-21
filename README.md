@@ -535,11 +535,12 @@ wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
 > container can reach the host kernel. `dind` is therefore an audited,
 > opt-in, per-hook capability; enable it only for **trusted,
 > operator-curated** hooks (the hooks repo is operator-controlled). It is
-> deliberately first-class rather than something assembled from
-> `extra_docker_args`: those raw args are appended only on the live-run path
-> (so they can never cover `webhook-runner test`) and would still leave you
-> hand-writing the volume, whereas `dind` applies the exact same two flags to
-> both paths and is auditable as a single boolean.
+> deliberately first-class rather than something assembled from raw docker
+> args: `dind` applies the exact same two flags to both the live-run and
+> `webhook-runner test` paths, and is auditable as a single boolean. There is
+> no general raw-docker-args escape hatch -- a hook cannot hand the runner
+> arbitrary `docker run` flags, so every privilege a container gets is a named,
+> reviewable field.
 
 > **Deploy-first:** `dind` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"dind":

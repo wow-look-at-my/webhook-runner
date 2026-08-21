@@ -1,6 +1,6 @@
 module github.com/wow-look-at-my/webhook-runner
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/fsnotify/fsnotify v1.8.0
@@ -12,7 +12,7 @@ require (
 	go.etcd.io/bbolt v1.5.0
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260815235059-bc089f373e68 // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0-20260820210621-2e1261867045 // go-toolchain:auto-branch
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect

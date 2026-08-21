@@ -145,16 +145,16 @@ type managerJSON struct {
 	ReconcileInterval string `json:"reconcile_interval"`
 	Timeout           string `json:"timeout"`
 
-	Command         []string        `json:"command"`
-	Script          *Script         `json:"script"`
-	Tests           [][]string      `json:"tests"`
-	Networks        []string        `json:"networks"`
-	Volumes         []string        `json:"volumes"`
-	Settings        json.RawMessage `json:"settings"`
-	User            string          `json:"user"`
-	Workdir         string          `json:"workdir"`
-	ExtraDockerArgs []string        `json:"extra_docker_args"`
-	Dind            bool            `json:"dind"`
+	Command  []string        `json:"command"`
+	Script   *Script         `json:"script"`
+	Tests    [][]string      `json:"tests"`
+	Networks []string        `json:"networks"`
+	Volumes  []string        `json:"volumes"`
+	Settings json.RawMessage `json:"settings"`
+	User     string          `json:"user"`
+	Workdir  string          `json:"workdir"`
+	Dind     bool            `json:"dind"`
+	Seccomp  *SeccompConfig  `json:"seccomp"`
 
 	ConcurrencyGroup string              `json:"concurrency_group"`
 	RunTitle         string              `json:"run_title"`
@@ -199,8 +199,8 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 		Settings:         mj.Settings,
 		User:             mj.User,
 		Workdir:          mj.Workdir,
-		ExtraDockerArgs:  mj.ExtraDockerArgs,
 		Dind:             mj.Dind,
+		Seccomp:          mj.Seccomp,
 		ConcurrencyGroup: mj.ConcurrencyGroup,
 		RunTitle:         mj.RunTitle,
 		GitHubStatus:     mj.GitHubStatus,
