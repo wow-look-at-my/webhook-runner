@@ -249,7 +249,7 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
 - `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
   EXACTLY two docker-run flags — `--privileged` and
   `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
-  live-run path (`runner.execute`, before extra_docker_args + the image)
+  live-run path (`runner.execute`, before the image)
   AND the `webhook-runner test` path (`runner.runOneTest`, before the
   image); that run/test parity is load-bearing so a dind hook's declared
   `tests` can start a nested daemon under `webhook-runner test`. The
@@ -260,10 +260,10 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   docker daemon is NEVER exposed (no host socket mount); the nested daemon
   is a throwaway. `--privileged` is host-root-equivalent, so this is an
   AUDITED capability — enable it only for trusted, operator-curated hooks.
-  It is deliberately first-class rather than `extra_docker_args`: those raw
-  args are appended only on the live-run path (they can't cover the test
-  path) and would still leave the volume hand-written, whereas `dind`
-  covers both paths with one greppable boolean. New hook.json field ⇒ same
+  It is deliberately first-class rather than raw docker args: `dind` covers
+  both paths with one greppable boolean, and there is no general
+  raw-docker-args escape hatch at all, so every privilege a container gets
+  is a named, reviewable field. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule` (old binaries reject it via
   DisallowUnknownFields).
 - `script` (hook.json) is parse-time sugar for `command`:

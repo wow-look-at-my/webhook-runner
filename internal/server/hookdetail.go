@@ -53,6 +53,11 @@ type HookInfo struct {
 	// daemon). Surfaced so an operator can see this host-root-equivalent
 	// capability on the hook's drill-down page.
 	Dind bool `json:"dind,omitempty"`
+	// SeccompUserns reports whether the hook opted into unprivileged user
+	// namespaces (a relaxed seccomp profile allowing unshare/clone). Like
+	// Dind, this is an audited privilege an operator should be able to see
+	// on the drill-down page rather than having to read hook.json.
+	SeccompUserns bool `json:"seccomp_userns,omitempty"`
 	// Timeout is the absolute run ceiling, when the hook sets one (empty =
 	// no absolute ceiling; the run is bounded by idle_timeout, if set, or
 	// runs until it exits).
@@ -82,6 +87,7 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		ConcurrencyGroup: h.ConcurrencyGroup,
 		State:            h.State,
 		Dind:             h.Dind,
+		SeccompUserns:    h.UsernsAllowed(),
 		APIKey:           h.APIKey != "",
 		SkipConditions:   len(h.SkipIf),
 	}

@@ -244,7 +244,17 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	if hook.Dind {
 		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
 	}
-	args = append(args, hook.ExtraDockerArgs...)
+	// seccomp.userns, same as the hook paths. The profile file must outlive
+	// the daemon's read at container start; this cleanup shares the deferred
+	// lifetime of the session's other temp files above.
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, instanceID)
+	if err != nil {
+		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for manager %s failed: %v", hook.ID, err),
+			map[string]string{"hook": hook.ID})
+		return fail(runs.StatusError, fmt.Sprintf("seccomp profile: %v", err), false)
+	}
+	defer seccompCleanup()
+	args = append(args, seccompFlags...)
 	args = append(args, image)
 	childArgv, err := imageCommand(r.dockerBin, image, hook.Command)
 	if err != nil {

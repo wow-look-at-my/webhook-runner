@@ -35,11 +35,15 @@
     "type": "boolean",
     "default": true
   },
-  "extra_docker_args": {
-    "type": "array",
-    "items": {
-      "type": "string"
-    }
+  "seccomp": {
+    "type": "object",
+    "properties": {
+      "userns": {
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "additionalProperties": false
   },
   "github_status": {
     "type": "object",
