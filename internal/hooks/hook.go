@@ -72,8 +72,15 @@ type Hook struct {
 	// there would show the override itself. Unexported and json:"-": it is
 	// derived state, never part of the manifest contract.
 	manifestSettings json.RawMessage `json:"-"`
-	User             string          `json:"user,omitempty"`
-	Workdir          string          `json:"workdir,omitempty"`
+	// manifestRaw is the whole comment-stripped hook.json this Hook parsed
+	// from, kept so the admin config view can render the document as
+	// authored instead of a hand-mirrored struct. Unexported and json:"-":
+	// derived state, never part of the manifest contract. Callers reach it
+	// through ManifestJSON, and it is ONLY ever served through a key
+	// whitelist -- it still contains every secret the file does.
+	manifestRaw json.RawMessage `json:"-"`
+	User        string          `json:"user,omitempty"`
+	Workdir     string          `json:"workdir,omitempty"`
 
 	// TimeoutRaw, when set, is the absolute processing ceiling: the run is
 	// killed once it has been processing this long, regardless of output.
@@ -261,6 +268,18 @@ func (h *Hook) UsernsAllowed() bool {
 	return h != nil && h.Seccomp != nil && h.Seccomp.Userns
 }
 
+// ManifestJSON returns the comment-stripped hook.json this Hook parsed
+// from. It contains EVERY secret the file does (api_key, secret, settings
+// values), so it must never be served raw -- the admin view filters it
+// through an explicit key whitelist. Empty when the Hook was built by a
+// caller other than Parse (tests construct Hooks directly).
+func (h *Hook) ManifestJSON() json.RawMessage {
+	if h == nil {
+		return nil
+	}
+	return h.manifestRaw
+}
+
 // GitHubStatusConfig configures the optional GitHub commit status update
 // posted before and after a hook run.
 type GitHubStatusConfig struct {
@@ -387,6 +406,14 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	// Keep the comment-stripped manifest so the admin view can show the
+	// hook's config AS AUTHORED (filtered through a key whitelist) rather
+	// than a hand-mirrored copy that drifts. Held in memory rather than
+	// re-read from disk at request time: this is the document that actually
+	// parsed into this Hook, so it stays truthful mid-reload.
+	if stripped, err := io.ReadAll(stripComments(data)); err == nil {
+		h.manifestRaw = stripped
+	}
 	if err := h.resolveScript(); err != nil {
 		return nil, err
 	}

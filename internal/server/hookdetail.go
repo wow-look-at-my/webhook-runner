@@ -19,8 +19,14 @@ import (
 // shape stays hook-scoped so a later grouping concept can aggregate several
 // of these without reshaping the fields.
 type HookDetail struct {
-	Info  HookInfo           `json:"info"`
-	Image runner.ImageStatus `json:"image"`
+	Info HookInfo `json:"info"`
+	// Config is the hook's own hook.json, passed through a key whitelist
+	// (see hookconfig.go): every non-secret key exactly as authored, with
+	// api_key/secret/settings values replaced by presence-only summaries.
+	// Info stays the compact summary the list view shares; this is the
+	// full document an operator would otherwise have to read off disk.
+	Config HookConfig         `json:"config"`
+	Image  runner.ImageStatus `json:"image"`
 	// Disabled is the operator kill switch (operational state, not
 	// hook.json config — which is why it sits beside Info, not in it):
 	// true means deliveries are rejected (503) and scheduled runs skipped
@@ -53,11 +59,6 @@ type HookInfo struct {
 	// daemon). Surfaced so an operator can see this host-root-equivalent
 	// capability on the hook's drill-down page.
 	Dind bool `json:"dind,omitempty"`
-	// SeccompUserns reports whether the hook opted into unprivileged user
-	// namespaces (a relaxed seccomp profile allowing unshare/clone). Like
-	// Dind, this is an audited privilege an operator should be able to see
-	// on the drill-down page rather than having to read hook.json.
-	SeccompUserns bool `json:"seccomp_userns,omitempty"`
 	// Timeout is the absolute run ceiling, when the hook sets one (empty =
 	// no absolute ceiling; the run is bounded by idle_timeout, if set, or
 	// runs until it exits).
@@ -87,7 +88,6 @@ func hookInfo(h *hooks.Hook) HookInfo {
 		ConcurrencyGroup: h.ConcurrencyGroup,
 		State:            h.State,
 		Dind:             h.Dind,
-		SeccompUserns:    h.UsernsAllowed(),
 		APIKey:           h.APIKey != "",
 		SkipConditions:   len(h.SkipIf),
 	}
@@ -120,6 +120,7 @@ func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	detail := HookDetail{
 		Info:     hookInfo(h),
+		Config:   filterHookConfig(h.ManifestJSON()),
 		Image:    s.runner.ImageStatus([]*hooks.Hook{h})[0],
 		Disabled: s.effectiveDisabled(id),
 		Stats:    s.mergedStats(id),
