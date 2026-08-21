@@ -39,12 +39,6 @@
           "type": "boolean",
           "default": true
         },
-        "extra_docker_args": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
         "github_status": {
           "type": "object",
           "additionalProperties": false,
@@ -129,6 +123,16 @@
               "description": "Additional arguments passed after the script path."
             }
           }
+        },
+        "seccomp": {
+          "type": "object",
+          "properties": {
+            "userns": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false
         },
         "secret": {
           "type": "string"
@@ -282,9 +286,6 @@
     "enable": {
       "description": "The kill switch's DEFAULT position, exactly the hook contract: absent or true means ENABLED — a declared manager starts working the moment it deploys. Explicit false loads it disabled (no session container, deliveries 503) until an operator enables it. The dashboard switch is a persisted runtime override that outranks this default in both directions; it is the emergency control, never a go-live gate."
     },
-    "extra_docker_args": {
-      "description": "Additional raw docker run arguments, appended before the image name."
-    },
     "github_status": {
       "description": "GitHub commit status updates with manager-shaped, PER-DELIVERY semantics: when a delivery's payload carries a repo + head SHA, the runner posts 'pending' as the event is accepted into the inbox and 'success'/'error' when the manager finishes/abandons that event. No status is posted for ticks or start events (they have no commit)."
     },
@@ -303,6 +304,9 @@
     },
     "script": {
       "description": "Parse-time sugar for command: run a script file from the manager directory with a named interpreter. The script is baked into the image like all code, so the interpreter must be installed in the image. An explicit command overrides the derived one."
+    },
+    "seccomp": {
+      "description": "Narrow the session container's syscall filter, exactly the hook seccomp contract. Absent means docker's builtin profile, unmodified. seccomp.userns (default false) allows unprivileged USER NAMESPACES by running the container under the default profile plus an ungated allow for unshare/clone/clone3/setns; every other syscall keeps the default policy. Needed by an in-container sandbox such as bubblewrap (and so `dats` on its default backend). Note the manager's container is LONG-LIVED, so the relaxed profile applies for the whole session rather than one run. An AUDITED opt-in like dind: enable only for trusted, operator-curated managers."
     },
     "secret": {
       "description": "GitHub-style HMAC-SHA256 webhook secret: deliveries must carry a valid X-Hub-Signature-256 over the raw body. The usual choice for managers fed by a GitHub App/org webhook."

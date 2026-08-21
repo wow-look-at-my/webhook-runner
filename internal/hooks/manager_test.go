@@ -48,7 +48,6 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 	  "settings": {"k": "v", "limit": 4},
 	  "user": "1000",
 	  "workdir": "/w",
-	  "extra_docker_args": ["--label", "x"],
 	  "dind": true,
 	  "concurrency_group": "g",
 	  "run_title": "manager {{x}}",

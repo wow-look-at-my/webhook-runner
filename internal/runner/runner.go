@@ -410,15 +410,29 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// subtree when the hook declared it (removed when the run ends), else from
 	// an anonymous volume --rm auto-removes; either way inner storage never
 	// leaks between runs. The host's daemon is never exposed (no socket
-	// mount). Injected before extra_docker_args and the image so a hook's raw
-	// args and command still trail.
+	// mount). Injected before the image so a hook's command still trails.
 	if hook.Dind {
 		args = append(args, "--privileged")
 		if !hook.ScratchCovers(dindStorageDir) {
 			args = append(args, "--mount", "type=volume,dst="+dindStorageDir)
 		}
 	}
-	args = append(args, hook.ExtraDockerArgs...)
+	// seccomp.userns: a profile file the DAEMON reads while starting the
+	// container, so it must outlive `docker run`'s startup -- the cleanup is
+	// deferred for the whole run rather than fired here. A hook that did not
+	// opt in adds no flags at all.
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, run.ID())
+	if err != nil {
+		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for %s failed: %v", hook.ID, err),
+			map[string]string{"hook": hook.ID, "run": run.ID()})
+		run.Finish(runs.StatusError, -1, fmt.Sprintf("seccomp profile: %v", err))
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	defer seccompCleanup()
+	args = append(args, seccompFlags...)
 	args = append(args, image)
 	if stateForwarding {
 		// The shim is the entrypoint; hand it the command the image would have

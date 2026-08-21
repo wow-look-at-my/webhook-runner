@@ -72,8 +72,15 @@ type Hook struct {
 	// there would show the override itself. Unexported and json:"-": it is
 	// derived state, never part of the manifest contract.
 	manifestSettings json.RawMessage `json:"-"`
-	User             string          `json:"user,omitempty"`
-	Workdir          string          `json:"workdir,omitempty"`
+	// manifestRaw is the whole comment-stripped hook.json this Hook parsed
+	// from, kept so the admin config view can render the document as
+	// authored instead of a hand-mirrored struct. Unexported and json:"-":
+	// derived state, never part of the manifest contract. Callers reach it
+	// through ManifestJSON, and it is ONLY ever served through a key
+	// whitelist -- it still contains every secret the file does.
+	manifestRaw json.RawMessage `json:"-"`
+	User        string          `json:"user,omitempty"`
+	Workdir     string          `json:"workdir,omitempty"`
 
 	// TimeoutRaw, when set, is the absolute processing ceiling: the run is
 	// killed once it has been processing this long, regardless of output.
@@ -101,8 +108,7 @@ type Hook struct {
 	// hook that sets it.
 	IdleTimeoutRaw string `json:"idle_timeout,omitempty"`
 
-	ExtraDockerArgs []string            `json:"extra_docker_args,omitempty"`
-	GitHubStatus    *GitHubStatusConfig `json:"github_status,omitempty"`
+	GitHubStatus *GitHubStatusConfig `json:"github_status,omitempty"`
 
 	// ConcurrencyGroup, when set, names a concurrency group the hook's runs
 	// must be scheduled through: at most that group's limit run at once and
@@ -205,6 +211,14 @@ type Hook struct {
 	// `tests`, which run with these same flags.
 	ReadOnlyRootfs bool `json:"read_only_rootfs,omitempty"`
 
+	// Seccomp narrows the container's syscall filter policy. Absent (the
+	// nil pointer) means the DEFAULT: docker's builtin seccomp profile,
+	// unmodified — the locked-down posture every hook gets for free. A hook
+	// can only RELAX specific, named behaviors here; there is deliberately
+	// no way to name an arbitrary profile or to say "unconfined", because
+	// that would be extra_docker_args again with a friendlier spelling.
+	Seccomp *SeccompConfig `json:"seccomp,omitempty"`
+
 	// Schedule, when set, makes the scheduler fire this hook on a fixed
 	// interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger. A
 	// scheduled run is dispatched through the exact same pipeline as an
@@ -255,6 +269,52 @@ type Hook struct {
 	// constructed in code (tests) may leave it nil — RenderRunTitle then
 	// parses on demand.
 	titleTmpl *titleTemplate
+}
+
+// SeccompConfig is the `seccomp` block: one named relaxation per field, so
+// every syscall privilege a container gets is greppable and reviewable.
+//
+// Docker's --security-opt seccomp= takes either the literal "unconfined"
+// (no filtering at all) or a PATH to a profile JSON -- there is no CLI
+// syntax for "the default profile, plus one syscall". So a narrow
+// relaxation necessarily means shipping a profile document; the runner
+// embeds it and writes it per run rather than requiring every fleet host to
+// be provisioned with a file that could drift or go missing.
+type SeccompConfig struct {
+	// Userns, when true, allows the container to create unprivileged user
+	// namespaces: the runner passes a profile that is docker's default plus
+	// an UNGATED allow for unshare/clone/clone3 (the default profile permits
+	// those only for a container holding CAP_SYS_ADMIN, which an ordinary
+	// hook container does not have). Everything else in the default profile
+	// -- every other blocked syscall -- stays blocked.
+	//
+	// This is what a sandboxing tool inside the container needs: bubblewrap,
+	// and therefore `dats` on its default bwrap backend, cannot create its
+	// namespace without it. Note the direction of the trade: the hook gains
+	// the ability to sandbox ITS OWN workload, at the cost of a wider kernel
+	// surface for the container itself. Unprivileged user namespaces have a
+	// real CVE history -- that is why distros started restricting them -- so
+	// this is an AUDITED opt-in like dind, not a default, and it belongs
+	// only on trusted, operator-curated hooks.
+	Userns bool `json:"userns,omitempty"`
+}
+
+// UsernsAllowed reports whether the hook opted into unprivileged user
+// namespaces. Nil-safe: an absent seccomp block means the default profile.
+func (h *Hook) UsernsAllowed() bool {
+	return h != nil && h.Seccomp != nil && h.Seccomp.Userns
+}
+
+// ManifestJSON returns the comment-stripped hook.json this Hook parsed
+// from. It contains EVERY secret the file does (api_key, secret, settings
+// values), so it must never be served raw -- the admin view filters it
+// through an explicit key whitelist. Empty when the Hook was built by a
+// caller other than Parse (tests construct Hooks directly).
+func (h *Hook) ManifestJSON() json.RawMessage {
+	if h == nil {
+		return nil
+	}
+	return h.manifestRaw
 }
 
 // GitHubStatusConfig configures the optional GitHub commit status update
@@ -383,6 +443,14 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
+	// Keep the comment-stripped manifest so the admin view can show the
+	// hook's config AS AUTHORED (filtered through a key whitelist) rather
+	// than a hand-mirrored copy that drifts. Held in memory rather than
+	// re-read from disk at request time: this is the document that actually
+	// parsed into this Hook, so it stays truthful mid-reload.
+	if stripped, err := io.ReadAll(stripComments(data)); err == nil {
+		h.manifestRaw = stripped
+	}
 	if err := h.resolveScript(); err != nil {
 		return nil, err
 	}

@@ -117,6 +117,17 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	if hook.ReadOnlyRootfs {
 		args = append(args, "--read-only")
 	}
+	// Same run/test parity for seccomp.userns: a hook whose tests exercise a
+	// sandbox (bwrap, dats' default backend) needs the relaxed profile here
+	// too, or its declared tests could never cover what its live runs do.
+	// No Runner here, so no configured tmpDir: "" means the OS default,
+	// which is right for a one-shot test container.
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
+	if err != nil {
+		return err
+	}
+	defer seccompCleanup()
+	args = append(args, seccompFlags...)
 	args = append(args, image)
 	args = append(args, argv...)
 
