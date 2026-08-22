@@ -36,13 +36,33 @@ var mobyDefaultSeccomp []byte
 
 // usernsSyscalls are the calls bubblewrap (and anything else creating an
 // unprivileged user namespace) needs. The vendored default already allows
-// them, but ONLY for a container holding CAP_SYS_ADMIN -- an ordinary hook
-// container has no such capability, so the gated rule never matches and the
-// call falls through to the profile's SCMP_ACT_ERRNO default. Appending an
-// UNGATED allow for just these names is the whole relaxation: last rule
-// wins in libseccomp's evaluation for a given syscall, and every other
-// syscall keeps whatever the default profile said.
-var usernsSyscalls = []string{"unshare", "clone", "clone3", "setns"}
+// most of them, but ONLY for a container holding CAP_SYS_ADMIN -- an
+// ordinary hook container has no such capability, so the gated rule never
+// matches and the call falls through to the profile's SCMP_ACT_ERRNO
+// default. Appending an UNGATED allow for just these names is the whole
+// relaxation: last rule wins in libseccomp's evaluation for a given
+// syscall, and every other syscall keeps whatever the default profile said.
+//
+// CREATING the namespace is only half of what a sandbox does. Inside its
+// new user + mount namespace bubblewrap builds the filesystem it promised
+// -- the read-only bind of /, the private /tmp, the fresh /proc -- and
+// those are mount/umount2/pivot_root, which the default profile gates on
+// CAP_SYS_ADMIN exactly as it gates unshare (pivot_root it does not name at
+// all, so that one hits the default deny). Allowing only the namespace
+// calls produced a container where `unshare --user` succeeded and bwrap
+// still failed, reporting the misleading "Creating new namespace failed:
+// Operation not permitted" -- the namespace was made; the first mount in it
+// was refused.
+//
+// These are namespaced operations, not host ones: a mount inside an
+// unprivileged user namespace can only affect that namespace's own mount
+// table, which is the isolation the sandbox exists to build.
+var usernsSyscalls = []string{
+	// Make the namespaces.
+	"unshare", "clone", "clone3", "setns",
+	// Furnish them.
+	"mount", "umount2", "pivot_root",
+}
 
 // usernsProfile returns the vendored default profile with an ungated allow
 // for the user-namespace syscalls appended. It parses and re-marshals
