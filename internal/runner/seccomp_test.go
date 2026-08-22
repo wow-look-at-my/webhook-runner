@@ -58,8 +58,8 @@ func TestUsernsProfileAllowsTheNamespaceCalls(t *testing.T) {
 	require.Nil(t, err)
 
 	for _, call := range namespaceCalls {
-		assert.True(t, profileAllowsUngated(t, profile, call))
-
+		assert.True(t, profileAllowsUngated(t, profile, call),
+			"%s must be allowed ungated: bwrap cannot create its namespace without it", call)
 	}
 }
 
@@ -72,8 +72,38 @@ func TestUsernsProfileAllowsTheSandboxToBeBuilt(t *testing.T) {
 	require.Nil(t, err)
 
 	for _, call := range sandboxCalls {
-		assert.True(t, profileAllowsUngated(t, profile, call))
+		assert.True(t, profileAllowsUngated(t, profile, call),
+			"%s must be allowed ungated: the namespace is created and then bwrap cannot "+
+				"bind /, mount its private /tmp, or pivot into the sandbox (reported "+
+				"misleadingly as \"Creating new namespace failed\")", call)
+	}
+}
 
+// Proof that the assertion above can actually FAIL -- that it is a regression
+// test and not a tautology. It rebuilds the profile from the PRE-FIX syscall
+// list (namespaces only, the exact bug) and checks that the sandbox calls come
+// back denied. Without this, the test above would keep passing if someone
+// removed the mount syscalls from usernsSyscalls AND the assertion's own
+// helper broke: here the two disagree on purpose.
+func TestTheOldNamespaceOnlyListWouldNotBuildASandbox(t *testing.T) {
+	saved := usernsSyscalls
+	t.Cleanup(func() { usernsSyscalls = saved })
+
+	// The list exactly as it shipped, and exactly as it failed on a real
+	// gha-runner container.
+	usernsSyscalls = []string{"unshare", "clone", "clone3", "setns"}
+	profile, err := usernsProfile()
+	require.Nil(t, err)
+
+	for _, call := range namespaceCalls {
+		assert.True(t, profileAllowsUngated(t, profile, call),
+			"%s: the old list did allow the namespace calls -- that half worked, "+
+				"which is what made the bug so hard to read", call)
+	}
+	for _, call := range sandboxCalls {
+		assert.False(t, profileAllowsUngated(t, profile, call),
+			"%s: the old list must NOT allow this, or this file is not testing "+
+				"the bug it claims to test", call)
 	}
 }
 
