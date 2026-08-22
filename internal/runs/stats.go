@@ -122,7 +122,18 @@ func ComputeStats(states []RunState) HookRunStats {
 	for i := range states {
 		snap := states[i]
 		stats.ByStatus[snap.Status]++
-		if stats.LastRun == nil || snap.Started.After(stats.LastRun.Started) {
+		// Newest by start time, with ties broken toward a run that has not
+		// finished. Several runs accepted inside one clock tick carry the SAME
+		// Started -- time.Now() is not guaranteed to advance between two
+		// consecutive calls -- and a strict After() then leaves the winner to
+		// iteration order, which is not creation order. The dashboard read
+		// "what is this hook doing right now", so a live run is the honest
+		// answer when it cannot be ordered against a finished one.
+		newer := stats.LastRun == nil ||
+			snap.Started.After(stats.LastRun.Started) ||
+			(snap.Started.Equal(stats.LastRun.Started) && stats.LastRun.Finished.IsZero() == snap.Finished.IsZero() && snap.ID > stats.LastRun.ID) ||
+			(snap.Started.Equal(stats.LastRun.Started) && !stats.LastRun.Finished.IsZero() && snap.Finished.IsZero())
+		if newer {
 			stats.LastRun = &LastRun{ID: snap.ID, Status: snap.Status, Started: snap.Started, Finished: snap.Finished}
 		}
 		if !snap.Status.Terminal() {
