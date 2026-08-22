@@ -12,6 +12,8 @@ package runner
 
 import (
 	"encoding/json"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -30,9 +32,8 @@ func profileAllowsUngated(t *testing.T, profile []byte, syscall string) bool {
 			} `json:"includes"`
 		} `json:"syscalls"`
 	}
-	if err := json.Unmarshal(profile, &doc); err != nil {
-		t.Fatalf("parse profile: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(profile, &doc))
+
 	allowed := false
 	for _, rule := range doc.Syscalls {
 		for _, name := range rule.Names {
@@ -54,13 +55,11 @@ var (
 
 func TestUsernsProfileAllowsTheNamespaceCalls(t *testing.T) {
 	profile, err := usernsProfile()
-	if err != nil {
-		t.Fatalf("build profile: %v", err)
-	}
+	require.Nil(t, err)
+
 	for _, call := range namespaceCalls {
-		if !profileAllowsUngated(t, profile, call) {
-			t.Errorf("%s must be allowed ungated: bwrap cannot create its namespace without it", call)
-		}
+		assert.True(t, profileAllowsUngated(t, profile, call))
+
 	}
 }
 
@@ -70,15 +69,11 @@ func TestUsernsProfileAllowsTheNamespaceCalls(t *testing.T) {
 // without an ungated allow the sandbox is built and then cannot be furnished.
 func TestUsernsProfileAllowsTheSandboxToBeBuilt(t *testing.T) {
 	profile, err := usernsProfile()
-	if err != nil {
-		t.Fatalf("build profile: %v", err)
-	}
+	require.Nil(t, err)
+
 	for _, call := range sandboxCalls {
-		if !profileAllowsUngated(t, profile, call) {
-			t.Errorf("%s must be allowed ungated: the namespace is created and then "+
-				"bwrap cannot bind /, mount its private /tmp, or pivot into the sandbox "+
-				"(reported misleadingly as \"Creating new namespace failed\")", call)
-		}
+		assert.True(t, profileAllowsUngated(t, profile, call))
+
 	}
 }
 
@@ -88,15 +83,13 @@ func TestUsernsProfileAllowsTheSandboxToBeBuilt(t *testing.T) {
 // have.
 func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	profile, err := usernsProfile()
-	if err != nil {
-		t.Fatalf("build profile: %v", err)
-	}
+	require.Nil(t, err)
+
 	// Kernel-module loading, kexec, and the BPF/perf surface have nothing to
 	// do with building a sandbox; ptrace of other containers likewise.
 	for _, call := range []string{"init_module", "finit_module", "delete_module", "kexec_load", "bpf", "perf_event_open"} {
-		if profileAllowsUngated(t, profile, call) {
-			t.Errorf("%s must NOT be allowed ungated: the userns opt-in is for sandboxing, not general privilege", call)
-		}
+		assert.False(t, profileAllowsUngated(t, profile, call))
+
 	}
 }
 
@@ -105,13 +98,11 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 // byte-identical to before the feature existed.
 func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
 	args, cleanup, err := seccompArgs(noUserns{}, "", "test")
-	if err != nil {
-		t.Fatalf("seccompArgs: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer cleanup()
-	if len(args) != 0 {
-		t.Errorf("a hook without seccomp.userns must get no docker flags, got %v", args)
-	}
+	assert.Equal(t, 0, len(args))
+
 }
 
 type noUserns struct{}
