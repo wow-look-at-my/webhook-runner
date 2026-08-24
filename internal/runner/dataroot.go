@@ -2,19 +2,16 @@ package runner
 
 // Where the daemon this runner talks to keeps its store.
 //
-// Every container webhook-runner creates is transient — a hook run is one
-// disposable container, and its image rebuilds from the hook directory on
-// demand — so the whole store can live on a filesystem that is allowed to lose
-// data. Pointing DOCKER_HOST at a daemon rooted there puts image layers,
-// writable layers and volumes on it in one move, without touching the host's
-// main daemon (which holds things that are NOT reconstructible).
+// A container's writable layer is an overlayfs upperdir whose location is a
+// DAEMON property (data-root), never a per-container one, so relocating it is
+// the only thing that covers the writes no mount enumerated. Which disk absorbs
+// them is the whole point of the arrangement.
 //
-// Nothing about that routing is visible at run time, though: a DOCKER_HOST
-// typo, a socket that moved, or a unit that failed to start all leave the
-// runner quietly talking to the default daemon and writing to whatever disk IT
-// is rooted on. That is the failure this probe exists to make impossible to
-// miss — the whole point of the arrangement is which disk absorbs the writes,
-// so being wrong about it silently defeats it entirely.
+// Nothing about it is visible at run time: a daemon.json that did not parse, a
+// mount that was not there when dockerd started, or a data-root pointing
+// somewhere other than the intended dataset all leave the runner writing to the
+// system disk with no symptom. That is the failure this probe exists to make
+// impossible to miss.
 //
 // see docs/internals/scratch-dirs.md
 
@@ -33,7 +30,7 @@ import (
 func DataRootMismatchMessage(want, got string) string {
 	return fmt.Sprintf(
 		"docker's store is at %q, not under the expected %q: this runner's containers are writing to the wrong filesystem. "+
-			"Check DOCKER_HOST points at the intended daemon and that it is running (WEBHOOK_RUNNER_EXPECT_DATA_ROOT declares where its store belongs)",
+			"Check the daemon's data-root and that its mount was present when dockerd started (WEBHOOK_RUNNER_EXPECT_DATA_ROOT declares where the store belongs)",
 		got, want)
 }
 

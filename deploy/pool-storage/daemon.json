@@ -1,0 +1,4 @@
+{
+  "data-root": "/mnt/pool/docker",
+  "storage-driver": "zfs"
+}

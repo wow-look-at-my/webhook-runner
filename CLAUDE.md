@@ -320,7 +320,7 @@ Read before changing any of these areas:
   the paths docker-updater discovers by itself. The image EXPOSEs both ports (metadata only, publishes nothing), and discovery
   picks a port itself only from an image declaring exactly one -- so deploy with `docker-updater.well-known.port: "9001"`; the
   older `docker-updater.pre-check.url` still wins where set, and marks the container "nonstandard" for as long as it is.
-- [docs/internals/scratch-dirs.md](docs/internals/scratch-dirs.md) -- keeping hook writes off the system disk: `scratch`/`tmpfs`/`read_only_rootfs`, the per-run subtree and its sweep, and why the store moves via a SECOND daemon (`deploy/pool-daemon/`) rather than the main one's data-root.
+- [docs/internals/scratch-dirs.md](docs/internals/scratch-dirs.md) -- keeping hook writes off the system disk: `scratch`/`tmpfs`/`read_only_rootfs`, the per-run subtree and its sweep, and why only a daemon's `data-root` reaches the writes no mount enumerated (`deploy/pool-storage/`).
 - [docs/internals/settings-editor.md](docs/internals/settings-editor.md) -- operator settings overrides: the sparse per-field shape, the four rules that make one safe, why a rejected override must not refuse the tree, the one-shape API, and the schema-to-control table the dashboard form is generated from.
 - [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
 - [docs/internals/backlogs.md](docs/internals/backlogs.md) -- the batch-backlog primitive: push-as-set-union, take-removes, depths, how it differs from internal/queue, and why a hook must never build a cursor instead.

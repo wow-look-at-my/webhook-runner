@@ -159,36 +159,37 @@ are not:
   outer container unless it explicitly asks for a container step, so its own
   writes are untouched by that.
 
-Relocating it is a daemon-level change, and WHICH daemon matters:
+Relocating it is a daemon-level change: point the daemon's `data-root` at the
+pool. `deploy/pool-storage/` ships the config and the steps. Set
+`WEBHOOK_RUNNER_EXPECT_DATA_ROOT` alongside it, so a `daemon.json` that did not
+parse or a mount that was absent at dockerd start raises a needs-attention entry
+instead of writing to the system disk silently (`CheckDataRoot`, dataroot.go).
 
-**Run a second daemon whose store is on the transient filesystem, and point
-`DOCKER_HOST` at it.** This is the supported arrangement —
-`deploy/pool-daemon/` ships the config, the unit and the steps. Every docker
-command the runner shells out to inherits `DOCKER_HOST`, so build, run,
-inspect, kill and the orphan sweep all follow it; set
-`WEBHOOK_RUNNER_EXPECT_DATA_ROOT` alongside it so a typo or a dead unit raises
-a needs-attention entry instead of silently falling back to the default daemon
-(`CheckDataRoot`, dataroot.go).
-
-It fits because everything this runner creates is disposable: a hook run is one
-container that exits, and its image rebuilds from the hook directory. The only
-thing on that filesystem is a store whose entire contents can be regenerated,
-so losing it costs a rebuild — which is what makes it safe to put on a pool
-tuned for losable data.
-
-**Do NOT move the MAIN daemon's `data-root` there instead.** That is docker's
-whole store for every container on the host, including images and volumes
-belonging to things that are not reconstructible, and a filesystem configured
-for transient data (e.g. ZFS with `sync=disabled`) can lose writes on power
-loss. The second daemon exists precisely so the losable store and the durable
-one are different stores.
+**The sync property is per DATASET, which is what makes one daemon enough.**
+`<pool>/docker` at `sync=standard` holds the store — including images and
+volumes, which are NOT all reconstructible — while `<pool>/runners` at
+`sync=disabled` holds only `WEBHOOK_RUNNER_SCRATCH_DIR`: `_work` and dind's
+nested `/var/lib/docker`, rebuilt every run. Losable data gets the losable
+dataset; nothing else does. A second daemon buys the same split at the cost of
+duplicate image layers, a second bridge and subnet, another unit to keep alive,
+and a `docker ps` that needs `--host` to see anything.
 
 **A tmpfs-backed store** is the strongest form of "writes never touch a disk"
 and takes the IMAGE layers with it, since docker cannot split them from the
 upper dirs. For multi-GB runner images that trades a disk problem for a memory
 one and re-pulls everything after a reboot.
 
-ZFS caveat, and it is not optional: **`overlay2` is unsupported on a ZFS
-dataset.** Use docker's native **`zfs` storage driver** with `data-root` on its
-own dataset, or a **zvol formatted ext4/xfs** with `overlay2`. Do not put
-`overlay2` on a plain dataset.
+ZFS picks the storage driver, and the choice is not arbitrary. Use docker's
+native **`zfs`** driver: it makes each layer a dataset and clones it, so no
+overlay mount happens and no kernel feature check applies. **`overlay2` on a
+plain dataset is CONDITIONAL** — it is overlayfs, and overlayfs refuses an
+upperdir whose filesystem cannot do `tmpfile` and `RENAME_WHITEOUT`. OpenZFS
+added `RENAME_WHITEOUT` in 2.2, so the answer depends on the host's ZFS
+version. `deploy/pool-storage/` carries the one-command probe that settles it
+on a given host. A zvol formatted ext4 or xfs carries `overlay2` on any
+version.
+
+That check is the kernel's, not docker's, so it governs every hand-rolled
+overlay equally: bubblewrap's `--overlay`, or a FUSE filesystem standing in as
+the upper, is the same mount and passes or fails in the same place. None of them
+reaches a write that `data-root` does not already cover.

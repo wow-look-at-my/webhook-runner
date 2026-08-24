@@ -39,7 +39,7 @@ func TestCheckDataRootRejectsSiblingPrefix(t *testing.T) {
 	msg := CheckDataRoot(fakeDockerInfo(t, "/mnt/pool2/docker"), "/mnt/pool", newSilentLogger(), nil)
 	require.NotEmpty(t, msg)
 	assert.Contains(t, msg, "/mnt/pool2/docker")
-	assert.Contains(t, msg, "DOCKER_HOST")
+	assert.Contains(t, msg, "data-root")
 }
 
 func TestCheckDataRootRejectsAnotherFilesystem(t *testing.T) {
