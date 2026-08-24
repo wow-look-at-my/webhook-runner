@@ -1,6 +1,6 @@
 name: Publish schemas to buildhost
 
-# A deploy workflow: the master-only filter STAYS -- README.md "the master-only trigger and the move off Pages".
+# A deploy workflow: the master-only filter STAYS.
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Stages exactly schema/*.schema.json, flat, and verifies each one -- README.md "the staging step".
+      # Stages exactly schema/*.schema.json, flat, and verifies each one.
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
