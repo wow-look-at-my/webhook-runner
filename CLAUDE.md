@@ -58,6 +58,14 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   first form and warns on the second, and there is no per-line exemption.
   A `map[K]bool` whose false values carry meaning is a real map — keep it,
   and keep its literals from being all-true.
+- **A workflow comment is ONE line.** `go-toolchain@v1` embeds
+  `wow-look-at-my/actions@yaml-comment-block`, which fails CI on any run of
+  more than one `#` line in a workflow (a blank line does not split a run).
+  The prose lives in
+  [.github/workflows/README.md](.github/workflows/README.md), and each
+  one-line comment names the heading it points at -- keep the two in sync.
+  The action's `exclude` input is for deliberate fixtures; using it on this
+  repo's own workflows would be gate-weakening, so do not.
 - **Cobra subcommands** live one-per-file in `internal/cli/` and self-register
   via `init()`.
 - **HTTP routing** uses Go 1.22+ `http.ServeMux` patterns (`POST /hook/{id}`).
