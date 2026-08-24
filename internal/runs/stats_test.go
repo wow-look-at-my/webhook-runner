@@ -109,9 +109,9 @@ func TestStatsByHookAggregates(t *testing.T) {
 func TestComputeStatsSplitsWaitFromProcessing(t *testing.T) {
 	base := time.Date(2026, 7, 9, 3, 36, 11, 0, time.UTC)
 	states := []RunState{
-		// Accepted, queued 26m09s behind a busy concurrency group, then
-		// processed for 23s. Duration must read 23s, not the 26m32s of the
-		// queued-inclusive span.
+		// The incident shape: accepted, queued 26m09s behind a busy
+		// concurrency group, processed for 23s. Duration must read 23s —
+		// not the 26m32s the queued-inclusive span used to show.
 		{ID: "incident", HookID: "h", Status: StatusSuccess,
 			Started:   base,
 			StartedAt: base.Add(26*time.Minute + 9*time.Second),

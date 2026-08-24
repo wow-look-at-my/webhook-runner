@@ -107,9 +107,9 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   holding it when the time is up. ONCE THAT FORCE KILL COMPLETES AND THAT
   JOB IS CERTAIN TO BE DEAD, then the mutex would be freed automatically
   due to the ending job, and the TTL has been enforced."*). An expired
-  lock must never read as FREE at acquire time: that is liveness-blind, so
-  any hold outliving its TTL silently becomes two holders. The store keeps
-  the entry (`kv.ErrLockExpired` + the holder's info, mutating nothing) and
+  lock used to read as FREE at acquire time, liveness-blind — so any hold
+  outliving its TTL silently became two holders. Now the store keeps the
+  entry (`kv.ErrLockExpired` + the holder's info, mutating nothing) and
   `Server.enforceLockTTL` does the enforcing: cancel the holder
   (`RequestCancelWithReason`, the same docker-kill path steal uses), poll
   until that run is TERMINAL, and take the lock its finish seam then

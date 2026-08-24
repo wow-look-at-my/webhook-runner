@@ -94,12 +94,16 @@ func (d *Delivered) settle(ok bool) {
 	d.mu.Unlock()
 }
 
-// The inbox is UNBOUNDED, deliberately. Never cap it and drop the oldest
-// entry. A full inbox is not proof that the manager is wedged: a healthy one
-// under a burst — a fan-out tick against a large fleet — fills any cap in
-// seconds. And a reconcile only covers a loss it can re-derive, so a delivery
-// carrying something the manager cannot reconstruct is simply gone. An
-// unbounded queue drains; a dropped event never comes back.
+// The inbox is UNBOUNDED, deliberately. It used to stop at 256 and drop the
+// oldest entry per push, on the reasoning that a full inbox means the manager
+// is wedged and its next reconcile re-derives whatever was lost. Both halves
+// were wrong in practice: a healthy manager under a burst (a fan-out tick
+// against a large fleet) fills 256 in seconds, and "reconcile covers the loss"
+// only holds for events a reconcile can re-derive — a delivery carrying
+// something the manager cannot reconstruct is simply gone. What the operator
+// saw was a wall of manager.inbox_dropped with real work disappearing behind
+// it, which is worse than any amount of memory: an unbounded queue drains,
+// while a dropped event never comes back.
 //
 // Growth is bounded by what the runner already bounds — deliveries arrive over
 // HTTP and ticks are one-at-a-time (tickQueued) — and a manager that stops
@@ -340,12 +344,14 @@ func (ib *Inbox) Next(ctx context.Context, instanceID string, wait time.Duration
 		return Event{}, false, ErrNotSession
 	}
 	// Count the consumer present for the WHOLE call, before checkedOut is
-	// cleared below. Counting only at the wait loop leaves a window where a
-	// push sees parked==0 && checkedOut==nil and arms the wedge guard at an
-	// actively-consuming manager — a redundant Arm, since the checkout
-	// re-arms right behind it, and a nondeterministic arm COUNT in
-	// TestInboxWatchdogArming. Every return path below parked--; only the
-	// not-this-instance return above precedes the count.
+	// cleared below. Pre-fix, parked++ happened only at the wait loop, so a
+	// push landing between this section and the park saw parked==0 &&
+	// checkedOut==nil and fired the wedge-guard arm at an actively-consuming
+	// manager — a redundant extra Arm in prod (the checkout re-arms right
+	// behind it) and a nondeterministic arm COUNT in
+	// TestInboxWatchdogArming (the 2026-07-22 CI flake: expected 3, got 4).
+	// Every return path below parked--; only the not-this-instance return
+	// above precedes the count.
 	ib.parked++
 	var done *entry
 	var disarm func()

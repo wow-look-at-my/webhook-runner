@@ -103,11 +103,11 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 // settingsView builds the ONE shape every settings endpoint answers with.
 //
-// Shared deliberately. The editor re-renders from whatever a write returns,
-// so a write that answers a trimmed view without the schema makes the whole
-// form vanish on the operator's first change — the missing schema reads as
-// "this hook takes no configuration". A partial view is not a smaller version
-// of the full one, it is a different claim.
+// Shared deliberately: a write used to answer a trimmed view without the
+// schema, and since the editor re-renders from whatever a write returns, the
+// entire form vanished the moment an operator changed their first value — it
+// read the missing schema as "this hook takes no configuration". A partial
+// view is not a smaller version of the full one, it is a different claim.
 func (s *Server) settingsView(h *hooks.Hook, id string) (SettingsView, error) {
 	schema, err := h.SettingsSchemaJSON()
 	if err != nil {

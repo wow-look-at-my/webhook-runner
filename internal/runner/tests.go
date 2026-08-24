@@ -19,15 +19,9 @@ const DefaultTestTimeout = 10 * time.Minute
 
 // TestOptions configure RunHookTests.
 type TestOptions struct {
-	Docker string // docker binary; "" = "docker"
-
-	// UsernsRemapped mirrors Options.UsernsRemapped: run/test parity means a
-	// hook's declared tests meet the same seccomp.userns interlock a live run
-	// meets, so an entity that cannot be served here fails in CI rather than on
-	// a runner. false is the safe default.
-	UsernsRemapped bool
-	Timeout        time.Duration // per-command cap; <= 0 = DefaultTestTimeout
-	Out            io.Writer     // combined progress + container output; nil = io.Discard
+	Docker  string        // docker binary; "" = "docker"
+	Timeout time.Duration // per-command cap; <= 0 = DefaultTestTimeout
+	Out     io.Writer     // combined progress + container output; nil = io.Discard
 
 	// The enforced-GitHub-gateway injection is UNCONDITIONAL (see
 	// GSMBaseURL) and applies to test containers too — run/test parity,
@@ -71,7 +65,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 		label := fmt.Sprintf("%s: test %d/%d", hook.ID, i+1, len(hook.Tests))
 		fmt.Fprintf(out, "=== %s: %s\n", label, strings.Join(argv, " "))
 		start := time.Now()
-		if err := runOneTest(docker, hook, image, argv, timeout, out, opts.UsernsRemapped); err != nil {
+		if err := runOneTest(docker, hook, image, argv, timeout, out); err != nil {
 			fmt.Fprintf(out, "--- %s FAILED after %s: %v\n", label, time.Since(start).Round(time.Millisecond), err)
 			failures = append(failures, fmt.Sprintf("test %d (%s): %v", i+1, strings.Join(argv, " "), err))
 			continue
@@ -84,7 +78,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 	return nil
 }
 
-func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer, usernsRemapped bool) error {
+func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer) error {
 	suffix := make([]byte, 8)
 	if _, err := rand.Read(suffix); err != nil {
 		return fmt.Errorf("generate container name: %w", err)
@@ -99,33 +93,20 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	// Mirror routing, run/test parity (unconditional): a test's GitHub
 	// reads ride the mirror exactly as a live run's do.
 	args = append(args, gsmInjectArgs()...)
-	// A dind hook gets exactly the live-run path's dind flags here (execute()),
-	// so a test that starts a nested daemon meets the same privilege it will
-	// meet in the fleet. That parity is the point: an image still launching
-	// root dockerd fails in CI rather than on a runner. --rm above auto-removes
-	// the volume when the test container exits.
+	// A dind hook gets the same --privileged + anonymous /var/lib/docker
+	// volume here as on the live-run path (execute()), so its declared tests
+	// can start a nested container daemon; without this parity a dind hook's
+	// smoke test could never run under `webhook-runner test`. --rm above
+	// auto-removes the volume when the test container exits.
 	if hook.Dind {
-		args = append(args, dindStorageArgs(hook.ScratchCovers(dindStorageDir))...)
-	}
-	// Storage parity with the live-run path, which is what makes
-	// read_only_rootfs PROVABLE instead of hopeful: a hook that writes
-	// somewhere it did not declare fails its own tests, in CI, before the
-	// fleet ever runs it. `scratch` paths are backed by tmpfs here rather than
-	// the operator's scratch filesystem — a CI runner has no such filesystem,
-	// and what the test needs to establish is that every writable path IS a
-	// mount, not which disk backs it.
-	for _, p := range append(append([]string{}, hook.Scratch...), hook.Tmpfs...) {
-		args = append(args, "--tmpfs", p)
-	}
-	if hook.ReadOnlyRootfs {
-		args = append(args, "--read-only")
+		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
 	}
 	// Same run/test parity for seccomp.userns: a hook whose tests exercise a
 	// sandbox (bwrap, dats' default backend) needs the relaxed profile here
 	// too, or its declared tests could never cover what its live runs do.
 	// No Runner here, so no configured tmpDir: "" means the OS default,
 	// which is right for a one-shot test container.
-	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix), usernsRemapped)
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
 	if err != nil {
 		return err
 	}

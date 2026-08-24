@@ -17,8 +17,8 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   instanceID)`, locks (incl. pinning), /wait, /title, and /spawn reuse
   verbatim, with the supervisor's `OnInstanceEnd` as the finish-seam
   analog (lock release + `lock.released_on_finish`); spawned WORKER runs
-  stay normal tracked runs. (2) Deliveries feed an UNBOUNDED INBOX (never
-  cap it and drop the oldest), never boot containers;
+  stay normal tracked runs. (2) Deliveries feed an UNBOUNDED INBOX (it
+  used to stop at 256 and drop the oldest), never boot containers;
   dispatch order is kill switch → auth → skip_if → inbox (a skip_if
   match answers 200 skipped + `manager.skipped`, no run record); the
   manager consumes via long-poll `POST /inbox/next`, and CALLING NEXT
@@ -63,11 +63,14 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   RunManagerSession): EVERY hook/manager/test container is launched with
   `-e GITHUB_API_URL=https://github-state-mirror.pazer.io`, and the
   runner's own GitHub calls (githubstatus posts, the reload poll) use the
-  same base via `gh.SetAPIURL`. **UNCONDITIONAL — there is no knob.**
-  Everything goes through the mirror; an off switch or a per-id carve-out
-  un-caches the fleet and blows the org's API quota, for zero benefit.
-  **THE MIRROR IS A PROXY, NOT A FIREWALL** — never inject
-  `--add-host api.github.com:0.0.0.0`.
+  same base via `gh.SetAPIURL`. **UNCONDITIONAL — there is no knob**
+  (operator ruling 2026-07-25: "*Everything* must go through GSM
+  otherwise we are blowing up our API quota and github servers for ZERO
+  benefit"). `WEBHOOK_RUNNER_GSM_URL`, `WEBHOOK_RUNNER_GITHUB_DIRECT`
+  and `WEBHOOK_RUNNER_GITHUB_API_URL` are DELETED; do not reintroduce an
+  off switch or a per-id carve-out. **GSM IS A PROXY, NOT A FIREWALL**
+  (operator correction, same day: "GSM is not a blackhole") — #98's
+  `--add-host api.github.com:0.0.0.0` was never requested and is gone.
   The mirror passes through whatever it does not model, so pointing
   GITHUB_API_URL at it IS the mechanism; blackholing would only break
   callers that cannot honor GITHUB_API_URL (tenant CI job steps), which

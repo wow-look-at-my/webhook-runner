@@ -1,8 +1,8 @@
 # Deploy windows: how a delivery survives a restart
 
-> A webhook that arrives while webhook-runner is restarting must never be
+> A webhook that arrives while webhook-runner is restarting used to be
 > **answered with an error AND lost**. GitHub does not re-send a failed
-> delivery, so a 503 during a deploy is permanent. Three mechanisms cover
+> delivery, so a 503 during a deploy was permanent. Three mechanisms now cover
 > the window: `/restart-ready` keeps the stop from being issued while runs are
 > in flight, the **delivery spool** parks anything that arrives once the drain
 > has begun and answers 202, and the **shutdown ordering** keeps the hook
@@ -128,14 +128,14 @@ Every listener outlives the drain, each for its own reason:
 - **The hook port**, so arriving deliveries get spooled and 202'd rather than
   connection-refused for the whole drain.
 - **The state socket**, because DRAINING RUNS ARE STILL USING IT — locks,
-  `/wait`, `/title` all ride it. Closing it before the drain pulls the floor
+  `/wait`, `/title` all ride it. Closing it before the drain pulled the floor
   out from under the very runs being drained.
 - **The admin port**, because the drain is precisely when an operator wants to
-  know what is still running and why the deploy is slow. It looks like a port
-  with no dependents — its dependent is the human. On a box whose hooks are CI
-  jobs, closing it first blanks the dashboard for minutes on every rolling
-  update (connection-refused through the tunnel) while the logs show hooks
-  still executing. Nothing on this port
+  know what is still running and why the deploy is slow. It used to close
+  *before* the drain, on the theory that it had no dependents — its dependent
+  is the human. On a box whose hooks are CI jobs that meant every rolling
+  update blanked the dashboard for minutes (connection-refused through the
+  tunnel) while the logs showed hooks still executing. Nothing on this port
   starts work: new runs are already refused and the supervisor will not restart
   an instance once shut down.
 

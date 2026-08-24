@@ -29,14 +29,16 @@ import (
 // THE FLEET IS ALL-OR-NOTHING, AND THAT IS THE POINT.
 //
 // A load in which ANY entity failed is REFUSED: nothing is swapped, the
-// previous registry keeps serving, and the caller gets an error. NEVER apply
-// the partial set. That fails OPEN in the one situation that produces
+// previous registry keeps serving, and the caller gets an error. It used to
+// apply the partial set, which fails OPEN in the one situation that produces
 // fleet-wide load errors -- a binary and a tree that disagree about the
-// manifest contract: every entity using the disputed field stops serving
-// silently, under a "hooks reloaded" line, and the reload gate cannot roll
-// back, because on the binary-changed side the tree never moved.
+// manifest contract. Every entity using the disputed field just stopped
+// serving, silently, with a "hooks reloaded" line to match; the reload gate
+// could not roll back, because on the binary-changed side the tree never
+// moved. Recovery was manual, and the damage was invisible until someone
+// noticed webhooks had stopped arriving.
 //
-// Refusing makes both deploy directions safe and loud:
+// Refusing instead makes both deploy directions safe and loud:
 //
 //   - The TREE moved (a manifest using a field this binary lacks): the gate
 //     resets to the commit that was serving and applies that, so the fleet

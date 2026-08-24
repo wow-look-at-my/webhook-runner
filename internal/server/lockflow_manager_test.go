@@ -69,9 +69,10 @@ func TestStateLockBlockingManagerInstanceWaitsForRelease(t *testing.T) {
 	}
 }
 
-// A manager instance's blocking acquire must work with NO run tracker
-// configured at all. blockOnLock must check whether the caller is a manager
-// instance before it decides a nil s.tracker is a 503: a manager instance's
+// The regression: a manager instance's blocking acquire must work with NO
+// run tracker configured at all. blockOnLock used to consult s.tracker
+// FIRST and 503 immediately when it was nil, before ever checking whether
+// the caller was a manager instance — wrong, since a manager instance's
 // liveness (TouchInstance) is independent of run tracking.
 func TestStateLockBlockingManagerInstanceWorksWithoutARunTracker(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

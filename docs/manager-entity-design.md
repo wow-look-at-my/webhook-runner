@@ -278,14 +278,14 @@ load-bearing sequence (internal/server/handlers.go:123-253):
   rolling-update handover puts the hook PORT on the new process before the
   old one's managers stop, so deploy-window deliveries land in the NEW
   process's inbox and are consumed when its sessions start.
-- **No overflow**: the inbox is UNBOUNDED. Never cap it and drop the OLDEST
-  per push on newest-wins reasoning. That is wrong twice over: a healthy
-  manager under a fan-out burst fills any cap in seconds, and "reconcile
-  covers the loss" only holds for events a reconcile can re-derive -- a
-  delivery carrying anything else is simply gone. A queue that grows drains;
-  a dropped event never comes back. A manager that genuinely stops consuming
-  is caught by the wedge guard, which reaps and restarts it, rather than by
-  discarding its work.
+- **No overflow**: the inbox is UNBOUNDED. It used to cap at 256 and drop
+  the OLDEST per push (`manager.inbox_dropped`), on the newest-wins
+  reasoning. That was wrong twice over: a healthy manager under a fan-out
+  burst fills 256 in seconds, and "reconcile covers the loss" only holds
+  for events a reconcile can re-derive -- a delivery carrying anything else
+  was simply gone. A queue that grows drains; a dropped event never comes
+  back. A manager that genuinely stops consuming is caught by the wedge
+  guard, which reaps and restarts it, rather than by discarding its work.
 - **Process crash**: the inbox is in-memory and dies with the process.
   DELIBERATE -- the reconcile loop is the correctness mechanism and events
   are a latency optimization; that is already the operating doctrine of all
@@ -395,42 +395,70 @@ and observability of one gateway. Its motivating evidence (the webhooks#66
 staleness class) is real, and is answered by fixing gsm at the root
 (section 9), not by bypassing it.
 
+> **SUPERSEDED (2026-07-25, operator).** Sections 8a/8b below describe the
+> shipped-inert `WEBHOOK_RUNNER_GSM_URL` design from webhook-runner#98. Both
+> the knob and the blackhole are GONE. The operator's instruction was always
+> to enforce mirror routing, never to make it optional ("I explicitly did not
+> make it optional"), and never to sever GitHub ("GSM is not a blackhole").
+> What ships now: `runner.GSMBaseURL` is a CONSTANT, every hook/manager/test
+> container gets `-e GITHUB_API_URL=<mirror>` with NO exemption list and NO
+> off switch, and `--add-host api.github.com:0.0.0.0` is deleted. The
+> "explicitly rejected: DNS-pointing api.github.com at gsm's address"
+> paragraph below REMAINS correct and is the reason a transparent redirect
+> is not on the table — the TLS/SNI cert mismatch is real. Kept below as the
+> historical record of the rejected design.
+
 ### 8a. Enforcement mechanism (concrete)
 
-`runner.GSMBaseURL` is a CONSTANT, never a service-env knob. For every hook,
-manager and test container the runner launches, with NO exemption list,
-`runner.execute` injects `-e GITHUB_API_URL=<mirror>` — before hook-declared
-environment (docker's last `-e` wins), so an entity that already sets the
-identical value is unchanged. The `webhook-runner test` path gets the same
-injection as the live-run path (the dind run/test-parity rule).
+One master knob on the runner service env: `WEBHOOK_RUNNER_GSM_URL`
+(operator deployment sets `https://github-state-mirror.pazer.io`). When
+set, for every hook AND manager container the runner launches, EXCEPT ids
+on the exemption list below, `runner.execute` injects:
 
-The mirror is a PROXY, not a firewall. Never inject
-`--add-host api.github.com:0.0.0.0`: severing the hostname does not route
-anything, it only breaks the callers that cannot honor `GITHUB_API_URL`.
+1. `--add-host api.github.com:0.0.0.0` -- a per-container, fail-closed
+   blackhole: /etc/hosts resolves api.github.com to 0.0.0.0, connects fail
+   immediately, no host-firewall dependency, no effect on any other
+   container or host process. Injected on BOTH the live-run path and the
+   `webhook-runner test` path (the dind run/test-parity rule) -- test
+   containers are hermetic by contract, and the blackhole turns a test that
+   illegally calls GitHub into a red build (requirements-are-CI-checks).
+2. `-e GITHUB_API_URL=<gsm url>` as the fleet default -- injected BEFORE
+   hook.json env (docker last--e-wins), so the two hooks that already set
+   the identical value are unchanged, and a hypothetical divergent override
+   still cannot reach api.github.com (the blackhole, not the env, is the
+   enforcement). `GITHUB_API_URL` does NOT become a ReservedEnvKey
+   (existing hook.jsons legitimately set it).
 
 Explicitly rejected: DNS-pointing api.github.com at gsm's address (TLS/SNI
 cert mismatch -- gsm's cert names github-state-mirror.pazer.io; clients
-hard-fail, and impersonating GitHub's hostname is the wrong pattern even if
-it "worked"); host-level firewalling (hits host processes too, coarse,
-outside the runner's control); per-hook egress networks (heavy, per-container
-netns machinery for what one env var does).
+would hard-fail, and impersonating GitHub's hostname is the wrong pattern
+even if it "worked"); host-level firewalling (hits host processes and the
+exempted CI fleets, coarse, outside the runner's control); per-hook egress
+networks (heavy, per-container netns machinery for what one hosts line
+does).
 
-Honesty note on the threat model: an injected env default defeats accidental
-resolution, which is the actual risk -- operator-authored fleet code drifting
-back to api.github.com. It does not stop deliberately adversarial code
-(hardcoded IPs, DoH); the fleet is operator-curated, so that is out of scope.
-This is misconfiguration-proofing, not sandboxing.
+Honesty note on the threat model: --add-host defeats accidental/default
+resolution, which is the actual risk (operator-authored fleet code drifting
+back to api.github.com). It does not stop deliberately adversarial code
+(hardcoded IPs, DoH); the fleet is operator-curated, so that is out of
+scope -- this is misconfiguration-proofing, not sandboxing.
 
-### 8b. What CI payloads do with it
+### 8b. Exemption list (CI payloads cannot ride gsm)
 
-`gha-runner` and `gha-runner-dind` containers run GitHub's actions runner
-serving ARBITRARY CI jobs. The runner agent talks to the Actions service
-endpoints embedded in its jitconfig (*.actions.githubusercontent.com), and
-job payloads call api.github.com themselves (gh CLI, octokit in org
-workflows, actions/github-script). The runner cannot rewrite a tenant job's
-view of `GITHUB_API_URL`, so those calls go direct — which is exactly why the
-mirror must stay a proxy: the injection reaches everything that honors the
-variable, and nothing that cannot is broken by it.
+`WEBHOOK_RUNNER_GITHUB_DIRECT` (runner service env, operator-curated,
+default EMPTY = everyone enforced): a comma list of ids whose containers
+get NEITHER the blackhole nor the env default. Operator sets it to
+`gha-runner,gha-runner-dind`. Reason: those containers run GitHub's actions
+runner serving ARBITRARY CI jobs -- the runner agent talks to the Actions
+service endpoints embedded in its jitconfig (*.actions.githubusercontent.com),
+and job payloads legitimately call api.github.com themselves (gh CLI,
+octokit in org workflows, actions/github-script); none of that can or
+should ride gsm, and the runner cannot rewrite a tenant job's view of
+GITHUB_API_URL. The exemption is runner-side env -- a hook can never
+self-exempt, so enforcement intent holds. (The gha hooks' OWN control-plane
+calls -- JIT-config minting via the sdk client -- follow the env default
+only in non-exempt containers; for the exempt runners they stay direct,
+which is today's behavior.)
 
 ### 8c. Fleet GitHub hostname inventory (what is blocked, what stays direct)
 
