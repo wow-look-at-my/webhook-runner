@@ -54,10 +54,9 @@ type HookInfo struct {
 	Schedule         string `json:"schedule,omitempty"`
 	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 	State            bool   `json:"state,omitempty"`
-	// Dind reports whether the hook opted into Docker-in-Docker (--privileged
-	// + an anonymous /var/lib/docker volume so it can run a nested container
-	// daemon). Surfaced so an operator can see this host-root-equivalent
-	// capability on the hook's drill-down page.
+	// Dind reports whether the hook opted into Docker-in-Docker (an anonymous
+	// /var/lib/docker volume for a nested daemon's storage; no privilege).
+	// Surfaced so an operator can see it on the hook's drill-down page.
 	Dind bool `json:"dind,omitempty"`
 	// Timeout is the absolute run ceiling, when the hook sets one (empty =
 	// no absolute ceiling; the run is bounded by idle_timeout, if set, or

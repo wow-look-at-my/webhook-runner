@@ -1,56 +1,37 @@
 #!/bin/sh
-# Docker-in-Docker smoke check. This runs inside the hook's --privileged
-# container (the runner adds --privileged + an anonymous /var/lib/docker
-# volume when dind:true). It starts a NESTED dockerd — whose storage lives
-# on that volume because an inner overlay driver can't stack on the outer
-# container's overlay rootfs — and proves it works via `docker version` &&
-# `docker info`. Loud non-zero exit if the daemon never comes up. The same
-# script is the container CMD (live run) and the declared test command, so
-# both the run and `webhook-runner test` paths exercise the capability.
+# The dind contract, checked from inside the container: the storage arrives and
+# the privilege does not. This script is both the container CMD (live run) and
+# the declared test command, so both paths prove the same thing.
+#
+# The negative half is the point. `dind` used to mean --privileged, the flag is
+# banned now (internal/runner/dind.go), and a check that only looked for the
+# volume would keep passing if it came back.
 set -eu
 
-# Talk to the daemon over the local unix socket only; no TLS/TCP needed for
-# a local smoke check.
-export DOCKER_TLS_CERTDIR=""
+fail() {
+	echo "dind-smoke: $1" >&2
+	exit 1
+}
 
-# cgroup v2 nesting: PID 1 here is this shell, not dockerd, so the nested
-# daemon can't enable subtree controllers until we move our own processes
-# into a leaf cgroup first (moby/moby hack/dind). Bounded + best-effort:
-# a no-op on cgroup v1, and if it can't converge we still try to start the
-# daemon (the readiness poll below is the real gate). --make-rshared keeps
-# mount propagation working for nested containers.
-mount --make-rshared / 2>/dev/null || :
-if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-	mkdir -p /sys/fs/cgroup/init
-	n=0
-	while [ "$n" -lt 10 ]; do
-		xargs -rn1 </sys/fs/cgroup/cgroup.procs >/sys/fs/cgroup/init/cgroup.procs 2>/dev/null || :
-		if sed -e 's/ / +/g' -e 's/^/+/' </sys/fs/cgroup/cgroup.controllers \
-			>/sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; then
-			break
-		fi
-		n=$((n + 1))
-		sleep 1
-	done
+# The anonymous volume. /var/lib/docker must be its own mount rather than part
+# of the container's overlay rootfs: an inner overlay driver cannot stack on
+# the outer one, so a nested daemon has nowhere to put layers without this.
+grep -q " /var/lib/docker " /proc/self/mounts ||
+	fail "/var/lib/docker is not a mount point -- the dind volume did not arrive"
+
+# No privilege. Each of these is writable in a --privileged container, is
+# read-only here, and is something a root dockerd needs.
+if [ -w /proc/sys/kernel/core_pattern ]; then
+	fail "/proc/sys is writable -- this container is privileged"
+fi
+if mkdir -p /sys/fs/cgroup/init 2>/dev/null; then
+	fail "/sys/fs/cgroup is writable -- this container is privileged"
 fi
 
-# Start the daemon via the base image's own entrypoint (handles the
-# iptables legacy/nft selection); background it — this script is the
-# workload that then drives the daemon.
-dockerd-entrypoint.sh dockerd >/tmp/dockerd.log 2>&1 &
+# The capability is gone, not merely unused: the cgroup-v2 nesting prep that
+# every root dockerd needs must fail here.
+if mount --make-rshared / 2>/dev/null; then
+	fail "mount --make-rshared succeeded -- this container holds CAP_SYS_ADMIN"
+fi
 
-# Poll the daemon (via /var/run/docker.sock) with flat 1s sleeps, up to ~60.
-i=0
-until docker version >/dev/null 2>&1; do
-	i=$((i + 1))
-	if [ "$i" -ge 60 ]; then
-		echo "dind-smoke: nested dockerd did not become ready within 60s" >&2
-		tail -n 40 /tmp/dockerd.log 2>/dev/null >&2 || :
-		exit 1
-	fi
-	sleep 1
-done
-
-docker version
-docker info
-echo "dind-smoke-ok"
+echo "dind-smoke-ok: volume present, container unprivileged"

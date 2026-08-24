@@ -55,9 +55,8 @@ type containerSpec struct {
 	networks         []string
 	user             string
 	workdir          string
-	// dind grants the container the privilege to run a nested dockerd. It does
-	// NOT widen any namespace: --privileged is capabilities and device access,
-	// and the PID namespace stays the container's own.
+	// dind gives the container storage a nested dockerd can use. It grants no
+	// privilege at all -- see dind.go.
 	dind bool
 	// seccomp is whatever seccompArgs produced for this entity, already
 	// rendered. Empty for an entity that opted into nothing.
@@ -108,13 +107,7 @@ func (s containerSpec) args() []string {
 	if s.workdir != "" {
 		args = append(args, "--workdir", s.workdir)
 	}
-	// The anonymous /var/lib/docker volume gives the nested daemon storage on a
-	// real filesystem -- its overlay driver cannot stack on the outer
-	// container's overlay rootfs -- and --rm above reaps it at exit, so inner
-	// storage never leaks between runs. The host's daemon is never exposed.
-	if s.dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
-	}
+	args = append(args, dindArgs(s.dind)...)
 	args = append(args, s.seccomp...)
 	args = append(args, s.image)
 	return append(args, s.argv...)

@@ -247,23 +247,21 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
 - `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
-  EXACTLY two docker-run flags — `--privileged` and
-  `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
-  live-run path (`runner.execute`, before the image)
-  AND the `webhook-runner test` path (`runner.runOneTest`, before the
-  image); that run/test parity is load-bearing so a dind hook's declared
-  `tests` can start a nested daemon under `webhook-runner test`. The
-  anonymous /var/lib/docker volume is REQUIRED, not decorative: an inner
-  daemon's overlay2 storage can't stack on the outer container's overlay
-  rootfs, so it needs a real volume — and `--rm` (always passed)
-  auto-removes it, so inner storage never leaks between runs. The host's
-  docker daemon is NEVER exposed (no host socket mount); the nested daemon
-  is a throwaway. `--privileged` is host-root-equivalent, so this is an
-  AUDITED capability — enable it only for trusted, operator-curated hooks.
-  It is deliberately first-class rather than raw docker args: `dind` covers
-  both paths with one greppable boolean, and there is no general
-  raw-docker-args escape hatch at all, so every privilege a container gets
-  is a named, reviewable field. New hook.json field ⇒ same
+  EXACTLY ONE docker-run flag — `--mount type=volume,dst=/var/lib/docker`
+  — injected on BOTH the live-run path and the `webhook-runner test` path
+  (`internal/runner/dind.go`, through the one argv builder); that run/test
+  parity is load-bearing so a dind hook's declared `tests` see the same
+  container its live runs get. The anonymous volume is REQUIRED, not
+  decorative: an inner daemon's overlay2 storage can't stack on the outer
+  container's overlay rootfs, so it needs a real filesystem — and `--rm`
+  (always passed) reaps it, so inner storage never leaks between runs. The
+  host's docker daemon is NEVER exposed (no host socket mount).
+  It grants NO privilege. `--privileged` is refused by operator ruling and
+  banned by `internal/runner/bannedflags_test.go`, so a nested daemon
+  started as root cannot come up here — it needs to write `/proc/sys` and
+  `/sys/fs/cgroup`, both read-only without it, and the run fails saying so.
+  What an unprivileged container can and cannot host is measured in
+  [nested-containers.md](nested-containers.md). New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule` (old binaries reject it via
   DisallowUnknownFields).
 - **`seccomp.userns` and the `/proc` masking — the opt-in that does NOT
