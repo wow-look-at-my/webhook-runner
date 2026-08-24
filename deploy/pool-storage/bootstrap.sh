@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Applies this directory's config to a real host: creates the two datasets,
-# merges daemon.json, installs the systemd mount-ordering override, restarts
-# dockerd, and verifies the result. Root, on the actual runner host --
-# nothing here can run from a build or CI environment.
+# Wires an ALREADY-EXISTING pair of datasets into docker: merges daemon.json,
+# installs the systemd mount-ordering override, restarts dockerd, and
+# verifies the result. Root, on the actual runner host -- nothing here can
+# run from a build or CI environment.
+#
+# This script never runs zpool/zfs create, set, or destroy -- the operator
+# owns the pool and its datasets, exactly as configured, and this script
+# only ever READS them (zfs list) to check they are what docker is about to
+# be pointed at. See require_dataset below and README.md's "Install" section
+# for the two `zfs create` lines the operator runs by hand, once, first.
 #
 # Usage: bootstrap.sh <pool> [mount-root]
-#   pool        an existing ZFS pool name (e.g. "tank")
-#   mount-root  defaults to /mnt/pool
+#   pool        an existing ZFS pool name (e.g. "tank"), with <pool>/docker
+#               and <pool>/runners already created (see README.md)
+#   mount-root  defaults to /mnt/pool -- must match the datasets' own
+#               mountpoint property, which this script does not set
 #
 # Idempotent: re-running after a partial or failed run is safe. Read
 # deploy/pool-storage/README.md first -- this script is the copy-paste
@@ -25,26 +33,38 @@ if ! command -v zfs > /dev/null; then
 	echo "bootstrap.sh: no zfs binary -- this is not a ZFS host" >&2
 	exit 1
 fi
-if ! zpool list "$POOL" > /dev/null 2>&1; then
-	echo "bootstrap.sh: pool '$POOL' does not exist -- create it first, this script does not" >&2
-	exit 1
-fi
 
 DOCKER_MOUNT="$MOUNT_ROOT/docker"
 RUNNERS_MOUNT="$MOUNT_ROOT/runners"
 
-create_dataset() {
-	local name="$1" mountpoint="$2" sync="$3"
-	if zfs list "$name" > /dev/null 2>&1; then
-		echo "bootstrap.sh: $name already exists, leaving it alone"
-	else
-		zfs create -o mountpoint="$mountpoint" -o sync="$sync" "$name"
-		echo "bootstrap.sh: created $name at $mountpoint (sync=$sync)"
+# READ-ONLY: checks the operator's own dataset against what docker is about
+# to be pointed at (mountpoint, sync). Never creates, sets, or destroys
+# anything -- a mismatch is a hard stop naming the `zfs create`/`zfs set`
+# the operator runs themselves, not a thing this script fixes for them.
+require_dataset() {
+	local name="$1" want_mountpoint="$2" want_sync="$3"
+	local got
+	if ! got="$(zfs list -H -o mountpoint,sync "$name" 2> /dev/null)"; then
+		echo "bootstrap.sh: dataset '$name' does not exist -- create it yourself first:" >&2
+		echo "  zfs create -o mountpoint=$want_mountpoint -o sync=$want_sync $name" >&2
+		exit 1
 	fi
+	local got_mountpoint="${got%%$'\t'*}" got_sync="${got##*$'\t'}"
+	if [ "$got_mountpoint" != "$want_mountpoint" ]; then
+		echo "bootstrap.sh: '$name' has mountpoint=$got_mountpoint, expected $want_mountpoint -- fix it yourself:" >&2
+		echo "  zfs set mountpoint=$want_mountpoint $name" >&2
+		exit 1
+	fi
+	if [ "$got_sync" != "$want_sync" ]; then
+		echo "bootstrap.sh: '$name' has sync=$got_sync, expected $want_sync -- fix it yourself:" >&2
+		echo "  zfs set sync=$want_sync $name" >&2
+		exit 1
+	fi
+	echo "bootstrap.sh: $name is at $want_mountpoint (sync=$want_sync), as expected"
 }
 
-create_dataset "$POOL/docker" "$DOCKER_MOUNT" standard
-create_dataset "$POOL/runners" "$RUNNERS_MOUNT" disabled
+require_dataset "$POOL/docker" "$DOCKER_MOUNT" standard
+require_dataset "$POOL/runners" "$RUNNERS_MOUNT" disabled
 
 if systemctl is-active --quiet docker; then
 	CURRENT_ROOT="$(docker info --format '{{.DockerRootDir}}' 2> /dev/null || echo '')"

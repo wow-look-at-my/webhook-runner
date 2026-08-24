@@ -20,25 +20,35 @@ covers the writes nobody enumerated.
 
 ## Install
 
-`bootstrap.sh <pool> [mount-root]` runs the steps below as one idempotent
-script — create the datasets, migrate the existing store, merge
-`daemon.json`, install the systemd override, restart dockerd, and verify
-`data-root`/driver/`userns-remap` all actually took. Run it as root on the
-runner host; it refuses to declare success on a mismatch rather than assuming
-one. It does not install sysbox (see the `dind` note below) or create the
-pool itself.
-
-The manual steps it automates, for reference or if you want to run them by
-hand instead:
-
-`daemon.json` here says `/mnt/pool/docker`. Substitute your own path and pool
-name throughout — and make the dataset's mountpoint equal `data-root`, since the
-two are set independently and nothing warns when they disagree:
+`bootstrap.sh` never runs `zfs create`, `zfs set`, `zfs destroy`, or any
+`zpool` command — the operator owns the pool and its datasets, configured
+however they need them, and this script only ever reads them (`zfs list`) to
+check they match what docker is about to be pointed at. Create the two
+datasets yourself first:
 
 ```
 zfs create -o mountpoint=/mnt/pool/docker -o sync=standard <pool>/docker
 zfs create -o mountpoint=/mnt/pool/runners -o sync=disabled  <pool>/runners
+```
 
+(`daemon.json` here says `/mnt/pool/docker`. Substitute your own path and pool
+name throughout — and make the dataset's mountpoint equal `data-root`, since the
+two are set independently and nothing warns when they disagree.)
+
+Then `bootstrap.sh <pool> [mount-root]` runs the rest as one idempotent
+script — verify both datasets exist with the right mountpoint/`sync`, migrate
+the existing docker store, merge `daemon.json`, install the systemd override,
+restart dockerd, and verify `data-root`/driver/`userns-remap` all actually
+took. Run it as root on the runner host; it refuses to declare success on a
+mismatch, and refuses to touch docker at all if either dataset is missing or
+misconfigured — naming the exact `zfs create`/`zfs set` line to run, which it
+does not run for you. It does not install sysbox either (see the `dind` note
+below).
+
+The manual steps it automates past dataset verification, for reference or if
+you want to run them by hand instead:
+
+```
 systemctl stop docker                       # a live daemon will not follow its store
 rsync -aHAX /var/lib/docker/ /mnt/pool/docker/   # or skip it and re-pull everything
 ```
@@ -74,24 +84,19 @@ nothing else would ever say so.
 - **`storage-driver: zfs`** — it is the driver that does not depend on a kernel
   feature check. The native driver makes each layer a dataset and clones it, so
   no overlay mount happens and no upperdir requirement applies. It needs
-  `data-root` to be its own dataset, which is what the `zfs create` above is for.
+  `data-root` to be its own dataset, which is why `<pool>/docker` exists.
 
   `overlay2` is the other candidate and it is CONDITIONAL. Docker's `overlay2`
   is overlayfs, and overlayfs refuses an upperdir on a filesystem that cannot do
   `tmpfile` and `RENAME_WHITEOUT`. OpenZFS added `RENAME_WHITEOUT` in 2.2, so
-  whether the mount is accepted depends on the ZFS version on the host. Measure
-  it, do not assume it — on the host, as root:
-
-  ```
-  zfs create -o mountpoint=/mnt/pool/ovlprobe <pool>/ovlprobe
-  mkdir -p /mnt/pool/ovlprobe/{lower,upper,work,merged}
-  mount -t overlay overlay \
-    -o lowerdir=/mnt/pool/ovlprobe/lower,upperdir=/mnt/pool/ovlprobe/upper,workdir=/mnt/pool/ovlprobe/work \
-    /mnt/pool/ovlprobe/merged
-  ```
-
-  A refusal prints `mount: ... wrong fs type, bad option ...` and `dmesg` names
-  the missing feature. Clean up with `umount` + `zfs destroy <pool>/ovlprobe`.
+  whether the mount is accepted depends on the ZFS version on the host. This
+  script does not probe for it and never will — that means creating and
+  destroying a throwaway dataset, and dataset lifecycle here is the
+  operator's call, not something run on their pool by anything in this repo.
+  If you want to evaluate `overlay2` yourself: create a scratch dataset with
+  your own tooling, mount an overlay on it (`lowerdir`/`upperdir`/`workdir`
+  under it), and check whether the mount is accepted or refused with
+  `wrong fs type, bad option` (`dmesg` names the missing feature on refusal).
   A zvol formatted ext4 or xfs carries `overlay2` on any ZFS version, at the cost
   of a fixed-size second filesystem.
 
