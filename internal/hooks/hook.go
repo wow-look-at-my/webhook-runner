@@ -60,6 +60,12 @@ type Hook struct {
 	Tests       [][]string `json:"tests,omitempty"`
 	Networks    []string   `json:"networks,omitempty"`
 	Volumes     []string   `json:"volumes,omitempty"`
+	// Devices are --device passthroughs (host device node -> container node,
+	// docker's own "src[:dst][:permissions]" syntax). Unlike volumes this
+	// grants access to a HOST resource, not container-private storage, so it
+	// carries the same audited-opt-in weight as dind/seccomp.userns rather
+	// than being a plain declared mount.
+	Devices []string `json:"devices,omitempty"`
 	// Settings is the hook's OWN configuration: arbitrary JSON this runner
 	// never interprets, validated at load against the settings.schema.json
 	// shipped next to the manifest, and handed to the container as a file

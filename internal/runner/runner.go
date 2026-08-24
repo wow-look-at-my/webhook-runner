@@ -393,6 +393,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		user:     hook.User,
 		workdir:  hook.Workdir,
 		dind:     hook.Dind,
+		devices:  hook.Devices,
 	}
 	spec.mounts = append(spec.mounts, hook.Volumes...)
 	// State store: opted-in hooks reach the KV API at a plain

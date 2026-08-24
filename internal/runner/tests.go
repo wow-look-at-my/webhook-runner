@@ -94,11 +94,12 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	// no payload/headers, no declared volumes or networks. Tests must be
 	// self-contained, so there is nothing to suppress -- the fields stay unset.
 	spec := containerSpec{
-		name:  name,
-		image: image,
-		env:   []string{"HOOK_ID=" + hook.ID},
-		dind:  hook.Dind,
-		argv:  argv,
+		name:    name,
+		image:   image,
+		env:     []string{"HOOK_ID=" + hook.ID},
+		dind:    hook.Dind,
+		devices: hook.Devices,
+		argv:    argv,
 	}
 	// Same run/test parity for seccomp.userns: a hook whose tests exercise a
 	// sandbox (bwrap, dats' default backend) needs the relaxed profile here

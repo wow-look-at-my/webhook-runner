@@ -150,6 +150,7 @@ type managerJSON struct {
 	Tests    [][]string      `json:"tests"`
 	Networks []string        `json:"networks"`
 	Volumes  []string        `json:"volumes"`
+	Devices  []string        `json:"devices"`
 	Settings json.RawMessage `json:"settings"`
 	User     string          `json:"user"`
 	Workdir  string          `json:"workdir"`
@@ -196,6 +197,7 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 		Tests:            mj.Tests,
 		Networks:         mj.Networks,
 		Volumes:          mj.Volumes,
+		Devices:          mj.Devices,
 		Settings:         mj.Settings,
 		User:             mj.User,
 		Workdir:          mj.Workdir,

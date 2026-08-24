@@ -59,6 +59,9 @@ type containerSpec struct {
 	// NOT widen any namespace: --privileged is capabilities and device access,
 	// and the PID namespace stays the container's own.
 	dind bool
+	// devices are --device passthroughs (host device node exposed into the
+	// container). An audited grant like dind, not a plain declared resource.
+	devices []string
 	// seccomp is whatever seccompArgs produced for this entity, already
 	// rendered. Empty for an entity that opted into nothing.
 	seccomp []string
@@ -114,6 +117,9 @@ func (s containerSpec) args() []string {
 	// storage never leaks between runs. The host's daemon is never exposed.
 	if s.dind {
 		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+	}
+	for _, d := range s.devices {
+		args = append(args, "--device", d)
 	}
 	args = append(args, s.seccomp...)
 	args = append(args, s.image)
