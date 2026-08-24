@@ -57,6 +57,12 @@ var mobyDefaultSeccomp []byte
 // These are namespaced operations, not host ones: a mount inside an
 // unprivileged user namespace can only affect that namespace's own mount
 // table, which is the isolation the sandbox exists to build.
+// NEVER add --security-opt systempaths=unconfined alongside this. Docker's
+// /proc masking is the other reason bwrap fails in a container, so clearing it
+// reads as the missing half of this opt-in. It is not: a hook container runs
+// as root, /proc/sysrq-trigger is 0200 root-owned, and one write there reboots
+// the HOST. A hook may not be able to do that. The sandbox does not need it
+// either -- see docs/internals/hooks-images-and-reload.md, "the /proc masking".
 var usernsSyscalls = []string{
 	// Make the namespaces.
 	"unshare", "clone", "clone3", "setns",

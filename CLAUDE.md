@@ -21,7 +21,7 @@ internal/concurrency/      named concurrency groups (central concurrency.json) +
 internal/overrides/        operator kill switch: disabled hooks + concurrency limit overrides, persisted to <data-dir>/overrides.json
 internal/scheduler/        per-hook "schedule" interval timer (pure timing; Fire callback dispatches the run)
 internal/jsonc/            shared JSONC comment-stripping (hook.json + concurrency.json)
-internal/runner/           docker run dispatch + output streaming + image build/status
+internal/runner/           docker run dispatch + output streaming + image build/status; containerargs.go is the ONE place `docker run` argv is assembled, for all three container starts (hook run, manager instance, hook tests)
 internal/runs/             in-memory run tracker (bounded) + the OnFinish persistence seam
 internal/runstore/         bbolt-backed persistent completed-run history (48h retention, GC sweeper)
 internal/events/           in-memory activity feed (bounded ring; nil-recorder safe)
@@ -58,6 +58,13 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   first form and warns on the second, and there is no per-line exemption.
   A `map[K]bool` whose false values carry meaning is a real map — keep it,
   and keep its literals from being all-true.
+- **A workflow comment is ONE line.** `go-toolchain@v1` embeds
+  `wow-look-at-my/actions@yaml-comment-block`, which fails CI on any run of
+  more than one `#` line in a workflow (a blank line does not split a run).
+  One line is enough for the fact a next editor breaks without; the rest is
+  deletion, never a doc holding the evicted prose -- that was tried here and
+  reverted. The action's `exclude` input is for deliberate fixtures; using it
+  on this repo's own workflows would be gate-weakening, so do not.
 - **Cobra subcommands** live one-per-file in `internal/cli/` and self-register
   via `init()`.
 - **HTTP routing** uses Go 1.22+ `http.ServeMux` patterns (`POST /hook/{id}`).
@@ -103,16 +110,16 @@ opt-out also means the suites need NO sandbox backend at all — dats probes
 lazily — so the dind pinning below is now belt-and-braces rather than load-bearing.
 
 **dats itself is not runner-free** (the ruling that put these jobs on dind):
-without the opt-out it fails a run outright when neither backend is usable. The slim
-`wow-linux` fleet can supply neither — docker is deleted from that image by
-design, and bubblewrap needs an unprivileged user namespace a stock container
-is refused — so **both jobs that run dats (`dats`, and `test` via
-go-toolchain's dats phase) use `vars.CI_RUNNER_DIND`**, where bubblewrap is
-installed and measured working. Operator ruling 2026-07-26; the measurements,
-and the alternative that was rejected (granting the slim fleet
-`seccomp=unconfined` + `CAP_SYS_ADMIN`), are in the webhooks repo's
-`src/hooks/gha-runner/CLAUDE.md`. Moving either job back to `CI_RUNNER` fails
-it at the dats phase, not in the suite.
+without the opt-out it fails a run outright when neither backend is usable.
+**Both jobs that run dats (`dats`, and `test` via go-toolchain's dats phase)
+use `vars.CI_RUNNER_DIND`**, where bubblewrap is measured working. The slim
+`wow-linux` fleet can supply bubblewrap too, via `seccomp.userns` alone —
+docker is deleted from that image by design, and the `/proc` masking that used
+to defeat bwrap there is now dats' problem, not a privilege to hand out (see
+the seccomp bullet in
+[docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md)).
+So the dind pinning is belt-and-braces on both counts, not a statement that
+slim cannot sandbox.
 
 Every suite command execs the binary as
 `"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare
@@ -307,6 +314,7 @@ most often, plus where to read the rest.
 - **`fleet-compat` reports the deploy ORDER; it no longer has to be red to keep you safe — ci.yml.** It validates this binary against webhooks **master** (the deployed tree) AND the webhooks branch matching this branch's name (the tree this change is paired with — the same convention webhooks CI uses in reverse). It FAILS only when nothing the change ships with can be served, i.e. there is no order in which it becomes deployable. When master alone fails, that is a `DEPLOY ORDER` notice, because the all-or-nothing rule above makes the wrong order survivable: the worst case is a failed rollout or a held tree, both loud, neither destructive. Before that rule existed this job was the only thing between a contract change and a silent fleet-wide outage, so it had to red every coordinated pair until its partner merged — which meant shipping red PRs with a merge-order runbook attached. Don't reintroduce that: the runtime owns the safety, CI owns the telling.
 - **New hook.json fields are deploy-first — but no longer dangerously so.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner first; if you don't, the all-or-nothing rule above turns it into a held tree (the gate rolls back and keeps serving), not a fleet missing entities.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
+- **ONE builder assembles every `docker run` argv** (`internal/runner/containerargs.go`). A hook run, a manager instance and a hook's tests are three lifecycles, not three kinds of container: they differ by FIELDS on a `containerSpec`, never by hand-built slices. This is what makes a fleet-wide property hold instead of being re-checked three times — mirror routing reaches every container because the builder injects it, and no container joins another PID namespace because there is no field to ask for one. **Never add `--pid`**: docker's fresh PID namespace is what keeps the container's `/proc` free of the host's processes, which is exactly what makes dats' read-only `/proc` bind safe on the slim fleet. `internal/runner/pidnamespace_test.go` fails the build on the flag; dats refuses the bind itself where it cannot prove the procfs is scoped.
 - **Filter BEFORE the cap, in every listing.** `max`/limit bounds what is RETURNED, never what is EXAMINED (`/runs?exclude=`, `/events?exclude=`+`?hook=`). Page-then-filter blanks a surface on exactly the busy hooks it exists for: a burst of excluded entries fills the page, the filter empties it, and the panel reports "nothing here" while the matches sit just behind them.
 - **An image tag is a content hash, so anything derived from it is cacheable.** `imageCommand`'s `docker inspect` is memoized per (tag, command) — it used to be a full CLI + daemon round trip on every state-hook run, between slot acquisition and container launch. Never cache an inspect FAILURE: that is a daemon condition, not a property of the tag.
 - **A phase mark that is missing means UNKNOWN, never zero.** Container overhead is measured, not estimated (`internal/runs` phase marks) — but only a hook whose container reports from the inside yields an EXACT boot figure; every other hook gets an upper bound that also contains its runtime's cold start. Never let the two meet in one number.

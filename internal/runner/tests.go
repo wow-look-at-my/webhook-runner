@@ -85,21 +85,20 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	}
 	name := "webhook-runner-test-" + hex.EncodeToString(suffix)
 
-	args := []string{
-		"run", "--rm",
-		"--name", name,
-		"-e", "HOOK_ID=" + hook.ID,
-	}
-	// Mirror routing, run/test parity (unconditional): a test's GitHub
-	// reads ride the mirror exactly as a live run's do.
-	args = append(args, gsmInjectArgs()...)
-	// A dind hook gets the same --privileged + anonymous /var/lib/docker
-	// volume here as on the live-run path (execute()), so its declared tests
-	// can start a nested container daemon; without this parity a dind hook's
-	// smoke test could never run under `webhook-runner test`. --rm above
-	// auto-removes the volume when the test container exits.
-	if hook.Dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+	// The same builder the live-run and manager paths use, which is what makes
+	// run/test parity a property rather than a habit: a test container gets the
+	// mirror routing and the dind privilege from the same code, and cannot
+	// quietly diverge on the isolation a hook's tests are supposed to cover.
+	//
+	// What a test deliberately does NOT get is stated by omission: no secrets,
+	// no payload/headers, no declared volumes or networks. Tests must be
+	// self-contained, so there is nothing to suppress -- the fields stay unset.
+	spec := containerSpec{
+		name:  name,
+		image: image,
+		env:   []string{"HOOK_ID=" + hook.ID},
+		dind:  hook.Dind,
+		argv:  argv,
 	}
 	// Same run/test parity for seccomp.userns: a hook whose tests exercise a
 	// sandbox (bwrap, dats' default backend) needs the relaxed profile here
@@ -111,11 +110,9 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 		return err
 	}
 	defer seccompCleanup()
-	args = append(args, seccompFlags...)
-	args = append(args, image)
-	args = append(args, argv...)
+	spec.seccomp = seccompFlags
 
-	cmd := exec.Command(docker, args...)
+	cmd := exec.Command(docker, spec.args()...)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {

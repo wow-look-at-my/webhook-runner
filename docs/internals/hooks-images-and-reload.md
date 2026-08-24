@@ -266,6 +266,45 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   is a named, reviewable field. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule` (old binaries reject it via
   DisallowUnknownFields).
+- **`seccomp.userns` and the `/proc` masking — the opt-in that does NOT
+  exist.** `seccomp: { userns: true }` runs the container under docker's
+  default profile plus an ungated allow for
+  `unshare`/`clone`/`clone3`/`setns` and `mount`/`umount2`/`pivot_root`
+  (`internal/runner/seccomp.go`), so a hook can build an unprivileged user
+  namespace and furnish it. That is the whole grant: no capability, no
+  `--privileged`, every other syscall keeps the default policy.
+
+  A container refuses bubblewrap for a SECOND, independent reason, and there
+  is deliberately no opt-in for it. Docker masks parts of `/proc` (a size-0
+  tmpfs over `/proc/acpi` and friends, a `/dev/null` bind over `/proc/kcore`
+  and friends, read-only self-binds of `/proc/sys` and `/proc/sysrq-trigger`),
+  and inside a user namespace the kernel refuses a fresh procfs while anything
+  obscures the one already visible (`mount_too_revealing`, `fs/namespace.c`),
+  so bwrap's `--proc` fails with `Can't mount proc on /newroot/proc: Operation
+  not permitted`. Measured: the tmpfs alone, the `/dev/null` bind alone, and
+  the read-only bind alone each reproduce it exactly.
+
+  `--security-opt systempaths=unconfined` clears the masks and therefore looks
+  like the missing half of this opt-in. **It shipped for one afternoon and was
+  removed by operator ruling: a hook may not be able to disrupt the host.**
+  Every write-capable path it uncovers is root-owned — `/proc/sysrq-trigger` is
+  `0200`, `/proc/sys/*` and `/proc/irq/*/smp_affinity` are `0644` — and a hook
+  container runs as root, so one write to `/proc/sysrq-trigger` reboots the
+  host. `/proc/sys/kernel/sysrq` does not gate that: `write_sysrq_trigger`
+  calls `__handle_sysrq(c, false)`, and the kernel's comment there reads
+  "Should we check for enabled operations (/proc/sysrq-trigger should not)".
+  It is not an escape primitive (the classic escapes need `CAP_SYS_ADMIN` or a
+  host bind), but a reboot is disruption enough. `-o subset=pid` is not a way
+  round it either: mainline exempts restricted procfs variants from the
+  visibility rule, no shipping kernel has that branch (`v6.18` does not), and
+  measured on 6.18 both variants are refused under masking.
+
+  The masking is not the runner's problem to solve, because the SANDBOX can
+  solve it without any grant: dats binds the container's existing `/proc`
+  read-only where the kernel refuses a private one, keeping `--unshare-pid`
+  and every containment property, and announcing the reduction. See
+  [dats' docs/sandbox-masked-proc.md](https://github.com/wow-look-at-my/dats/blob/master/docs/sandbox-masked-proc.md).
+  If a future sandbox needs a fresh procfs in a container, fix it there.
 - `script` (hook.json) is parse-time sugar for `command`:
   `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
   pwsh, node, or tsx), resolving the file with `EvalSymlinks` and
