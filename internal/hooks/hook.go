@@ -4,12 +4,14 @@ package hooks
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,8 +63,8 @@ type Hook struct {
 	// Settings is the hook's OWN configuration: arbitrary JSON this runner
 	// never interprets, validated at load against the settings.schema.json
 	// shipped next to the manifest, and handed to the container as a file
-	// (HOOK_SETTINGS_FILE). Hook-private config lives HERE, never mixed into
-	// the runner's own parsed keys. See settings.go.
+	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
+	// hook-private config into the runner's own parsed keys. See settings.go.
 	Settings json.RawMessage `json:"settings,omitempty"`
 	// manifestSettings preserves the document as hook.json declared it,
 	// before any operator override was merged into Settings. The editor
@@ -152,63 +154,25 @@ type Hook struct {
 	// every other hook. Omitted (the default) means no KV access.
 	State bool `json:"state,omitempty"`
 
-	// Dind, when true, gives the hook's container an anonymous volume at
-	// /var/lib/docker (--mount type=volume,dst=/var/lib/docker) for a nested
-	// container daemon: an inner daemon cannot run its overlay storage driver
-	// on top of the outer container's overlay, so that path must be a volume
-	// and not the layered rootfs. --rm (always passed) auto-removes it when the
-	// run ends, so inner storage never leaks between runs. The host's own
-	// docker daemon is NEVER exposed -- no socket is mounted. The same flags
-	// apply on the `webhook-runner test` path, so an image is proved in CI
-	// rather than on a runner.
+	// Dind, when true, grants the hook's container the privileges to run its
+	// OWN nested container daemon: the runner adds --privileged and an
+	// anonymous volume at /var/lib/docker (--mount
+	// type=volume,dst=/var/lib/docker), so a dockerd started inside the
+	// container has container-local storage on a real filesystem (an inner
+	// daemon can't run its overlay storage driver on top of the outer
+	// container's overlay — /var/lib/docker must be a volume, not the layered
+	// rootfs). The host's own docker daemon is NEVER exposed — no docker
+	// socket is mounted; the nested daemon is fully isolated from it. --rm
+	// (always passed) auto-removes the anonymous volume when the run ends, so
+	// inner storage never leaks between runs. The SAME two flags apply on the
+	// `webhook-runner test` path, so a dind hook's declared tests can start a
+	// nested daemon too.
 	//
-	// NO PRIVILEGE IS ADDED. --privileged is refused by ruling: it is
-	// host-root-equivalent, and these containers execute other people's CI. So
-	// the nested daemon must be a ROOTLESS one; a root `dockerd` will not come
-	// up, and the run fails saying so rather than degrading quietly. See
-	// runner/dind.go.
-	//
-	// Like the other newer hook.json fields, old binaries reject it via
-	// DisallowUnknownFields: deploy a webhook-runner that supports it before
-	// merging a hook that sets it.
+	// This is a host-root-equivalent capability (--privileged) — enable it
+	// only for trusted, operator-curated hooks. Like the other newer hook.json
+	// fields, old binaries reject it via DisallowUnknownFields: deploy a
+	// webhook-runner that supports it before merging a hook that sets it.
 	Dind bool `json:"dind,omitempty"`
-
-	// Scratch names absolute CONTAINER paths whose writes must land on the
-	// operator's scratch filesystem (WEBHOOK_RUNNER_SCRATCH_DIR) instead of
-	// under docker's data-root. Each listed path is bind-mounted from a
-	// per-run directory that is removed when the run ends.
-	//
-	// Declaring a path here is a REQUIREMENT, not a hint: with no scratch
-	// root configured the run fails rather than quietly writing to the disk
-	// the declaration exists to spare. A dind hook that lists
-	// /var/lib/docker gets its inner daemon's store from scratch, and the
-	// anonymous volume is not added — two mounts on one destination is a
-	// docker error.
-	//
-	// see docs/internals/scratch-dirs.md
-	Scratch []string `json:"scratch,omitempty"`
-
-	// Tmpfs names absolute CONTAINER paths backed by RAM (--tmpfs) instead of
-	// disk. The companion to Scratch: scratch takes what must survive on a
-	// disk or is too big for memory, tmpfs takes the rest, and between them a
-	// hook can account for every path it writes to.
-	//
-	// An entry may carry docker's option suffix ("/tmp:size=4g"). SIZE IT: an
-	// unbounded tmpfs may grow to half of host RAM, and several on one
-	// container — times the concurrency limit — can take the host down. See
-	// TmpfsPath.
-	Tmpfs []string `json:"tmpfs,omitempty"`
-
-	// ReadOnlyRootfs runs the container with --read-only, so the ONLY writable
-	// locations are the mounts above. Without it, "the heavy paths are on
-	// scratch" is a claim about the paths somebody remembered to list: any
-	// other write still lands in the container's writable layer under docker's
-	// data-root, silently. With it, an unlisted write fails loudly instead.
-	//
-	// It is opt-in because it can only be proven per image — a program that
-	// writes somewhere unlisted breaks under it. Prove it in the hook's own
-	// `tests`, which run with these same flags.
-	ReadOnlyRootfs bool `json:"read_only_rootfs,omitempty"`
 
 	// Seccomp narrows the container's syscall filter policy. Absent (the
 	// nil pointer) means the DEFAULT: docker's builtin seccomp profile,
@@ -251,8 +215,8 @@ type Hook struct {
 
 	// RunTitle, when set, is a template for the friendly display title of
 	// this hook's runs — "{{repository.full_name}}#{{pull_request.number}}"
-	// renders "wow-look-at-my/go-toolchain#47" on the dashboard in place of
-	// the opaque run id. {{...}} placeholders name a dotted payload
+	// renders "wow-look-at-my/go-toolchain#47" on the dashboard where the
+	// opaque run id used to be. {{...}} placeholders name a dotted payload
 	// path or a request header via the "header:" prefix — skip_if's exact
 	// key syntax and bounded traversal (see title.go for the resolution
 	// semantics: graceful, never blocking, all-placeholders-empty means no
@@ -529,6 +493,90 @@ func (h *Hook) hasDockerfile() bool {
 	return err == nil && !fi.IsDir()
 }
 
+// ContentHash digests the files that determine this hook's image, tagging
+// the build so a changed hook rebuilds on its next run while an unchanged
+// one reuses the already built image.
+//
+// LEGACY layout: every file under the hook's directory, hashed as
+// relative path + content — byte-identical to the historical algorithm
+// (existing deployments must not re-tag on upgrade).
+//
+// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every
+// SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the
+// tree has) — never sibling entity dirs — hashed as src-relative path +
+// file mode + content. A shared-code edit re-tags every src-layout entity
+// (lazy rebuild on its next run, intended even for non-consumers); an edit
+// to hook A never re-tags hook B. The COPY-surface convention follows from
+// this: an SDK-layout Dockerfile may COPY only from a shared dir and its
+// own hooks/<id>/ — a sibling entity's dir is undefined-staleness territory
+// (builds don't fail, but edits there never re-tag).
+func (h *Hook) ContentHash() (string, error) {
+	dir := h.Dir()
+	if dir == "" {
+		return "", errors.New("hook has no source directory")
+	}
+	digest := sha256.New()
+	if h.SrcRoot != "" {
+		if err := hashTree(digest, h.SrcRoot, dir, true); err != nil {
+			return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
+		}
+		// A src tree without shared code is fine: no shared dirs simply
+		// contribute nothing.
+		shared, err := SharedDirs(h.SrcRoot)
+		if err != nil {
+			return "", fmt.Errorf("list shared dirs under %s: %w", h.SrcRoot, err)
+		}
+		for _, sd := range shared {
+			if err := hashTree(digest, h.SrcRoot, sd, true); err != nil {
+				return "", fmt.Errorf("hash shared dir %s: %w", sd, err)
+			}
+		}
+		return hex.EncodeToString(digest.Sum(nil))[:16], nil
+	}
+	if err := hashTree(digest, dir, dir, false); err != nil {
+		return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
+	}
+	return hex.EncodeToString(digest.Sum(nil))[:16], nil
+}
+
+// hashTree feeds every file under root into digest, ordered by
+// filepath.WalkDir's lexical walk: relative-to-base path, optionally the
+// file mode (the SDK layout hashes modes; legacy predates that and must
+// stay byte-identical), then the content.
+func hashTree(digest io.Writer, base, root string, withMode bool) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(base, p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(digest, "%s\x00", filepath.ToSlash(rel))
+		if withMode {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(digest, "%o\x00", info.Mode().Perm())
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		_, cpErr := io.Copy(digest, f)
+		f.Close()
+		if cpErr != nil {
+			return cpErr
+		}
+		fmt.Fprint(digest, "\x00")
+		return nil
+	})
+}
+
 // ReservedEnvKey reports whether the runner sets this env key itself; hook
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
@@ -599,9 +647,6 @@ func (h *Hook) validate() error {
 	// Same rule for the run_title template: parsed here, once, so a
 	// malformed one is a load error — never a silently titleless run.
 	if err := h.compileRunTitle(); err != nil {
-		return err
-	}
-	if err := h.validateScratch(); err != nil {
 		return err
 	}
 	if err := h.validateAuth(); err != nil {

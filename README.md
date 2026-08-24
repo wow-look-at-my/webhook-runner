@@ -1241,8 +1241,8 @@ With a hooks repo configured, reloads are **CI-gated by default**: the
 working tree never switches to a commit that GitHub has not reported a
 successful gating commit status for (context `all-builds` unless
 `WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT` says otherwise). The last green commit
-keeps serving until the next one is proven, so a broken push to the hooks
-repo cannot take the fleet down.
+keeps serving until the next one is proven — a broken push to the hooks
+repo can no longer take the fleet down.
 
 The tree moves along three paths:
 

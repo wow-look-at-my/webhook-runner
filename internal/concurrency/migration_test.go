@@ -57,10 +57,12 @@ func assertNoAcquire(t *testing.T, ch <-chan func(), what string) {
 	}
 }
 
-// A limit change swaps the group's semaphore. Blocked waiters must re-bind
-// to the group's current semaphore at every swap site: SetLimitOverride,
-// Update, and ClearLimitOverride. A waiter left on the retired channel makes
-// a raised limit a no-op — the queued backlog keeps draining at the old one.
+// The production regression these tests pin: a limit change swaps the
+// group's semaphore, but runs already QUEUED used to stay blocked on the
+// retired channel — so raising a limit (the dashboard's 2→10 gha-runner
+// override) had no effect on the queued backlog, which kept draining at the
+// old limit. Blocked waiters must re-bind to the group's current semaphore
+// at every swap site: SetLimitOverride, Update, and ClearLimitOverride.
 func TestLimitRaiseAdmitsQueuedWaiters(t *testing.T) {
 	cases := []struct {
 		name  string

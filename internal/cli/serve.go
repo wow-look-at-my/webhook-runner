@@ -88,9 +88,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// the standard rules subscribe the recognized event-derived classes.
 	agg := attention.New()
 	attention.RegisterStandardEventRules(agg)
-	dockerBin := dockerBinary()
-	usernsRemapped := reportHostChecks(dockerBin, logger, rec, agg)
-
+	// A containerized server whose temp dir isn't host-shared breaks every
+	// hook run (payload mounts resolve on the docker HOST) — detect the
+	// topology at startup and say so loudly. See runner.WarnIfContainerized.
+	// The verdict is boot-scoped attention state: a running process's env
+	// can't change, so the entry stands until a restart with TMPDIR set.
+	if runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv") {
+		agg.Report(attention.Entry{
+			Source:  attention.SourceServer,
+			Key:     attention.KeyTmpDir,
+			Message: runner.TmpDirHazardMessage,
+		})
+	}
 	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
 	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
 	// key material (e.g. SOPS_AGE_KEY_FILE) is plain sops configuration on
@@ -233,19 +242,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	rn := runner.New(runner.Options{
-		UsernsRemapped: usernsRemapped,
-		Tracker:        tracker,
-		Logger:         logger,
-		TmpDir:         tmpDir,
-		Secrets:        secrets,
-		Events:         rec,
-		Groups:         concurrencyMgr,
-		GlobalCap:      globalCap,
-		KV:             kvStore,
-		KVSocket:       socketPath,
-		KVShim:         shimPath,
-
-		ScratchDir: o.scratchDir,
+		Tracker:   tracker,
+		Logger:    logger,
+		TmpDir:    tmpDir,
+		Secrets:   secrets,
+		Events:    rec,
+		Groups:    concurrencyMgr,
+		GlobalCap: globalCap,
+		KV:        kvStore,
+		KVSocket:  socketPath,
+		KVShim:    shimPath,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {
 			gh.PostStart(context.Background(), h, r, payload)
 		},
@@ -260,11 +266,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// bbolt flock above proves no concurrent serve process is live, and
 	// this process has started no runs yet. See runner.SweepOrphanContainers.
 	rn.SweepOrphanContainers()
-	// Same moment, same safety argument, for the per-run scratch subtrees the
-	// same dead process left on the scratch filesystem. Unswept, they are the
-	// one leak that grows without bound: a container orphan holds an IP until
-	// the next boot, a scratch orphan holds a whole job tree forever.
-	rn.SweepOrphanScratch()
 
 	// The manager supervisor: one long-lived instance per declared manager,
 	// exactly-one-fleet-wide behind the kernel-flock lease in the data dir.

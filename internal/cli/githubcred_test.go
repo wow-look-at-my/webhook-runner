@@ -31,9 +31,10 @@ func statusServer(t *testing.T, seen *string) *httptest.Server {
 	return srv
 }
 
-// A deployment with neither credential configured answers every
-// reconciliation poll with an error, and that error has to say how to fix it
-// -- BOTH ways, since the environment variable is not the only source.
+// The failure that motivated the whole thing: a deployment with neither
+// credential configured answers every reconciliation poll with an error, and
+// that error has to say how to fix it -- BOTH ways, since the environment
+// variable is no longer the only one.
 func TestNoCredentialFailsClosedAndNamesBothFixes(t *testing.T) {
 	gh, err := newGitHubStatusClient(&serveOptions{}, quietLogger())
 	require.Nil(t, err)

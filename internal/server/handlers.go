@@ -210,9 +210,9 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	// A draining server must not LOSE the delivery. GitHub does not re-send
 	// a failed one — the hooks repo's delivery-gap replay SDK exists exactly
-	// because deliveries are consumed-and-lost during downtime — so a 503
-	// here would be an error AND a dropped webhook. Park it instead and let
-	// the next process run it. Checked BEFORE Start so a
+	// because deliveries are consumed-and-lost during downtime — so the 503
+	// the drain gate used to answer was an error AND a dropped webhook. Park
+	// it instead and let the next process run it. Checked BEFORE Start so a
 	// parked delivery leaves no errored run record: it did not fail, it is
 	// waiting. By here it has passed auth and skip_if, so the spool never
 	// holds an unauthenticated body.

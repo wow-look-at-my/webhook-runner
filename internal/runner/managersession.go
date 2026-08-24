@@ -239,15 +239,15 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	if hook.Workdir != "" {
 		args = append(args, "--workdir", hook.Workdir)
 	}
-	// dind, exactly the hook flags (see execute and dind.go): the nested
-	// daemon's storage volume and no added privilege; --rm reaps it at exit.
+	// dind, exactly the hook flags (see execute): --privileged + an
+	// anonymous /var/lib/docker volume; --rm reaps the volume at exit.
 	if hook.Dind {
-		args = append(args, dindStorageArgs(false)...)
+		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
 	}
 	// seccomp.userns, same as the hook paths. The profile file must outlive
 	// the daemon's read at container start; this cleanup shares the deferred
 	// lifetime of the session's other temp files above.
-	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, instanceID, r.usernsRemapped)
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, instanceID)
 	if err != nil {
 		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for manager %s failed: %v", hook.ID, err),
 			map[string]string{"hook": hook.ID})
@@ -436,15 +436,25 @@ func (r *Runner) stopContainer(name string, graceSeconds int) {
 	}
 }
 
-// GSMBaseURL is the github-state-mirror every container's GitHub API traffic
-// rides. It is a CONSTANT, not a knob: an off switch or a per-id carve-out
-// un-caches the fleet and blows the org's API quota.
+// GSMBaseURL is the github-state-mirror every container's GitHub API
+// traffic rides. It is a CONSTANT, not a knob: routing through the mirror
+// is unconditional by operator ruling (2026-07-25) — "*Everything* must go
+// through GSM otherwise we are blowing up our API quota and github servers
+// for ZERO benefit". The former WEBHOOK_RUNNER_GSM_URL /
+// WEBHOOK_RUNNER_GITHUB_DIRECT / WEBHOOK_RUNNER_GITHUB_API_URL env knobs
+// are DELETED: the instruction was always to route through the mirror, and
+// wiring it as an opt-in service-env flip (webhook-runner#98) was never
+// requested. Do not reintroduce an off switch or a per-id carve-out.
 //
-// THE MIRROR IS A PROXY, NOT A FIREWALL. It passes through whatever it does
-// not model, so pointing GITHUB_API_URL at it is the whole mechanism. Never
-// blackhole api.github.com: that breaks only the callers which cannot honor
-// GITHUB_API_URL (gh CLI, octokit, actions/github-script in tenant CI steps).
-// see docs/internals/managers-and-gateway.md
+// GSM IS A PROXY, NOT A FIREWALL (operator correction, 2026-07-25 —
+// "GSM is not a blackhole"). #98 also injected
+// `--add-host api.github.com:0.0.0.0` to make direct calls fail closed;
+// that was never asked for and is DELETED. The mirror passes through
+// whatever it does not model, so pointing GITHUB_API_URL at it is the
+// whole mechanism — severing api.github.com DNS would only break the
+// callers that cannot honor GITHUB_API_URL (tenant CI job steps: gh CLI,
+// octokit, actions/github-script), which is breakage, not routing. Never
+// reintroduce a blackhole here.
 const GSMBaseURL = "https://github-state-mirror.pazer.io"
 
 // gsmArgs points a container's GitHub API traffic at the mirror. Applied to

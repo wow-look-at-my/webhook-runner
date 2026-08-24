@@ -16,9 +16,9 @@ import (
 )
 
 // A delivery arriving during a deploy must be answered without an error AND
-// must not be lost. Never 503 it on the premise that "the sender redelivers"
-// — GitHub does not, which is why the hooks repo needs a delivery-gap replay
-// SDK at all.
+// must not be lost. It used to get a 503 on the premise that "the sender
+// redelivers" — GitHub does not, which is why the hooks repo needs a
+// delivery-gap replay SDK at all.
 
 func drainingServerWithSpool(t *testing.T) (*Server, *spool.Store) {
 	t.Helper()
@@ -82,8 +82,7 @@ func TestFullSpoolFallsBackToTheHonest503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
-// With no spool configured there is nowhere to park a delivery, so a
-// draining server answers 503 rather than accepting one it will drop.
+// With no spool configured the old behavior stands exactly: 503.
 func TestNoSpoolKeepsThe503Path(t *testing.T) {
 	s, reg, _, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{ID: "h", Description: "d", Command: []string{"x"}})

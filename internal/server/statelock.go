@@ -255,9 +255,11 @@ func (w managerLockWaiter) cancelled() <-chan struct{}         { return nil }
 // manager instance — and keep retrying on their behalf until acquired,
 // timed out, or they are gone.
 //
-// The run tracker is consulted first, but its ABSENCE must never refuse a
-// manager instance's block: a manager instance's liveness (TouchInstance)
-// has nothing to do with the run tracker at all.
+// The run tracker is consulted first, but its ABSENCE no longer refuses a
+// manager instance's block: a prior version 503'd here whenever s.tracker
+// was nil, before ever checking whether the caller was a manager — wrong,
+// since a manager instance's liveness (TouchInstance) has nothing to do
+// with the run tracker at all.
 func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, id string, ttl time.Duration, req lockRequest, holder kv.LockInfo) {
 	var waiter lockWaiter
 	if s.tracker != nil {

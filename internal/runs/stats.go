@@ -61,8 +61,8 @@ type HookRunStats struct {
 }
 
 // OverheadStats answers "what does running this hook in a container
-// actually cost?" over a window of runs, from measurement rather than an
-// estimate. Every span is reported with its own sample count:
+// actually cost?" over a window of runs — the figure that was previously
+// only ever estimated. Every span is reported with its own sample count:
 // they come from different marks and are populated by different subsets of
 // runs, so one shared denominator would misrepresent all of them.
 type OverheadStats struct {

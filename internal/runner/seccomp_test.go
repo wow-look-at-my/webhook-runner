@@ -89,21 +89,21 @@ func TestTheOldNamespaceOnlyListWouldNotBuildASandbox(t *testing.T) {
 	saved := usernsSyscalls
 	t.Cleanup(func() { usernsSyscalls = saved })
 
-	// The namespace-only list: enough to CREATE a user namespace, and not
-	// enough to furnish one, which is how a gha-runner container fails.
+	// The list exactly as it shipped, and exactly as it failed on a real
+	// gha-runner container.
 	usernsSyscalls = []string{"unshare", "clone", "clone3", "setns"}
 	profile, err := usernsProfile()
 	require.Nil(t, err)
 
 	for _, call := range namespaceCalls {
 		assert.True(t, profileAllowsUngated(t, profile, call),
-			"%s: the namespace-only list does allow the namespace calls -- that "+
-				"half works, which is what makes the failure hard to read", call)
+			"%s: the old list did allow the namespace calls -- that half worked, "+
+				"which is what made the bug so hard to read", call)
 	}
 	for _, call := range sandboxCalls {
 		assert.False(t, profileAllowsUngated(t, profile, call),
-			"%s: the namespace-only list must NOT allow this, or this file is "+
-				"not testing the gap it claims to test", call)
+			"%s: the old list must NOT allow this, or this file is not testing "+
+				"the bug it claims to test", call)
 	}
 }
 
@@ -123,28 +123,11 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	}
 }
 
-// The opt-in clears docker's masked and read-only /proc paths, because the
-// kernel refuses a fresh procfs inside a user namespace while the visible /proc
-// carries them -- syscalls alone leave bwrap dead. It is paired with remap
-// rather than shipped bare: see TestUsernsRunIsRefusedWithoutRemap.
-func TestUsernsOptInUnmasksProcUnderRemap(t *testing.T) {
-	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test", true)
-	require.Nil(t, err)
-	defer cleanup()
-
-	assert.Contains(t, args, "systempaths=unconfined")
-	assert.Contains(t, args, "--security-opt")
-}
-
-type wantsUserns struct{}
-
-func (wantsUserns) UsernsAllowed() bool { return true }
-
 // The default is untouched: a hook that did not opt in gets no flags at all,
 // so its container keeps docker's builtin profile and its command line is
 // byte-identical to before the feature existed.
 func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
-	args, cleanup, err := seccompArgs(noUserns{}, "", "test", true)
+	args, cleanup, err := seccompArgs(noUserns{}, "", "test")
 	require.Nil(t, err)
 
 	defer cleanup()

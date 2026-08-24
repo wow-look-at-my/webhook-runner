@@ -38,9 +38,10 @@ func recordingShutdown(order *[]string, duringDrain func()) shutdownDeps {
 	}
 }
 
-// The admin port must close AFTER the drain. Closing it first takes the
-// dashboard away for as long as the longest run (a CI job) while hooks keep
-// executing — the one stretch an operator most needs to see what is running.
+// The regression this file exists for: the admin port used to close BEFORE
+// the drain, so a rolling update took the dashboard away for as long as the
+// longest run (a CI job) while hooks kept executing — the one stretch an
+// operator most needs to see what is still running.
 func TestAdminPortServesUntilAfterTheDrain(t *testing.T) {
 	var order []string
 	gracefulShutdown(recordingShutdown(&order, nil))

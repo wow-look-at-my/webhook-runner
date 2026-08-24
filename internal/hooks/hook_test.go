@@ -46,7 +46,7 @@ func TestParseValid(t *testing.T) {
 
 	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
 	// settings is the hook's own config, kept verbatim and never coerced --
-	// note the integer, which must stay a number rather than becoming "3".
+	// note the integer, which the old string-only env block could not express.
 	assert.JSONEq(t, `{"foo":"bar","retries":3}`, string(h.SettingsJSON()))
 }
 
