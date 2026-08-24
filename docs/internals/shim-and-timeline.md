@@ -67,3 +67,23 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   internal/server/dashboard/ts/js-snippets/`) fails CI on any drift, so a
   stale bundle, stale fetched types, or upstream component API change all
   turn CI red instead of shipping silently stale.
+
+- **Bumping the ts0 pin: a HIGHER `v=` is not a NEWER master.** buildhost
+  numbers every publish, feature-branch builds included, so `v=11` and
+  `v=12` can both be branch builds sitting above a `v=10` that is master's
+  tip. Picking the largest number deploys somebody's branch into this
+  repo's build. Resolve it instead:
+  `https://dl.pazer.build/ts0?branch=master&os=linux&arch=amd64` redirects
+  to the master build, and the `v=` in its Location header is the number
+  to pin. Then re-run the job and confirm the bundle regenerates
+  byte-for-byte -- the freshness gate is what proves the new ts0 emits the
+  same output, and a bump that changes the bundle is a real change to
+  review, not a version tick.
+
+- **ts0 is saved as `.cjs`, and the extension is load-bearing.** The bundle
+  is CommonJS. A `.js` name is parsed as ESM inside any package declaring
+  `"type": "module"`, so renaming it breaks the generate with a syntax
+  error that points at ts0 rather than at the rename. There is also no
+  smoke-test step after the download: ts0 has no `version` subcommand (it
+  prints "Unknown command" and exits 0, so such a step would pass on a
+  truncated file). The build itself is the check that it runs.

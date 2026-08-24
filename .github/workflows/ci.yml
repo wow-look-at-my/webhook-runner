@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # ?v=N is an immutable pin: do NOT bump it blind.
+      # A higher ?v= is not a newer master -- docs/internals/shim-and-timeline.md.
       - name: Install ts0 (prebuilt, from buildhost)
         run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
       # Type-checks ts/ and rebuilds the bundle in place.
