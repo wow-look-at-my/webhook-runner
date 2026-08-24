@@ -1,56 +1,60 @@
 #!/bin/sh
-# Docker-in-Docker smoke check. This runs inside the hook's --privileged
-# container (the runner adds --privileged + an anonymous /var/lib/docker
-# volume when dind:true). It starts a NESTED dockerd — whose storage lives
-# on that volume because an inner overlay driver can't stack on the outer
-# container's overlay rootfs — and proves it works via `docker version` &&
-# `docker info`. Loud non-zero exit if the daemon never comes up. The same
-# script is the container CMD (live run) and the declared test command, so
-# both the run and `webhook-runner test` paths exercise the capability.
+# What `dind: true` delivers, and what no container gets, checked against a real
+# docker daemon.
+#
+# dind gives ONE thing: an anonymous volume at /var/lib/docker, because an inner
+# daemon cannot stack its overlay driver on the outer container's overlay
+# rootfs. It adds no privilege. So this proves the volume is there and writable,
+# and then proves the host is still out of reach.
+#
+# The second half is the point. /proc/sysrq-trigger reboots the host and
+# /proc/sys/kernel/core_pattern names a helper the HOST kernel runs as real root
+# on any core dump. Both are refused only because docker binds those paths
+# read-only, and exactly two flags remove that bind -- --privileged and
+# systempaths=unconfined. Both have been in this runner. hostprimitives_test.go
+# pins the argv; this pins the OUTCOME, against the daemon, where a docker
+# release that changed its defaults would also show up.
+#
+# The same script is the container CMD and the declared test command, so the
+# live-run path and `webhook-runner test` both prove it.
 set -eu
 
-# Talk to the daemon over the local unix socket only; no TLS/TCP needed for
-# a local smoke check.
-export DOCKER_TLS_CERTDIR=""
+# What dind is for.
+if [ ! -d /var/lib/docker ]; then
+	echo "dind-smoke: /var/lib/docker is missing -- the dind volume was not mounted" >&2
+	exit 1
+fi
+if ! touch /var/lib/docker/.probe 2>/dev/null; then
+	echo "dind-smoke: /var/lib/docker is not writable -- an inner daemon could not use it" >&2
+	exit 1
+fi
+rm -f /var/lib/docker/.probe
 
-# cgroup v2 nesting: PID 1 here is this shell, not dockerd, so the nested
-# daemon can't enable subtree controllers until we move our own processes
-# into a leaf cgroup first (moby/moby hack/dind). Bounded + best-effort:
-# a no-op on cgroup v1, and if it can't converge we still try to start the
-# daemon (the readiness poll below is the real gate). --make-rshared keeps
-# mount propagation working for nested containers.
-mount --make-rshared / 2>/dev/null || :
-if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-	mkdir -p /sys/fs/cgroup/init
-	n=0
-	while [ "$n" -lt 10 ]; do
-		xargs -rn1 </sys/fs/cgroup/cgroup.procs >/sys/fs/cgroup/init/cgroup.procs 2>/dev/null || :
-		if sed -e 's/ / +/g' -e 's/^/+/' </sys/fs/cgroup/cgroup.controllers \
-			>/sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; then
-			break
-		fi
-		n=$((n + 1))
-		sleep 1
-	done
+# What no container may have. Each write MUST fail. A shell that can perform
+# either of these owns the host, so a success here is the loudest possible
+# failure of this test.
+#
+# core_pattern is re-written with the value already there, and sysrq-trigger is
+# probed with a no-op level rather than a command, so a regression that lets the
+# write through does not also reboot the CI runner. Each redirect runs in a
+# SUBSHELL: a failed redirect is reported by the shell itself, not by the
+# command, so 2>/dev/null only reaches it from outside -- otherwise a passing
+# run prints three "cannot create" lines and reads like a failure.
+existing_pattern=$(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo core)
+if ( printf '%s' "$existing_pattern" >/proc/sys/kernel/core_pattern ) 2>/dev/null; then
+	echo "dind-smoke: WROTE /proc/sys/kernel/core_pattern -- this container can run code as root ON THE HOST" >&2
+	exit 1
+fi
+if ( printf '0' >/proc/sysrq-trigger ) 2>/dev/null; then
+	echo "dind-smoke: WROTE /proc/sysrq-trigger -- this container can reboot the host" >&2
+	exit 1
 fi
 
-# Start the daemon via the base image's own entrypoint (handles the
-# iptables legacy/nft selection); background it — this script is the
-# workload that then drives the daemon.
-dockerd-entrypoint.sh dockerd >/tmp/dockerd.log 2>&1 &
+# /proc/sys as a whole, not just the two files above: the read-only bind covers
+# the tree, and a partial one would leave a different global writable.
+if ( printf '1' >/proc/sys/kernel/pid_max ) 2>/dev/null; then
+	echo "dind-smoke: /proc/sys is writable -- docker's read-only bind is not in place" >&2
+	exit 1
+fi
 
-# Poll the daemon (via /var/run/docker.sock) with flat 1s sleeps, up to ~60.
-i=0
-until docker version >/dev/null 2>&1; do
-	i=$((i + 1))
-	if [ "$i" -ge 60 ]; then
-		echo "dind-smoke: nested dockerd did not become ready within 60s" >&2
-		tail -n 40 /tmp/dockerd.log 2>/dev/null >&2 || :
-		exit 1
-	fi
-	sleep 1
-done
-
-docker version
-docker info
-echo "dind-smoke-ok"
+echo "dind-storage-ok"

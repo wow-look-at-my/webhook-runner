@@ -63,12 +63,11 @@ func TestInboxTickCoalescing(t *testing.T) {
 	assert.True(t, ib.PushTick(), "consumed tick re-allows one")
 }
 
-// The inbox is UNBOUNDED: a burst far past the old 256 cap keeps every
-// event, in order, and settles none of them early. The cap used to drop the
-// oldest per push, which is how a fan-out tick against a large fleet lost
-// real deliveries behind a wall of manager.inbox_dropped.
+// The inbox is UNBOUNDED: a burst keeps every event, in order, and settles
+// none of them early. A cap that drops the oldest per push is how a fan-out
+// tick against a large fleet loses real deliveries.
 func TestInboxKeepsEveryEventUnderABurst(t *testing.T) {
-	const burst = 1000 // ~4x the retired cap
+	const burst = 1000
 	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
 

@@ -49,6 +49,10 @@ const (
 	// HOOK_KV_URL (http://localhost:9002) to the Unix socket, then execs the
 	// hook's real command, so hooks use a plain URL with any HTTP client.
 	mountedShim = "/run/webhook-runner/whr-shim"
+	// dindStorageDir is where a dind hook's nested daemon keeps its store.
+	// It needs a real filesystem, so it is always a mount: this run's scratch
+	// subtree when the hook lists it in `scratch`, else an anonymous volume.
+	dindStorageDir = "/var/lib/docker"
 )
 
 // HookFinishedFunc is invoked once the container exits (or fails to
@@ -71,6 +75,10 @@ type KVInjector interface {
 
 // Runner launches docker containers and tracks the resulting runs.
 type Runner struct {
+	// usernsRemapped is the daemon's startup answer to whether container root
+	// maps to an unprivileged host uid. See Options.UsernsRemapped.
+	usernsRemapped bool
+
 	tracker  *runs.Tracker
 	log      *slog.Logger
 	tmpDir   string
@@ -102,6 +110,11 @@ type Runner struct {
 	// dockerBin is the docker executable, configurable for testing.
 	dockerBin string
 
+	// scratchDir is the host root for per-run scratch subtrees (see
+	// scratch.go). Empty means no scratch filesystem is configured, and a
+	// hook declaring scratch paths fails rather than running without one.
+	scratchDir string
+
 	wg sync.WaitGroup
 
 	// draining is set once shutdown begins: no NEW runs may start (a run
@@ -109,60 +122,6 @@ type Runner struct {
 	// docker-kill teardown). In-flight runs are unaffected — Wait drains
 	// them. See BeginShutdown.
 	draining atomic.Bool
-}
-
-// Options configure a Runner.
-type Options struct {
-	Tracker  *runs.Tracker
-	Logger   *slog.Logger
-	TmpDir   string // directory for payload/header temp files; "" = os.TempDir()
-	OnStart  HookStartedFunc
-	OnFinish HookFinishedFunc
-	Docker   string               // docker binary path; "" = "docker"
-	Secrets  *hooks.SecretsLoader // per-hook sops secrets; nil disables decryption
-	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
-	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
-
-	// GlobalCap bounds how many hook executions run containers at once,
-	// across ALL hooks (excess runs queue as pending). nil = no cap. See
-	// concurrency.Global; serve always wires one (default 64).
-	GlobalCap *concurrency.Global
-
-	// KV mints per-hook state tokens; KVSocket is the host path of the KV
-	// API's Unix socket and KVShim is the host path of webhook-runner's own
-	// binary (the in-container proxy entrypoint), both bind-mounted into
-	// state-hook containers. KV nil or either path empty disables KV injection.
-	KV       KVInjector
-	KVSocket string
-	KVShim   string
-}
-
-// New constructs a Runner.
-func New(opts Options) *Runner {
-	if opts.Logger == nil {
-		opts.Logger = slog.Default()
-	}
-	if opts.Docker == "" {
-		opts.Docker = "docker"
-	}
-	if opts.TmpDir == "" {
-		opts.TmpDir = os.TempDir()
-	}
-	return &Runner{
-		tracker:   opts.Tracker,
-		log:       opts.Logger,
-		tmpDir:    opts.TmpDir,
-		onStart:   opts.OnStart,
-		onFinish:  opts.OnFinish,
-		secrets:   opts.Secrets,
-		events:    opts.Events,
-		groups:    opts.Groups,
-		globalCap: opts.GlobalCap,
-		kv:        opts.KV,
-		kvSocket:  opts.KVSocket,
-		kvShim:    opts.KVShim,
-		dockerBin: opts.Docker,
-	}
 }
 
 // Wait blocks until all in-flight runs have finished. Useful for tests
@@ -365,6 +324,23 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	containerName := "webhook-runner-" + run.ID()
 
+	// Per-run scratch subtrees for the paths the hook declared (scratch.go).
+	// Created after the slots are held so a long queue does not park empty
+	// directories on the scratch filesystem, and torn down when execute
+	// returns — which is after the container has exited, so nothing is
+	// removed from under a live run.
+	storeArgs, scratchCleanup, err := r.storageArgs(hook, run.ID())
+	if err != nil {
+		r.events.Record("run.misconfigured", fmt.Sprintf("%s run %s: %v", hook.ID, run.ID(), err),
+			map[string]string{"hook": hook.ID, "run": run.ID()})
+		run.Finish(runs.StatusError, -1, err.Error())
+		if r.onFinish != nil {
+			r.onFinish(hook, run, payload)
+		}
+		return
+	}
+	defer scratchCleanup()
+
 	spec := containerSpec{
 		name:  containerName,
 		image: image,
@@ -392,7 +368,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		networks: hook.Networks,
 		user:     hook.User,
 		workdir:  hook.Workdir,
+		storage:  storeArgs,
 		dind:     hook.Dind,
+		// A hook that put the dind storage dir in its own `scratch` has already
+		// mounted it, and docker refuses a second mount on one destination.
+		dindStorageCovered: hook.ScratchCovers(dindStorageDir),
 	}
 	spec.mounts = append(spec.mounts, hook.Volumes...)
 	// State store: opted-in hooks reach the KV API at a plain
@@ -420,7 +400,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// container, so it must outlive `docker run`'s startup -- the cleanup is
 	// deferred for the whole run rather than fired here. A hook that did not
 	// opt in adds no flags at all.
-	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, run.ID())
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, run.ID(), r.usernsRemapped)
 	if err != nil {
 		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for %s failed: %v", hook.ID, err),
 			map[string]string{"hook": hook.ID, "run": run.ID()})

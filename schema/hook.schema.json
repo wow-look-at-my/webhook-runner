@@ -316,7 +316,7 @@
       "description": "Human-readable description of what this hook does."
     },
     "dind": {
-      "description": "When true, run the hook's container with the privileges to host its OWN nested container daemon: the runner adds --privileged and an anonymous volume at /var/lib/docker (--mount type=volume,dst=/var/lib/docker), applied identically on the live-run and `webhook-runner test` paths. The nested daemon's storage lives on that real volume because an inner overlay driver cannot stack on the outer container's overlay rootfs; --rm auto-removes the anonymous volume so inner storage never leaks between runs. The host's docker daemon is NEVER exposed — no docker socket is mounted, and the nested daemon is isolated from it. This is an AUDITED, host-root-equivalent capability (--privileged grants effectively full access to the host): enable it only for trusted, operator-curated hooks. Default: false."
+      "description": "When true, give the container an anonymous volume at /var/lib/docker so it can host its OWN nested container daemon: an inner daemon cannot run its overlay storage driver on top of the outer container's overlay, so that path must be a volume rather than the layered rootfs. --rm auto-removes it when the run ends, so inner storage never leaks between runs, and the host's own docker daemon is NEVER exposed (no socket is mounted). A hook listing /var/lib/docker in `scratch` supplies that mount itself and no volume is added (two mounts on one destination is a docker error). NO PRIVILEGE IS ADDED: --privileged is refused by ruling, because it is host-root-equivalent -- it hands a uid-0 container an unmasked /proc, and a writable /proc/sys/kernel/core_pattern alone runs a helper as real root on the HOST. These containers execute other people's CI, so the nested daemon has to be a ROOTLESS one (dockerd-rootless.sh, needing a user namespace, fuse-overlayfs or vfs storage, and no iptables). A root `dockerd` will not start and the run fails saying so, rather than degrading quietly. Applied identically on the live-run and `webhook-runner test` paths, so an image is proved in CI rather than on a runner."
     },
     "enable": {
       "description": "The hook's DEFAULT enabled state. When false, the hook loads disabled: deliveries are rejected (503) and scheduled runs are skipped exactly as if the operator kill switch were off, until an operator explicitly enables it. The dashboard/admin runtime override (POST /hooks/{id}/enable|disable, persisted server-side) always takes precedence over this default, in both directions. Absent = enabled, so existing hooks are unchanged."
@@ -335,6 +335,12 @@
     "public_key": {
       "description": "Base64 or hex-encoded Ed25519 public key. When set, incoming requests must include a valid Ed25519 signature of the body in the signature header."
     },
+    "read_only_rootfs": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run the container with --read-only, so the ONLY writable locations are its scratch and tmpfs mounts. Without this, \"the heavy paths are on scratch\" is a claim about the paths somebody remembered to list: any other write still lands in the container's writable layer under docker's data-root, silently, which is exactly the disk the declarations exist to spare. With it, an unlisted write fails loudly instead. Opt-in because it can only be proven per image -- a program that writes somewhere unlisted breaks under it -- so prove it in the hook's own tests, which `webhook-runner test` runs with these same flags (scratch paths backed by tmpfs there, since a CI runner has no scratch filesystem). Default: false.",
+      "$comment": "Enforcement, not decoration: without it the other two fields cannot be trusted, because an undeclared path fails silently onto the data-root."
+    },
     "run_title": {
       "description": "Template for the friendly display title of this hook's runs, shown by the dashboard in place of the opaque run id (e.g. \"{{repository.full_name}}#{{pull_request.number}}\" renders \"wow-look-at-my/go-toolchain#47\"). A {{...}} placeholder names a dotted path into the parsed JSON payload (\"pull_request.number\", array elements by numeric index) or a request header via the \"header:\" prefix — exactly skip_if's key syntax and bounded traversal. Resolution is graceful and never blocks a run: each placeholder becomes the scalar leaf's string form (numbers as their JSON literal, true/false as those words); a missing path, an object/array, and JSON null become empty; when EVERY placeholder resolves empty the run simply gets no title (consumers fall back to the run id), otherwise pure-separator literals stranded next to empty placeholders are dropped and whitespace collapses. A template with no placeholders is a static title, always set. Resolved once at run creation, before skip_if — skipped runs are titled too; schedule-triggered runs resolve against the synthetic schedule payload and fall back to \"schedule\". Titles are capped at 200 characters, and a state hook can rename its run mid-flight via POST /title on the state API. A malformed template (unterminated \"{{\", empty \"{{}}\") is a load/validation error."
     },
@@ -343,11 +349,20 @@
       "pattern": "^[0-9]+(ns|us|ms|s|m|h)+$",
       "description": "Go duration (e.g. \"5m\", \"1h\") to fire this hook on a fixed interval, in addition to any HTTP trigger. A scheduled run goes through the same pipeline as an HTTP-triggered one (tracked, gated by concurrency_group, KV-enabled, shown on the dashboard) with a synthetic payload marking it schedule-triggered. On startup, and whenever the schedule is newly added or its interval changes, the hook fires immediately, then every interval; the scheduler skips a tick while a previous run of the same hook is still in flight (skip-if-already-running). Omit for HTTP-triggered only."
     },
+    "scratch": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^/.+"
+      },
+      "description": "Absolute CONTAINER paths whose writes must land on the operator's scratch filesystem (WEBHOOK_RUNNER_SCRATCH_DIR) instead of under docker's data-root. Each path is bind-mounted from a directory private to this run, created before the container starts and removed when it ends; a serve boot also sweeps subtrees left by a process that died mid-run. Declare the paths that carry real volume -- a CI job's checkout tree, a nested daemon's image store at /var/lib/docker -- and pair them with tmpfs for the rest. This is a REQUIREMENT, not a hint: a run whose hook declares scratch paths on a server with no scratch directory configured FAILS, rather than quietly writing to the disk the declaration exists to spare. A dind hook listing /var/lib/docker gets its inner daemon's store from scratch and no anonymous volume is added (two mounts on one destination is a docker error). Paths must be absolute and clean, may not be \"/\", and may not repeat within scratch or across tmpfs.",
+      "default": []
+    },
     "script": {
       "description": "Run a script file from the hook directory: derives the container command as \u003cinterpreter\u003e \u003cfile\u003e [args...]. Like all hook code, the script is baked into the hook's image by its Dockerfile (never mounted), so the interpreter must be installed in that image. An explicit command overrides the derived one."
     },
     "seccomp": {
-      "description": "Narrow the container's syscall filter. Absent means the default: docker's builtin seccomp profile, unmodified. The block names specific relaxations -- there is deliberately no way to point at an arbitrary profile or to say 'unconfined'. seccomp.userns (default false): allow the container to create unprivileged USER NAMESPACES, by running it under docker's default profile plus an ungated allow for unshare/clone/clone3/setns (the default permits those only for a container holding CAP_SYS_ADMIN, which a hook container does not have; every other syscall keeps the default policy). This is what an in-container sandbox needs -- bubblewrap, and so `dats` on its default bwrap backend, cannot create its namespace without it. The trade runs both ways: the hook gains the ability to sandbox its OWN workload, at the cost of a wider kernel surface for the container itself, and unprivileged user namespaces have a real CVE history. An AUDITED opt-in like dind: enable only for trusted, operator-curated hooks. Applied identically on the live-run and `webhook-runner test` paths."
+      "description": "Narrow the container's syscall filter. Absent means the default: docker's builtin seccomp profile, unmodified. The block names specific relaxations -- there is deliberately no way to point at an arbitrary profile or to say 'unconfined'. seccomp.userns (default false): let the container build an in-container sandbox (bubblewrap, and so `dats` on its default backend). TWO obstructions come off together, because either alone leaves bwrap dead. Syscalls: docker's default profile plus an ungated allow for unshare/clone/clone3/setns and mount/umount2/pivot_root, which the default permits only for a container holding CAP_SYS_ADMIN. Paths: docker's masked and read-only /proc paths (systempaths=unconfined), because the kernel refuses a fresh procfs inside a user namespace while the visible /proc carries them. THIS REQUIRES A DAEMON THAT REMAPS CONTAINER ROOT (userns-remap) and the run FAILS on one that does not, naming it. That is the interlock: on a container whose root is the host's root, an unmasked /proc means a writable /proc/sys/kernel/core_pattern, whose helper the HOST kernel runs as real root -- dropping CAP_SYS_ADMIN does not refuse that write. Under remap the file is owned by a uid outside the container's map, so the write is refused on the DAC check while bwrap still mounts its /proc. An AUDITED opt-in like dind: unprivileged user namespaces have a real CVE history, so enable it only for trusted, operator-curated hooks. Applied identically on the live-run and `webhook-runner test` paths."
     },
     "secret": {
       "description": "Legacy: shared secret for HMAC-SHA256 signature verification. Prefer api_key or public_key."
@@ -374,6 +389,15 @@
     },
     "timeout": {
       "description": "Go duration for the container timeout (e.g. \"5m\", \"30s\"): the absolute processing ceiling, counted from container launch regardless of output. Omit for no absolute ceiling; pair with idle_timeout so a hung run still dies (a hook that omits both runs until it exits)."
+    },
+    "tmpfs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^/.+"
+      },
+      "description": "Absolute CONTAINER paths backed by RAM (--tmpfs) instead of disk: writes never touch a disk at all, so they cost no device wear and vanish with the container. The companion to scratch: scratch takes what must survive on a disk or is too big for memory, tmpfs takes the rest, and between them a hook can account for every path it writes to -- which is what read_only_rootfs then enforces. An entry may carry docker's option suffix (\"/tmp:size=4g\"), passed through untouched. SIZE ANYTHING THAT COULD GROW: an unbounded tmpfs may reach half of host RAM, and several of them on one container, multiplied by the concurrency limit, can exhaust the host. Same path rules as scratch, and a path may not appear in both.",
+      "default": []
     },
     "user": {
       "description": "User/UID to run the container as (--user flag)."

@@ -18,7 +18,7 @@ import (
 const imageRepoPrefix = "whr-hook/"
 
 // buildTailLines is how much build output a failed build carries back in its
-// error. A build failure used to surface as a bare "exit status 1" with the
+// error. Without it a build failure reads as a bare "exit status 1", with the
 // real docker error only in the server's own log — invisible on the dashboard,
 // which is where the operator looks.
 const buildTailLines = 40

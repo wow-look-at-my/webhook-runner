@@ -1,13 +1,13 @@
 // Delta-coalescing harness for the timeline adapter: evaluates the REAL
 // assets/timeline.js in a vm sandbox (stub <timeline-view>, stub EventSource,
 // recorded setData/mergeData calls) and proves the burst-batching contract
-// that fixes the 2026-07-21 freeze:
+// that keeps a wake-up flush from freezing the tab:
 //
 //   A backlog of SSE `run` deltas — buffered while the tab sat backgrounded
-//   for hours, then flushed all at once on wake (a captured profile showed
-//   6,335 deltas in one 15.3s block, 0 repaints) — used to run one full
+//   for hours, then flushed all at once on wake (a measured profile: 6,335
+//   deltas in one 15.3s block, 0 repaints) — must never run one full
 //   component mergeData PER delta, synchronously, on the SSE message handler.
-//   The adapter now:
+//   The adapter instead:
 //     1. does ZERO chart work on the `run` handler itself (the merge is
 //        deferred to requestAnimationFrame — so the event loop is never
 //        blocked by the burst; rAF is parked while backgrounded, so the

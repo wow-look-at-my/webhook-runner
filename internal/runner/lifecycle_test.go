@@ -54,8 +54,7 @@ func TestRunContextZeroTimeoutFollowsParentCancel(t *testing.T) {
 }
 
 // End-to-end through execute(): a hook that omits timeout runs and finishes
-// normally. (An absent timeout used to mean a 5m default ceiling; it now
-// means no absolute ceiling at all.)
+// normally. An absent timeout means NO absolute ceiling, never a default one.
 func TestRunnerNoTimeoutRunsToCompletion(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)

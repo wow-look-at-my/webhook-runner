@@ -1,12 +1,13 @@
 {
   "$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
-  "description": "e2e Docker-in-Docker smoke test: starts a nested dockerd and verifies it with docker version && docker info",
-  // dind:true makes the runner add --privileged + an anonymous
-  // /var/lib/docker volume on BOTH the live-run and `webhook-runner test`
-  // paths, so this hook can host its own nested container daemon.
+  "description": "e2e dind contract: the /var/lib/docker volume is mounted and writable, and the host stays out of reach",
+  // dind:true adds an anonymous /var/lib/docker volume on BOTH the live-run
+  // and `webhook-runner test` paths, and NO privilege. The script proves both
+  // halves against a real daemon: the volume an inner daemon needs, and
+  // /proc/sysrq-trigger + /proc/sys still read-only.
   "dind": true,
-  // Same script as the container CMD — run under `webhook-runner test` in
-  // the built image, exercising the test-path capability injection.
+  // Same script as the container CMD, so the test path's flag parity is what
+  // makes an image provable in CI rather than on a runner.
   "tests": [["/usr/local/bin/dind-smoke.sh"]],
   "timeout": "120s"
 }

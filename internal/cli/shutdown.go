@@ -47,15 +47,13 @@ func gracefulShutdown(d shutdownDeps) {
 	//     /wait, /title all ride it. Closing it before the drain pulled the
 	//     floor out from under the very runs being drained.
 	//   - the admin port, because the drain is precisely when an operator
-	//     needs to see what is still running and why the deploy is slow. It
-	//     used to close ahead of a wait measured in whole CI jobs, so a
-	//     rolling update took the dashboard away for minutes while hooks
-	//     went on executing: connection-refused through the tunnel, with no
-	//     way to watch the drain it was waiting on. Nothing on this port
+	//     needs to see what is still running and why the deploy is slow.
+	//     Closing it ahead of a wait measured in whole CI jobs gives the
+	//     operator connection-refused through the tunnel, with no way to
+	//     watch the drain the deploy is waiting on. Nothing on this port
 	//     starts work — new runs are already refused above and the
 	//     supervisor will not restart an instance once shut down — so
-	//     serving it to the end costs nothing and tells the operator
-	//     everything.
+	//     serving it to the end costs nothing.
 	d.drainRuns()
 	// The grace window starts HERE, not before the drain — a deadline armed
 	// pre-drain would already be blown and turn a graceful close into an

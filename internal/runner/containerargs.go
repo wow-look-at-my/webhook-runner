@@ -55,10 +55,15 @@ type containerSpec struct {
 	networks         []string
 	user             string
 	workdir          string
-	// dind grants the container the privilege to run a nested dockerd. It does
-	// NOT widen any namespace: --privileged is capabilities and device access,
-	// and the PID namespace stays the container's own.
+	// storage are the entity's own scratch/tmpfs/read-only-rootfs flags, already
+	// rendered by the caller (scratch.go). They precede the dind mount below.
+	storage []string
+	// dind gives the container the nested daemon's STORAGE, and nothing else --
+	// no capability, no device access, no widened namespace. See dind.go.
 	dind bool
+	// dindStorageCovered suppresses that mount because the entity's own scratch
+	// already supplies the path. Two mounts on one destination is a docker error.
+	dindStorageCovered bool
 	// seccomp is whatever seccompArgs produced for this entity, already
 	// rendered. Empty for an entity that opted into nothing.
 	seccomp []string
@@ -108,12 +113,12 @@ func (s containerSpec) args() []string {
 	if s.workdir != "" {
 		args = append(args, "--workdir", s.workdir)
 	}
-	// The anonymous /var/lib/docker volume gives the nested daemon storage on a
-	// real filesystem -- its overlay driver cannot stack on the outer
-	// container's overlay rootfs -- and --rm above reaps it at exit, so inner
-	// storage never leaks between runs. The host's daemon is never exposed.
+	// Storage precedes the dind mount: an entity whose own scratch covers the
+	// dind storage dir has already supplied it, and dindStorageArgs is what
+	// keeps the second mount from being added on top.
+	args = append(args, s.storage...)
 	if s.dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+		args = append(args, dindStorageArgs(s.dindStorageCovered)...)
 	}
 	args = append(args, s.seccomp...)
 	args = append(args, s.image)

@@ -247,25 +247,44 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   demand `image`/`command` — so deploy webhook-runner before merging
   hooks that rely on them.
 - `dind: true` (hook.json, a plain opt-in bool like `state`) maps to
-  EXACTLY two docker-run flags — `--privileged` and
+  EXACTLY ONE docker-run flag pair —
   `--mount type=volume,dst=/var/lib/docker` — injected on BOTH the
-  live-run path (`runner.execute`, before the image)
-  AND the `webhook-runner test` path (`runner.runOneTest`, before the
-  image); that run/test parity is load-bearing so a dind hook's declared
-  `tests` can start a nested daemon under `webhook-runner test`. The
-  anonymous /var/lib/docker volume is REQUIRED, not decorative: an inner
-  daemon's overlay2 storage can't stack on the outer container's overlay
-  rootfs, so it needs a real volume — and `--rm` (always passed)
-  auto-removes it, so inner storage never leaks between runs. The host's
-  docker daemon is NEVER exposed (no host socket mount); the nested daemon
-  is a throwaway. `--privileged` is host-root-equivalent, so this is an
-  AUDITED capability — enable it only for trusted, operator-curated hooks.
-  It is deliberately first-class rather than raw docker args: `dind` covers
-  both paths with one greppable boolean, and there is no general
-  raw-docker-args escape hatch at all, so every privilege a container gets
-  is a named, reviewable field. New hook.json field ⇒ same
-  deploy-first rule as `state`/`schedule` (old binaries reject it via
-  DisallowUnknownFields).
+  live-run path (`runner.execute`, before the image) AND the
+  `webhook-runner test` path (`runner.runOneTest`, before the image).
+  That run/test parity is load-bearing: an image is proved in CI rather
+  than on a runner. The anonymous volume is REQUIRED, not decorative: an
+  inner daemon's overlay2 storage can't stack on the outer container's
+  overlay rootfs, so it needs a real volume — and `--rm` (always passed)
+  auto-removes it, so inner storage never leaks between runs. A hook
+  listing `/var/lib/docker` in `scratch` supplies that mount itself and no
+  volume is added; two mounts on one destination is a docker error. The
+  host's docker daemon is NEVER exposed (no host socket mount).
+
+  **`--privileged` is NOT among the flags, by operator ruling.** A
+  privileged container holds every capability, an unmasked `/proc` and full
+  device access, which is host-root-equivalent on a uid-0 image. The
+  cheapest proof: `/proc/sys/kernel/core_pattern` is global, not
+  namespaced, and its helper is run by the HOST kernel as real root on any
+  core dump. Dropping `CAP_SYS_ADMIN` does not refuse that write — measured
+  — so only docker's read-only `/proc` bind stands in the way, and
+  `--privileged` removes it. A `scratch` mount already hands the container
+  a writable host path to aim it at. A fleet that runs other people's CI
+  must not hold that.
+
+  The consequence is deliberate and loud: a nested daemon started as root
+  (`dockerd`) does not come up without those capabilities, and the run
+  fails saying so. An image that wants a nested daemon runs a ROOTLESS one
+  (`dockerd-rootless.sh`, which needs a user namespace, fuse-overlayfs or
+  vfs storage, and no iptables). Nothing in the runner fakes that for it —
+  an image still launching root `dockerd` fails every run until it is
+  converted, which is the honest signal that the conversion has not
+  happened. See `internal/runner/dind.go`.
+
+  `dind` stays first-class rather than raw docker args: one greppable
+  boolean covers both paths, and there is no general raw-docker-args escape
+  hatch at all, so every privilege a container gets is a named, reviewable
+  field. New hook.json field ⇒ same deploy-first rule as
+  `state`/`schedule` (old binaries reject it via DisallowUnknownFields).
 - **`seccomp.userns` and the `/proc` masking — the opt-in that does NOT
   exist.** `seccomp: { userns: true }` runs the container under docker's
   default profile plus an ungated allow for

@@ -660,8 +660,8 @@ function renderRunOutput(view) {
 //
 // One async fetch+render per section. `hooks` also republishes its payload
 // for timeline.js (window.whrHooks + whr:hooks-data) — this is the ONLY
-// place /hooks is fetched, which fixed the old page-load double-fetch (both
-// scripts used to fetch it independently). `runs` is the overview TABLE
+// place /hooks is fetched. Never fetch it from timeline.js as well: that is
+// a page-load double-fetch. `runs` is the overview TABLE
 // (hidden by default; the timeline is the primary runs view) and fetches
 // nothing while hidden. renderKV needs the loaded-hook id set, so the kv
 // section reads the roster the hooks section last published.
@@ -1577,11 +1577,10 @@ function concurrencyColumns(o) {
 }
 
 
-// The named concurrency groups, as a <data-table>. Clicking a row expands
-// the same drill-down as before — but the expansion now lives in the
-// component, so opening one no longer re-renders the whole page (which is
-// what the old concurrencyOpenGroup + refresh() dance did, losing scroll
-// position and any open prompt every time).
+// The named concurrency groups, as a <data-table>. Clicking a row expands a
+// drill-down inside the component, so opening one never re-renders the whole
+// page. Never drive this from a page-level open-group flag plus a refresh():
+// that loses scroll position and any open prompt on every click.
 function renderConcurrency(data) {
   // {global, groups} from cap-aware servers; a bare array from older ones
   // (and the test harness) keeps rendering as groups-only.
@@ -2049,12 +2048,11 @@ async function refreshApp(id) {
     return;
   }
   // FILTER FIRST, THEN LIMIT: the hidden statuses go to the server as
-  // ?exclude= so max=50 counts fifty runs the operator can actually see. It
-  // used to fetch the newest 50 and hide statuses here, which on a hook
-  // whose recent history is all skips (every gha-runner delivery that is
-  // not a queued job) rendered an empty table — "All 50 recent run(s) are
-  // hidden by the status filter above" — with the real runs just past the
-  // window and unreachable at any limit.
+  // ?exclude= so max=50 counts fifty runs the operator can actually see.
+  // Fetching the newest 50 and hiding statuses here empties the table on a
+  // hook whose recent history is all skips (every gha-runner delivery that
+  // is not a queued job), with the real runs just past the window and
+  // unreachable at any limit.
   const exclude = [...appRunsHiddenStatuses()].sort().join(",");
   const [runs, events, kvKeys] = await Promise.all([
     fetchJSON(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
@@ -2249,17 +2247,17 @@ function renderApp(detail, runs, events) {
 // localStorage (the runs-table toggle precedent).
 //
 // The filter is applied SERVER-SIDE, before the row limit (?exclude= on
-// /runs). It used to be a pure selection over the fetched page, which
-// quietly failed on exactly the hooks it was built for: hide "skipped" on a
-// hook whose newest 50 runs are all skips and the table emptied out, saying
-// "All 50 recent run(s) are hidden" while the runs that did work sat just
-// past the window — unreachable however high the limit went, because the
-// limit was spent before the filter ran. Filter first, then limit.
+// /runs). A pure selection over the fetched page fails on exactly the hooks
+// this was built for: hide "skipped" on a hook whose newest 50 runs are all
+// skips and the table empties out, saying "All 50 recent run(s) are hidden"
+// while the runs that did work sit just past the window — unreachable
+// however high the limit goes, because the limit is spent before the filter
+// runs. Filter first, then limit.
 //
 // Two consequences worth keeping in mind: toggling a chip REFETCHES (a
 // different filter is a different fifty rows), and the chip counts come
 // from the hook's stats.by_status over the whole retention window, since
-// the page no longer contains the hidden statuses at all.
+// the page does not contain the hidden statuses at all.
 
 const APP_RUNS_FILTER_KEY = "whr.appRuns.hiddenStatuses";
 const APP_RUNS_FILTER_DEFAULT = ["skipped"];
@@ -3051,11 +3049,10 @@ function renderReloadCommits(data) {
 // cheap status view always; the origin-fetching commits list only while
 // the picker is open.
 async function refreshReloadPanel() {
-  // A THROWN status read must never take the panel down with it: this call
-  // used to be unguarded, so a failing /reload/status left #reload-section
-  // hidden and the page showed nothing but the webhook setup instructions —
-  // no live commit, no held row, no force controls. The error belongs ON the
-  // panel, not instead of it.
+  // A THROWN status read must never take the panel down with it. Unguarded,
+  // a failing /reload/status leaves #reload-section hidden and the page shows
+  // nothing but the webhook setup instructions — no live commit, no held row,
+  // no force controls. The error belongs ON the panel, not instead of it.
   let data = null;
   let statusErr = "";
   try {
