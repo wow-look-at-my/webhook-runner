@@ -73,27 +73,22 @@ func ImageTag(hook *hooks.Hook) (string, error) {
 	return imageRepoPrefix + hook.ID + ":" + h, nil
 }
 
-// DefaultBuildTimeout caps a build that produces nothing and never returns.
-// A wedged `docker build` is the quietest failure this binary can have: a RUN
-// step emits no output while it runs, so a fetch against a black hole looks
-// exactly like a slow layer, and the caller's own supervisor kills the whole
-// container before the build ever reports. Loud and late beats silent.
+// DefaultBuildTimeout: a RUN step is silent while it runs, so a wedged build reads as a slow layer until something else dies of it.
 const DefaultBuildTimeout = 30 * time.Minute
 
-// EnsureImage makes sure the image for the hook's current content exists
-// locally, building it from the hook directory when it doesn't, and
-// returns the tag to run plus whether a build actually happened. The
-// content-hash tag is what makes runs immutable: a changed hook gets a
-// fresh build on its next run, an unchanged one reuses the existing
-// image, and in-flight runs keep the image they started with. Build
-// output is streamed to out.
+// EnsureImage builds the hook's image at DefaultBuildTimeout. See EnsureImageWithin.
 func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string, built bool, err error) {
 	return EnsureImageWithin(dockerBin, hook, out, DefaultBuildTimeout)
 }
 
-// EnsureImageWithin is EnsureImage with the caller's own cap on the build.
-// `webhook-runner test` passes its per-command timeout so one entity's wedged
-// build fails with that entity's name, in time for the log to survive.
+// EnsureImageWithin makes sure the image for the hook's current content exists
+// locally, building it from the hook directory when it doesn't, and returns the
+// tag to run plus whether a build happened. The content-hash tag is what makes
+// runs immutable: a changed hook gets a fresh build on its next run, an
+// unchanged one reuses the existing image, and in-flight runs keep the image
+// they started with. Build output is streamed to out, and the build is capped
+// so a wedged one fails with this entity's name rather than outliving the
+// caller that would have reported it.
 func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeout time.Duration) (tag string, built bool, err error) {
 	tag, err = ImageTag(hook)
 	if err != nil {
