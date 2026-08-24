@@ -359,4 +359,3 @@ func TestRunnerMountsEmptySettingsByDefault(t *testing.T) {
 
 	assert.Contains(t, run.Snapshot(-1).Output, "arg=HOOK_SETTINGS_FILE="+mountedSettings)
 }
-

@@ -4,14 +4,12 @@ package hooks
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -530,90 +528,6 @@ func (h *Hook) hasDockerfile() bool {
 	return err == nil && !fi.IsDir()
 }
 
-// ContentHash digests the files that determine this hook's image, tagging
-// the build so a changed hook rebuilds on its next run while an unchanged
-// one reuses the already built image.
-//
-// LEGACY layout: every file under the hook's directory, hashed as
-// relative path + content — byte-identical to the historical algorithm
-// (existing deployments must not re-tag on upgrade).
-//
-// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every
-// SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the
-// tree has) — never sibling entity dirs — hashed as src-relative path +
-// file mode + content. A shared-code edit re-tags every src-layout entity
-// (lazy rebuild on its next run, intended even for non-consumers); an edit
-// to hook A never re-tags hook B. The COPY-surface convention follows from
-// this: an SDK-layout Dockerfile may COPY only from a shared dir and its
-// own hooks/<id>/ — a sibling entity's dir is undefined-staleness territory
-// (builds don't fail, but edits there never re-tag).
-func (h *Hook) ContentHash() (string, error) {
-	dir := h.Dir()
-	if dir == "" {
-		return "", errors.New("hook has no source directory")
-	}
-	digest := sha256.New()
-	if h.SrcRoot != "" {
-		if err := hashTree(digest, h.SrcRoot, dir, true); err != nil {
-			return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
-		}
-		// A src tree without shared code is fine: no shared dirs simply
-		// contribute nothing.
-		shared, err := SharedDirs(h.SrcRoot)
-		if err != nil {
-			return "", fmt.Errorf("list shared dirs under %s: %w", h.SrcRoot, err)
-		}
-		for _, sd := range shared {
-			if err := hashTree(digest, h.SrcRoot, sd, true); err != nil {
-				return "", fmt.Errorf("hash shared dir %s: %w", sd, err)
-			}
-		}
-		return hex.EncodeToString(digest.Sum(nil))[:16], nil
-	}
-	if err := hashTree(digest, dir, dir, false); err != nil {
-		return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
-	}
-	return hex.EncodeToString(digest.Sum(nil))[:16], nil
-}
-
-// hashTree feeds every file under root into digest, ordered by
-// filepath.WalkDir's lexical walk: relative-to-base path, optionally the
-// file mode (the SDK layout hashes modes; legacy predates that and must
-// stay byte-identical), then the content.
-func hashTree(digest io.Writer, base, root string, withMode bool) error {
-	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(base, p)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(digest, "%s\x00", filepath.ToSlash(rel))
-		if withMode {
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(digest, "%o\x00", info.Mode().Perm())
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		_, cpErr := io.Copy(digest, f)
-		f.Close()
-		if cpErr != nil {
-			return cpErr
-		}
-		fmt.Fprint(digest, "\x00")
-		return nil
-	})
-}
-
 // ReservedEnvKey reports whether the runner sets this env key itself; hook
 // env entries must not declare it and secrets-file entries are skipped.
 func ReservedEnvKey(k string) bool {
@@ -696,70 +610,6 @@ func (h *Hook) validate() error {
 		return errors.New("github_status.context is required when github_status.enabled is true")
 	}
 	return nil
-}
-
-// validateScratch rejects a mount entry that could not be applied, or that
-// would mount somewhere destructive. A relative path has no meaning as a mount
-// destination; "/" would replace the whole container rootfs; a destination
-// named twice — within one list or across both — is two mounts on one target,
-// which docker refuses. Catching all of it at LOAD keeps it out of a running
-// fleet entirely.
-func (h *Hook) validateScratch() error {
-	seen := make(map[string]string, len(h.Scratch)+len(h.Tmpfs))
-	for _, list := range []struct {
-		field string
-		paths []string
-	}{{"scratch", h.Scratch}, {"tmpfs", h.Tmpfs}} {
-		for i, entry := range list.paths {
-			p := entry
-			if list.field == "tmpfs" {
-				p = TmpfsPath(entry)
-				if p == entry && strings.Contains(entry, ":") {
-					return fmt.Errorf("tmpfs[%d] %q has an empty option list after %q", i, entry, ":")
-				}
-			}
-			if !strings.HasPrefix(p, "/") {
-				return fmt.Errorf("%s[%d] %q must be an absolute container path", list.field, i, entry)
-			}
-			clean := filepath.Clean(p)
-			if clean != p {
-				return fmt.Errorf("%s[%d] %q must be a clean path (%q)", list.field, i, entry, clean)
-			}
-			if clean == "/" {
-				return fmt.Errorf("%s[%d] must not be %q", list.field, i, "/")
-			}
-			if prev, dup := seen[clean]; dup {
-				return fmt.Errorf("%s[%d] %q is already mounted by %s", list.field, i, entry, prev)
-			}
-			seen[clean] = list.field
-		}
-	}
-	return nil
-}
-
-// TmpfsPath returns the mount destination of a tmpfs entry, which may carry
-// docker's option suffix ("/tmp:size=4g"). Options are passed through
-// untouched — docker owns that grammar, and validating a copy of it here would
-// only reject options docker gains later.
-//
-// Sizing is not cosmetic: an unbounded tmpfs may grow to half of host RAM, and
-// several of them on one container can exhaust it. A path expected to hold
-// gigabytes should name a size.
-func TmpfsPath(entry string) string {
-	if i := strings.IndexByte(entry, ':'); i >= 0 && i < len(entry)-1 {
-		return entry[:i]
-	}
-	return entry
-}
-
-// ScratchCovers reports whether the hook declared dst as a scratch path.
-func (h *Hook) ScratchCovers(dst string) bool {
-	for _, p := range h.Scratch {
-		if p == dst {
-			return true
-		}
-	}
-	return false
 }
 
 func (h *Hook) validateAuth() error {
