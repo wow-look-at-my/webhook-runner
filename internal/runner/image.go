@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -71,6 +73,13 @@ func ImageTag(hook *hooks.Hook) (string, error) {
 	return imageRepoPrefix + hook.ID + ":" + h, nil
 }
 
+// DefaultBuildTimeout caps a build that produces nothing and never returns.
+// A wedged `docker build` is the quietest failure this binary can have: a RUN
+// step emits no output while it runs, so a fetch against a black hole looks
+// exactly like a slow layer, and the caller's own supervisor kills the whole
+// container before the build ever reports. Loud and late beats silent.
+const DefaultBuildTimeout = 30 * time.Minute
+
 // EnsureImage makes sure the image for the hook's current content exists
 // locally, building it from the hook directory when it doesn't, and
 // returns the tag to run plus whether a build actually happened. The
@@ -79,6 +88,13 @@ func ImageTag(hook *hooks.Hook) (string, error) {
 // image, and in-flight runs keep the image they started with. Build
 // output is streamed to out.
 func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string, built bool, err error) {
+	return EnsureImageWithin(dockerBin, hook, out, DefaultBuildTimeout)
+}
+
+// EnsureImageWithin is EnsureImage with the caller's own cap on the build.
+// `webhook-runner test` passes its per-command timeout so one entity's wedged
+// build fails with that entity's name, in time for the log to survive.
+func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeout time.Duration) (tag string, built bool, err error) {
 	tag, err = ImageTag(hook)
 	if err != nil {
 		return "", false, err
@@ -92,7 +108,12 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 		args = append(args, "-f", filepath.Join(hook.Dir(), hooks.DockerfileName))
 	}
 	args = append(args, hook.BuildContext())
-	cmd := exec.Command(dockerBin, args...)
+	if timeout <= 0 {
+		timeout = DefaultBuildTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, dockerBin, args...)
 	// Select BuildKit explicitly.
 	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
 	// Tee the build output: `out` is the live stream, `tail` retains the last lines so the FAILURE below can carry the actual docker error.
@@ -100,6 +121,9 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 	cmd.Stdout = io.MultiWriter(out, tail)
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("build produced nothing for %s and was killed", timeout)
+		}
 		return "", false, fmt.Errorf("docker build %s: %w\n%s", tag, err, tail.String())
 	}
 	removeSupersededImages(dockerBin, hook.ID, tag)
