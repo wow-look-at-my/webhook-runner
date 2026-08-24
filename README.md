@@ -136,13 +136,11 @@ graph LR
 - **Hooks ship their own tests**: a `tests` array in `hook.json` declares
   test commands; `webhook-runner test <hooks-dir>` runs each one in the
   hook's built image, so CI never hardcodes per-hook test invocations.
-- **Docker-in-Docker**: a hook can opt into `"dind": true` to run its own
-  nested container daemon — the runner starts its container with
-  `--privileged` plus an anonymous `/var/lib/docker` volume, fully isolated
-  from the host's daemon (no host docker socket is ever mounted). The same
-  two flags apply on the `webhook-runner test` path. `--privileged` is
-  host-root-equivalent, so enable it only for trusted, operator-curated
-  hooks. See [Docker-in-Docker](#docker-in-docker-dind).
+- **Docker-in-Docker**: a hook can opt into `"dind": true` for an anonymous
+  `/var/lib/docker` volume a nested daemon can use for storage, on both the
+  live-run and `webhook-runner test` paths. It grants no privilege: the
+  host's daemon is never exposed, and `--privileged` is refused, so a nested
+  daemon must run rootless. See [Docker-in-Docker](#docker-in-docker-dind).
 - **Schema-validated hook settings**: a hook's own configuration is one
   `settings` object in hook.json, described by a `settings.schema.json` the
   hook ships. It is validated AT LOAD — a hook whose settings do not match its
@@ -510,10 +508,9 @@ service, drive a nested `docker` CLI — can opt into Docker-in-Docker with
 }
 ```
 
-When set, the runner starts the hook's container with two extra flags,
+When set, the runner starts the hook's container with one extra flag,
 applied identically on the **live-run** and **`webhook-runner test`** paths:
 
-- `--privileged` — grants a nested `dockerd` the capabilities it needs.
 - `--mount type=volume,dst=/var/lib/docker` — an anonymous volume for the
   inner daemon's storage.
 
@@ -526,21 +523,18 @@ ends — inner image/layer storage never leaks between runs.
 
 The host's own docker daemon is **never exposed**: webhook-runner does not
 mount the host's docker socket, so the nested daemon is a fully isolated,
-throwaway daemon rather than a window onto the host. Start it inside the
-hook (e.g. `dockerd-entrypoint.sh dockerd &` on a `docker:dind` base image),
-wait for `/var/run/docker.sock`, then drive it with the `docker` CLI. See
-`e2e/hooks/dind-hook/` for a worked smoke test.
+throwaway daemon rather than a window onto the host.
 
-> **Security:** `--privileged` is effectively host-root — a privileged
-> container can reach the host kernel. `dind` is therefore an audited,
-> opt-in, per-hook capability; enable it only for **trusted,
-> operator-curated** hooks (the hooks repo is operator-controlled). It is
-> deliberately first-class rather than something assembled from raw docker
-> args: `dind` applies the exact same two flags to both the live-run and
-> `webhook-runner test` paths, and is auditable as a single boolean. There is
-> no general raw-docker-args escape hatch -- a hook cannot hand the runner
-> arbitrary `docker run` flags, so every privilege a container gets is a named,
-> reviewable field.
+> **`dind` grants no privilege.** `--privileged` is refused by operator
+> ruling: it hands a container every capability, an unmasked `/proc` and full
+> device access, and one write to `/proc/sysrq-trigger` reboots the host. A
+> nested daemon started as root therefore cannot come up — it needs to write
+> `/proc/sys` and `/sys/fs/cgroup`, both read-only without it — and the run
+> fails saying so rather than degrading quietly. There is no general
+> raw-docker-args escape hatch either, so every flag a container gets is a
+> named, reviewable field. What an unprivileged container *can* host, and the
+> kernel check that decides it, is measured in
+> [docs/internals/nested-containers.md](docs/internals/nested-containers.md).
 
 > **Deploy-first:** `dind` is a newer `hook.json` field, so deploy a
 > webhook-runner build that understands it before any hook sets `"dind":

@@ -1,5 +1,3 @@
-package reloadgate
-
 // The operator-facing manual controls behind the admin dashboard's reload
 // panel: a state snapshot (Status), a best-effort CI probe (CIState), and
 // the informed manual commit switch (ManualSwitch). ManualSwitch is
@@ -12,6 +10,7 @@ package reloadgate
 // override is recorded loudly with every reason named. The automatic paths
 // (status events, the reconciliation poll) are untouched: they still switch
 // only on an affirmative green through trySwitch's ordering rules.
+package reloadgate
 
 import (
 	"context"
@@ -21,30 +20,13 @@ import (
 	"time"
 )
 
-// SrcMarkerDir is the tree path whose presence marks a commit as holding
-// the src hooks layout (internal/hooks.DetectLayout's rule). A hooks-repo
-// commit without it would load zero hooks on this fleet — the exact broken
-// tree the manual switch must warn about.
+// SrcMarkerDir is the tree path whose presence marks a commit as holding the src hooks layout (internal/hooks.DetectLayout's rule).
 const SrcMarkerDir = "src/hooks"
 
-// ciStateNotProbed is the CI state of an OVERRIDDEN switch: we deliberately
-// did not ask GitHub, because the answer changes nothing once the operator
-// has overridden and the probe is a network call that hangs when GitHub is
-// the thing that is broken. It is NOT "unknown" (a probe that failed) and
-// certainly not "success" — the surfaces must never show a green nobody saw.
+// ciStateNotProbed is the CI state of an OVERRIDDEN switch: we deliberately did not ask GitHub, because the answer changes nothing once the.
 const ciStateNotProbed = "not-probed (override)"
 
-// gateFetchTimeout bounds EVERY fetch this package runs. A `git fetch` onto
-// a half-open socket does not fail, it hangs — indefinitely, since git sets
-// no timeout of its own — and most of these calls hold the gate mutex. One
-// such hang froze a production runner: /version and /reload/status stopped
-// answering, both force buttons hung, and the status webhook and hourly poll
-// could no longer switch the tree, so the fleet could not be deployed by ANY
-// route. The only symptom was requests that never returned, and the only
-// cure was restarting the process.
-//
-// Bounded, a degraded origin fails closed in 20s and the next event or tick
-// retries — which is what every caller here already handles.
+// gateFetchTimeout bounds EVERY fetch this package runs.
 const gateFetchTimeout = 20 * time.Second
 
 // fetchBranchBounded fetches with gateFetchTimeout, killing the git process
@@ -55,26 +37,20 @@ func (g *Gate) fetchBranchBounded() (string, error) {
 	return g.repo.FetchBranchContext(ctx, fetchDepth)
 }
 
-// manualCILookupTimeout bounds each best-effort CI status read: the panel
-// (and a manual switch under a wedged gate) must answer promptly, with
-// "unknown", rather than hang on GitHub.
+// manualCILookupTimeout bounds each best-effort CI status read: the panel (and a manual switch under a wedged gate) must answer promptly.
 const manualCILookupTimeout = 5 * time.Second
 
-// ErrUnknownRef marks a manual switch whose ref could not be resolved to a
-// commit — a caller input problem (HTTP 400), not a gate failure.
+// ErrUnknownRef marks a manual switch whose ref could not be resolved to a commit — a caller input problem (HTTP 400), not a gate failure.
 var ErrUnknownRef = errors.New("cannot resolve ref")
 
 // GateStatus is a point-in-time snapshot of the gate's bookkeeping for the
 // admin reload panel.
 type GateStatus struct {
-	// ServingSHA is the commit the working tree serves ("" before the
-	// first Startup on a broken clone).
+	// ServingSHA is the commit the working tree serves ("" before the first Startup on a broken clone).
 	ServingSHA string
-	// Verified reports whether a green gating status (or operator force)
-	// vouched for ServingSHA.
+	// Verified reports whether a green gating status (or operator force) vouched for ServingSHA.
 	Verified bool
-	// PendingSHA is a newer fetched commit not yet green ("" = none), with
-	// its last known CI state in PendingState ("pending"/"failure"/"error").
+	// PendingSHA is a newer fetched commit not yet green ("" = none), with its last known CI state in PendingState.
 	PendingSHA   string
 	PendingState string
 	// Branch is the configured tracked branch ("" = the repo default).
@@ -100,11 +76,7 @@ func (g *Gate) Status() GateStatus {
 	return st
 }
 
-// CIState reads the gating context's current state for sha, best-effort
-// and bounded: "success", "pending", "failure", or "error" straight from
-// the reader; "none" when the reader determinately reports no status for
-// the context yet; "unknown" when the state could not be read at all (no
-// reader configured, API failure, timeout) — never a guess.
+// CIState reads the gating context's current state for sha, best-effort and bounded: "success", "pending", "failure", or "error" straight from the reader; "none" when the reader determinately reports no status for the context yet; "unknown" when the state could not be read at all (no reader configured.
 func (g *Gate) CIState(ctx context.Context, sha string) string {
 	if g.status == nil || sha == "" {
 		return "unknown"
@@ -125,18 +97,13 @@ func (g *Gate) CIState(ctx context.Context, sha string) string {
 type SwitchOutcome struct {
 	// SHA is the resolved target commit.
 	SHA string
-	// CIState is the gating context's state for SHA at decision time
-	// (CIState's vocabulary; "unknown" counts as not green).
+	// CIState is the gating context's state for SHA at decision time (CIState's vocabulary; "unknown" counts as not green).
 	CIState string
 	// HasSrc reports whether SHA's tree contains SrcMarkerDir.
 	HasSrc bool
-	// Switched is true when the tree moved to SHA. False with a non-empty
-	// Reasons means the switch was REFUSED pending an explicit override.
+	// Switched is true when the tree moved to SHA. False with a non-empty Reasons means the switch was REFUSED pending an explicit override.
 	Switched bool
-	// Reasons names everything about this pick the gate would have refused
-	// on (empty = a clean green pick). An override always contributes at
-	// least the un-probed CI state, so a Switched outcome with reasons is
-	// exactly an overridden one.
+	// Reasons names everything about this pick the gate would have refused on (empty = a clean green pick).
 	Reasons []string
 }
 
@@ -173,21 +140,10 @@ func (g *Gate) ManualSwitch(ctx context.Context, ref string, override bool) (Swi
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// LOCAL FIRST. This endpoint is the escape hatch for a wedged gate, and a
-	// wedged gate is usually GitHub being down — so it must not begin with a
-	// network round trip. It used to fetch unconditionally, holding g.mu
-	// across a `git fetch` that HANGS (not fails) when GitHub is degraded:
-	// the request never answered, Cloudflare 524'd at 100s, /reload/status
-	// timed out behind the same mutex, and the operator was left with a
-	// dashboard that could not show the problem or fix it. The commit an
-	// operator forces is nearly always already local — the push webhook
-	// fetched it when it recorded the hold — so resolve first and reach for
-	// the network only when that fails.
+	// LOCAL FIRST.
 	sha, resolveErr := g.repo.ResolveRef(ref)
 
-	// THEN freshen, on a leash. The fetch still runs — the tip is what tells
-	// us whether this switch settles the pending hold — but it can no longer
-	// decide whether the switch happens at all, and it cannot run forever.
+	// THEN freshen, on a leash.
 	tip, tipErr := g.fetchBranchBounded()
 	if tipErr != nil {
 		g.log.Warn("manual switch: hooks repo fetch failed; continuing with local objects", "err", tipErr)
@@ -232,9 +188,7 @@ func (g *Gate) ManualSwitch(ctx context.Context, ref string, override bool) (Swi
 		return out, nil
 	}
 
-	// Switching to the pending commit (or the current tip) settles the
-	// hold; a pick elsewhere keeps an existing hold for that OTHER commit
-	// visible.
+	// Switching to the pending commit (or the current tip) settles the hold; a pick elsewhere keeps an existing hold for that OTHER commit visible.
 	clearPending := g.pendingSHA == sha || (tipErr == nil && sha == tip)
 	kind := "reload.switched"
 	msg := fmt.Sprintf("hooks repo manually switched to %s (operator pick; %s green)", short(sha), g.context)

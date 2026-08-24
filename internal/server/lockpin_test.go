@@ -119,8 +119,7 @@ func TestStateLockPinnedStealFallbackBlockingAcquire(t *testing.T) {
 		done <- rr.Code
 	}()
 
-	// Holder finishes its critical section and releases; the blocked
-	// acquire takes the lock (pinned, per its own request).
+	// Holder finishes its critical section and releases; the blocked acquire takes the lock (pinned, per its own request).
 	require.Equal(t, 204, stateReq(t, s, "POST", "/kv/l/release", holderTok, nil).Code)
 	require.Equal(t, 200, <-done)
 

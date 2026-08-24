@@ -109,8 +109,7 @@ func TestApplyServeProbeSettlesEventEntries(t *testing.T) {
 	RegisterStandardEventRules(a)
 	loader := hooks.NewSecretsLoader("")
 
-	// Two deliveries were denied at request time; one hook also
-	// self-reported a problem.
+	// Two deliveries were denied at request time; one hook also self-reported a problem.
 	a.ObserveEvent(KindHookMisconfigured, "fixed", "fixed: api_key reference ${WHR_ATTN_TEST_FIX} did not resolve")
 	a.ObserveEvent(KindHookMisconfigured, "still-broken", "still-broken: api_key reference ${WHR_ATTN_TEST_UNSET_Z9} did not resolve")
 	a.ObserveEvent(KindHookMisconfigured, "removed", "removed: api_key reference ${GONE} did not resolve")
@@ -138,16 +137,14 @@ func TestApplyServeProbeSettlesEventEntries(t *testing.T) {
 	assert.True(t, byID.Contains(SourceEvent+"/reporter/reported:permission missing: contents write"),
 		"hook-reported entries survive reloads while the hook stays loaded (a reload cannot fix a runtime problem)")
 
-	// The reporter hook is removed on the next reload: its reported
-	// entries clear (nothing left to fix here).
+	// The reporter hook is removed on the next reload: its reported entries clear (nothing left to fix here).
 	delete(loaded, "reporter")
 	ApplyServeProbe(a, loaded, loader)
 	for _, e := range a.Snapshot() {
 		assert.NotEqual(t, "reporter", e.Hook)
 	}
 
-	// A hook whose sops file is broken keeps its event entry alive: the
-	// api_key is unresolvable as long as decryption fails.
+	// A hook whose sops file is broken keeps its event entry alive: the api_key is unresolvable as long as decryption fails.
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "secrets.sops.env"), []byte("garbage"), 0o600))
 	loaded["still-broken"] = &hooks.Hook{

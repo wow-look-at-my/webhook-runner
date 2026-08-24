@@ -1,13 +1,3 @@
-package hooks
-
-import (
-	"encoding/json"
-	"fmt"
-	"regexp"
-	"strconv"
-	"strings"
-)
-
 // References inside a settings document: `${env:NAME}` and
 // `${settings:a.b[2].c}`.
 //
@@ -40,15 +30,20 @@ import (
 // takes the referenced value's own type -- `"${settings:limits.max}"` pointing
 // at the number 5 yields 5, not "5". A reference embedded in surrounding text
 // stringifies, because the result is text either way.
+package hooks
 
-// refPattern matches one reference: ${<kind>:<body>}. The body stops at the
-// closing brace, so nesting is not supported -- a nested reference would be a
-// second syntax to learn and a cycle to chase for no use anyone has asked for.
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// refPattern matches one reference: ${<kind>:<body>}.
 var refPattern = regexp.MustCompile(`\$\{([a-zA-Z]+):([^}]*)\}`)
 
-// malformedRefPattern catches an opening `${` whose reference never closes, so
-// a truncated reference is a load error rather than a literal that silently
-// reaches the container.
+// malformedRefPattern catches an opening `${` whose reference never closes, so a truncated reference is a load error rather than a literal.
 var malformedRefPattern = regexp.MustCompile(`\$\{[^}]*$`)
 
 // Reference kinds.
@@ -57,8 +52,7 @@ const (
 	refKindSettings = "settings"
 )
 
-// maxRefDepth bounds `${settings:...}` chains (a reference to a reference).
-// Reaching it means a cycle the resolver did not otherwise catch.
+// maxRefDepth bounds `${settings:...}` chains (a reference to a reference). Reaching it means a cycle the resolver did not otherwise catch.
 const maxRefDepth = 10
 
 // ExpandSettingsSelfRefs resolves every `${settings:path}` in the document
@@ -200,8 +194,7 @@ func expandEnvIn(s string, lookup func(string) (string, bool)) (any, error) {
 		kind, body := s[m[2]:m[3]], s[m[4]:m[5]]
 		b.WriteString(s[last:m[0]])
 		if kind != refKindEnv {
-			// A settings reference that survived load is a bug in the load
-			// path, not something to paper over here.
+			// A settings reference that survived load is a bug in the load path, not something to paper over here.
 			return nil, fmt.Errorf("unresolved ${%s:%s} reached the run path", kind, body)
 		}
 		val, ok := lookup(body)

@@ -1,5 +1,3 @@
-package reloadgate
-
 // THE TREE-MOVED HALF OF THE FAIL-CLOSED RULE, over a real git clone.
 //
 // A tree can carry a manifest field the RUNNING binary does not know — the
@@ -15,6 +13,8 @@ package reloadgate
 // fail: the gate recorded the new sha as serving, called apply, and a
 // refused tree became a fleet quietly missing every entity the binary could
 // not parse, with a persisted state file insisting all was well.
+package reloadgate
+
 import (
 	"io"
 	"log/slog"
@@ -72,8 +72,7 @@ func TestRefusedTreeRollsBackToTheServingCommit(t *testing.T) {
 	rec := events.NewRecorder(100)
 	agg := attention.New()
 
-	// The binary accepts the tree it is already serving and REFUSES the next
-	// one — the shape of a manifest field this build does not know.
+	// The binary accepts the tree it is already serving and REFUSES the next one — the shape of a manifest field this build does not know.
 	refuse := false
 	applied := []string{}
 	g, err := New(Config{
@@ -114,10 +113,7 @@ func TestRefusedTreeRollsBackToTheServingCommit(t *testing.T) {
 	assert.Equal(t, c2, head, "the tree must be reset to the commit that was serving")
 	assert.Equal(t, "c2\n", treeContent(t, repo, base), "and the files on disk with it")
 
-	// It was RE-APPLIED, not merely reset: the fleet has to actually be
-	// running the rolled-back tree, not whatever the refused load left.
-	// Startup applies nothing (the gate only applies on a switch), so the
-	// two applies are the refused switch and the rollback.
+	// It was RE-APPLIED, not merely reset: the fleet has to actually be running the rolled-back tree, not whatever the refused load left.
 	require.Len(t, applied, 2, "the refused switch, then the rollback")
 	assert.Equal(t, c3, applied[0], "the refused apply saw the new tree")
 	assert.Equal(t, c2, applied[1], "the rollback re-applies the restored tree")
@@ -154,8 +150,7 @@ func TestARefusedSwitchIsNotPersisted(t *testing.T) {
 	require.NoError(t, err, "the accepting binary switches normally")
 	require.Equal(t, c3, g.TreeState().ServingSHA)
 
-	// Now the same repo under a binary that refuses the CURRENT tree's
-	// successor — a second commit arrives and is refused.
+	// Now the same repo under a binary that refuses the CURRENT tree's successor — a second commit arrives and is refused.
 	c4 := commit("c4")
 	refuse := false
 	g2, err := New(Config{
@@ -198,8 +193,7 @@ func TestARefusedSwitchIsNotPersisted(t *testing.T) {
 	assert.NotEqual(t, c2, g3.TreeState().ServingSHA)
 }
 
-// assertRefused stands in for internal/cli's refusedError: the gate only
-// needs "the apply failed", never the concrete type.
+// assertRefused stands in for internal/cli's refusedError: the gate only needs "the apply failed", never the concrete type.
 type assertRefused struct{}
 
 func (assertRefused) Error() string {

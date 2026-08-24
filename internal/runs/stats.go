@@ -12,51 +12,28 @@ type HookRunStats struct {
 	Tracked int `json:"tracked"`
 	// MaxTracked is the live tracker's per-hook retention bound.
 	MaxTracked int `json:"max_tracked"`
-	// Retention, when set, is the persisted-history window backing these
-	// stats (the run store's configured retention, compacted — e.g. "48h"):
-	// the figures then cover live runs plus completed runs persisted for
-	// that long, surviving restarts. Empty means memory-only.
+	// Retention, when set, is the persisted-history window backing these stats (the run store's configured retention, compacted — e.g. "48h").
 	Retention string `json:"retention,omitempty"`
 	// ByStatus counts every run in the window, including active ones.
 	ByStatus map[Status]int `json:"by_status,omitempty"`
-	// Completed counts runs that reached a terminal status BY DOING WORK;
-	// active (pending/running) runs and skipped runs appear in Tracked and
-	// ByStatus but are excluded from the rate and duration figures below.
+	// Completed counts runs that reached a terminal status BY DOING WORK; active (pending/running) runs and skipped runs appear in Tracked and.
 	Completed int `json:"completed"`
-	// Skipped counts terminal skip_if matches — deliveries answered without
-	// booting a container. A distinct bucket on purpose: no work was done,
-	// so folding skips into Completed would dilute SuccessRate and the
-	// duration/wait figures with zero-length non-runs. They still show in
-	// ByStatus (and can be LastRun).
+	// Skipped counts terminal skip_if matches — deliveries answered without booting a container.
 	Skipped int `json:"skipped,omitempty"`
-	// SuccessRate is successes/Completed over the window. It is 0 when
-	// Completed is 0 — check Completed before displaying it.
+	// SuccessRate is successes/Completed over the window. It is 0 when Completed is 0 — check Completed before displaying it.
 	SuccessRate float64 `json:"success_rate"`
-	// AvgDurationMS/MaxDurationMS cover completed runs' PROCESSING span
-	// (StartedAt→Finished): container time only, queue wait excluded. Runs
-	// persisted before StartedAt existed fall back to Started→Finished (the
-	// old queued-inclusive span); runs that never started contribute
-	// nothing. See ComputeStats for the exact rules.
+	// AvgDurationMS/MaxDurationMS cover completed runs' PROCESSING span (StartedAt→Finished): container time only, queue wait excluded.
 	AvgDurationMS int64 `json:"avg_duration_ms"`
 	MaxDurationMS int64 `json:"max_duration_ms"`
-	// AvgWaitMS/MaxWaitMS cover completed runs' QUEUE WAIT
-	// (Started→StartedAt): accepted until the container launched — time
-	// spent waiting for a concurrency-group slot (plus secrets decrypt and
-	// image build). Only the WaitSampled runs that recorded a StartedAt
-	// count; pre-upgrade history is excluded.
+	// AvgWaitMS/MaxWaitMS cover completed runs' QUEUE WAIT (Started→StartedAt): accepted until the container launched — time spent waiting.
 	AvgWaitMS int64 `json:"avg_wait_ms"`
 	MaxWaitMS int64 `json:"max_wait_ms"`
-	// WaitSampled is how many completed runs back the wait figures. 0 means
-	// no wait data in the window (e.g. only pre-upgrade history) — display
-	// "no data", not a zero wait.
+	// WaitSampled is how many completed runs back the wait figures.
 	WaitSampled int `json:"wait_sampled"`
-	// LastRun is the newest run by start time, whatever its status — an
-	// in-flight run is deliberately included, it IS the latest.
+	// LastRun is the newest run by start time, whatever its status — an in-flight run is deliberately included, it IS the latest.
 	LastRun *LastRun `json:"last_run,omitempty"`
 
-	// Overhead aggregates the container-startup instrumentation over the
-	// same window. nil when no run in the window carries phase marks (all
-	// pre-upgrade history, or nothing ran).
+	// Overhead aggregates the container-startup instrumentation over the same window. nil when no run in the window carries phase marks (all.
 	Overhead *OverheadStats `json:"overhead,omitempty"`
 }
 
@@ -66,33 +43,21 @@ type HookRunStats struct {
 // they come from different marks and are populated by different subsets of
 // runs, so one shared denominator would misrepresent all of them.
 type OverheadStats struct {
-	// BootAvgMS/BootMaxMS/BootSampled cover EXACT container startup:
-	// `docker run` spawned → the container's first instruction, with no
-	// hook runtime in it. Only runs carrying the in-container mark (state
-	// hooks) count, which is what makes the figure exact.
+	// BootAvgMS/BootMaxMS/BootSampled cover EXACT container startup: `docker run` spawned → the container's first instruction, with no.
 	BootAvgMS   int64 `json:"boot_avg_ms"`
 	BootMaxMS   int64 `json:"boot_max_ms"`
 	BootSampled int   `json:"boot_sampled"`
 
-	// BoundAvgMS/BoundMaxMS/BoundSampled cover the UPPER BOUND on startup
-	// — spawned → first output — for runs with no in-container mark. It
-	// includes the hook runtime's cold start and must be labeled as a
-	// bound, never quoted as container overhead.
+	// BoundAvgMS/BoundMaxMS/BoundSampled cover the UPPER BOUND on startup — spawned → first output — for runs with no in-container mark.
 	BoundAvgMS   int64 `json:"bound_avg_ms"`
 	BoundMaxMS   int64 `json:"bound_max_ms"`
 	BoundSampled int   `json:"bound_sampled"`
 
-	// RuntimeStartAvgMS is the hook runtime's own cold start (container
-	// entry → first output): the half of the naive bound that is NOT
-	// Docker's cost. Same sample set as the exact boot figures.
+	// RuntimeStartAvgMS is the hook runtime's own cold start (container entry → first output): the half of the naive bound that is NOT Docker's.
 	RuntimeStartAvgMS int64 `json:"runtime_start_avg_ms"`
 	RuntimeStartMaxMS int64 `json:"runtime_start_max_ms"`
 
-	// InspectAvgMS is the argv-reconstruction `docker inspect` state hooks
-	// pay before their container starts — a whole extra CLI + daemon round
-	// trip on the critical path, measured separately because it is
-	// removable (the image tag is a content hash, so its answer is
-	// cacheable) while the rest of boot is not.
+	// InspectAvgMS is the argv-reconstruction `docker inspect` state hooks pay before their container starts — a whole extra CLI + daemon round.
 	InspectAvgMS   int64 `json:"inspect_avg_ms"`
 	InspectMaxMS   int64 `json:"inspect_max_ms"`
 	InspectSampled int   `json:"inspect_sampled"`
@@ -122,13 +87,7 @@ func ComputeStats(states []RunState) HookRunStats {
 	for i := range states {
 		snap := states[i]
 		stats.ByStatus[snap.Status]++
-		// Newest by start time, with ties broken toward a run that has not
-		// finished. Several runs accepted inside one clock tick carry the SAME
-		// Started -- time.Now() is not guaranteed to advance between two
-		// consecutive calls -- and a strict After() then leaves the winner to
-		// iteration order, which is not creation order. The dashboard read
-		// "what is this hook doing right now", so a live run is the honest
-		// answer when it cannot be ordered against a finished one.
+		// Newest by start time, with ties broken toward a run that has not finished.
 		newer := stats.LastRun == nil ||
 			snap.Started.After(stats.LastRun.Started) ||
 			(snap.Started.Equal(stats.LastRun.Started) && stats.LastRun.Finished.IsZero() == snap.Finished.IsZero() && snap.ID > stats.LastRun.ID) ||
@@ -145,24 +104,12 @@ func ComputeStats(states []RunState) HookRunStats {
 			stats.Skipped++
 			continue
 		}
-		// Terminal implies Finished is set: Finish records both under one
-		// lock, and Snapshot reads under the same lock.
+		// Terminal implies Finished is set: Finish records both under one lock, and Snapshot reads under the same lock.
 		stats.Completed++
 		if snap.Status == StatusSuccess {
 			successes++
 		}
-		// Duration is processing-only (StartedAt→Finished) and wait is
-		// queue time (Started→StartedAt). Runs without a recorded StartedAt
-		// split by status:
-		//  - success/failure/timeout: the container certainly ran, but the
-		//    state predates the split (pre-upgrade persisted history) — the
-		//    duration EXPLICITLY falls back to Finished−Started, the old
-		//    queued-inclusive span, rather than dropping the history.
-		//  - cancelled/error: the container may never have launched
-		//    (cancelled while queued, failed before start) — there is no
-		//    processing time, so nothing is aggregated.
-		// Either way a run without StartedAt is excluded from the wait
-		// figures: its queue wait is unknowable.
+		// Duration is processing-only (StartedAt→Finished) and wait is queue time (Started→StartedAt). Runs without a recorded StartedAt split by status: - success/failure/timeout: the container certainly ran, but the state predates the split (pre-upgrade persisted history) — the duration EXPLICITLY falls back to Finished−Started, the old queued-inclusive span, rather than dropping the history.
 		if !snap.StartedAt.IsZero() {
 			d := snap.Finished.Sub(snap.StartedAt)
 			totalDur += d
@@ -249,9 +196,7 @@ func computeOverhead(states []RunState) *OverheadStats {
 	if o.BootSampled > 0 {
 		o.BootAvgMS = (bootTotal / time.Duration(o.BootSampled)).Milliseconds()
 		o.BootMaxMS = bootMax.Milliseconds()
-		// Runtime start shares the exact-boot sample set: both need the
-		// in-container mark, and RuntimeStartDuration only returns ok when
-		// first output followed it.
+		// Runtime start shares the exact-boot sample set: both need the in-container mark, and RuntimeStartDuration only returns ok when first.
 		o.RuntimeStartAvgMS = (rtTotal / time.Duration(o.BootSampled)).Milliseconds()
 		o.RuntimeStartMaxMS = rtMax.Milliseconds()
 	}
@@ -266,10 +211,7 @@ func computeOverhead(states []RunState) *OverheadStats {
 	return &o
 }
 
-// StatsByHook aggregates the tracker's retained runs of one hook (the
-// memory-only window). A hook with no retained runs yields zeroed stats
-// (Tracked 0, no LastRun) — the tracker cannot tell "unknown hook" from "no
-// runs yet", so callers wanting a 404 must consult the registry.
+// StatsByHook aggregates the tracker's retained runs of one hook (the memory-only window). A hook with no retained runs yields zeroed stats (Tracked 0, no LastRun) — the tracker cannot tell "unknown hook" from "no runs yet", so callers wanting a 404 must consult the registry.
 func (t *Tracker) StatsByHook(hookID string) HookRunStats {
 	src := t.ListByHook(hookID, 0)
 	states := make([]RunState, 0, len(src))

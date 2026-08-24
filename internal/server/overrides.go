@@ -1,5 +1,3 @@
-package server
-
 // The operator kill switch (admin port, behind Zero Trust — same trust
 // model as /reload and run cancellation):
 //
@@ -21,6 +19,7 @@ package server
 // per-hook override — tri-state in the store — which persists and wins
 // over the default in both directions, so enabling a hook that ships
 // `"enable": false` sticks across reloads and restarts.
+package server
 
 import (
 	"encoding/json"
@@ -121,8 +120,7 @@ func (s *Server) handleConcurrencyOverrideSet(w http.ResponseWriter, r *http.Req
 	// Persisted first, then applied live: if the process dies between the
 	// two, the restart re-applies from disk — never the other way around.
 	if err := s.concurrency.SetLimitOverride(group, limit); err != nil {
-		// Unreachable in practice (limit and group were just validated),
-		// but never swallow it.
+		// Unreachable in practice (limit and group were just validated), but never swallow it.
 		writeError(w, http.StatusInternalServerError, "apply override: "+err.Error())
 		return
 	}

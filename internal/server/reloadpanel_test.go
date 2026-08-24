@@ -86,10 +86,7 @@ func (f *fakeReloadControl) ManualSwitch(ctx context.Context, ref string, overri
 	return f.switchOut, f.switchErr
 }
 
-// CIState is probed from a BACKGROUND goroutine now, so the fake has to be
-// safe against a test mutating f.ci while one is in flight. ciDelay scripts
-// a slow GitHub; ciCalls counts probes, which is how the in-flight dedupe
-// is observed.
+// CIState is probed from a BACKGROUND goroutine now, so the fake has to be safe against a test mutating f.ci while one is in flight. ciDelay scripts a slow GitHub; ciCalls counts probes, which is how the in-flight dedupe is observed.
 func (f *fakeReloadControl) CIState(ctx context.Context, sha string) string {
 	f.ciMu.Lock()
 	delay := f.ciDelay
@@ -362,8 +359,7 @@ func TestReloadCIStateExpiredEntryServesStaleAndRefreshesBehind(t *testing.T) {
 	control := &fakeReloadControl{ci: map[string]string{"aaaa": "pending"}, ciDelay: 2 * time.Second}
 	s := newReloadPanelServer(t, &fakePanelRepo{}, control, nil, events.NewRecorder(16))
 
-	// Seed an entry that is already past the live TTL — the exact state a
-	// degraded GitHub leaves behind, since "unknown" is not terminal.
+	// Seed an entry that is already past the live TTL — the exact state a degraded GitHub leaves behind, since "unknown" is not terminal.
 	s.ciCache = map[string]ciCacheEntry{"aaaa": {state: "unknown", at: time.Now().Add(-time.Hour)}}
 
 	start := time.Now()

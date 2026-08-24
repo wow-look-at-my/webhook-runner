@@ -1,9 +1,8 @@
-package server
-
 // /runs/stream: the SSE live tail. These tests exercise the real HTTP
 // surface (httptest.NewServer — a ResponseRecorder can't hang up, and the
 // handler intentionally never returns on its own), the hub's
 // never-block/drop-slow-clients contract, and shape parity with /runs.
+package server
 
 import (
 	"bufio"
@@ -298,8 +297,7 @@ func TestRunsStreamSlowClientDropped(t *testing.T) {
 	}
 	assert.Equal(t, streamClientBuffer, drained)
 
-	// And the tracker path stays non-blocking end to end: a Finish with a
-	// wedged subscriber must return promptly.
+	// And the tracker path stays non-blocking end to end: a Finish with a wedged subscriber must return promptly.
 	tr := runs.NewTracker()
 	tr.SetOnChange(hub.publish)
 	stuck := hub.subscribe()
@@ -344,8 +342,7 @@ func TestRunsStreamCloseStreamsEndsHandlers(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("stream did not end after CloseStreams")
 	}
-	// New subscriptions after close die immediately (no handler leak at
-	// shutdown).
+	// New subscriptions after close die immediately (no handler leak at shutdown).
 	sub := s.stream.subscribe()
 	_, ok := <-sub.ch
 	assert.False(t, ok)

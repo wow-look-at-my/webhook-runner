@@ -11,9 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The spool's whole reason to exist: a delivery that arrives during a deploy
-// must not be lost. GitHub does not re-send a failed one, so anything that
-// leaves this directory without running is gone for good.
+// The spool's whole reason to exist: a delivery that arrives during a deploy must not be lost.
 
 func openTemp(t *testing.T) *Store {
 	t.Helper()

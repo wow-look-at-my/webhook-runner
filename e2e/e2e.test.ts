@@ -245,17 +245,16 @@ try {
     assert.ok(run.output.join("\n").includes("hello-from-baked-image"), "missing baked file content");
   });
 
-  await test("dind hook runs a nested docker daemon (--privileged + /var/lib/docker volume)", async () => {
-    // dind:true → the runner adds --privileged and an anonymous
-    // /var/lib/docker volume, so the container hosts its own dockerd. Async
-    // + a generous poll: starting the nested daemon takes a few seconds.
+  await test("dind hook gets the /var/lib/docker volume and no privilege", async () => {
+    // The script checks both halves from inside the container; failing it
+    // means either the volume did not arrive or --privileged came back.
     const trigger = await fetch(`${base}/hook/dind-hook`, { method: "POST", body: "{}" });
     assert.equal(trigger.status, 202);
     const { run_id } = (await trigger.json()) as any;
     const result = await pollRun(adminBase, run_id, 120_000);
     assert.equal(result.status, "success", `dind run failed: ${(result.output ?? []).join("\n")}`);
     assert.equal(result.exit_code, 0);
-    assert.ok(result.output.join("\n").includes("dind-smoke-ok"), "nested dockerd smoke check did not confirm");
+    assert.ok(result.output.join("\n").includes("dind-smoke-ok"), "dind contract check did not confirm");
   });
 
   await test("sops secrets: injected env and api_key both decrypt", async () => {
@@ -401,9 +400,9 @@ await test("webhook-runner test runs declared hook tests", async () => {
   const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
   assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
   assert.ok(r.stdout.includes("built-tests-ok"), "missing built-image test output");
-  // The dind hook's declared test starts a nested daemon under the same
-  // --privileged + volume injection — the test-path capability parity.
-  assert.ok(r.stdout.includes("dind-smoke-ok"), "missing dind nested-daemon test output");
+  // The dind hook's declared test sees the same volume and the same absence
+  // of privilege a live run gets -- the test path's flag parity.
+  assert.ok(r.stdout.includes("dind-smoke-ok"), "missing dind contract test output");
   assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
 });
 

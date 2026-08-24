@@ -15,13 +15,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// lockRequest is the acquire/steal request body. TTLSeconds bounds the
-// backstop expiry; Block turns a contended acquire into a held request
-// (see handleKVAcquire); BlockTimeoutSeconds caps the hold (default and max
-// maxWaitSeconds, same 10-minute cap as /wait — loop for longer); Pinned
-// (acquire only) applies the steal-protection pin ATOMICALLY with the take
-// — take-and-pin in one compare-and-set, so no stealer can slip between an
-// acquire and a separate POST /kv/{key}/pin.
+// lockRequest is the acquire/steal request body.
 type lockRequest struct {
 	TTLSeconds          *int `json:"ttl_seconds"`
 	Block               bool `json:"block"`
@@ -59,23 +53,7 @@ func parseLockRequest(w http.ResponseWriter, r *http.Request) (req lockRequest, 
 	return req, ttl, true
 }
 
-// handleKVAcquire is the cooperative lock take: atomic under the store's
-// lock-table mutex, owned by the CALLING RUN (the identity in the bearer
-// token — there are no client-managed owner tokens). 200 when this run took
-// or already held the lock (idempotent re-acquire); 409 when another live
-// run holds it (nothing is mutated — in particular the holder's backstop
-// expiry is never restamped by a contender), with the HOLDER named in the
-// body's held_by. Optional body {"ttl_seconds": N} sets the secondary
-// backstop expiry; absent, the store default applies (run-finish release is
-// the primary mechanism either way).
-//
-// With {"block": true} a contended acquire is HELD instead of refused: the
-// server retries every lockRetryInterval until the lock is taken (200), the
-// block timeout passes (409 + held_by, default/max the /wait 10-minute
-// cap via "block_timeout_seconds"), or the run ends underneath it. While
-// blocked, the run is visibly waiting on the named holder (RunState
-// waiting_on, rendered by the dashboard) and the hold counts as ACTIVITY
-// for the idle `timeout` — exactly like a declared /wait.
+// handleKVAcquire is the cooperative lock take: atomic under the store's lock-table mutex, owned by the CALLING RUN (the identity in the bearer token — there are no client-managed owner tokens). 200 when this run took or already held the lock (idempotent re-acquire); 409 when another live run holds it (nothing is mutated — in particular the holder's backstop expiry is never restamped by a contender), with the HOLDER named in the body's held_by. Optional body {"ttl_seconds": N} sets the secondary backstop expiry; absent, the store default applies (run-finish release is the primary mechanism either way).
 func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	req, ttl, ok := parseLockRequest(w, r)
 	if !ok {
@@ -89,9 +67,7 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 		return
 	}
 	if errors.Is(err, kv.ErrLockExpired) {
-		// TTL enforcement did not finish: the holder is still dying, or it is
-		// an entity this server cannot kill. The lock is NOT handed over —
-		// the whole point — so the caller gets a named 409 either way.
+		// TTL enforcement did not finish: the holder is still dying, or it is an entity this server cannot kill.
 		writeJSON(w, http.StatusConflict, lockConflict{Error: err.Error(), HeldBy: &info})
 		return
 	}
@@ -106,12 +82,7 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 	s.blockOnLock(w, r, ns, key, runID, ttl, req, info)
 }
 
-// lockKillTimeout bounds ONE TTL enforcement: how long an acquire waits for
-// the over-budget holder it just killed to actually reach a terminal state
-// (docker kill + the finish seam — normally well under a second). Past it
-// the acquire is refused rather than granted: a mutex is only ever handed
-// over once the previous holder is CERTAIN to be dead.
-// (a var only so tests can shorten it; nothing reassigns it in production)
+// lockKillTimeout bounds ONE TTL enforcement: how long an acquire waits for the over-budget holder it just killed to actually reach a.
 var lockKillTimeout = 30 * time.Second
 
 // takeLock is THE acquire seam — the plain compare-and-set plus TTL
@@ -206,21 +177,12 @@ func (s *Server) acquireLock(ns, key, runID string, ttl time.Duration, pinned bo
 type lockWaiter interface {
 	// label names the caller in events and messages: "run" or "instance".
 	label() string
-	// touch credits one poll's worth of activity toward the caller's idle
-	// watchdog and reports whether it is still the entity this wait should
-	// keep running for. A run always answers true — its liveness is tracked
-	// separately via done()/cancelled() — while a manager instance's
-	// liveness IS this check (TouchInstance), since it has no other signal.
+	// touch credits one poll's worth of activity toward the caller's idle watchdog and reports whether it is still the entity this wait should.
 	touch() bool
-	// setWaitingOn/clearWaitingOn mirror the hold onto a run row's dashboard
-	// badge. A manager instance has no row; both are no-ops there.
+	// setWaitingOn/clearWaitingOn mirror the hold onto a run row's dashboard badge. A manager instance has no row; both are no-ops there.
 	setWaitingOn(runs.WaitingOn) uint64
 	clearWaitingOn(seq uint64)
-	// done/cancelled fire when the caller is torn down out from under the
-	// wait. A manager instance has neither concept (its termination IS
-	// touch() going false), so both return nil — and a select on a nil
-	// channel simply never fires, which is exactly "no such signal", not a
-	// workaround.
+	// done/cancelled fire when the caller is torn down out from under the wait.
 	done() <-chan struct{}
 	cancelled() <-chan struct{}
 }
@@ -269,8 +231,7 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, id
 	}
 	if waiter == nil {
 		if !s.managerCaller(ns, id) {
-			// Same rule as /wait: nothing to attribute the hold to — refuse
-			// rather than blocking a connection nobody owns.
+			// Same rule as /wait: nothing to attribute the hold to — refuse rather than blocking a connection nobody owns.
 			writeError(w, http.StatusConflict, "run is not active")
 			return
 		}
@@ -290,8 +251,7 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, id
 		fmt.Sprintf("%s %s %s waiting on lock %q held by run %s", ns, waiter.label(), id, key, holder.RunID),
 		map[string]string{"hook": ns, "run": id})
 
-	// Retry + watchdog-touch cadence: the touch interval a /wait would use,
-	// tightened to the lock retry interval so handoff stays snappy.
+	// Retry + watchdog-touch cadence: the touch interval a /wait would use, tightened to the lock retry interval so handoff stays snappy.
 	interval := s.waitTouchInterval(ns)
 	if interval > lockRetryInterval {
 		interval = lockRetryInterval
@@ -317,17 +277,13 @@ func (s *Server) blockOnLock(w http.ResponseWriter, r *http.Request, ns, key, id
 			if errors.Is(err, context.Canceled) {
 				return // client hung up mid-enforcement; the deferred cleanup tidies up
 			}
-			// An expired hold whose enforcement did not complete keeps this
-			// waiter waiting — the retry re-enters enforcement, and the hold
-			// is never handed over on a guess.
+			// An expired hold whose enforcement did not complete keeps this waiter waiting — the retry re-enters enforcement, and the hold is never.
 			if !errors.Is(err, kv.ErrLockHeld) && !errors.Is(err, kv.ErrLockExpired) {
 				s.writeKVError(w, ns, err)
 				return
 			}
 			if info.RunID != holder.RunID {
-				// The lock changed hands (release+re-acquire, or a steal)
-				// and we lost the race: re-stamp who we're waiting on (a
-				// no-op for a manager waiter, which has no dashboard row).
+				// The lock changed hands (release+re-acquire, or a steal) and we lost the race: re-stamp who we're waiting on (a no-op for a manager waiter.
 				seq = waiter.setWaitingOn(waitingOnLock(key, deadline, info))
 			}
 			holder = info
@@ -360,10 +316,7 @@ func waitingOnLock(key string, deadline time.Time, holder kv.LockInfo) runs.Wait
 	}
 }
 
-// stealResult is the POST /kv/{key}/steal response: the lock's new state
-// (owned by the caller) plus, when another run was displaced, who lost it.
-// stolen_from absent means the lock was free — a steal of an uncontended
-// lock is exactly an acquire.
+// stealResult is the POST /kv/{key}/steal response: the lock's new state (owned by the caller) plus, when another run was displaced, who.
 type stealResult struct {
 	kv.LockInfo
 	StolenFrom *stolenParty `json:"stolen_from,omitempty"`
@@ -401,12 +354,7 @@ func (s *Server) handleKVSteal(w http.ResponseWriter, r *http.Request, ns, runID
 
 	info, displaced, err := s.kv.StealLock(ns, key, runID, ttl)
 	if errors.Is(err, kv.ErrLockPinned) {
-		// The holder marked its critical section non-displaceable. Refuse
-		// LOUDLY (contention is never anonymous — and neither is protection):
-		// the 409 names the pinned holder, and the feed records the refused
-		// displacement so a long-pinned section is visible to the operator.
-		// The caller's correct fallback is a blocking acquire, which wins the
-		// moment the pin lifts or the holder finishes.
+		// The holder marked its critical section non-displaceable.
 		s.events.Record("lock.steal_refused",
 			fmt.Sprintf("%s run %s: steal of lock %q refused — pinned by run %s", ns, runID, key, info.RunID),
 			map[string]string{"hook": ns, "run": runID})
@@ -437,11 +385,7 @@ func (s *Server) handleKVSteal(w http.ResponseWriter, r *http.Request, ns, runID
 	writeJSON(w, http.StatusOK, res)
 }
 
-// handleKVRelease frees a lock the calling run holds (early release — the
-// runner also frees everything a run still holds when it finishes). The
-// owner check is server-side, from the token's run identity: 204 released,
-// 404 not held (absent or already expired), 409 held by another run. Any
-// request body is ignored — there is nothing a caller could need to say.
+// handleKVRelease frees a lock the calling run holds (early release — the runner also frees everything a run still holds when it finishes).
 func (s *Server) handleKVRelease(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	if err := s.kv.ReleaseLock(ns, r.PathValue("key"), runID); err != nil {
 		s.writeKVError(w, ns, err)
@@ -450,13 +394,7 @@ func (s *Server) handleKVRelease(w http.ResponseWriter, r *http.Request, ns, run
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleKVPin marks a lock the calling run holds non-stealable —
-// POST /kv/{key}/pin, no body. Owner-only, the release auth rule: 204
-// pinned (idempotent), 404 not held (absent/expired), 409 held by another
-// run. A separate route rather than an acquire flag so the mode change is
-// unmistakable in request lines and logs; the
-// atomic take-and-pin lives on acquire as {"pinned": true} for callers that
-// need zero window between take and protection.
+// handleKVPin marks a lock the calling run holds non-stealable — POST /kv/{key}/pin, no body. Owner-only, the release auth rule: 204 pinned (idempotent), 404 not held (absent/expired), 409 held by another run.
 func (s *Server) handleKVPin(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	if err := s.kv.PinLock(ns, r.PathValue("key"), runID); err != nil {
 		s.writeKVError(w, ns, err)

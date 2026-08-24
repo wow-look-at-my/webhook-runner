@@ -31,8 +31,7 @@ func writeMockDocker(t *testing.T, dir string) string {
 	return path
 }
 
-// testVersion is the build identity newTestServer injects, so tests can
-// assert /health and /version report exactly what the server was given.
+// testVersion is the build identity newTestServer injects, so tests can assert /health and /version report exactly what the server was.
 var testVersion = VersionInfo{Version: "v1.2.3-test", Revision: "abcdef123456", Time: "2026-07-04T00:00:00Z"}
 
 func newTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *runner.Runner) {
@@ -56,13 +55,7 @@ func newTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *runn
 		Logger:   logger,
 		Version:  testVersion,
 	})
-	// Drain the runner before the TempDir above is removed. An accepted
-	// delivery starts an async run on context.Background(), so it outlives
-	// the test body and keeps creating its temp dir under `dir` — which
-	// t.TempDir()'s cleanup is meanwhile trying to delete ("unlinkat ...:
-	// directory not empty"). Registered here rather than per test because it
-	// is a property of this harness, not of any one case: every test that
-	// accepts a delivery had the same race waiting for it.
+	// Drain the runner before the TempDir above is removed.
 	t.Cleanup(rn.Wait)
 	return s, reg, tr, rn
 }
@@ -145,8 +138,7 @@ func TestTriggerValidSignature(t *testing.T) {
 
 func TestTriggerSyncMode(t *testing.T) {
 	s, reg, _, rn := newTestServer(t)
-	// Sync mode surfaces the run's final status, so this hook needs a real
-	// directory for its image-tag content hash to resolve.
+	// Sync mode surfaces the run's final status, so this hook needs a real directory for its image-tag content hash to resolve.
 	hookDir := filepath.Join(t.TempDir(), "sync")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
 	reg.Set(&hooks.Hook{

@@ -1,5 +1,3 @@
-package hooks
-
 // Layout: where a hooks tree keeps its pieces. Two shapes exist, detected —
 // never configured — by one rule, applied identically in serve, validate,
 // and test:
@@ -24,6 +22,8 @@ package hooks
 // top-level hook left by an incomplete move can never silently vanish.
 // The guard fires only when src/hooks/ exists, so pure-legacy trees are
 // unaffected.
+package hooks
+
 import (
 	"os"
 	"path/filepath"
@@ -64,8 +64,7 @@ func (l Layout) HooksDir() string {
 	return l.Root
 }
 
-// SrcDir is the docker build context for src-layout hooks (<root>/src), or
-// "" under the legacy layout (each hook builds from its own directory).
+// SrcDir is the docker build context for src-layout hooks (<root>/src), or "" under the legacy layout (each hook builds from its own.
 func (l Layout) SrcDir() string {
 	if l.SDK {
 		return filepath.Join(l.Root, "src")
@@ -73,19 +72,7 @@ func (l Layout) SrcDir() string {
 	return ""
 }
 
-// SharedDirs lists the shared-code directories hashed into every
-// src-layout entity's content tag: every immediate child of <root>/src
-// except the two entity trees (hooks/, managers/), lexically ordered so the
-// hash is deterministic. Empty under the legacy layout, and a src tree with
-// no shared code at all is fine.
-//
-// It is EVERY such directory, not just src/sdk, because a shared directory
-// the tag does not cover is worse than no sharing at all: editing it changes
-// no image, so every consumer keeps running the old copy with nothing
-// anywhere to notice. That rule is also what lets shared code be organized
-// by what it IS (src/sdk = generic infrastructure, src/actions-runner =
-// the runner-fleet domain) instead of everything piling into src/sdk to be
-// hash-covered.
+// SharedDirs lists the shared-code directories hashed into every src-layout entity's content tag: every immediate child of <root>/src.
 func (l Layout) SharedDirs() ([]string, error) { return SharedDirs(l.SrcDir()) }
 
 func SharedDirs(srcRoot string) ([]string, error) {
@@ -118,12 +105,7 @@ func (l Layout) ConcurrencyPath() string {
 	return filepath.Join(l.Root, "concurrency.json")
 }
 
-// ManagersDir is the directory whose immediate children are scanned for
-// manager.json folders (<root>/src/managers), or "" under the legacy
-// layout: managers are an SDK-layout-only entity — a legacy tree is never
-// scanned for them, so a pre-manager runner and a legacy tree are both
-// structurally incapable of loading one (the deploy-first hazard that bit
-// every new hook.json field cannot exist for managers).
+// ManagersDir is the directory whose immediate children are scanned for manager.json folders (<root>/src/managers), or "" under the.
 func (l Layout) ManagersDir() string {
 	if l.SDK {
 		return filepath.Join(l.Root, "src", "managers")

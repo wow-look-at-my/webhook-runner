@@ -46,9 +46,7 @@ func newSkipTestServer(t *testing.T) (*Server, *hooks.Registry, *runs.Tracker, *
 
 	rec := events.NewRecorder(50)
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker, Events: rec})
-	// LIFO with the store's Close above: every in-flight async run finishes
-	// (and records) before the store closes — same ordering serve.go
-	// guarantees with its deferred runStore.Close after rn.Wait().
+	// LIFO with the store's Close above: every in-flight async run finishes (and records) before the store closes — same ordering serve.go.
 	t.Cleanup(rn.Wait)
 	s := New(Options{Registry: reg, Runner: rn, Tracker: tr, Logger: logger, RunStore: st, Events: rec, Version: testVersion})
 	return s, reg, tr, st, rec, dockerLog
@@ -115,8 +113,7 @@ func TestTriggerSkipMatched(t *testing.T) {
 	assert.Equal(t, []string{`skipped: skip_if[0]: header x-github-event == "workflow_run"`}, snap.Output)
 	assert.True(t, snap.StartedAt.IsZero())
 
-	// Persisted through the OnFinish seam (Finish runs it synchronously, so
-	// it's durable before the HTTP response is even written).
+	// Persisted through the OnFinish seam (Finish runs it synchronously, so it's durable before the HTTP response is even written).
 	got, ok := st.Get(id)
 	require.True(t, ok)
 	assert.Equal(t, runs.StatusSkipped, got.Status)
@@ -157,10 +154,7 @@ func TestTriggerSkipNoMatchRunsNormally(t *testing.T) {
 	w := httptest.NewRecorder()
 	hook(s).ServeHTTP(w, req)
 
-	// The normal async path: accepted, run dispatched. (The run itself
-	// errors later — the registry hook has no on-disk directory to build an
-	// image from — but that's the run pipeline's business; the point here is
-	// the delivery was NOT skipped.)
+	// The normal async path: accepted, run dispatched.
 	require.Equal(t, http.StatusAccepted, w.Code)
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))

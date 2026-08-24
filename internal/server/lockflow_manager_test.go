@@ -16,9 +16,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 )
 
-// Manager-instance lock blocking shares blockOnLock with run lock blocking
-// (see the lockWaiter interface in statelock.go) — these tests cover the
-// manager-instance side of that unification.
+// Manager-instance lock blocking shares blockOnLock with run lock blocking (see the lockWaiter interface in statelock.go) — these tests.
 
 func hasEventKind(evs []events.Event, kind string) bool {
 	for _, e := range evs {
@@ -33,8 +31,7 @@ func TestStateLockBlockingManagerInstanceWaitsForRelease(t *testing.T) {
 	s, fm, _, _, rec, store := managerServer(t, managerDoc)
 	fm.bind("coord", "inst-1")
 
-	// The holder need not be a tracked run at all — a manager instance can
-	// contend on a lock anything else holds.
+	// The holder need not be a tracked run at all — a manager instance can contend on a lock anything else holds.
 	_, err := store.AcquireLock("coord", "gate", "external-holder", 0)
 	require.NoError(t, err)
 
@@ -123,8 +120,7 @@ func TestStateLockBlockingManagerInstanceStopsWhenSuperseded(t *testing.T) {
 			strings.NewReader(`{"block":true,"block_timeout_seconds":10}`))
 	}()
 
-	// A fresher instance replaces inst-1 (a redeploy). inst-1's own block
-	// must not linger believing it is still current.
+	// A fresher instance replaces inst-1 (a redeploy). inst-1's own block must not linger believing it is still current.
 	time.Sleep(20 * time.Millisecond)
 	fm.bind("coord", "inst-2")
 

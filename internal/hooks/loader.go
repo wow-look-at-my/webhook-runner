@@ -7,39 +7,12 @@ import (
 	"path/filepath"
 )
 
-// LoadDir detects the tree's layout (see layout.go) and loads every hook
-// in it. Shorthand for LoadLayout(DetectLayout(root)) — serve, validate,
-// and test all go through this, so the detection rule cannot drift
-// between them.
+// LoadDir detects the tree's layout (see layout.go) and loads every hook in it.
 func LoadDir(root string) (map[string]*Hook, []error) {
 	return LoadLayout(DetectLayout(root))
 }
 
-// LoadLayout walks the layout's hooks directory and loads every immediate
-// child folder that contains a hook.json file. Folders without hook.json
-// are silently skipped so the same directory can hold non-hook artifacts
-// (README, scripts, etc.).
-//
-// The returned map is keyed by hook ID (the folder name). On error, any
-// hooks that loaded successfully before the failure are still returned —
-// callers can decide whether to use them.
-//
-// Two loud, typed error conditions ride in the error list:
-//
-//   - ZeroHooksError when NOTHING loaded. A hooks root that yields zero
-//     hooks is almost always a layout mistake (e.g. a src/-restructured
-//     tree served by a binary predating layout detection scans the root,
-//     finds only a "src" folder, and would otherwise take the whole fleet
-//     offline with a green validate). Zero hooks must never be silent:
-//     validate exits non-zero on it and serve records an error-grade
-//     event.
-//   - IgnoredLegacyDirError for each root-level hook directory found
-//     while the src layout is active — a MIXED layout. Layouts are never
-//     mixed: the dir is NOT loaded, and the error is a HARD failure, never
-//     a silent skip — it rides this error list, so validate exits
-//     non-zero and every serve reload logs + records it (hook.load_error).
-//     It fires ONLY when src/hooks/ exists, so a pure-legacy tree is never
-//     scanned for it and is completely unaffected.
+// LoadLayout walks the layout's hooks directory and loads every immediate child folder that contains a hook.json file. Folders without hook.json are silently skipped so the same directory can hold non-hook artifacts (README, scripts, etc.). The returned map is keyed by hook ID (the folder name). On error, any hooks that loaded successfully before the failure are still returned — callers can decide whether to use them. Two loud, typed error conditions ride in the error list: - ZeroHooksError when NOTHING loaded. A hooks root that yields zero hooks is almost always a layout mistake (e.g. a src/-restructured tree served by a binary predating layout detection scans the root, finds only a "src" folder, and would otherwise take the whole fleet offline with a green validate). Zero hooks must never be silent: validate exits non-zero on it and serve records an error-grade event.
 func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	hooks := make(map[string]*Hook)
 	var errs []error
@@ -51,8 +24,7 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 		return hooks, errs
 	}
 
-	// SrcRoot is stored absolute, matching Hook.Dir()'s convention, so
-	// hashing and builds behave identically however the root was given.
+	// SrcRoot is stored absolute, matching Hook.Dir()'s convention, so hashing and builds behave identically however the root was given.
 	srcRoot := ""
 	if l.SDK {
 		srcRoot = l.SrcDir()
@@ -92,12 +64,7 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	return hooks, errs
 }
 
-// HookLoadError attributes one hook directory's load/validation failure
-// (unparseable hook.json, missing Dockerfile or $schema, malformed
-// skip_if/run_title, …) to its hook ID, so consumers that retain load
-// errors — the attention aggregator's "needs attention" surface — can pin
-// the problem on the hook instead of string-parsing. The rendered text is
-// unchanged from the historical `hook %q: %v` wrap.
+// HookLoadError attributes one hook directory's load/validation failure (unparseable hook.json, missing Dockerfile or $schema.
 type HookLoadError struct {
 	HookID string
 	Err    error
@@ -118,23 +85,7 @@ func (e ZeroHooksError) Error() string {
 		e.Dir, e.Layout, "<root>/<id>/hook.json")
 }
 
-// IgnoredLegacyDirError: the src layout is active (<root>/src/hooks/
-// exists) but a root-level directory still carries a hook.json — a MIXED
-// layout. This is a HARD ERROR, never a silent skip: the dir is NOT
-// loaded into the registry AND the error rides the load-error list, so
-// `validate` exits non-zero and every `serve` reload logs + records it
-// (hook.load_error). Naming each offending dir is the failsafe the
-// operator asked for — a stray top-level hook left behind by an
-// incomplete move to the src layout turns CI RED instead of quietly
-// vanishing from the fleet. (The type name predates this framing; the
-// dir is "ignored" only in the sense of not-loaded — it is emphatically
-// not overlooked.)
-//
-// SCOPE: this fires ONLY on a mixed layout. It is emitted exclusively
-// from findIgnoredLegacyDirs, which LoadLayout calls only when l.SDK is
-// true (src/hooks/ present). A pure-legacy tree with no src/hooks/
-// sibling — e.g. this repo's own examples/hooks/ and e2e/hooks/ fixtures
-// — is never scanned for it and stays 100% valid.
+// IgnoredLegacyDirError: the src layout is active (<root>/src/hooks/ exists) but a root-level directory still carries a hook.json — a.
 type IgnoredLegacyDirError struct {
 	Dir string // the offending top-level hook dir (absolute or as-given path)
 }

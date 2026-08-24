@@ -1,9 +1,8 @@
-package server
-
 // The /runs read surface: the single-run read (tracker -> persisted-history
 // fallback), the merged list with its active-truth partition, the ?live=1
 // active-set view, and the derived holder-side waiter decoration. Split
 // from handlers.go, which keeps the trigger/cancel/reload handlers.
+package server
 
 import (
 	"fmt"
@@ -56,17 +55,7 @@ func tailOutput(st *runs.RunState, tail int) {
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	// ?live=1: exactly the current ACTIVE (non-terminal) set — the one-shot
-	// truth fetch for clients reconciling against the stream's hb active-id
-	// payload. No cap, no cursor (the active set IS the answer); ?hook=
-	// still narrows. Additive: absent/false keeps the merged view below.
-	//
-	// ?exclude=<csv of statuses> drops those runs from the answer BEFORE max
-	// applies — parsed first because both views honor it. The dashboard's
-	// status-filter chips send it: filtering AFTER the limit meant a hook
-	// whose newest 50 runs were all skips rendered an empty table ("All 50
-	// recent run(s) are hidden by the status filter above") while its real
-	// runs sat just past the window.
+	// ?live=1: exactly the current ACTIVE (non-terminal) set — the one-shot truth fetch for clients reconciling against the stream's hb.
 	exclude, err := excludedStatuses(r.URL.Query().Get("exclude"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -84,9 +73,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	// ?before= pages into history: only runs queued STRICTLY before the
-	// instant (RFC3339, fractional seconds optional). Clients page by
-	// passing the oldest `started` they already hold. Omitted = no bound.
+	// ?before= pages into history: only runs queued STRICTLY before the instant (RFC3339, fractional seconds optional).
 	var before time.Time
 	if b := r.URL.Query().Get("before"); b != "" {
 		t, err := time.Parse(time.RFC3339Nano, b)
@@ -176,10 +163,7 @@ func (s *Server) liveRuns(hookID string, exclude map[runs.Status]bool) []runs.Ru
 // cap is applied. It is an explicit operator request, so it also overrides
 // the always-include-active rule above: hiding "running" hides running runs.
 func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude map[runs.Status]bool) []runs.RunState {
-	// List the tracker uncapped: the active partition must be COMPLETE
-	// (a newest-max pre-cut could hide older active runs behind newer
-	// terminal ones), and with a cursor the newest-max live window may sit
-	// entirely at-or-after it. The tracker is bounded anyway.
+	// List the tracker uncapped: the active partition must be COMPLETE (a newest-max pre-cut could hide older active runs behind newer terminal.
 	var live []*runs.Run
 	if hookID != "" {
 		live = s.tracker.ListByHook(hookID, 0)
@@ -209,8 +193,7 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude ma
 		}
 	}
 	if s.runstore != nil {
-		// Persisted history is terminal by construction (write-once at
-		// terminal status), so it always lands in the capped partition.
+		// Persisted history is terminal by construction (write-once at terminal status), so it always lands in the capped partition.
 		var persisted []runs.RunState
 		if hookID != "" {
 			persisted = s.runstore.ListByHookBeforeFiltered(hookID, before, max, keeper(exclude))

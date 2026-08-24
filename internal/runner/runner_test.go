@@ -20,15 +20,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// writeMockDocker drops a shell script at <dir>/docker that:
-//   - parses docker-run-style flags (skipping known flag-value pairs)
-//   - prints "image=<name>" once it identifies the image
-//   - prints each command token after the image on its own line
-//   - exits with code N when it sees "EXIT_N" in the command
-//   - sleeps N seconds when it sees "SLEEP_N" (kill-able)
-//
-// This lets the runner be exercised end-to-end without a real docker
-// daemon.
+// writeMockDocker drops a shell script at <dir>/docker that: - parses docker-run-style flags (skipping known flag-value pairs) - prints "image=<name>" once it identifies the image - prints each command token after the image on its own line - exits with code N when it sees "EXIT_N" in the command - sleeps N seconds when it sees "SLEEP_N" (kill-able) This lets the runner be.
 func writeMockDocker(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "docker")
@@ -267,9 +259,7 @@ func TestRunnerCancelWhileRunning(t *testing.T) {
 }
 
 func TestRunnerCancelImmediately(t *testing.T) {
-	// A cancel racing the container launch must still end in StatusCancelled,
-	// whether the pre-start check catches it or the watcher kills the
-	// just-started container.
+	// A cancel racing the container launch must still end in StatusCancelled, whether the pre-start check catches it or the watcher kills the.
 	dir := t.TempDir()
 	docker := writeMockDocker(t, dir)
 
@@ -384,10 +374,7 @@ func TestWriteTempFilesWritesTheSettingsDocument(t *testing.T) {
 	assert.JSONEq(t, `{}`, string(b2))
 }
 
-// writeBuildAwareDocker drops a mock docker that understands the image
-// lifecycle: `image inspect` reports not-built, `build` records its args
-// to a file, `image ls` lists nothing, and `run` dumps args like
-// writeArgDumpDocker.
+// writeBuildAwareDocker drops a mock docker that understands the image lifecycle: `image inspect` reports not-built, `build` records its args to a file, `image ls` lists nothing, and `run` dumps args like writeArgDumpDocker.
 func writeBuildAwareDocker(t *testing.T, dir string) (docker, buildLog string) {
 	t.Helper()
 	docker = filepath.Join(dir, "docker")
@@ -447,8 +434,7 @@ func TestRunnerBuildsDockerfileHookImage(t *testing.T) {
 	assert.Contains(t, string(built), "buildarg="+filepath.Join(dir, "myhook"))
 
 	out := run.Snapshot(-1).Output
-	// The container runs the built tag with no command (image CMD) and no
-	// code mount.
+	// The container runs the built tag with no command (image CMD) and no code mount.
 	assert.Contains(t, out, "arg="+tag)
 	for _, line := range out {
 		assert.NotContains(t, line, "HOOK_DIR")
@@ -525,8 +511,7 @@ func TestRunnerInjectsSopsSecrets(t *testing.T) {
 
 	out := run.Snapshot(-1).Output
 	require.Equal(t, runs.StatusSuccess, run.Status())
-	// secrets.sops.env entries are still injected as environment; they are the
-	// runner's own mechanism, not hook config (which now rides settings.json).
+	// secrets.sops.env entries are still injected as environment; they are the runner's own mechanism, not hook config (which now rides.
 	assert.Contains(t, out, "arg=INJECTED=from-sops")
 	assert.Contains(t, out, "arg=OVERRIDDEN=secret-version")
 	// A secret may never shadow a key the runner sets itself.
@@ -608,10 +593,7 @@ func TestRunnerConcurrencyGroupQueuesAndDefersTimeout(t *testing.T) {
 	require.NoError(t, err)
 	waitStatus(t, runA, runs.StatusRunning, 2*time.Second)
 
-	// B has a tiny timeout and a fast command. Started while A holds the
-	// slot, it must queue (stay pending) and only start its timeout once it
-	// runs — so despite waiting ~1s (>> its 300ms timeout) it succeeds
-	// rather than timing out.
+	// B has a tiny timeout and a fast command.
 	hookB := diskHook(t, dir, &hooks.Hook{ID: "b", Command: []string{"echo", "b"}, TimeoutRaw: "300ms", ConcurrencyGroup: "g"})
 	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)

@@ -27,9 +27,7 @@ func adminGet(t *testing.T, s *Server, target string) *httptest.ResponseRecorder
 	return rr
 }
 
-// The wire shapes of the two inspection endpoints, decoded field-by-field so
-// the tests pin the JSON contract (names, omitempty behavior), not just the
-// Go structs.
+// The wire shapes of the two inspection endpoints, decoded field-by-field so the tests pin the JSON contract (names, omitempty behavior), not just the Go.
 type kvKeyJSON struct {
 	Key        string     `json:"key"`
 	Size       int        `json:"size"`
@@ -60,8 +58,7 @@ func TestAdminKVNamespaceList(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &got))
 	require.Equal(t, "h", got.Namespace)
-	// The expired key is invisible (lazy expiry) and other namespaces'
-	// keys don't bleed in; results are sorted by key.
+	// The expired key is invisible (lazy expiry) and other namespaces' keys don't bleed in; results are sorted by key.
 	require.Len(t, got.Keys, 2)
 	require.Equal(t, "desc:repo#7", got.Keys[0].Key)
 	require.Equal(t, 4, got.Keys[0].Size)
@@ -81,8 +78,7 @@ func TestAdminKVNamespaceList(t *testing.T) {
 	require.Len(t, got.Keys, 1)
 	require.Equal(t, "pr:repo#1", got.Keys[0].Key)
 
-	// An unknown namespace lists as empty (same semantics as the state
-	// API's list), not an error.
+	// An unknown namespace lists as empty (same semantics as the state API's list), not an error.
 	rr = adminGet(t, s, "/kv/nope")
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &got))
@@ -124,8 +120,7 @@ func TestAdminKVEntryBinary(t *testing.T) {
 }
 
 func TestAdminKVEntryEscapedKey(t *testing.T) {
-	// pr-minder-style keys contain "/", ":" and "#"; the admin URL carries
-	// them percent-encoded in a single path segment.
+	// pr-minder-style keys contain "/", ":" and "#"; the admin URL carries them percent-encoded in a single path segment.
 	s, store := newStateServer(t, kv.Config{})
 	require.NoError(t, store.Set("h", "pr:wow-look-at-my/webhooks#42", []byte("sha"), 0))
 
@@ -145,8 +140,7 @@ func TestAdminKVEntryMissingOrExpired(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rr.Code)
 	require.Contains(t, rr.Body.String(), "absent or expired")
 
-	// An expired key 404s exactly like a missing one — the same lazy-expiry
-	// rule as the state API, so inspection never returns ghosts.
+	// An expired key 404s exactly like a missing one — the same lazy-expiry rule as the state API, so inspection never returns ghosts.
 	require.NoError(t, store.Set("h", "fast", []byte("v"), 10*time.Millisecond))
 	time.Sleep(30 * time.Millisecond)
 	rr = adminGet(t, s, "/kv/h/fast")
@@ -189,9 +183,7 @@ func TestStateWriteFailureIsLoud(t *testing.T) {
 	s := New(Options{Logger: logger, KV: store, Events: rec})
 	tok := store.Token("h", "run1")
 
-	// Sabotage persistence: remove the store's directory out from under it,
-	// so the next write's temp-file creation fails (works even as root,
-	// unlike a chmod).
+	// Sabotage persistence: remove the store's directory out from under it, so the next write's temp-file creation fails (works even as root.
 	require.NoError(t, os.RemoveAll(dir))
 
 	rr := stateReq(t, s, "PUT", "/kv/foo", tok, strings.NewReader("v"))

@@ -7,12 +7,7 @@ import (
 	"time"
 )
 
-// containerEntryTimeout bounds the entry report end to end. It is generous
-// for a local Unix-socket POST and short enough that a wedged state API
-// delays the hook by a blink rather than a run. Deliberately NOT the
-// proxy's dial-retry window: the shim retries nothing here — a mark that
-// misses is one absent data point, and holding the hook to chase it would
-// make instrumentation cost more than what it measures.
+// containerEntryTimeout bounds the entry report end to end.
 const containerEntryTimeout = 2 * time.Second
 
 // reportContainerEntry tells the state API that this container is now

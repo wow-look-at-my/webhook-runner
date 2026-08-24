@@ -114,8 +114,7 @@ func TestApplyServeEnvReloadPollInterval(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Hour, o.reloadPollInterval)
 
-	// Unlike the fall-back-quietly options, an unparseable or negative
-	// value FAILS startup — a typo must not silently change deploy latency.
+	// Unlike the fall-back-quietly options, an unparseable or negative value FAILS startup — a typo must not silently change deploy latency.
 	_, err = parse("soonish")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL")
@@ -141,8 +140,7 @@ func TestApplyServeEnvMaxConcurrentRuns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 128, o.maxConcurrentRuns)
 
-	// A set-but-invalid cap FAILS startup (the reload-poll rule): a typo
-	// must not silently fall back and mask a deliberately tightened limit.
+	// A set-but-invalid cap FAILS startup (the reload-poll rule): a typo must not silently fall back and mask a deliberately tightened limit.
 	_, err = parse("lots")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS")
@@ -188,9 +186,7 @@ func TestValidateCommand(t *testing.T) {
 	require.Error(t, cmd.RunE(cmd, []string{bad}))
 	assert.Contains(t, errOut.String(), "undeclared concurrency group")
 
-	// A MIXED layout — a stray top-level hook alongside src/hooks/ — must
-	// turn validate RED with a clear message (the failsafe for an
-	// incomplete move to the src layout), never a silent skip.
+	// A MIXED layout — a stray top-level hook alongside src/hooks/ — must turn validate RED with a clear message (the failsafe for an incomplete.
 	mixed := t.TempDir()
 	srcHook := filepath.Join(mixed, "src", "hooks", "alpha")
 	require.NoError(t, os.MkdirAll(srcHook, 0o755))
@@ -233,9 +229,7 @@ func TestTestCommand(t *testing.T) {
 	require.NoError(t, cmd.RunE(cmd, []string{root}))
 	assert.Contains(t, out.String(), "1 test command(s) passed across 1 hook(s)")
 
-	// --hook naming an unknown hook is an error. Kept last: pflag string
-	// slices append on repeated Set, so this value sticks to the shared
-	// command for the rest of the process (nothing else uses it).
+	// --hook naming an unknown hook is an error.
 	require.NoError(t, cmd.Flags().Set("hook", "missing"))
 	require.Error(t, cmd.RunE(cmd, []string{root}))
 }

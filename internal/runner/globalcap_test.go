@@ -96,10 +96,7 @@ func TestRunnerGlobalCapRaiseAdmitsQueued(t *testing.T) {
 	require.Eventually(t, func() bool { return cap1.Status().Waiting == 1 }, 2*time.Second, 5*time.Millisecond)
 	assert.Equal(t, runs.StatusPending, runB.Status())
 
-	// Raise: B must run to completion while A still holds its original
-	// slot — the proof it was admitted by the raise, not by A's release.
-	// (B is fast, so wait for its Done rather than sampling the transient
-	// "running" state.)
+	// Raise: B must run to completion while A still holds its original slot — the proof it was admitted by the raise, not by A's release.
 	require.NoError(t, cap1.SetLimitOverride(2))
 	select {
 	case <-runB.Done():

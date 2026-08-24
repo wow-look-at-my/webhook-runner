@@ -1,5 +1,3 @@
-package server
-
 // GET /attention (admin port): the persistent "needs attention" surface —
 // the CURRENT set of active misconfigurations the attention aggregator
 // holds (dropped hooks, unresolvable ${NAME} references, sops decrypt
@@ -8,6 +6,7 @@ package server
 // when. The dashboard renders it as the red banner + the Needs attention
 // panel, refetched on the stream's "attention" changed-section signal
 // (the aggregator's own onChange seam — see server.New).
+package server
 
 import (
 	"net/http"
@@ -24,12 +23,7 @@ type attentionView struct {
 
 func (s *Server) handleAttention(w http.ResponseWriter, _ *http.Request) {
 	all := s.attention.Snapshot() // nil-aggregator safe: empty, never nil
-	// A hook that is effectively disabled (operator override, or its
-	// hook.json `enable: false` default) has its problems filtered out
-	// here, at READ time: if it's off, its failures are moot. The entries
-	// are never deleted from the aggregator, so re-enabling the hook
-	// immediately resurfaces everything still active. Non-hook-scoped
-	// entries (server/zero-hooks/reload) always show.
+	// A hook that is effectively disabled (operator override, or its hook.json `enable: false` default) has its problems filtered out here, at.
 	entries := make([]attention.Entry, 0, len(all))
 	for _, e := range all {
 		if e.Hook != "" && s.effectiveDisabled(e.Hook) {

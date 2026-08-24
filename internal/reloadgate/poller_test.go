@@ -76,8 +76,7 @@ func TestPollerFiresOnInterval(t *testing.T) {
 func TestPollerNoBacklogBurstAfterPause(t *testing.T) {
 	p, clk, fc := newTestPoller(time.Hour)
 	p.fireDue() // 1
-	// A slept/restarted process misses many intervals: fire ONCE, not once
-	// per missed hour.
+	// A slept/restarted process misses many intervals: fire ONCE, not once per missed hour.
 	clk.advance(7 * time.Hour)
 	p.fireDue()
 	require.Equal(t, 2, fc.count())
@@ -92,16 +91,13 @@ func TestPollerDisabledAtZero(t *testing.T) {
 	p.fireDue()
 	require.Zero(t, fc.count(), "interval 0 must never fire")
 
-	// Run returns immediately when disabled — no timer, no fire (a hang
-	// here would time the test out).
+	// Run returns immediately when disabled — no timer, no fire (a hang here would time the test out).
 	p.Run(context.Background())
 	require.Zero(t, fc.count())
 }
 
 func TestPollerRunStopsOnCancel(t *testing.T) {
-	// With a cancelled context Run performs the one immediate pass and
-	// returns on the first select — deterministic, no sleeps (the ticker,
-	// at the default 1s, never gets a chance to fire).
+	// With a cancelled context Run performs the one immediate pass and returns on the first select — deterministic, no sleeps (the ticker, at the.
 	p, _, fc := newTestPoller(time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

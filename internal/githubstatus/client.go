@@ -27,20 +27,10 @@ const (
 	StateError   State = "error"
 )
 
-// TokenFunc yields the GitHub credential for one call. Resolving per call
-// rather than once at construction is what lets the credential come from
-// secret-server: a fetch that failed at startup must not leave the process
-// permanently unable to read commit statuses, and a rotated credential must
-// heal without a redeploy. An error means "could not obtain one right now",
-// which every caller treats exactly like the no-token case -- fail closed on
-// reads, no-op on posts.
+// TokenFunc yields the GitHub credential for one call.
 type TokenFunc func(ctx context.Context) (string, error)
 
-// Client posts commit-status updates. A client with no credential still
-// works, but every Post returns before a request is built — so an entity
-// that DECLARED github_status is named on the needs-attention surface at
-// load instead (attention.GitHubStatusEntries). Dropping here silently is
-// what let a hook run green while publishing nothing.
+// Client posts commit-status updates.
 type Client struct {
 	tokenFn    TokenFunc
 	configured bool // a credential source exists, even if a fetch can fail
@@ -61,11 +51,7 @@ func New(token string, log *slog.Logger) *Client {
 	return c
 }
 
-// NewFromSource returns a Client whose credential is resolved per call --
-// the secret-server path. The client counts as configured from the start:
-// a source that cannot answer yet is a failing credential, not an absent
-// one, and the difference is what turns "no GitHub token configured" into
-// an error naming the actual cause.
+// NewFromSource returns a Client whose credential is resolved per call -- the secret-server path.
 func NewFromSource(fn TokenFunc, log *slog.Logger) *Client {
 	c := newClient(log)
 	if fn != nil {
@@ -101,13 +87,10 @@ func (c *Client) token(ctx context.Context) (string, error) {
 	return tok, nil
 }
 
-// Enabled reports whether the client has a credential SOURCE. It does not
-// resolve it: a source that is temporarily failing is still configured, and
-// reporting it as disabled would hide the failure behind "not set up".
+// Enabled reports whether the client has a credential SOURCE.
 func (c *Client) Enabled() bool { return c != nil && c.configured }
 
-// SetAPIURL overrides the API base URL. Tests use it to point at an
-// httptest server.
+// SetAPIURL overrides the API base URL. Tests use it to point at an httptest server.
 func (c *Client) SetAPIURL(u string) { c.apiURL = strings.TrimRight(u, "/") }
 
 // PostStart sends a "pending" status. The repo + sha are looked up from
@@ -344,7 +327,5 @@ func firstNonEmpty(parts ...string) string {
 	return ""
 }
 
-// ErrDisabled is returned by callers that try to use a Client without a
-// configured token. Reserved for future strict modes; the current code
-// path silently skips instead.
+// ErrDisabled is returned by callers that try to use a Client without a configured token.
 var ErrDisabled = errors.New("github_status: client disabled (no token)")

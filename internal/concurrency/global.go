@@ -1,7 +1,3 @@
-package concurrency
-
-import "fmt"
-
 // The GLOBAL run cap: one server-wide ceiling on how many hook executions
 // may run their containers SIMULTANEOUSLY, across every hook — bounding
 // total Docker-container concurrency (each container holds a bridge-network
@@ -22,23 +18,20 @@ import "fmt"
 // Configuration precedence (resolved by the caller — cli/serve):
 // persisted dashboard override (overrides.Store.GlobalRunLimit) >
 // WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS > DefaultGlobalLimit.
+package concurrency
+
+import "fmt"
 
 // DefaultGlobalLimit is the global run cap when nothing configures one.
 const DefaultGlobalLimit = 64
 
-// globalGroup names the pseudo-group inside Global's private Manager. It is
-// internal to that Manager instance — declared concurrency.json groups live
-// in the server's other Manager, so no collision is possible.
+// globalGroup names the pseudo-group inside Global's private Manager.
 const globalGroup = "global"
 
-// GlobalWaitKey is the waiting_on key a run queued on the global cap
-// carries (kind "group") — what the dashboard/timeline show as the thing
-// the run waits for. Not a declared group name; display only.
+// GlobalWaitKey is the waiting_on key a run queued on the global cap carries (kind "group") — what the dashboard/timeline show as the thing.
 const GlobalWaitKey = globalGroup
 
-// Global is the server-wide run cap. A nil *Global applies no cap (every
-// Acquire succeeds immediately) so tests and callers without one need no
-// checks; the write methods on nil return an error, never a silent no-op.
+// Global is the server-wide run cap.
 type Global struct {
 	def int
 	mgr *Manager
@@ -56,8 +49,7 @@ func NewGlobal(def int) *Global {
 	}
 }
 
-// Default returns the configured default limit — what ClearLimitOverride
-// reverts to (the env value, or the built-in DefaultGlobalLimit).
+// Default returns the configured default limit — what ClearLimitOverride reverts to (the env value, or the built-in DefaultGlobalLimit).
 func (g *Global) Default() int {
 	if g == nil {
 		return 0
@@ -77,18 +69,13 @@ func (g *Global) Acquire(runID string, cancel <-chan struct{}, onQueue func(Queu
 	}
 	release, acquired, err := g.mgr.Acquire(globalGroup, runID, cancel, onQueue)
 	if err != nil {
-		// Unreachable: the pseudo-group is always declared in the private
-		// Manager and never removed by any code path. Fail OPEN (run
-		// uncapped) rather than fail a production run over an impossible
-		// state.
+		// Unreachable: the pseudo-group is always declared in the private Manager and never removed by any code path.
 		return func() {}, true
 	}
 	return release, acquired
 }
 
-// SetLimitOverride swaps the effective cap live (>= 1 enforced by the
-// underlying Manager; already-queued runs re-bind immediately — a raise
-// admits them at once, holders above a lowered cap finish normally).
+// SetLimitOverride swaps the effective cap live (>= 1 enforced by the underlying Manager; already-queued runs re-bind immediately — a raise admits them at once, holders.
 func (g *Global) SetLimitOverride(limit int) error {
 	if g == nil {
 		return fmt.Errorf("global run cap not configured")
@@ -105,9 +92,7 @@ func (g *Global) ClearLimitOverride() {
 	g.mgr.ClearLimitOverride(globalGroup)
 }
 
-// GlobalStatus is the cap's live utilization snapshot: Limit is what gates
-// runs right now, Default what ClearLimitOverride reverts to, Overridden
-// whether an operator override is in effect.
+// GlobalStatus is the cap's live utilization snapshot: Limit is what gates runs right now, Default what ClearLimitOverride reverts to, Overridden whether an operator override is.
 type GlobalStatus struct {
 	Limit      int  `json:"limit"`
 	Default    int  `json:"default"`

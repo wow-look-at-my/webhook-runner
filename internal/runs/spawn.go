@@ -10,13 +10,7 @@ type SpawnedBy struct {
 	HookID string `json:"hook_id"`
 }
 
-// SetSpawnedBy records the parent that started this run through the state
-// API's POST /spawn. The runner stamps it at run creation (right after
-// tracker.New, like SetTitle), before the run can plausibly be terminal —
-// but mirror SetTitle's finished-run refusal anyway: the terminal snapshot
-// already flowed into the run store, so a late stamp would diverge live
-// state from history. Empty IDs are a no-op (an unspawned run stays
-// unattributed rather than half-attributed).
+// SetSpawnedBy records the parent that started this run through the state API's POST /spawn.
 func (r *Run) SetSpawnedBy(parentHookID, parentRunID string) {
 	if parentHookID == "" || parentRunID == "" {
 		return

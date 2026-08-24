@@ -26,11 +26,7 @@ func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) er
 }
 
 func (s *Server) checkAPIKey(hook *hooks.Hook, r *http.Request) error {
-	// api_key may reference a secret as ${NAME} — resolved from the hook's
-	// sops secrets file first, then the host environment — so the real key
-	// never lives in the hooks repo as plaintext. Expanded per request
-	// (decryption is cached by the loader), and failing closed: an
-	// unresolvable or empty reference must never degrade to "no auth".
+	// api_key may reference a secret as ${NAME} — resolved from the hook's sops secrets file first, then the host environment — so the real key.
 	var secrets map[string]string
 	if s.secrets != nil {
 		var err error

@@ -29,9 +29,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// fakeManagers is a ManagerControl the server tests drive directly: one
-// real inbox per id (the actual completion/settle semantics), instance
-// binding under test control.
+// fakeManagers is a ManagerControl the server tests drive directly: one real inbox per id (the actual completion/settle semantics), instance binding under test control.
 type fakeManagers struct {
 	mu        sync.Mutex
 	inboxes   map[string]*managers.Inbox
@@ -117,9 +115,7 @@ func (f *fakeManagers) RequestStop(id, reason string) {
 
 func (f *fakeManagers) Poke(string) {}
 
-// SetOnChange mirrors the real supervisor's wiring: the seam the server
-// turns into a "managers" section signal, fed here by the inboxes (depth
-// and stamps are exactly what the roster shows).
+// SetOnChange mirrors the real supervisor's wiring: the seam the server turns into a "managers" section signal, fed here by the inboxes (depth.
 func (f *fakeManagers) SetOnChange(fn func()) {
 	f.mu.Lock()
 	f.onChange = fn
@@ -226,8 +222,7 @@ func TestManagerTriggerFlow(t *testing.T) {
 	assert.Equal(t, "queued", acc.Status)
 	assert.NotEmpty(t, acc.Event)
 
-	// The manager's instance pops it via POST /inbox/next (state socket,
-	// instance token).
+	// The manager's instance pops it via POST /inbox/next (state socket, instance token).
 	fm.bind("coord", "inst-1")
 	tok := store.Token("coord", "inst-1")
 	nr := stateReq(t, s, "POST", "/inbox/next", tok, strings.NewReader(`{"wait_seconds":1}`))
@@ -299,10 +294,7 @@ func TestManagerSynchronousDelivery(t *testing.T) {
 // token still 409s.
 func TestSpawnManagerParent(t *testing.T) {
 	s, fm, _, _, _, store := managerServer(t, managerDoc)
-	// The server needs spawn wiring: a target hook + allowlist + runner are
-	// exercised in spawn_test.go; here the PARENT gate is the subject — an
-	// unknown target after a PASSING parent check proves the manager parent
-	// was accepted (404, not the parent 409).
+	// The server needs spawn wiring: a target hook + allowlist + runner are exercised in spawn_test.go; here the PARENT gate is the subject — an.
 	fm.bind("coord", "inst-1")
 	tok := store.Token("coord", "inst-1")
 	rr := stateReq(t, s, "POST", "/spawn", tok,

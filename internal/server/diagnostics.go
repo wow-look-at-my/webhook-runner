@@ -1,5 +1,3 @@
-package server
-
 // GET /hooks/{id}/diagnostics (admin port): one downloadable bundle of
 // everything an operator would otherwise gather by hand across /hooks/{id},
 // /runs?hook=, /events?hook=, /attention and /concurrency — built so an
@@ -16,6 +14,7 @@ package server
 // like the rest of the admin API, because this file is meant to be pasted
 // into a bug report or a chat, which is a much wider audience than the
 // Zero-Trust-gated dashboard itself.
+package server
 
 import (
 	"fmt"
@@ -36,44 +35,26 @@ import (
 type DiagnosticsBundle struct {
 	GeneratedAt time.Time   `json:"generated_at"`
 	Runner      VersionInfo `json:"runner_version"`
-	// HooksTree is the reload gate's served-tree state (same shape as
-	// /version's hooks_tree) — a hook misbehaving because the fleet is
-	// running an older or held hooks-repo commit than expected is a common
-	// enough root cause to include by default. Omitted when no gate tracks
-	// the tree (no hooks repo, or the legacy gate-disabled mode).
+	// HooksTree is the reload gate's served-tree state (same shape as /version's hooks_tree) — a hook misbehaving because the fleet is running.
 	HooksTree *reloadgate.TreeState `json:"hooks_tree,omitempty"`
 
 	Hook HookDetail `json:"hook"`
-	// ConcurrencyGroup is the hook's declared group's live state (holders,
-	// waiting, limit) — present only when the hook sets concurrency_group.
-	// A hook wedged behind a saturated group is one of the more common
-	// "why is nothing happening" incidents, and the group state answers it
-	// without a separate /concurrency lookup.
+	// ConcurrencyGroup is the hook's declared group's live state (holders, waiting, limit) — present only when the hook sets.
 	ConcurrencyGroup *concurrencyGroupView `json:"concurrency_group,omitempty"`
 
-	// Runs are this hook's most recent runs, newest first, WITH output
-	// (tailed per RunsTail — see handleHookDiagnostics), merged live +
-	// persisted exactly like /runs?hook=.
+	// Runs are this hook's most recent runs, newest first, WITH output (tailed per RunsTail — see handleHookDiagnostics), merged live +.
 	Runs []runs.RunState `json:"runs"`
-	// RunsTruncated is set when more runs exist than were included, so a
-	// short bundle never reads as "this hook has only ever run N times".
+	// RunsTruncated is set when more runs exist than were included, so a short bundle never reads as "this hook has only ever run N times".
 	RunsTruncated bool `json:"runs_truncated,omitempty"`
 
-	// Events are this hook's activity-feed entries, newest first — every
-	// kind, unlike the dashboard's exclude=run (a diagnostic bundle wants
-	// the full timeline, not just what has no run to show already).
+	// Events are this hook's activity-feed entries, newest first — every kind, unlike the dashboard's exclude=run (a diagnostic bundle wants.
 	Events []events.Event `json:"events"`
 
-	// Attention holds every CURRENTLY ACTIVE needs-attention entry scoped to
-	// this hook, plus any server-wide entry (empty Hook) that could explain
-	// hook-level symptoms — a zero-hooks or reload-held condition affects
-	// every hook at once.
+	// Attention holds every CURRENTLY ACTIVE needs-attention entry scoped to this hook, plus any server-wide entry (empty Hook) that could.
 	Attention []attention.Entry `json:"attention"`
 }
 
-// defaultDiagnosticsRuns/Tail/Events are the un-parameterized bundle sizes:
-// generous enough to cover a real incident (a stuck gate, a wedged lock) in
-// one download, bounded so the file stays pasteable into a chat.
+// defaultDiagnosticsRuns/Tail/Events are the un-parameterized bundle sizes: generous enough to cover a real incident (a stuck gate, a wedged lock) in.
 const (
 	defaultDiagnosticsRuns   = 50
 	maxDiagnosticsRuns       = 500
@@ -179,12 +160,7 @@ func intParam(r *http.Request, name string, def, min, max int) int {
 	return n
 }
 
-// attentionFor is the needs-attention entries relevant to one hook: its own
-// scoped entries plus every server-wide entry (empty Hook — zero-hooks,
-// reload-held, the containerized-TMPDIR hazard), oldest first. Unlike
-// handleAttention's dashboard-banner view, this does NOT drop entries for an
-// effectively-disabled hook: a diagnostic bundle for a hook is exactly the
-// place an operator wants to see why it was disabled in the first place.
+// attentionFor is the needs-attention entries relevant to one hook: its own scoped entries plus every server-wide entry (empty Hook — zero-hooks, reload-held, the containerized-TMPDIR hazard), oldest first.
 func (s *Server) attentionFor(hookID string) []attention.Entry {
 	all := s.attention.Snapshot() // nil-aggregator safe: empty, never nil
 	out := make([]attention.Entry, 0, len(all))

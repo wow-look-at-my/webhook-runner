@@ -9,9 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// titledHook builds a hook whose run_title has been compiled the way a real
-// load compiles it, so tests exercise the validated path (RenderRunTitle's
-// lazy parse is covered separately).
+// titledHook builds a hook whose run_title has been compiled the way a real load compiles it, so tests exercise the validated path (RenderRunTitle's.
 func titledHook(t *testing.T, tmpl string) *Hook {
 	t.Helper()
 	h := &Hook{ID: "t", RunTitle: tmpl}
@@ -40,26 +38,19 @@ func TestRunTitleResolution(t *testing.T) {
 	cases := []struct {
 		name, tmpl, want string
 	}{
-		// Leaves stringify exactly like skip_if's: numbers as their JSON
-		// literal text, booleans as the words.
+		// Leaves stringify exactly like skip_if's: numbers as their JSON literal text, booleans as the words.
 		{"nested number", "PR {{pull_request.number}}", "PR 47"},
 		{"boolean leaf", "draft={{pull_request.draft}}", "draft=false"},
 		{"array index", "{{commits.1.message}}", "second"},
-		// Headers resolve via the same header: prefix as skip_if keys,
-		// name case-insensitive.
+		// Headers resolve via the same header: prefix as skip_if keys, name case-insensitive.
 		{"header placeholder", "{{header:x-github-event}} {{action}}", "pull_request opened"},
-		// Missing paths and non-leaves (objects/arrays) render empty, and a
-		// pure-separator literal touching the hole is dropped as that
-		// placeholder's leftover scaffolding — on EITHER side, so
-		// "{{a}}#{{b}}" degrades to "a" or to "b", never to "a#" or "#b".
+		// Missing paths and non-leaves (objects/arrays) render empty, and a pure-separator literal touching the hole is dropped as that.
 		{"missing field trims trailing separator", "{{repository.full_name}}#{{issue.number}}", "o/r"},
 		{"missing field trims leading separator", "{{issue.number}}#{{pull_request.number}}", "47"},
 		{"non-leaf renders empty", "{{repository.full_name}} {{labels}}", "o/r"},
-		// JSON null is "no value" for a title — never the word "null"
-		// (deliberate divergence from skip_if's leaf text).
+		// JSON null is "no value" for a title — never the word "null" (deliberate divergence from skip_if's leaf text).
 		{"null renders empty", "{{repository.full_name}} {{pull_request.body}}", "o/r"},
-		// Wordy literals survive an empty neighbor; only pure scaffolding
-		// drops, and whitespace runs left by drops fold to one space.
+		// Wordy literals survive an empty neighbor; only pure scaffolding drops, and whitespace runs left by drops fold to one space.
 		{"wordy literal kept", "PR {{issue.number}}#{{pull_request.number}} opened", "PR 47 opened"},
 		{"whitespace folds", "run {{action}} {{issue.number}} done", "run opened done"},
 		// A template with no placeholders is a static title, always set.

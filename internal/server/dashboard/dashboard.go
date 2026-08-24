@@ -62,10 +62,7 @@ type Asset struct {
 	ContentType string
 }
 
-// CSS and JS are the dashboard's static assets; TimelineJS is the generated
-// runs-timeline bundle (ts0 output, committed — see the package comment);
-// Index is index.html with its asset references rewritten to the
-// content-addressed names.
+// CSS and JS are the dashboard's static assets; TimelineJS is the generated runs-timeline bundle (ts0 output, committed — see the package.
 var (
 	CSS        Asset
 	JS         Asset
@@ -78,9 +75,7 @@ func init() {
 	JS = load("dashboard.js", "text/javascript; charset=utf-8")
 	TimelineJS = load("timeline.js", "text/javascript; charset=utf-8")
 	idx := mustRead("index.html")
-	// Dumb-but-sufficient rewrite: the quoted literals appear exactly once
-	// each (the <link href> and <script src>); quotes keep prose mentions
-	// of the file names in comments untouched.
+	// Dumb-but-sufficient rewrite: the quoted literals appear exactly once each (the <link href> and <script src>); quotes keep prose.
 	idx = bytes.ReplaceAll(idx, []byte(`"dashboard.css"`), []byte(`"`+CSS.HashedName+`"`))
 	idx = bytes.ReplaceAll(idx, []byte(`"dashboard.js"`), []byte(`"`+JS.HashedName+`"`))
 	idx = bytes.ReplaceAll(idx, []byte(`"timeline.js"`), []byte(`"`+TimelineJS.HashedName+`"`))
@@ -100,9 +95,7 @@ func load(name, contentType string) Asset {
 	}
 }
 
-// mustRead returns an embedded asset. The files are baked in at compile
-// time, so a read can only fail if the embed directive and these names
-// drift — a programmer error worth failing fast on.
+// mustRead returns an embedded asset.
 func mustRead(name string) []byte {
 	b, err := assets.ReadFile("assets/" + name)
 	if err != nil {

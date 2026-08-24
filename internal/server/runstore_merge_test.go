@@ -68,8 +68,7 @@ func TestListRunsMergesPersistedHistory(t *testing.T) {
 	// Only in the store: finished before a "restart".
 	old := persistOld(t, st, "oldoldoldoldoldoldoldoldol", "h", runs.StatusSuccess, time.Hour, "bye")
 
-	// Finished live run: in the tracker AND (via OnFinish) in the store —
-	// the merged view must show it exactly once.
+	// Finished live run: in the tracker AND (via OnFinish) in the store — the merged view must show it exactly once.
 	fin := tr.New("h")
 	fin.AppendOutput("data")
 	fin.Finish(runs.StatusFailure, 1, "")
@@ -93,9 +92,7 @@ func TestListRunsMergesPersistedHistory(t *testing.T) {
 		assert.Empty(t, r.Output, "list view must not ship output")
 	}
 
-	// max caps the TERMINAL rows of the merged result, newest-first; the
-	// active run always rides above the cap (see mergedRuns — a live window
-	// must never hide work that is happening right now).
+	// max caps the TERMINAL rows of the merged result, newest-first; the active run always rides above the cap (see mergedRuns — a live window must.
 	rec = httptest.NewRecorder()
 	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?max=1", nil))
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
@@ -154,9 +151,7 @@ func TestListRunsBeforePagesMergedSources(t *testing.T) {
 		return "before=" + url.QueryEscape(at.Format(time.RFC3339Nano))
 	}
 
-	// Cursor at the active run's queued instant: it drops out (strictly
-	// before); the finished run — in BOTH sources — appears exactly once,
-	// ahead of the store-only history, newest-first.
+	// Cursor at the active run's queued instant: it drops out (strictly before); the finished run — in BOTH sources — appears exactly once, ahead.
 	atAct := cursor(act.Snapshot(0).Started)
 	assert.Equal(t, []string{fin.ID(), mid.ID, other.ID, old.ID}, get(atAct))
 
@@ -201,8 +196,7 @@ func TestHookDetailStatsMergePersisted(t *testing.T) {
 	reg.Set(&hooks.Hook{ID: "h", Command: []string{"x"},
 		SourcePath: filepath.Join(t.TempDir(), "hook.json")})
 
-	// Persisted-only failure, live success (in both sources via OnFinish),
-	// and a live in-flight run.
+	// Persisted-only failure, live success (in both sources via OnFinish), and a live in-flight run.
 	persistOld(t, st, "dddddddddddddddddddddddddd", "h", runs.StatusFailure, 30*time.Minute)
 	tr.New("h").Finish(runs.StatusSuccess, 0, "")
 	running := tr.New("h")

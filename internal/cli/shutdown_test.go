@@ -76,9 +76,7 @@ func TestShutdownRunsTheFullOrder(t *testing.T) {
 	}, order)
 }
 
-// A stream handler holds its response open until its subscription closes, and
-// the admin close waits for in-flight handlers — so closing streams after it
-// would hang until the grace deadline instead of being graceful.
+// A stream handler holds its response open until its subscription closes, and the admin close waits for in-flight handlers — so closing streams after it would hang until the grace deadline instead of being.
 func TestStreamsCloseBeforeTheAdminPort(t *testing.T) {
 	var order []string
 	gracefulShutdown(recordingShutdown(&order, nil))

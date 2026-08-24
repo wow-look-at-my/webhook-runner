@@ -76,8 +76,7 @@ func TestListByHookScansWholeRing(t *testing.T) {
 func TestFamily(t *testing.T) {
 	assert.Equal(t, "run", Family("run.started"))
 	assert.Equal(t, "image", Family("image.build_failed"))
-	// A dotless kind is its own family, and a family must not match by bare
-	// prefix: excluding "run" cannot take "runstore.*" with it.
+	// A dotless kind is its own family, and a family must not match by bare prefix: excluding "run" cannot take "runstore.*" with it.
 	assert.Equal(t, "k", Family("k"))
 	assert.Equal(t, "runstore", Family("runstore.compacted"))
 }

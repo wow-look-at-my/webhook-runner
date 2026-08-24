@@ -20,19 +20,14 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-// DockerfileName is the file every hook must ship next to its hook.json:
-// hooks run images built from their own directory, code baked in.
+// DockerfileName is the file every hook must ship next to its hook.json: hooks run images built from their own directory, code baked in.
 const DockerfileName = "Dockerfile"
 
 const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
 const DefaultAPIKeyHeader = "X-API-Key"
 
-// Script configures a hook to run a script file from the hook directory
-// without spelling out the command: the interpreter determines it
-// (e.g. "tsx <file>"). The script is baked into the hook's image like all
-// hook code, so the interpreter must be installed in that image. An
-// explicit Command overrides the derived one.
+// Script configures a hook to run a script file from the hook directory without spelling out the command: the interpreter determines it (e.g.
 type Script struct {
 	File        string   `json:"file"`
 	Interpreter string   `json:"interpreter"`
@@ -47,11 +42,7 @@ type Hook struct {
 	ID         string `json:"-"`
 	SourcePath string `json:"-"`
 
-	// SrcRoot is the absolute path of the hooks repo's src/ directory when
-	// this hook was loaded from the src (SDK) layout, "" for legacy hooks.
-	// Set by the loader, never by JSON. It selects the docker build context
-	// (src/ instead of the hook dir) and widens the content hash to include
-	// src/sdk — see BuildContext and ContentHash.
+	// SrcRoot is the absolute path of the hooks repo's src/ directory when this hook was loaded from the src (SDK) layout, "" for legacy hooks.
 	SrcRoot     string     `json:"-"`
 	Schema      string     `json:"$schema,omitempty"`
 	Description string     `json:"description"`
@@ -60,62 +51,24 @@ type Hook struct {
 	Tests       [][]string `json:"tests,omitempty"`
 	Networks    []string   `json:"networks,omitempty"`
 	Volumes     []string   `json:"volumes,omitempty"`
-	// Settings is the hook's OWN configuration: arbitrary JSON this runner
-	// never interprets, validated at load against the settings.schema.json
-	// shipped next to the manifest, and handed to the container as a file
-	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
-	// hook-private config into the runner's own parsed keys. See settings.go.
+	// Settings is the hook's OWN configuration: arbitrary JSON this runner never interprets, validated at load against the.
 	Settings json.RawMessage `json:"settings,omitempty"`
-	// manifestSettings preserves the document as hook.json declared it,
-	// before any operator override was merged into Settings. The editor
-	// needs it to answer "what would revert restore?" — reading Settings
-	// there would show the override itself. Unexported and json:"-": it is
-	// derived state, never part of the manifest contract.
+	// manifestSettings preserves the document as hook.json declared it, before any operator override was merged into Settings.
 	manifestSettings json.RawMessage `json:"-"`
-	// manifestRaw is the whole comment-stripped hook.json this Hook parsed
-	// from, kept so the admin config view can render the document as
-	// authored instead of a hand-mirrored struct. Unexported and json:"-":
-	// derived state, never part of the manifest contract. Callers reach it
-	// through ManifestJSON, and it is ONLY ever served through a key
-	// whitelist -- it still contains every secret the file does.
+	// manifestRaw is the whole comment-stripped hook.json this Hook parsed from, kept so the admin config view can render the document as.
 	manifestRaw json.RawMessage `json:"-"`
 	User        string          `json:"user,omitempty"`
 	Workdir     string          `json:"workdir,omitempty"`
 
-	// TimeoutRaw, when set, is the absolute processing ceiling: the run is
-	// killed once it has been processing this long, regardless of output.
-	// Empty means NO absolute ceiling — the run is bounded only by its
-	// idle_timeout (if set) or by the container exiting. Omit it for work
-	// whose healthy runtime is unbounded (pair with idle_timeout so a hung
-	// run still dies); a hook that omits both runs until it exits.
+	// TimeoutRaw, when set, is the absolute processing ceiling: the run is killed once it has been processing this long, regardless of output.
 	TimeoutRaw string `json:"timeout,omitempty"`
 
-	// IdleTimeoutRaw, when set, kills a run once its container has produced
-	// NO output (stdout or stderr) for this long — a progress-aware timeout
-	// for hooks whose healthy runtime varies too much for a tight total
-	// ceiling (a hook that logs progress every few seconds may legitimately
-	// run for an hour). Any output byte resets the idle clock. It follows
-	// the same arming rule as timeout: the clock starts only once the
-	// concurrency-group slot is acquired and the container launches, so a
-	// queued run never idles out (see runner.execute). Independent of
-	// timeout — both may be set, and whichever fires first kills the run
-	// with status "timeout" (an idle kill carries a distinguishable
-	// "idle timeout ... (no output)" message). Empty means no idle limit.
-	//
-	// Like state/concurrency_group/schedule, idle_timeout is a newer
-	// hook.json field, so Parse's DisallowUnknownFields means old binaries
-	// reject it — deploy a webhook-runner that supports it before merging a
-	// hook that sets it.
+	// IdleTimeoutRaw, when set, kills a run once its container has produced NO output (stdout or stderr) for this long — a progress-aware timeout.
 	IdleTimeoutRaw string `json:"idle_timeout,omitempty"`
 
 	GitHubStatus *GitHubStatusConfig `json:"github_status,omitempty"`
 
-	// ConcurrencyGroup, when set, names a concurrency group the hook's runs
-	// must be scheduled through: at most that group's limit run at once and
-	// the rest queue (staying "pending" with their timeout NOT yet counting
-	// — see runner.execute). The group must be declared in the central
-	// concurrency.json at the hooks root; referencing an undeclared group is
-	// a load/validation error. Empty means unbounded (no queueing).
+	// ConcurrencyGroup, when set, names a concurrency group the hook's runs must be scheduled through: at most that group's limit run at once and.
 	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 
 	APIKey       string `json:"api_key,omitempty"`
@@ -127,152 +80,46 @@ type Hook struct {
 	// Legacy HMAC-SHA256 — prefer api_key or public_key.
 	Secret string `json:"secret,omitempty"`
 
-	// Synchronous, when true, makes the server hold the HTTP connection
-	// open until the container exits (subject to its timeout). When false
-	// (the default), the server returns 202 immediately and the caller
-	// must poll /runs/{run_id} for completion. The query parameter
-	// ?wait=true on a request also forces synchronous behavior.
+	// Synchronous, when true, makes the server hold the HTTP connection open until the container exits (subject to its timeout).
 	Synchronous bool `json:"synchronous,omitempty"`
 
-	// Enable, when explicitly false, loads the hook DISABLED by default:
-	// deliveries are rejected (503) and scheduled runs are skipped exactly
-	// as if the operator kill switch were flipped off — until an operator
-	// explicitly enables it (the dashboard switch / POST /hooks/{id}/enable,
-	// a persisted runtime override that always wins over this default, in
-	// both directions). Absent (nil) or true means enabled by default, so
-	// existing hooks are unchanged. Like the other newer hook.json fields,
-	// old binaries reject it via DisallowUnknownFields: deploy a
-	// webhook-runner that supports it before merging a hook that sets it.
+	// Enable, when explicitly false, loads the hook DISABLED by default: deliveries are rejected (503) and scheduled runs are skipped exactly.
 	Enable *bool `json:"enable,omitempty"`
 
-	// State, when true, opts the hook into the persistent KV store: the
-	// runner bind-mounts the KV API's Unix socket into the container and
-	// injects HOOK_KV_SOCKET, HOOK_KV_URL, and HOOK_KV_TOKEN (a per-hook
-	// bearer token scoped to a namespace == this hook's ID), so the hook
-	// reaches the state API over that socket — no networking. The hook's data
-	// survives across its runs and across server restarts, isolated from
-	// every other hook. Omitted (the default) means no KV access.
+	// State, when true, opts the hook into the persistent KV store: the runner bind-mounts the KV API's Unix socket into the container and injects.
 	State bool `json:"state,omitempty"`
 
-	// Dind, when true, grants the hook's container the privileges to run its
-	// OWN nested container daemon: the runner adds --privileged and an
-	// anonymous volume at /var/lib/docker (--mount
-	// type=volume,dst=/var/lib/docker), so a dockerd started inside the
-	// container has container-local storage on a real filesystem (an inner
-	// daemon can't run its overlay storage driver on top of the outer
-	// container's overlay — /var/lib/docker must be a volume, not the layered
-	// rootfs). The host's own docker daemon is NEVER exposed — no docker
-	// socket is mounted; the nested daemon is fully isolated from it. --rm
-	// (always passed) auto-removes the anonymous volume when the run ends, so
-	// inner storage never leaks between runs. The SAME two flags apply on the
-	// `webhook-runner test` path, so a dind hook's declared tests can start a
-	// nested daemon too.
-	//
-	// This is a host-root-equivalent capability (--privileged) — enable it
-	// only for trusted, operator-curated hooks. Like the other newer hook.json
-	// fields, old binaries reject it via DisallowUnknownFields: deploy a
-	// webhook-runner that supports it before merging a hook that sets it.
+	// Dind, when true, gives the hook's container STORAGE a nested container daemon can use: an anonymous volume at /var/lib/docker (--mount.
 	Dind bool `json:"dind,omitempty"`
 
-	// Seccomp narrows the container's syscall filter policy. Absent (the
-	// nil pointer) means the DEFAULT: docker's builtin seccomp profile,
-	// unmodified — the locked-down posture every hook gets for free. A hook
-	// can only RELAX specific, named behaviors here; there is deliberately
-	// no way to name an arbitrary profile or to say "unconfined", because
-	// that would be extra_docker_args again with a friendlier spelling.
+	// Seccomp narrows the container's syscall filter policy.
 	Seccomp *SeccompConfig `json:"seccomp,omitempty"`
 
-	// Schedule, when set, makes the scheduler fire this hook on a fixed
-	// interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger. A
-	// scheduled run is dispatched through the exact same pipeline as an
-	// HTTP-triggered one — tracked, gated by the hook's concurrency_group,
-	// KV-enabled, shown on the dashboard — with a synthetic payload that marks
-	// it as schedule-triggered. To stop a long sweep stacking on itself, the
-	// scheduler skips a tick whenever a previous run of the same hook is still
-	// in flight (skip-if-already-running). On startup (and when newly added or
-	// when its interval changes) the hook fires immediately, then every
-	// interval thereafter. Empty (the default) means HTTP-triggered only.
-	//
-	// Like state/concurrency_group, schedule is a newer hook.json field, so
-	// Parse's DisallowUnknownFields means old binaries reject it — deploy a
-	// webhook-runner that supports it before merging a hook that sets it.
+	// Schedule, when set, makes the scheduler fire this hook on a fixed interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger.
 	Schedule string `json:"schedule,omitempty"`
 
-	// SkipIf declares conditions under which an (authenticated) delivery is
-	// SKIPPED instead of run: answered immediately, recorded as a
-	// first-class run with status "skipped" naming the matched condition,
-	// and given NO container — no image build, no concurrency slot, no
-	// docker run. List entries are ORed; keys within one condition are
-	// ANDed. Keys address the parsed JSON payload by dotted path or a
-	// request header via the "header:" prefix; matchers are a bare string
-	// (equality) or {eq,ne,in,exists,prefix,regex} — see skip.go. Malformed
-	// conditions (bad regex, unknown operator, empty condition) fail the
-	// hook's load/validation. Like state/concurrency_group/schedule this is
-	// a newer hook.json field: deploy a webhook-runner that supports it
-	// before merging a hook that sets it (old binaries reject it via
-	// DisallowUnknownFields).
+	// SkipIf declares conditions under which an (authenticated) delivery is SKIPPED instead of run: answered immediately, recorded as a.
 	SkipIf SkipConditions `json:"skip_if,omitempty"`
 
-	// RunTitle, when set, is a template for the friendly display title of
-	// this hook's runs — "{{repository.full_name}}#{{pull_request.number}}"
-	// renders "wow-look-at-my/go-toolchain#47" on the dashboard where the
-	// opaque run id used to be. {{...}} placeholders name a dotted payload
-	// path or a request header via the "header:" prefix — skip_if's exact
-	// key syntax and bounded traversal (see title.go for the resolution
-	// semantics: graceful, never blocking, all-placeholders-empty means no
-	// title). Resolved once at run creation, BEFORE skip evaluation, so
-	// skipped runs are titled too; a malformed template is a load/validation
-	// error. Like the other newer hook.json fields, old binaries reject it
-	// via DisallowUnknownFields: deploy a webhook-runner that supports it
-	// before merging a hook that sets it.
+	// RunTitle, when set, is a template for the friendly display title of this hook's runs —.
 	RunTitle string `json:"run_title,omitempty"`
 
-	// titleTmpl is RunTitle parsed by validate() at load time, so rendering
-	// never re-parses and a malformed template can never load. Hooks
-	// constructed in code (tests) may leave it nil — RenderRunTitle then
-	// parses on demand.
+	// titleTmpl is RunTitle parsed by validate() at load time, so rendering never re-parses and a malformed template can never load.
 	titleTmpl *titleTemplate
 }
 
-// SeccompConfig is the `seccomp` block: one named relaxation per field, so
-// every syscall privilege a container gets is greppable and reviewable.
-//
-// Docker's --security-opt seccomp= takes either the literal "unconfined"
-// (no filtering at all) or a PATH to a profile JSON -- there is no CLI
-// syntax for "the default profile, plus one syscall". So a narrow
-// relaxation necessarily means shipping a profile document; the runner
-// embeds it and writes it per run rather than requiring every fleet host to
-// be provisioned with a file that could drift or go missing.
+// SeccompConfig is the `seccomp` block: one named relaxation per field, so every syscall privilege a container gets is greppable and reviewable.
 type SeccompConfig struct {
-	// Userns, when true, allows the container to create unprivileged user
-	// namespaces: the runner passes a profile that is docker's default plus
-	// an UNGATED allow for unshare/clone/clone3 (the default profile permits
-	// those only for a container holding CAP_SYS_ADMIN, which an ordinary
-	// hook container does not have). Everything else in the default profile
-	// -- every other blocked syscall -- stays blocked.
-	//
-	// This is what a sandboxing tool inside the container needs: bubblewrap,
-	// and therefore `dats` on its default bwrap backend, cannot create its
-	// namespace without it. Note the direction of the trade: the hook gains
-	// the ability to sandbox ITS OWN workload, at the cost of a wider kernel
-	// surface for the container itself. Unprivileged user namespaces have a
-	// real CVE history -- that is why distros started restricting them -- so
-	// this is an AUDITED opt-in like dind, not a default, and it belongs
-	// only on trusted, operator-curated hooks.
+	// Userns, when true, allows the container to create unprivileged user namespaces: the runner passes a profile that is docker's default plus.
 	Userns bool `json:"userns,omitempty"`
 }
 
-// UsernsAllowed reports whether the hook opted into unprivileged user
-// namespaces. Nil-safe: an absent seccomp block means the default profile.
+// UsernsAllowed reports whether the hook opted into unprivileged user namespaces.
 func (h *Hook) UsernsAllowed() bool {
 	return h != nil && h.Seccomp != nil && h.Seccomp.Userns
 }
 
-// ManifestJSON returns the comment-stripped hook.json this Hook parsed
-// from. It contains EVERY secret the file does (api_key, secret, settings
-// values), so it must never be served raw -- the admin view filters it
-// through an explicit key whitelist. Empty when the Hook was built by a
-// caller other than Parse (tests construct Hooks directly).
+// ManifestJSON returns the comment-stripped hook.json this Hook parsed from.
 func (h *Hook) ManifestJSON() json.RawMessage {
 	if h == nil {
 		return nil
@@ -288,11 +135,7 @@ type GitHubStatusConfig struct {
 	TargetURL string `json:"target_url,omitempty"`
 }
 
-// Timeout returns the parsed timeout, or 0 when the hook sets none (no
-// absolute ceiling — the run is bounded only by its idle_timeout, if set, or
-// by the container exiting; see runner.execute, which skips the deadline
-// entirely for 0). Validation has already happened at load time, so a parse
-// failure here is treated as "no ceiling" rather than panicking.
+// Timeout returns the parsed timeout, or 0 when the hook sets none (no absolute ceiling — the run is bounded only by its idle_timeout, if set, or by the.
 func (h *Hook) Timeout() time.Duration {
 	if h.TimeoutRaw == "" {
 		return 0
@@ -304,10 +147,7 @@ func (h *Hook) Timeout() time.Duration {
 	return d
 }
 
-// IdleTimeout returns the parsed idle timeout, or 0 when the hook sets none
-// (no idle limit — silence is bounded only by the total timeout, if one is
-// set). Validation has already happened at load time, so a parse failure
-// here is treated as "no idle limit" rather than panicking.
+// IdleTimeout returns the parsed idle timeout, or 0 when the hook sets none (no idle limit — silence is bounded only by the total timeout, if one is set).
 func (h *Hook) IdleTimeout() time.Duration {
 	if h.IdleTimeoutRaw == "" {
 		return 0
@@ -319,17 +159,12 @@ func (h *Hook) IdleTimeout() time.Duration {
 	return d
 }
 
-// EnabledByDefault reports the hook.json `enable` default: true unless the
-// hook explicitly sets "enable": false. This is only the DEFAULT position
-// of the kill switch — a persisted operator override (internal/overrides)
-// takes precedence over it everywhere.
+// EnabledByDefault reports the hook.json `enable` default: true unless the hook explicitly sets "enable": false.
 func (h *Hook) EnabledByDefault() bool {
 	return h.Enable == nil || *h.Enable
 }
 
-// ScheduleInterval returns the parsed schedule duration, or 0 when the hook
-// is not scheduled. Validation has already happened at load time, so a parse
-// failure here is treated as "not scheduled" rather than panicking.
+// ScheduleInterval returns the parsed schedule duration, or 0 when the hook is not scheduled.
 func (h *Hook) ScheduleInterval() time.Duration {
 	if h.Schedule == "" {
 		return 0
@@ -341,9 +176,7 @@ func (h *Hook) ScheduleInterval() time.Duration {
 	return d
 }
 
-// SigHeader returns the configured signature header or a sensible default
-// based on the auth method. For ed25519 public_key auth it defaults to
-// X-Signature-Ed25519; for legacy HMAC it defaults to X-Hub-Signature-256.
+// SigHeader returns the configured signature header or a sensible default based on the auth method.
 func (h *Hook) SigHeader() string {
 	if h.SignatureHeader != "" {
 		return h.SignatureHeader
@@ -361,10 +194,7 @@ func (h *Hook) APIKeyHdr() string {
 	return DefaultAPIKeyHeader
 }
 
-// Dir returns the absolute path of the directory containing this hook's
-// hook.json, or "" for hooks not loaded from disk (tests). For Dockerfile
-// hooks it is the docker build context, so code and assets ship alongside
-// hook.json and get baked into the image.
+// Dir returns the absolute path of the directory containing this hook's hook.json, or "" for hooks not loaded from disk (tests).
 func (h *Hook) Dir() string {
 	if h.SourcePath == "" {
 		return ""
@@ -376,17 +206,10 @@ func (h *Hook) Dir() string {
 	return abs
 }
 
-// SDKLayout reports whether this hook was loaded from the src (SDK)
-// layout — see internal/hooks/layout.go.
+// SDKLayout reports whether this hook was loaded from the src (SDK) layout — see internal/hooks/layout.go.
 func (h *Hook) SDKLayout() bool { return h.SrcRoot != "" }
 
-// BuildContext is the docker build context for this hook's image: the
-// hook's own directory under the legacy layout, the repo's src/ directory
-// under the SDK layout (so Dockerfiles COPY with the tree-mirror
-// convention — `COPY sdk/ /app/sdk/` + `COPY hooks/<id>/ /app/hooks/<id>/`
-// — and a hook's relative ../../sdk import resolves identically in-repo
-// and in-image). The Dockerfile itself is always the hook's own (the
-// runner passes -f for SDK builds).
+// BuildContext is the docker build context for this hook's image: the hook's own directory under the legacy layout, the repo's src/.
 func (h *Hook) BuildContext() string {
 	if h.SrcRoot != "" {
 		return h.SrcRoot
@@ -406,11 +229,7 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	}
 	h.ID = id
 	h.SourcePath = sourcePath
-	// Keep the comment-stripped manifest so the admin view can show the
-	// hook's config AS AUTHORED (filtered through a key whitelist) rather
-	// than a hand-mirrored copy that drifts. Held in memory rather than
-	// re-read from disk at request time: this is the document that actually
-	// parsed into this Hook, so it stays truthful mid-reload.
+	// Keep the comment-stripped manifest so the admin view can show the hook's config AS AUTHORED (filtered through a key whitelist) rather than.
 	if stripped, err := io.ReadAll(stripComments(data)); err == nil {
 		h.manifestRaw = stripped
 	}
@@ -423,12 +242,7 @@ func Parse(id, sourcePath string, data []byte) (*Hook, error) {
 	if err := h.validate(); err != nil {
 		return nil, err
 	}
-	// Then the PUBLISHED schema (see schemacheck.go) -- the contract a hooks
-	// repo validates against in CI, enforced here by the same implementation.
-	// It runs LAST because the checks above produce better messages for what
-	// they cover ("invalid schedule 5 minutes" beats a pattern mismatch); what
-	// it adds is everything a Go struct cannot express -- enums, patterns,
-	// formats, minimums -- which until now was checked in CI and nowhere else.
+	// Then the PUBLISHED schema (see schemacheck.go) -- the contract a hooks repo validates against in CI, enforced here by the same.
 	if err := ValidateHookJSON(sourcePath, data); err != nil {
 		return nil, err
 	}
@@ -443,8 +257,7 @@ func (h *Hook) resolveScript() error {
 	if s.File == "" {
 		return errors.New("script.file is required")
 	}
-	// Checked HERE, before the args are folded into Command: the author wrote
-	// script.args, so that is the key the error must name (see shellsafe.go).
+	// Checked HERE, before the args are folded into Command: the author wrote script.args, so that is the key the error must name (see.
 	if err := checkNoShellSubstitution("script.args", s.Args); err != nil {
 		return err
 	}
@@ -493,23 +306,7 @@ func (h *Hook) hasDockerfile() bool {
 	return err == nil && !fi.IsDir()
 }
 
-// ContentHash digests the files that determine this hook's image, tagging
-// the build so a changed hook rebuilds on its next run while an unchanged
-// one reuses the already built image.
-//
-// LEGACY layout: every file under the hook's directory, hashed as
-// relative path + content — byte-identical to the historical algorithm
-// (existing deployments must not re-tag on upgrade).
-//
-// SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every
-// SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the
-// tree has) — never sibling entity dirs — hashed as src-relative path +
-// file mode + content. A shared-code edit re-tags every src-layout entity
-// (lazy rebuild on its next run, intended even for non-consumers); an edit
-// to hook A never re-tags hook B. The COPY-surface convention follows from
-// this: an SDK-layout Dockerfile may COPY only from a shared dir and its
-// own hooks/<id>/ — a sibling entity's dir is undefined-staleness territory
-// (builds don't fail, but edits there never re-tag).
+// ContentHash digests the files that determine this hook's image, tagging the build so a changed hook rebuilds on its next run while an unchanged one reuses the already built image. LEGACY layout: every file under the hook's directory, hashed as relative path + content — byte-identical to the historical algorithm (existing deployments must not re-tag on upgrade). SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the tree has) — never sibling entity dirs — hashed as src-relative path + file mode + content. A shared-code edit re-tags every src-layout entity (lazy rebuild on its next run, intended even for non-consumers); an edit to hook A never re-tags hook B.
 func (h *Hook) ContentHash() (string, error) {
 	dir := h.Dir()
 	if dir == "" {
@@ -520,8 +317,7 @@ func (h *Hook) ContentHash() (string, error) {
 		if err := hashTree(digest, h.SrcRoot, dir, true); err != nil {
 			return "", fmt.Errorf("hash hook dir %s: %w", dir, err)
 		}
-		// A src tree without shared code is fine: no shared dirs simply
-		// contribute nothing.
+		// A src tree without shared code is fine: no shared dirs simply contribute nothing.
 		shared, err := SharedDirs(h.SrcRoot)
 		if err != nil {
 			return "", fmt.Errorf("list shared dirs under %s: %w", h.SrcRoot, err)
@@ -592,11 +388,7 @@ func (h *Hook) validate() error {
 	if h.Schema == "" {
 		return errors.New("$schema is required (point it at https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json)")
 	}
-	// The hook's OWN configuration, checked against the contract it ships
-	// (settings.schema.json). Fail closed like every other load gate: a hook
-	// configured wrongly must not run at all, because the alternative is a
-	// container that starts, finds its config missing, and reports whatever it
-	// decides to report.
+	// The hook's OWN configuration, checked against the contract it ships (settings.schema.json).
 	if err := h.ValidateSettings(); err != nil {
 		return err
 	}
@@ -632,10 +424,7 @@ func (h *Hook) validate() error {
 			return fmt.Errorf("schedule must be positive, got %s", d)
 		}
 	}
-	// A manifest is not a place to write shell (see shellsafe.go): nested
-	// command/process substitution in an argv entry is a load error. script.args
-	// is checked in resolveScript, before it becomes part of Command, so each
-	// error names the key the author actually wrote.
+	// A manifest is not a place to write shell (see shellsafe.go): nested command/process substitution in an argv entry is a load error.
 	if err := checkNoShellSubstitution("command", h.Command); err != nil {
 		return err
 	}
@@ -697,9 +486,7 @@ func parseEd25519PublicKey(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-// stripComments returns a reader over the input with // and /* */ comments
-// removed, since the hook.json format documented to users contains
-// JSONC-style comments. The shared implementation lives in internal/jsonc.
+// stripComments returns a reader over the input with // and /* */ comments removed, since the hook.json format documented to users contains.
 func stripComments(in []byte) *strings.Reader {
 	return jsonc.NewReader(in)
 }

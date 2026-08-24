@@ -33,16 +33,13 @@ import (
 	"time"
 )
 
-// Bounds. A spool is a deploy-window buffer, not a queue: if a delivery
-// storm fills it the handler must fall back to the honest 503 rather than
-// grow without limit.
+// Bounds.
 const (
 	DefaultMaxEntries = 1000
 	DefaultMaxBytes   = 64 << 20 // 64 MiB
 )
 
-// ErrFull means the spool is at its bound; the caller should answer 503
-// (loudly) rather than drop the delivery silently.
+// ErrFull means the spool is at its bound; the caller should answer 503 (loudly) rather than drop the delivery silently.
 var ErrFull = errors.New("spool is full")
 
 // Entry is one parked delivery. Headers carry the original request headers
@@ -208,8 +205,7 @@ func (s *Store) Replay(fn func(Entry) error) int {
 		}
 		var e Entry
 		if err := json.Unmarshal(data, &e); err != nil {
-			// Quarantine, never silently drop: the operator can still see
-			// what arrived, and the queue keeps moving.
+			// Quarantine, never silently drop: the operator can still see what arrived, and the queue keeps moving.
 			bad := path + ".corrupt"
 			s.log.Error("spool replay: corrupt entry quarantined", "entry", name, "renamed_to", filepath.Base(bad), "err", err)
 			if err := os.Rename(path, bad); err != nil {

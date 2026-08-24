@@ -13,21 +13,12 @@ import (
 	"time"
 )
 
-// SecretsFileName is the per-hook encrypted secrets file: a sops-encrypted
-// dotenv file sitting next to hook.json. Its decrypted KEY=VALUE entries are
-// injected into the hook's container environment and are resolvable by
-// ${NAME} references in hook.json (env values and api_key), so secrets can
-// live in the hooks repo instead of the runner host's environment.
+// SecretsFileName is the per-hook encrypted secrets file: a sops-encrypted dotenv file sitting next to hook.json.
 const SecretsFileName = "secrets.sops.env"
 
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// SecretsLoader decrypts per-hook sops secrets files by shelling out to the
-// sops binary (same convention as docker: no SDK). Decryption happens at
-// run/request time, never at load/validate time, so `validate` in CI needs
-// neither sops nor any keys. Results are cached per file and invalidated by
-// mtime+size, so a `git pull` of the hooks repo picks up new values without
-// a process restart.
+// SecretsLoader decrypts per-hook sops secrets files by shelling out to the sops binary (same convention as docker: no SDK).
 type SecretsLoader struct {
 	sops string
 

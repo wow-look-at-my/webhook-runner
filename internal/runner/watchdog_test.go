@@ -15,8 +15,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// fakeClock is a hand-advanced clock for driving the watchdog's pure logic
-// without sleeping (the scheduler's injected-clock house style).
+// fakeClock is a hand-advanced clock for driving the watchdog's pure logic without sleeping (the scheduler's injected-clock house style).
 type fakeClock struct {
 	mu sync.Mutex
 	t  time.Time
@@ -72,12 +71,7 @@ func TestIdleWatchdogFiresOnSilence(t *testing.T) {
 	assert.Equal(t, time.Duration(0), wait)
 }
 
-// REGRESSION: a zero limit (a hook that omits `timeout` — "no absolute
-// ceiling") must never fire, armed or not, however much time passes. Without
-// the limit<=0 guard in check(), idle >= w.limit is vacuously true (idle can
-// never be negative), so an armed watchdog fired on its very first check —
-// every hook without an explicit timeout timed out immediately instead of
-// running until it exits.
+// REGRESSION: a zero limit (a hook that omits `timeout` — "no absolute ceiling") must never fire, armed or not, however much time passes.
 func TestIdleWatchdogZeroLimitNeverFires(t *testing.T) {
 	clock := newFakeClock()
 	w := newIdleWatchdog(0, clock.Now)
@@ -204,9 +198,7 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 		Docker:  docker,
 	})
 
-	// A line every ~1s for ~4s of runtime, against a 3s idle_timeout: every
-	// silent gap stays well under the limit while the total runtime
-	// exceeds it — under a naive wall-clock semantics this run would die.
+	// A line every ~1s for ~4s of runtime, against a 3s idle_timeout: every silent gap stays well under the limit while the total runtime exceeds it — under a naive wall-clock semantics this.
 	hook := diskHook(t, dir, &hooks.Hook{
 		ID:             "h",
 		Command:        []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},

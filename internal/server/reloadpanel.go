@@ -1,5 +1,3 @@
-package server
-
 // The admin dashboard's hooks-repo reload panel: which commit is live,
 // what the reload gate is holding, the recent origin history with CI +
 // src-layout verdicts, an on-demand re-evaluation, and the operator's
@@ -14,6 +12,7 @@ package server
 // /reload/commits — an explicit operator navigation — fetches the remote.
 // The automatic reload paths (status events, the reconciliation poll) are
 // completely untouched by this file.
+package server
 
 import (
 	"context"
@@ -53,11 +52,9 @@ const (
 	reloadCommitsMax = 20
 	// reloadCommitsFetchDepth matches the gate's ordering window.
 	reloadCommitsFetchDepth = 100
-	// reloadCIBudget bounds the whole CI-enrichment pass of one commits
-	// listing; commits past the budget report "unknown" instead of waiting.
+	// reloadCIBudget bounds the whole CI-enrichment pass of one commits listing; commits past the budget report "unknown" instead of waiting.
 	reloadCIBudget = 15 * time.Second
-	// CI verdict cache TTLs: terminal states are stable (a re-run can still
-	// flip them, so not forever), live states go stale fast.
+	// CI verdict cache TTLs: terminal states are stable (a re-run can still flip them, so not forever), live states go stale fast.
 	reloadCITerminalTTL = 5 * time.Minute
 	reloadCILiveTTL     = 20 * time.Second
 )

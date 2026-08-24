@@ -51,8 +51,7 @@ func TestImageCommandCachesPerTag(t *testing.T) {
 	dir := t.TempDir()
 	docker, counter := countingDocker(t, dir)
 
-	// A content-hash tag: its ENTRYPOINT/CMD cannot change, so exactly one
-	// inspect should ever run for it however many runs the hook has.
+	// A content-hash tag: its ENTRYPOINT/CMD cannot change, so exactly one inspect should ever run for it however many runs the hook has.
 	tag := "whr-hook/h:" + t.Name()
 	first, err := imageCommand(docker, tag, nil)
 	require.NoError(t, err)
@@ -78,8 +77,7 @@ func TestImageCommandCacheKeyedOnCommandToo(t *testing.T) {
 	override, err := imageCommand(docker, tag, []string{"other"})
 	require.NoError(t, err)
 
-	// Different command overrides are different answers and must not share
-	// a cache entry, even though they share a tag.
+	// Different command overrides are different answers and must not share a cache entry, even though they share a tag.
 	assert.Equal(t, []string{"/entry", "arg1", "arg2"}, base)
 	assert.Equal(t, []string{"/entry", "other"}, override)
 	assert.Equal(t, 2, inspectCalls(t, counter))
@@ -92,9 +90,7 @@ func TestImageCommandCacheReturnsIndependentSlices(t *testing.T) {
 
 	first, err := imageCommand(docker, tag, nil)
 	require.NoError(t, err)
-	// The runner appends the shim's argv onto this result. Without a copy
-	// that append writes into the cached slice's spare capacity and the
-	// NEXT run inherits the previous run's command.
+	// The runner appends the shim's argv onto this result.
 	_ = append(first, "injected") //nolint:gocritic // deliberately abusing spare capacity
 
 	second, err := imageCommand(docker, tag, nil)
@@ -105,8 +101,7 @@ func TestImageCommandCacheReturnsIndependentSlices(t *testing.T) {
 
 func TestImageCommandDoesNotCacheFailures(t *testing.T) {
 	dir := t.TempDir()
-	// A docker that always fails inspect: a transient daemon condition is
-	// not a property of the tag, so it must be retried, never memoized.
+	// A docker that always fails inspect: a transient daemon condition is not a property of the tag, so it must be retried, never memoized.
 	path := filepath.Join(dir, "docker")
 	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755))
 
@@ -114,8 +109,7 @@ func TestImageCommandDoesNotCacheFailures(t *testing.T) {
 	_, err := imageCommand(path, tag, nil)
 	require.Error(t, err)
 
-	// The same tag now inspects successfully; the earlier failure must not
-	// have been cached as an answer.
+	// The same tag now inspects successfully; the earlier failure must not have been cached as an answer.
 	docker, counter := countingDocker(t, dir)
 	got, err := imageCommand(docker, tag, nil)
 	require.NoError(t, err)

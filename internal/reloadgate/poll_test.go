@@ -56,9 +56,7 @@ func TestReconcileUpToDateMakesNoStatusCall(t *testing.T) {
 }
 
 func TestReconcileGreenSwitches(t *testing.T) {
-	// The startup catch-up shape: a green landed while the runner was down
-	// (or its status webhook was missed) — the first poll pass switches
-	// through the exact event path.
+	// The startup catch-up shape: a green landed while the runner was down (or its status webhook was missed) — the first poll pass switches.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 	st := &countingStatus{state: "success"}
@@ -129,8 +127,7 @@ func TestReconcilePendingOrUnreportedHolds(t *testing.T) {
 }
 
 func TestReconcileNoReaderHoldsLoudly(t *testing.T) {
-	// No StatusFunc configured at all: the poll must fail closed — the
-	// tree stays put and the blindness is loud (event + attention entry).
+	// No StatusFunc configured at all: the poll must fail closed — the tree stays put and the blindness is loud (event + attention entry).
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 
@@ -157,13 +154,11 @@ func TestReconcileStatusErrorHoldsThenRecovers(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "reload.poll_blind")
 	require.Contains(t, attentionKeys(f.agg), attention.KeyReloadPoll)
 
-	// The same problem on the next tick stays quiet on the feed (the
-	// attention entry is the persistent surface).
+	// The same problem on the next tick stays quiet on the feed (the attention entry is the persistent surface).
 	f.gate.Reconcile(context.Background())
 	assert.Equal(t, 1, countKind(f.rec, "reload.poll_blind"))
 
-	// The credential/API recovers and the tip is green: switch, and the
-	// blindness entry resolves.
+	// The credential/API recovers and the tip is green: switch, and the blindness entry resolves.
 	st.err, st.state = nil, "success"
 	f.gate.Reconcile(context.Background())
 	assert.Equal(t, []string{"B"}, repo.resets)
@@ -189,9 +184,7 @@ func TestReconcileFetchErrorLeavesEverything(t *testing.T) {
 }
 
 func TestReconcileGreenNotInHistoryIgnoredStale(t *testing.T) {
-	// The ordering rules are the SAME shared path the status event uses: a
-	// tip whose sha the freshly-fetched history does not vouch for is
-	// ignored stale, never applied — even with the API reporting green.
+	// The ordering rules are the SAME shared path the status event uses: a tip whose sha the freshly-fetched history does not vouch for is ignored.
 	repo := &fakeRepo{tip: "B", commits: []string{"C", "A"}}
 	f := servingFixture(t, repo, "A")
 	f.gate.status = (&countingStatus{state: "success"}).fn
@@ -205,8 +198,7 @@ func TestReconcileGreenNotInHistoryIgnoredStale(t *testing.T) {
 }
 
 func TestReconcileRepeatTicksQuiet(t *testing.T) {
-	// An unchanged verdict on later ticks re-records nothing: the
-	// persistent attention entries are the surface, not hourly feed spam.
+	// An unchanged verdict on later ticks re-records nothing: the persistent attention entries are the surface, not hourly feed spam.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 	st := &countingStatus{state: "failure"}
@@ -216,8 +208,7 @@ func TestReconcileRepeatTicksQuiet(t *testing.T) {
 	f.gate.Reconcile(context.Background())
 	assert.Equal(t, 1, countKind(f.rec, "reload.held_red"))
 
-	// The verdict changing (red -> pending, e.g. a new CI run) records
-	// exactly once more.
+	// The verdict changing (red -> pending, e.g. a new CI run) records exactly once more.
 	st.state = "pending"
 	f.gate.Reconcile(context.Background())
 	f.gate.Reconcile(context.Background())
@@ -225,10 +216,7 @@ func TestReconcileRepeatTicksQuiet(t *testing.T) {
 }
 
 func TestReconcileRedRepointsPendingToTip(t *testing.T) {
-	// A push event recorded B pending; then C landed but its push webhook
-	// was missed and C's CI failed. The poll must point the hold at the
-	// actual tip (what the missed push would have recorded) with its red
-	// state.
+	// A push event recorded B pending; then C landed but its push webhook was missed and C's CI failed.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 	_, err := f.gate.HandleEvent("push", pushBody(t, "refs/heads/master", "B"))
@@ -246,9 +234,7 @@ func TestReconcileRedRepointsPendingToTip(t *testing.T) {
 }
 
 func TestReconcileStartupCatchupAfterDowntime(t *testing.T) {
-	// The runner was down while master advanced and greened: the poller's
-	// immediate first pass (Poller fires once on start) converges without
-	// any webhook delivery.
+	// The runner was down while master advanced and greened: the poller's immediate first pass (Poller fires once on start) converges without.
 	statePath := t.TempDir() + "/reload-gate.json"
 	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
 	repo := &fakeRepo{head: "A", tip: "C", commits: []string{"C", "B", "A"}}

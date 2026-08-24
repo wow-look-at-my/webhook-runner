@@ -43,9 +43,9 @@ jobs:
           fi
           echo "assets/timeline.js matches its source."
 
-  # wow-dind, not wow-linux: go-toolchain's dats phase sandboxes.
+  # GitHub-hosted, not wow-dind: go-toolchain's dats phase needs a sandbox backend.
   test:
-    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       # Do NOT add an explicit `cache-upload go-build` here.
@@ -63,8 +63,9 @@ jobs:
       - name: Generated assets are fresh
         run: git diff --exit-code -- internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/
 
+  # GitHub-hosted: the suite starts real containers.
   e2e:
-    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
@@ -92,9 +93,9 @@ jobs:
         with:
           file: e2e/e2e.test.ts
 
-  # Black-box CLI-contract tests against the built binary.
+  # Black-box CLI-contract tests against the built binary; GitHub-hosted for the sandbox.
   dats:
-    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4

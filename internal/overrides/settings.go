@@ -1,5 +1,3 @@
-package overrides
-
 // Per-entity SETTINGS overrides: the values the operator pins from the
 // dashboard's settings editor, keyed by entity id and RFC 6901 JSON Pointer.
 //
@@ -13,6 +11,7 @@ package overrides
 // settings.schema.json can answer, and both live elsewhere — see
 // hooks.ApplySettingsOverrides (the merge + re-validation) and
 // server.handleSettingsOverrideSet (the write-time gate).
+package overrides
 
 import (
 	"bytes"
@@ -85,8 +84,7 @@ func (s *Store) SetSettingOverride(id, pointer string, value json.RawMessage) (c
 			return false, nil
 		}
 	}
-	// Snapshot for rollback BEFORE mutating: a persist failure must leave
-	// memory exactly as it was, the same rule the other setters follow.
+	// Snapshot for rollback BEFORE mutating: a persist failure must leave memory exactly as it was, the same rule the other setters follow.
 	var restore map[string]json.RawMessage
 	if hadEntity {
 		restore = copyPointerMap(prev)

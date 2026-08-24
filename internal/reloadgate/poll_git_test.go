@@ -86,8 +86,7 @@ func TestReconcileAgainstRealRepoAndFakeAPI(t *testing.T) {
 		StatePath: filepath.Join(base, "reload-gate.json"),
 		Apply:     func() error { applies++; return nil },
 		Status: func(ctx context.Context, sha string) (string, error) {
-			// The cli adapter's exact shape: missing context reads as "no
-			// status yet", everything else passes through.
+			// The cli adapter's exact shape: missing context reads as "no status yet", everything else passes through.
 			state, err := gh.ContextState(ctx, "wow-look-at-my/webhooks", sha, "all-builds")
 			if errors.Is(err, githubstatus.ErrNoContextStatus) {
 				return "", nil

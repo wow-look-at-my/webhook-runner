@@ -1,7 +1,6 @@
-package runs
-
 // Wait-history segments + the cancel-request timestamp: spans render their
 // TRUE lifecycle, so every transition must be recorded at its real time.
+package runs
 
 import (
 	"encoding/json"
@@ -93,8 +92,7 @@ func TestSetWaitingOnRestampContinuesOpenSegment(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
 
-	// Join the queue at position 7, then advance through the line: same
-	// logical wait, restamped once per queue movement.
+	// Join the queue at position 7, then advance through the line: same logical wait, restamped once per queue movement.
 	var seq uint64
 	for pos := 7; pos >= 1; pos-- {
 		seq = r.SetWaitingOn(WaitingOn{Kind: WaitingOnGroup, Key: "model-gateway", Position: pos,
@@ -113,9 +111,7 @@ func TestSetWaitingOnRestampContinuesOpenSegment(t *testing.T) {
 	assert.False(t, st.WaitHistory[0].End.IsZero(), "the group wait closed when the lock wait began")
 	assert.True(t, st.WaitHistory[1].End.IsZero())
 
-	// Clear, then a NEW wait of the original kind+key: the previous segment
-	// is closed, so this is a fresh entry — continuation only applies to an
-	// OPEN segment.
+	// Clear, then a NEW wait of the original kind+key: the previous segment is closed, so this is a fresh entry — continuation only applies to an.
 	r.ClearWaitingOn(seq)
 	r.SetWaitingOn(WaitingOn{Kind: WaitingOnGroup, Key: "model-gateway", Position: 3})
 	st = r.Snapshot(0)

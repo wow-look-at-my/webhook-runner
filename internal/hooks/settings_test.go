@@ -59,8 +59,7 @@ func TestSettingsAbsentStillCheckedAgainstSchema(t *testing.T) {
 
 func TestSettingsWrongTypeIsALoadError(t *testing.T) {
 	src := writeSettingsFixture(t, settingsSchema)
-	// A string where the schema says integer: the classic "everything was a
-	// string in env" bug, now caught before the hook loads.
+	// A string where the schema says integer: the classic "everything was a string in env" bug, now caught before the hook loads.
 	h := &Hook{ID: "h", SourcePath: src, Settings: json.RawMessage(`{"app_id":"42","pacing_ms":"1000"}`)}
 	require.Error(t, h.ValidateSettings())
 }
