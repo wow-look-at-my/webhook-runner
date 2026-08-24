@@ -16,37 +16,25 @@ import (
 // build-broken manager restarts (and fails) every RestartDelay until the
 // tree is fixed.
 var (
-	// RestartDelay is the fixed pause between an instance ending (for any
-	// reason other than an operator/reload-requested stop) and the next
-	// start attempt.
+	// RestartDelay is the fixed pause between an instance ending (for any reason other than an operator/reload-requested stop) and the next.
 	RestartDelay = 10 * time.Second
-	// ParkPoll is the cadence at which a parked loop (disabled manager, or
-	// waiting on the lease) re-checks state when nothing pokes it.
+	// ParkPoll is the cadence at which a parked loop (disabled manager, or waiting on the lease) re-checks state when nothing pokes it.
 	ParkPoll = 2 * time.Second
 )
 
-// OutputTailLines bounds the per-manager instance output ring the admin
-// surface serves (managers are not runs — their logs live here, not in the
-// run store).
+// OutputTailLines bounds the per-manager instance output ring the admin surface serves (managers are not runs — their logs live here, not in.
 const OutputTailLines = 500
 
-// ContainerName is the DETERMINISTIC instance container name for a
-// manager: no instance-id suffix, so a crashed runner's orphan is findable
-// (and rm -f-able) by the next lease holder, and docker's name uniqueness
-// makes two live instances of one manager impossible even mid-race.
+// ContainerName is the DETERMINISTIC instance container name for a manager: no instance-id suffix, so a crashed runner's orphan is.
 func ContainerName(id string) string { return "webhook-runner-mgr-" + id }
 
-// StopRequest asks a running instance to stop GRACEFULLY (docker stop —
-// SIGTERM, grace, then kill). Reason is surfaced on the panel and the
-// activity feed ("disabled by operator", "superseded by reload", ...).
+// StopRequest asks a running instance to stop GRACEFULLY (docker stop — SIGTERM, grace, then kill).
 type StopRequest struct{ Reason string }
 
 // SessionOutcome reports how an instance ended.
 type SessionOutcome struct {
 	Status runs.Status
-	// RequestedStop: the instance ended because the supervisor asked it to
-	// (disable, replace, removal, shutdown) — the loop re-evaluates
-	// immediately instead of counting a failure or waiting RestartDelay.
+	// RequestedStop: the instance ended because the supervisor asked it to (disable, replace, removal, shutdown) — the loop re-evaluates.
 	RequestedStop bool
 	Err           string
 }
@@ -63,22 +51,14 @@ type SessionRunner interface {
 type Options struct {
 	Runner SessionRunner
 	// LeasePath is the single-instance flock file (<data-dir>/managers.lock).
-	// Empty disables the lease (tests): the supervisor runs as if it held it.
 	LeasePath string
-	// Disabled reports the operator kill switch's effective verdict for an
-	// id, given the manager's enable default (absent = enabled, the hook
-	// rule) — wired to overrides.Store.HookDisabled. nil = never disabled.
+	// Disabled reports the operator kill switch's effective verdict for an id, given the manager's enable default (absent = enabled, the hook.
 	Disabled func(id string, defaultEnabled bool) bool
 	Events   *events.Recorder
 	Logger   *slog.Logger
-	// OnAttention receives the CURRENT set of manager problems (managers
-	// that should be running but are not) whenever it re-derives — wired to
-	// the attention aggregator's manager source. nil-safe.
+	// OnAttention receives the CURRENT set of manager problems (managers that should be running but are not) whenever it re-derives — wired to.
 	OnAttention func([]AttentionEntry)
-	// OnInstanceEnd fires after every instance ends, with its identity —
-	// the finish-seam analog: serve wires it to release the instance's
-	// cooperative locks (managers are not runs, so the tracker's OnFinish
-	// seam never sees them). nil-safe.
+	// OnInstanceEnd fires after every instance ends, with its identity — the finish-seam analog: serve wires it to release the instance's.
 	OnInstanceEnd func(instanceID string)
 }
 
@@ -94,11 +74,9 @@ type AttentionEntry struct {
 type Status struct {
 	ID          string `json:"id"`
 	Description string `json:"description,omitempty"`
-	// Title is the instance's friendly panel title — the run_title template
-	// rendered at instance start, overridden live via POST /title.
+	// Title is the instance's friendly panel title — the run_title template rendered at instance start, overridden live via POST /title.
 	Title string `json:"title,omitempty"`
-	// State: waiting-lease | disabled | starting | running | restart-wait |
-	// stopping | removed.
+	// State: waiting-lease | disabled | starting | running | restart-wait | stopping | removed.
 	State            string    `json:"state"`
 	Disabled         bool      `json:"disabled"`
 	InstanceID       string    `json:"instance_id,omitempty"`
@@ -130,10 +108,7 @@ type Supervisor struct {
 	onInstanceEnd func(string)
 
 	mu sync.Mutex
-	// onChange is the admin-surface change seam (see SetOnChange): every
-	// mutation the /managers roster or a /managers/{id} drill-down would
-	// show. Read under mu; invoked with mu RELEASED (it must never call
-	// back into the Supervisor).
+	// onChange is the admin-surface change seam (see SetOnChange): every mutation the /managers roster or a /managers/{id} drill-down would.
 	onChange func()
 	desired  map[string]*hooks.Manager
 	states   map[string]*managed
@@ -185,17 +160,7 @@ func New(opts Options) *Supervisor {
 	}
 }
 
-// SetOnChange registers fn to run after every change to the ADMIN-VISIBLE
-// manager surface: roster state, instance identity/title, inbox
-// depth/stamps, and instance output lines. The dashboard's push feed rides
-// it (signal "managers"), and that is what makes the Managers page and the
-// #manager=<id> drill-down live — output and inbox churn record no
-// activity events, so before this seam those panels moved only on the rare
-// lifecycle event, leaving F5 as the operator's refresh button.
-//
-// Contract is the events.Recorder / kv.Store one: trivial, non-blocking,
-// never calls back into the Supervisor (it is invoked from the supervision
-// loops and the output sink). Set once at wiring time, before Run.
+// SetOnChange registers fn to run after every change to the ADMIN-VISIBLE manager surface: roster state, instance identity/title, inbox.
 func (s *Supervisor) SetOnChange(fn func()) {
 	s.mu.Lock()
 	s.onChange = fn
@@ -235,17 +200,14 @@ func (s *Supervisor) Update(managers map[string]*hooks.Manager) {
 				state: "waiting-lease",
 			}
 			mg.inbox = NewInbox()
-			// Inbox depth and the last-delivery/last-tick stamps are part of
-			// the admin surface: route their mutations through the same seam.
+			// Inbox depth and the last-delivery/last-tick stamps are part of the admin surface: route their mutations through the same seam.
 			mg.inbox.SetOnChange(s.changed)
 			s.states[id] = mg
 			if s.leased && !s.shutdown {
 				s.startLoopLocked(mg)
 			}
 		}
-		// Replace-on-change: compare the running instance's content hash to
-		// the fresh tree's. ContentHash does I/O (hashes the manager dir +
-		// sdk) but only on reload, matching EnsureImage's own cost model.
+		// Replace-on-change: compare the running instance's content hash to the fresh tree's.
 		if mg.runningHash != "" {
 			if newHash, err := m.ContentHash(); err == nil && newHash != mg.runningHash {
 				s.requestStopLocked(mg, "superseded by reload")

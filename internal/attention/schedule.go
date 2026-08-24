@@ -8,16 +8,10 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// KeyStale is the one entry key CheckStaleSchedules ever reports (one
-// hook, at most one "its schedule went quiet" problem).
+// KeyStale is the one entry key CheckStaleSchedules ever reports (one hook, at most one "its schedule went quiet" problem).
 const KeyStale = "stale"
 
-// ScheduleStaleMultiplier and ScheduleStaleFloor set the staleness
-// threshold together: interval*ScheduleStaleMultiplier, floored so a
-// short-interval hook doesn't alarm on a single bad run. 3x tolerates a
-// couple of missed or failed ticks (a transient blip) without flagging
-// every hiccup, while still catching a hook that has silently stopped
-// succeeding long before an operator would otherwise notice by hand.
+// ScheduleStaleMultiplier and ScheduleStaleFloor set the staleness threshold together: interval*ScheduleStaleMultiplier, floored.
 const ScheduleStaleMultiplier = 3
 
 const ScheduleStaleFloor = 15 * time.Minute
@@ -87,10 +81,7 @@ func CheckStaleSchedules(schedules map[string]time.Duration, recent func(hookID 
 			continue
 		}
 
-		// Never succeeded within the tracked window. Oldest tracked run
-		// (ListByHook is newest-first) stands in for "how long has this
-		// been failing" — if even that is within the threshold, there
-		// simply hasn't been enough time/history yet to call it stale.
+		// Never succeeded within the tracked window.
 		oldest := tracked[len(tracked)-1].Started()
 		if now.Sub(oldest) < threshold {
 			continue

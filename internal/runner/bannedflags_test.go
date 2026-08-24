@@ -1,28 +1,26 @@
-package runner
-
 // Docker flags a hook container must never get, and why each one is banned.
 //
-// All three defeat the same wall from different sides: this fleet executes
-// other people's CI, so a run must not be able to reach the host. Docker's
-// defaults already hold every property here, so each ban costs nothing today --
-// which is exactly the problem. A default is one plausible commit from gone,
-// and each of these flags is the first hit when searching for why a nested
-// daemon or a sandbox will not start. These make that commit a build failure.
+// Both defeat the same wall from different sides: this fleet executes other
+// people's CI, so a run must not be able to reach the host. Docker's defaults
+// already hold every property here, so each ban costs nothing today -- which is
+// exactly the problem. A default is one plausible commit from gone, and each of
+// these is the first hit when searching for why a nested daemon or a sandbox
+// will not start. These make that commit a build failure.
 //
 //   - --pid: sharing the host PID namespace puts the host's process table in
 //     the container's /proc. dats binds that /proc read-only when the kernel
 //     refuses it a private procfs, and the bind is safe only because the procfs
 //     lists nothing outside the container.
-//   - --privileged: every capability, an unmasked /proc and full device access,
-//     which is host root by another name. /proc/sys/kernel/core_pattern is
-//     global and non-namespaced, and the HOST kernel runs its helper as real
-//     root on any core dump; one write to /proc/sysrq-trigger reboots the
-//     machine. Operator ruling, and the reason dind is a mount and nothing else
-//     (dind.go).
-//   - systempaths=unconfined: the narrower spelling of the same hole. It clears
-//     docker's masked AND read-only /proc paths, so /proc/sysrq-trigger becomes
-//     writable to a container root that already exists. It reads as the missing
-//     half of the seccomp.userns opt-in; it is not (seccomp.go).
+//   - systempaths=unconfined: clears docker's masked AND read-only /proc paths,
+//     so /proc/sysrq-trigger becomes writable to a container root that already
+//     exists. It reads as the missing half of the seccomp.userns opt-in; it is
+//     not (seccomp.go).
+//
+// --privileged is NOT here. dind needs it and nothing else on this host makes
+// /proc/sys and /sys/fs/cgroup writable, so banning it takes the fleet down --
+// which is what happened (dind.go, docs/internals/nested-containers.md). It is
+// confined to dindArgs, which one test pins, rather than banned outright.
+package runner
 
 import (
 	"context"
@@ -41,12 +39,9 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// bannedFlags are the spellings that must never reach a container. The bare
-// "--pid" covers the two-token form; "systempaths" catches the flag whichever
-// way the value is written.
+// bannedFlags are the spellings that must never reach a container.
 var bannedFlags = []string{
 	"--pid", "--pid=host", "--pid=container",
-	"--privileged",
 	"systempaths",
 }
 

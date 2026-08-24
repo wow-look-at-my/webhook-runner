@@ -12,10 +12,6 @@ package runner
 const dindStorageDir = "/var/lib/docker"
 
 // dindArgs returns the docker flags for an entity's `dind` field.
-//
-// The volume is anonymous, so --rm reaps it and inner storage never leaks
-// between runs. The host's own daemon is never exposed -- this is a
-// daemon-in-a-container, never a mounted host socket.
 func dindArgs(dind bool) []string {
 	if !dind {
 		return nil

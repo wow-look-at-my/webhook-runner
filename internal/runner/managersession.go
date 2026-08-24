@@ -1,5 +1,3 @@
-package runner
-
 // Manager INSTANCES: the long-lived supervised container behind a manager
 // entity. An instance is a first-class identity, not a run: it never
 // registers with the tracker, never persists to the run store, and never
@@ -23,6 +21,7 @@ package runner
 // released at end); run_title/synchronous/github_status are handled by the
 // supervisor/server around the inbox (titles, delivery holds, per-delivery
 // statuses) — not here.
+package runner
 
 import (
 	"bufio"
@@ -45,10 +44,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// managerStopGraceSeconds is how long docker stop waits between SIGTERM
-// and SIGKILL on a graceful instance stop. Managers should exit promptly
-// on SIGTERM (finish the in-flight event, flush, exit); the grace bounds a
-// slow one.
+// managerStopGraceSeconds is how long docker stop waits between SIGTERM and SIGKILL on a graceful instance stop.
 const managerStopGraceSeconds = 30
 
 // RemoveManagerContainer force-removes a (possibly orphaned) manager
@@ -81,9 +77,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		return managers.SessionOutcome{Status: status, RequestedStop: requested, Err: msg}
 	}
 
-	// One merged abort signal: a supervisor stop request OR the run
-	// context ending. The forwarder owns the single receive from stop; the
-	// launch stages and the container watcher all watch `abort`.
+	// One merged abort signal: a supervisor stop request OR the run context ending.
 	abort := make(chan struct{})
 	sessionDone := make(chan struct{})
 	defer close(sessionDone)
@@ -117,8 +111,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		req := stopRequested
 		stopMu.Unlock()
 		if !req {
-			// ctx-driven abort (process shutting down): still a requested
-			// stop from the supervisor's perspective, never a failure.
+			// ctx-driven abort (process shutting down): still a requested stop from the supervisor's perspective, never a failure.
 			reason = "runner shutting down"
 		}
 		return managers.SessionOutcome{Status: status, RequestedStop: true, Err: reason}
@@ -158,11 +151,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		return requestedOutcome(runs.StatusCancelled)
 	}
 
-	// concurrency_group, manager-shaped: the INSTANCE holds one slot for
-	// its whole life — acquired here (queued while the group is full,
-	// abortable), released when the session ends. A persistent holder is a
-	// persistent slot; sharing a group with bursty hooks is an operator
-	// choice, not a footgun we silently ignore.
+	// concurrency_group, manager-shaped: the INSTANCE holds one slot for its whole life — acquired here (queued while the group is full.
 	release := func() {}
 	if hook.ConcurrencyGroup != "" {
 		var acquired bool
@@ -192,9 +181,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	}
 	defer cleanup()
 
-	// Managers REQUIRE the state socket (inbox, KV, locks, /spawn all ride
-	// it): refuse to run without the injection rather than start a manager
-	// that cannot function.
+	// Managers REQUIRE the state socket (inbox, KV, locks, /spawn all ride it): refuse to run without the injection rather than start a manager that cannot function.
 	if r.kv == nil || r.kvSocket == "" || r.kvShim == "" {
 		return fail(runs.StatusError, "manager requires the state store (KV socket/shim not configured)", false)
 	}
@@ -236,9 +223,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		dind:     hook.Dind,
 	}
 	spec.mounts = append(spec.mounts, hook.Volumes...)
-	// seccomp.userns, same as the hook paths. The profile file must outlive
-	// the daemon's read at container start; this cleanup shares the deferred
-	// lifetime of the session's other temp files above.
+	// seccomp.userns, same as the hook paths.
 	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, instanceID)
 	if err != nil {
 		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for manager %s failed: %v", hook.ID, err),
@@ -287,10 +272,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	stdoutW.Close()
 	stderrW.Close()
 
-	// The manager-shaped watchdog: created UNARMED — the inbox arms it when
-	// an event is checked out (or queued unconsumed) and disarms it when
-	// the manager comes back for the next event. Output bytes touch it like
-	// a hook run's; /wait holds feed it via the supervisor's TouchInstance.
+	// The manager-shaped watchdog: created UNARMED — the inbox arms it when an event is checked out (or queued unconsumed) and disarms it when the.
 	wd := newIdleWatchdog(hook.Timeout(), time.Now)
 	ib.BindInstance(instanceID, wd.Arm, wd.Disarm, wd.Touch)
 	defer ib.UnbindInstance()
@@ -321,9 +303,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 			r.killContainer(containerName)
 		case <-abort:
 			close(stopped)
-			// Graceful: SIGTERM, grace, then docker's own SIGKILL. Blocking
-			// is fine — this goroutine has nothing else to do, and cmd.Wait
-			// unblocks the session the moment the container dies.
+			// Graceful: SIGTERM, grace, then docker's own SIGKILL.
 			r.stopContainer(containerName, managerStopGraceSeconds)
 		case <-stopWatcher:
 			return
@@ -378,8 +358,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	default:
 		select {
 		case <-stopped:
-			// A supervisor-requested stop (or process shutdown) is a
-			// deliberate lifecycle transition, never a failure.
+			// A supervisor-requested stop (or process shutdown) is a deliberate lifecycle transition, never a failure.
 			outcome = requestedOutcome(runs.StatusCancelled)
 			status = outcome.Status
 			errMsg = outcome.Err
@@ -427,36 +406,10 @@ func (r *Runner) stopContainer(name string, graceSeconds int) {
 	}
 }
 
-// GSMBaseURL is the github-state-mirror every container's GitHub API
-// traffic rides. It is a CONSTANT, not a knob: routing through the mirror
-// is unconditional by operator ruling (2026-07-25) — "*Everything* must go
-// through GSM otherwise we are blowing up our API quota and github servers
-// for ZERO benefit". The former WEBHOOK_RUNNER_GSM_URL /
-// WEBHOOK_RUNNER_GITHUB_DIRECT / WEBHOOK_RUNNER_GITHUB_API_URL env knobs
-// are DELETED: the instruction was always to route through the mirror, and
-// wiring it as an opt-in service-env flip (webhook-runner#98) was never
-// requested. Do not reintroduce an off switch or a per-id carve-out.
-//
-// GSM IS A PROXY, NOT A FIREWALL (operator correction, 2026-07-25 —
-// "GSM is not a blackhole"). #98 also injected
-// `--add-host api.github.com:0.0.0.0` to make direct calls fail closed;
-// that was never asked for and is DELETED. The mirror passes through
-// whatever it does not model, so pointing GITHUB_API_URL at it is the
-// whole mechanism — severing api.github.com DNS would only break the
-// callers that cannot honor GITHUB_API_URL (tenant CI job steps: gh CLI,
-// octokit, actions/github-script), which is breakage, not routing. Never
-// reintroduce a blackhole here.
+// GSMBaseURL is the github-state-mirror every container's GitHub API traffic rides.
 const GSMBaseURL = "https://github-state-mirror.pazer.io"
 
-// gsmInjectArgs points a container's GitHub API traffic at the mirror. Applied
-// to EVERY hook, manager, and test container, no exemptions — which is now a
-// property of the code rather than of three call sites agreeing, because
-// containerSpec.args is its only caller and every container start goes through
-// it. Injected BEFORE secrets and hook env (docker keeps the last -e), so a
-// hook.json that declares its own GITHUB_API_URL still wins — today pr-minder
-// and required-builds declare exactly this same mirror base, so the injection
-// makes their per-hook lines redundant rather than conflicting, and every
-// other container gains the routing it never had.
+// gsmInjectArgs points a container's GitHub API traffic at the mirror.
 func gsmInjectArgs() []string {
 	return []string{"-e", "GITHUB_API_URL=" + GSMBaseURL}
 }

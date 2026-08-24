@@ -15,11 +15,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// runContext returns the context bounding container processing: the parent
-// with the hook's absolute timeout applied, or — when the hook sets no
-// timeout (0) — a plain cancellable child with NO deadline, so an uncapped
-// run is bounded only by its idle_timeout (if set), an explicit cancel, or
-// the container exiting. Parent cancellation still propagates either way.
+// runContext returns the context bounding container processing: the parent with the hook's absolute timeout applied, or — when the hook sets no timeout (0) — a plain cancellable child with NO deadline, so an.
 func runContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout > 0 {
 		return context.WithTimeout(parent, timeout)
@@ -27,21 +23,7 @@ func runContext(parent context.Context, timeout time.Duration) (context.Context,
 	return context.WithCancel(parent)
 }
 
-// Skip records a first-class "no work was done" run for a delivery matched
-// by one of the hook's skip_if conditions. It is the whole pipeline for a
-// skip: a real, tracked run that goes terminal immediately with status
-// "skipped" — its output names the matched condition, its Finish drives the
-// tracker's OnFinish seam exactly like any other run (so the skip persists
-// to run history), and a run.skipped event lands on the activity feed. What
-// it deliberately does NOT do is any work: no temp files, no secrets
-// decrypt, no image build, no concurrency-group slot, and above all NO
-// container. The onStart/onFinish callbacks (GitHub commit statuses) are
-// not invoked either — they report container work, and none happened.
-// Cancellation and timeout cannot apply: the run is terminal on return.
-//
-// title carries the run's friendly display title like Start's — set BEFORE
-// Finish, so the terminal snapshot the OnFinish seam persists is titled: a
-// skip should still say which PR it was about.
+// Skip records a first-class "no work was done" run for a delivery matched by one of the hook's skip_if conditions. It is the whole pipeline for a skip: a real, tracked run that goes terminal immediately with status "skipped" — its output names the matched condition, its Finish drives the tracker's OnFinish seam exactly like any other run (so the skip persists to run history), and a run.skipped event lands on the activity feed.
 func (r *Runner) Skip(hook *hooks.Hook, reason, title string) *runs.Run {
 	run := r.tracker.New(hook.ID)
 	run.SetTitle(title)
@@ -53,11 +35,7 @@ func (r *Runner) Skip(hook *hooks.Hook, reason, title string) *runs.Run {
 	return run
 }
 
-// runRef names a run for the activity feed: the id, plus the friendly
-// title when one is set — `abc… (wow-look-at-my/go-toolchain#47)` — so the
-// feed's run-scoped lines are readable without a lookup. The id stays
-// first: it is the stable handle everything else (logs, /runs/{id},
-// container names) keys on.
+// runRef names a run for the activity feed: the id, plus the friendly title when one is set — `abc… (wow-look-at-my/go-toolchain#47)` — so the.
 func runRef(run *runs.Run) string {
 	if t := run.Title(); t != "" {
 		return run.ID() + " (" + t + ")"

@@ -1,10 +1,9 @@
-package server
-
 // GET /runs time-cursor paging (?before=) and its companion /config field
 // (run_retention — the "history ends here" boundary for paging clients).
 // Beside these, TestListRuns/TestListRunsByHook (server_test.go) pin the
 // omitted-cursor behavior and TestListRunsBeforePagesMergedSources
 // (runstore_merge_test.go) covers paging across the live+persisted merge.
+package server
 
 import (
 	"encoding/json"
@@ -38,8 +37,7 @@ func TestListRunsBeforeParam(t *testing.T) {
 		return rec.Body.String()
 	}
 
-	// A cursor at the newer run's queued instant excludes it — strictly
-	// before — leaving only the older run.
+	// A cursor at the newer run's queued instant excludes it — strictly before — leaving only the older run.
 	var got []runs.RunState
 	nanoCursor := url.QueryEscape(r2.Snapshot(0).Started.Format(time.RFC3339Nano))
 	require.NoError(t, json.Unmarshal([]byte(body("/runs?before="+nanoCursor, http.StatusOK)), &got))
@@ -56,8 +54,7 @@ func TestListRunsBeforeParam(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(body("/runs?before=yesterday", http.StatusBadRequest)), &e))
 	assert.Contains(t, e["error"], `invalid before="yesterday"`)
 
-	// Omitted and empty cursors keep the unpaged view, byte-for-byte —
-	// which a far-future cursor (excluding nothing) also matches.
+	// Omitted and empty cursors keep the unpaged view, byte-for-byte — which a far-future cursor (excluding nothing) also matches.
 	unpaged := body("/runs", http.StatusOK)
 	assert.Equal(t, unpaged, body("/runs?before=", http.StatusOK))
 	future := url.QueryEscape(time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano))

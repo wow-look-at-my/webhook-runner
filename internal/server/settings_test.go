@@ -16,9 +16,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/overrides"
 )
 
-// The settings editor's contract, from the operator's side: what they can
-// see, what they are stopped from doing, and — the part that matters most —
-// that a value they set either becomes live or says why it did not.
+// The settings editor's contract, from the operator's side: what they can see, what they are stopped from doing, and — the part that matters.
 
 const editorSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -39,10 +37,7 @@ const editorSchema = `{
   }
 }`
 
-// editManifest rewrites the hook.json settings and reloads, the way a
-// hooks-repo push does. It matters that this builds a FRESH Hook: a reload
-// re-parses the manifest, so the merged document and the remembered manifest
-// both come from disk rather than from the previously-merged object.
+// editManifest rewrites the hook.json settings and reloads, the way a hooks-repo push does.
 type editManifest func(t *testing.T, settings string)
 
 // settingsServer wires a server with a real override store and one hook
@@ -67,8 +62,7 @@ func settingsServer(t *testing.T) (*Server, *overrides.Store, editManifest) {
 	}
 	s.onReload = func() error {
 		h := fresh()
-		// A rejected override leaves the manifest values in place and is
-		// NOT a load failure — the same degrade buildLoadAndApply applies.
+		// A rejected override leaves the manifest values in place and is NOT a load failure — the same degrade buildLoadAndApply applies.
 		_ = h.ApplySettingsOverrides(ov.SettingsOverrides("h"))
 		reg.Set(h)
 		return nil

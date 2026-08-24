@@ -31,8 +31,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-// FileName is the central concurrency-groups file, read from the hooks
-// root (the same directory hook folders live under).
+// FileName is the central concurrency-groups file, read from the hooks root (the same directory hook folders live under).
 const FileName = "concurrency.json"
 
 // DefaultLimit is a group's max concurrency when it doesn't set one.
@@ -40,8 +39,7 @@ const DefaultLimit = 1
 
 // Group is one declared concurrency group.
 type Group struct {
-	// Limit is the maximum number of runs in this group that may execute
-	// at once; the rest queue. Defaults to DefaultLimit, must be >= 1.
+	// Limit is the maximum number of runs in this group that may execute at once; the rest queue. Defaults to DefaultLimit, must be >= 1.
 	Limit int `json:"limit,omitempty"`
 	// Description is optional human-facing documentation for the group.
 	Description string `json:"description,omitempty"`
@@ -81,20 +79,12 @@ func Parse(data []byte) (*Config, error) {
 	return c, nil
 }
 
-// Load reads <root>/concurrency.json — the LEGACY location. Layout-aware
-// callers (serve, validate) should resolve the path through
-// hooks.Layout.ConcurrencyPath and call LoadFile; this stays for callers
-// that know they have a legacy tree.
+// Load reads <root>/concurrency.json — the LEGACY location.
 func Load(root string) (*Config, error) {
 	return LoadFile(filepath.Join(root, FileName))
 }
 
-// LoadFile reads a concurrency.json at an explicit path (the hooks
-// layout decides where that is: <root>/concurrency.json for legacy trees,
-// <root>/cfg/concurrency.json for the src layout). A missing file
-// is not an error: it yields an empty Config (no groups declared), which
-// makes any hook that references a group fail validation — exactly the
-// "groups must be declared" contract.
+// LoadFile reads a concurrency.json at an explicit path (the hooks layout decides where that is: <root>/concurrency.json for legacy trees, <root>/cfg/concurrency.json for the src layout).
 func LoadFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

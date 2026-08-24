@@ -1,5 +1,3 @@
-package server
-
 // GET /concurrency (admin port): the live state of every declared
 // concurrency group — and, per group, the ADVISORY queue detail: which runs
 // hold its slots and which are waiting, in order. This is the operator's
@@ -7,6 +5,7 @@ package server
 // limit, Waiting > 0) is a wedge you can only unstick if the holders are
 // one click away, so each entry carries enough run metadata to render a
 // run link without another round trip.
+package server
 
 import (
 	"net/http"
@@ -25,50 +24,34 @@ type groupRunView struct {
 	// Title is the run's friendly display title, when it has one.
 	Title  string `json:"title,omitempty"`
 	Status string `json:"status,omitempty"`
-	// Since is when the run took its slot (holders) or joined the queue
-	// (waiting) — the manager's advisory stamp, not a run lifecycle field.
+	// Since is when the run took its slot (holders) or joined the queue (waiting) — the manager's advisory stamp, not a run lifecycle field.
 	Since time.Time `json:"since,omitzero"`
-	// Started/StartedAt mirror the run row fields (queued instant /
-	// container launch) so renderers can reuse the same formatting.
+	// Started/StartedAt mirror the run row fields (queued instant / container launch) so renderers can reuse the same formatting.
 	Started   time.Time `json:"started,omitzero"`
 	StartedAt time.Time `json:"started_at,omitzero"`
 }
 
-// concurrencyGroupView is one per-group entry: the embedded GroupStatus
-// keeps the original shape (name/limit/declared/overridden/active/waiting)
-// — Holders and WaitingRuns are additive. The waiting COUNT stays the
-// `waiting` integer it has always been; the waiting LIST is `waiting_runs`
-// (renaming the count to make room would break the existing shape for no
-// gain).
+// concurrencyGroupView is one per-group entry: the embedded GroupStatus keeps the original shape (name/limit/declared/overridden/active/waiting) — Holders and WaitingRuns are.
 type concurrencyGroupView struct {
 	concurrency.GroupStatus
 	Holders     []groupRunView `json:"holders,omitempty"`
 	WaitingRuns []groupRunView `json:"waiting_runs,omitempty"`
 }
 
-// globalCapView is the global run cap's entry: its GlobalStatus
-// (limit/default/overridden/active/waiting) plus the same holder/waiting
-// drill-down lists the groups carry.
+// globalCapView is the global run cap's entry: its GlobalStatus (limit/default/overridden/active/waiting) plus the same holder/waiting drill-down lists the groups carry.
 type globalCapView struct {
 	concurrency.GlobalStatus
 	Holders     []groupRunView `json:"holders,omitempty"`
 	WaitingRuns []groupRunView `json:"waiting_runs,omitempty"`
 }
 
-// concurrencyView is the GET /concurrency document: the global run cap
-// (the ceiling across ALL runs; omitted when no cap is configured) plus
-// the declared groups — which gate independently UNDER the cap, so both
-// belong on one page. This replaced the older bare-array response when the
-// global cap landed; the dashboard is served by the same binary, and it
-// still tolerates the array form for older servers.
+// concurrencyView is the GET /concurrency document: the global run cap (the ceiling across ALL runs; omitted when no cap is configured) plus.
 type concurrencyView struct {
 	Global *globalCapView         `json:"global,omitempty"`
 	Groups []concurrencyGroupView `json:"groups"`
 }
 
-// handleConcurrency reports the global run cap and the live state of every
-// declared concurrency group — limit, active, queued — plus the per-entry
-// holder/waiting run lists (admin port).
+// handleConcurrency reports the global run cap and the live state of every declared concurrency group — limit, active, queued — plus the.
 func (s *Server) handleConcurrency(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.concurrencyDoc())
 }
@@ -123,9 +106,7 @@ func (s *Server) groupRunViews(grs []concurrency.GroupRun) []groupRunView {
 	return out
 }
 
-// GroupWaiterKeyPrefix marks a Waiter.Key as a concurrency-group wait
-// ("group:<name>") in the derived holder-side waiter lists, distinguishing
-// it from a cooperative-lock key.
+// GroupWaiterKeyPrefix marks a Waiter.Key as a concurrency-group wait ("group:<name>") in the derived holder-side waiter lists.
 const GroupWaiterKeyPrefix = "group:"
 
 func groupWaiterKey(group string) string { return GroupWaiterKeyPrefix + group }

@@ -1,11 +1,12 @@
 #!/bin/sh
-# The dind contract, checked from inside the container: the storage arrives and
-# the privilege does not. This script is both the container CMD (live run) and
-# the declared test command, so both paths prove the same thing.
+# The dind contract, checked from inside the container: the storage arrives AND
+# the container can do what a nested daemon needs. This script is both the
+# container CMD (live run) and the declared test command, so both paths prove
+# the same thing.
 #
-# The negative half is the point. `dind` used to mean --privileged, the flag is
-# banned now (internal/runner/dind.go), and a check that only looked for the
-# volume would keep passing if it came back.
+# The capability half is the point. Dropping --privileged left the volume
+# arriving exactly as before, so a check that only looked for the mount stayed
+# green while every real dind run died at cgroup-prep.
 set -eu
 
 fail() {
@@ -19,19 +20,12 @@ fail() {
 grep -q " /var/lib/docker " /proc/self/mounts ||
 	fail "/var/lib/docker is not a mount point -- the dind volume did not arrive"
 
-# No privilege. Each of these is writable in a --privileged container, is
-# read-only here, and is something a root dockerd needs.
-if [ -w /proc/sys/kernel/core_pattern ]; then
-	fail "/proc/sys is writable -- this container is privileged"
-fi
-if mkdir -p /sys/fs/cgroup/init 2>/dev/null; then
-	fail "/sys/fs/cgroup is writable -- this container is privileged"
-fi
+# The three things the launcher's cgroup-prep does before it starts dockerd.
+[ -w /proc/sys/kernel/core_pattern ] ||
+	fail "/proc/sys is read-only -- dockerd cannot start; the container is not privileged"
+mkdir -p /sys/fs/cgroup/init ||
+	fail "/sys/fs/cgroup is read-only -- cgroup-v2 nesting prep cannot run"
+mount --make-rshared / ||
+	fail "mount --make-rshared failed -- the container lacks CAP_SYS_ADMIN"
 
-# The capability is gone, not merely unused: the cgroup-v2 nesting prep that
-# every root dockerd needs must fail here.
-if mount --make-rshared / 2>/dev/null; then
-	fail "mount --make-rshared succeeded -- this container holds CAP_SYS_ADMIN"
-fi
-
-echo "dind-smoke-ok: volume present, container unprivileged"
+echo "dind-smoke-ok: volume present, container can host a nested daemon"

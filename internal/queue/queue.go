@@ -65,23 +65,15 @@ import (
 )
 
 const (
-	// MaxKeyLen bounds a caller-supplied key. Keys are opaque to the runner
-	// but they name entries on the dashboard and in logs.
+	// MaxKeyLen bounds a caller-supplied key. Keys are opaque to the runner but they name entries on the dashboard and in logs.
 	MaxKeyLen = 256
-	// MaxPayloadBytes bounds one entry's payload. A queue entry says WHAT
-	// needs doing, not the data to do it with — the hook's own state holds
-	// that — so this is deliberately small.
+	// MaxPayloadBytes bounds one entry's payload.
 	MaxPayloadBytes = 16 * 1024
-	// MaxPerNamespace bounds how many distinct keys one hook may have
-	// outstanding. Past it, enqueueing a NEW key is refused (existing keys
-	// still upsert, so a hook can never be locked out of updating work it
-	// already queued). A hook that needs thousands of distinct keys is
-	// enqueueing subjects, not work — that is what its own KV is for.
+	// MaxPerNamespace bounds how many distinct keys one hook may have outstanding.
 	MaxPerNamespace = 1000
 	// DefaultMinInterval is the floor between two fires of the SAME key.
 	DefaultMinInterval = 5 * time.Second
-	// DefaultMaxDelay caps delay_seconds. A queue entry is pending work, not
-	// a calendar; anything wanting a longer horizon wants a schedule.
+	// DefaultMaxDelay caps delay_seconds. A queue entry is pending work, not a calendar; anything wanting a longer horizon wants a schedule.
 	DefaultMaxDelay = 24 * time.Hour
 )
 
@@ -97,9 +89,7 @@ type Entry struct {
 	Key        string    `json:"key"`
 	RunAt      time.Time `json:"run_at"`
 	EnqueuedAt time.Time `json:"enqueued_at"`
-	// Enqueues counts how many times this entry was (re-)enqueued before it
-	// fired — the dedup made visible. 1 means one enqueue; 40 means the same
-	// work was announced 40 times and still costs one run.
+	// Enqueues counts how many times this entry was (re-)enqueued before it fired — the dedup made visible.
 	Enqueues int             `json:"enqueues"`
 	Payload  json.RawMessage `json:"payload,omitempty"`
 }
@@ -123,8 +113,7 @@ type Store struct {
 	cfg Config
 	log *slog.Logger
 
-	// Notifies the dispatcher that the earliest due time may have moved
-	// closer. Buffered depth 1: a pending signal already means "re-read".
+	// Notifies the dispatcher that the earliest due time may have moved closer. Buffered depth 1: a pending signal already means "re-read".
 	wake chan struct{}
 
 	mu     sync.Mutex
@@ -192,8 +181,7 @@ func splitEntryKey(b []byte) (namespace, key string, ok bool) {
 	return ns, k, found
 }
 
-// ErrTooManyKeys is returned when a namespace is at MaxPerNamespace and the
-// enqueue would add a NEW key.
+// ErrTooManyKeys is returned when a namespace is at MaxPerNamespace and the enqueue would add a NEW key.
 var ErrTooManyKeys = errors.New("queue: too many outstanding keys for this namespace")
 
 // Enqueue records outstanding work, returning the stored entry.
@@ -234,10 +222,7 @@ func (s *Store) Enqueue(namespace, key string, delay time.Duration, payload json
 		ek := entryKey(namespace, key)
 		existing := entries.Get(ek)
 
-		// The anti-hot-loop floor: never schedule a key sooner than
-		// MinInterval after its own last fire. A hook that re-enqueues from
-		// inside the run its enqueue caused gets a run — just not instantly,
-		// forever.
+		// The anti-hot-loop floor: never schedule a key sooner than MinInterval after its own last fire.
 		if last, ok := lastFire(tx, ek); ok {
 			if earliest := last.Add(s.cfg.MinInterval); want.Before(earliest) {
 				want = earliest

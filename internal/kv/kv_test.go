@@ -65,8 +65,7 @@ func TestPersistenceReload(t *testing.T) {
 	require.NoError(t, s.Set("counter", "plain", []byte("42"), 0))
 	require.NoError(t, s.Set("counter", "ttl", []byte("keep"), time.Hour))
 
-	// A brand-new Store over the same dir must see the data — this is the
-	// "survives a server restart" guarantee.
+	// A brand-new Store over the same dir must see the data — this is the "survives a server restart" guarantee.
 	s2, err := New(Config{Dir: dir}, []byte("secret"), nil)
 	require.NoError(t, err)
 	v, ok := s2.Get("counter", "plain")
@@ -206,8 +205,7 @@ func TestToken(t *testing.T) {
 	_, _, ok = s.VerifyToken("other" + tok[len("my-hook"):])
 	require.False(t, ok)
 
-	// Cross-run forgery: keep a valid MAC but swap the run identity (a hook
-	// must not be able to release another run's locks by editing its token).
+	// Cross-run forgery: keep a valid MAC but swap the run identity (a hook must not be able to release another run's locks by editing its token).
 	_, _, ok = s.VerifyToken("my-hook.run999." + strings.SplitN(tok, ".", 3)[2])
 	require.False(t, ok)
 
@@ -291,8 +289,7 @@ func TestGetEntry(t *testing.T) {
 	v, _ := s.Get("ns", "k")
 	require.Equal(t, "hello", string(v))
 
-	// Absent and expired keys are equally invisible — the same lazy-expiry
-	// rule as Get, so inspection can never show a ghost.
+	// Absent and expired keys are equally invisible — the same lazy-expiry rule as Get, so inspection can never show a ghost.
 	_, ok = s.GetEntry("ns", "missing")
 	require.False(t, ok)
 	require.NoError(t, s.Set("ns", "fast", []byte("v"), 10*time.Millisecond))
@@ -350,8 +347,7 @@ func TestOnMutateSeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, n, "Incr fires")
 
-	// Expired entries are reclaimed by the sweep: one signal per sweep
-	// that removed anything, none for an idle sweep.
+	// Expired entries are reclaimed by the sweep: one signal per sweep that removed anything, none for an idle sweep.
 	require.NoError(t, s.Set("ns", "t", []byte("x"), time.Millisecond))
 	assert.Equal(t, 4, n)
 	time.Sleep(10 * time.Millisecond)

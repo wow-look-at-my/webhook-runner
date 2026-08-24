@@ -44,9 +44,7 @@ func TestStateTitleValidation(t *testing.T) {
 		require.Equalf(t, 400, rr.Code, "body=%q -> %s", body, rr.Body.String())
 	}
 
-	// A token whose run is unknown, finished, or belongs to another hook has
-	// nothing to title: 409 — same rule as /wait, and a terminal run's
-	// persisted snapshot must never diverge from the live view.
+	// A token whose run is unknown, finished, or belongs to another hook has nothing to title: 409 — same rule as /wait, and a terminal run's.
 	require.Equal(t, 409,
 		stateReq(t, s, "POST", "/title", store.Token("h", "nosuchrun"), strings.NewReader(`{"title":"x"}`)).Code)
 	require.Equal(t, 409,

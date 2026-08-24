@@ -18,28 +18,17 @@ import (
 )
 
 // MaxBodyBytes caps the request body size accepted on POST /hook/{id}.
-// 25 MiB matches GitHub's documented webhook payload ceiling and is
-// generous for everything else.
 const MaxBodyBytes = 25 * 1024 * 1024
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	// The version rides along so a single probe answers both "is it up?"
-	// and "which build is this?" — status stays the first field for
-	// backward compatibility with anything matching on the raw body.
+	// The version rides along so a single probe answers both "is it up?" and "which build is this?" — status stays the first field for backward compatibility.
 	writeJSON(w, http.StatusOK, struct {
 		Status  string `json:"status"`
 		Version string `json:"version"`
 	}{Status: "ok", Version: s.version.Version})
 }
 
-// handleVersion identifies the running build (same string the `version`
-// command prints, plus the VCS revision/time when the build has them) AND
-// which hooks tree it is serving: the reload gate's state rides along as
-// hooks_tree, so "which hooks commit is deployed?" is answerable without
-// probing hook 404s. Registered on both ports so the deployed build is
-// checkable from either side of the tunnel — which deliberately exposes
-// the served hooks-tree commit sha on the public hook port (an explicit
-// operator request; the hooks repo itself stays private).
+// handleVersion identifies the running build (same string the `version` command prints, plus the VCS revision/time when the build has them) AND which hooks tree it is serving: the reload gate's state rides along as hooks_tree, so "which hooks.
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		VersionInfo
@@ -47,21 +36,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	}{VersionInfo: s.version, HooksTree: s.hooksTreeState()})
 }
 
-// hooksTreeState is /version's hooks_tree object: which hooks tree this
-// runner is serving, per the reload gate. state discriminates:
-//
-//   - "serving": the tree is at serving_sha; nothing newer is held.
-//   - "held": pending_sha is fetched but not switched to — pending_state
-//     carries the gating context's last known CI state for it, and reason
-//     spells the hold out ("awaiting all-builds" / "all-builds failure").
-//   - "unknown": a gate is tracking but has no serving commit recorded
-//     (the boot HEAD read failed and nothing has settled since).
-//   - "untracked": no gate tracks the tree — mode names why (no hooks
-//     repo, or the CI-gate-disabled legacy reload flow).
-//
-// serving_sha is omitted rather than sent as an ambiguous empty string
-// when it is unknown; verified is present exactly when a gate is
-// tracking (states other than "untracked").
+// hooksTreeState is /version's hooks_tree object: which hooks tree this runner is serving, per the reload gate. state discriminates: - "serving": the tree is at serving_sha; nothing newer is held.
 type hooksTreeState struct {
 	State        string `json:"state"`
 	ServingSHA   string `json:"serving_sha,omitempty"`
@@ -102,10 +77,7 @@ func (s *Server) hooksTreeState() hooksTreeState {
 	return out
 }
 
-// hookListEntry is one row of GET /hooks: the registry summary plus the
-// EFFECTIVE kill-switch state — the operator's persisted override when one
-// exists, else the hook.json `enable` default (disabled hooks stay loaded
-// and listed — only their dispatch is gated).
+// hookListEntry is one row of GET /hooks: the registry summary plus the EFFECTIVE kill-switch state — the operator's persisted override.
 type hookListEntry struct {
 	hooks.Summary
 	Disabled bool `json:"disabled"`
@@ -124,31 +96,19 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	hook, ok := s.registry.Get(id)
 	if !ok {
-		// Managers share the endpoint (and the id namespace): a delivery
-		// for a manager id lands in its inbox instead of booting a
-		// container — same auth, same skip_if, same kill switch. See
-		// managers.go.
+		// Managers share the endpoint (and the id namespace): a delivery for a manager id lands in its inbox instead of booting a container — same auth.
 		if mgr, isManager := s.registry.GetManager(id); isManager {
 			s.handleManagerTrigger(w, r, mgr)
 			return
 		}
-		// Rejected requests are activity too: a caller hitting a wrong URL or
-		// a stale key is exactly the misconfiguration the dashboard must be
-		// able to answer "did you receive anything?" about.
+		// Rejected requests are activity too: a caller hitting a wrong URL or a stale key is exactly the misconfiguration the dashboard must be able to.
 		s.events.Record("hook.unknown", "trigger for unknown hook "+id+" from "+r.RemoteAddr,
 			map[string]string{"hook": id})
 		writeError(w, http.StatusNotFound, "no such hook")
 		return
 	}
 
-	// The operator kill switch gates DISPATCH only: the hook stays loaded
-	// (image state, config, runs all intact) but no new run starts — not
-	// even from the admin port (re-enable it to run it). Effective state:
-	// explicit override first, else the hook.json `enable` default — so a
-	// hook shipping `"enable": false` is born gated. Checked before the
-	// body/auth so a runaway caller is cut off at minimal cost, and
-	// answered with a deliberately distinct, loud 503 (a 404/401 would read
-	// as a routing or key problem).
+	// The operator kill switch gates DISPATCH only: the hook stays loaded (image state, config, runs all intact) but no new run starts — not even from the admin port (re-enable it to run it).
 	if s.effectiveDisabled(id) {
 		s.events.Record("hook.disabled_rejected",
 			hook.ID+": delivery rejected — hook is disabled by operator (from "+r.RemoteAddr+")",
@@ -178,20 +138,10 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Friendly run title — resolved exactly ONCE per delivery, here, BEFORE
-	// skip evaluation, so whichever pipeline the delivery takes (skip or
-	// run) carries the same title: a skipped run should still say which PR
-	// it was about. Resolution is total and never fails ("" = untitled, the
-	// dashboard falls back to the run id), so it cannot reject a delivery.
+	// Friendly run title — resolved exactly ONCE per delivery, here, BEFORE skip evaluation, so whichever pipeline the delivery takes (skip or.
 	title := hook.RenderRunTitle(body, r.Header)
 
-	// Declarative skip conditions — evaluated strictly AFTER authentication
-	// (an unauthenticated caller must never probe the conditions; it gets
-	// the 401 above with nothing recorded) and BEFORE any work: no image
-	// build, no container, no concurrency slot. A match answers the request
-	// immediately — sync hooks included, there is nothing to hold for — and
-	// records a real, terminal `skipped` run naming the matched condition,
-	// so "no work was done" is first-class on the runs table.
+	// Declarative skip conditions — evaluated strictly AFTER authentication (an unauthenticated caller must never probe the conditions; it gets the 401 above with nothing recorded) and BEFORE any work: no image build, no container, no concurrency slot.
 	if reason, skip := hook.EvaluateSkip(body, r.Header); skip {
 		run := s.runner.Skip(hook, reason, title)
 		writeJSON(w, http.StatusOK, map[string]string{
@@ -208,14 +158,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A draining server must not LOSE the delivery. GitHub does not re-send
-	// a failed one — the hooks repo's delivery-gap replay SDK exists exactly
-	// because deliveries are consumed-and-lost during downtime — so the 503
-	// the drain gate used to answer was an error AND a dropped webhook. Park
-	// it instead and let the next process run it. Checked BEFORE Start so a
-	// parked delivery leaves no errored run record: it did not fail, it is
-	// waiting. By here it has passed auth and skip_if, so the spool never
-	// holds an unauthenticated body.
+	// A draining server must not LOSE the delivery. GitHub does not re-send a failed one — the hooks repo's delivery-gap replay SDK exists exactly because deliveries are consumed-and-lost during downtime — so the 503 the drain gate used to answer was an error AND a dropped webhook. Park it instead and let the next process run it. Checked BEFORE Start so a parked delivery leaves no errored run record: it did not fail, it is waiting. By here it has passed auth and skip_if, so the spool never holds an unauthenticated body.
 	if s.runner.Draining() {
 		if id, ok := s.spoolDelivery(hook.ID, title, r.Header, body); ok {
 			writeJSON(w, http.StatusAccepted, map[string]string{
@@ -350,10 +293,7 @@ func (s *Server) cancelRun(w http.ResponseWriter, run *runs.Run) {
 	})
 }
 
-// defaultSyncHold bounds how long a synchronous request is held open when
-// the hook declares no timeout of its own: an uncapped run must not hold the
-// HTTP connection indefinitely, so after this long the request degrades to a
-// background-running 202 (the run itself is untouched). ?timeout= overrides.
+// defaultSyncHold bounds how long a synchronous request is held open when the hook declares no timeout of its own: an uncapped run must not.
 const defaultSyncHold = 5 * time.Minute
 
 // parseWaitParams reads the optional ?wait=true and ?timeout=<go-duration>
@@ -394,10 +334,7 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 	return sync, syncTimeout, nil
 }
 
-// handleReload triggers a reload on the admin port (no auth — the admin
-// port is behind zero trust). With a reload gate configured, OnReload is
-// wired to the gate's Force: admin /reload DELIBERATELY bypasses the CI
-// gate (jump to the remote tip, recorded verified — the operator vouched).
+// handleReload triggers a reload on the admin port (no auth — the admin port is behind zero trust).
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 	s.events.Record("reload.requested", "reload requested via admin port", map[string]string{"source": "admin"})
 	s.runReload(w)
@@ -432,9 +369,7 @@ func (s *Server) handleReloadWebhook(w http.ResponseWriter, r *http.Request) {
 
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "push" {
-		// Feed continuity: pushes stay announced exactly as before. The
-		// gate records its own held/red/switched events; the server only
-		// maps its verdict onto HTTP.
+		// Feed continuity: pushes stay announced exactly as before.
 		s.events.Record("github.push", describePush(body), map[string]string{"source": "github"})
 	}
 	status, err := s.gate.HandleEvent(event, body)
@@ -533,17 +468,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.events.ListFiltered(f, max))
 }
 
-// handleImages reports per-hook image state — the tag the hook's current
-// content resolves to, whether it's built (false = the next run builds
-// it), and every whr-hook image on disk (admin port).
+// handleImages reports per-hook image state — the tag the hook's current content resolves to, whether it's built (false = the next run builds it), and.
 func (s *Server) handleImages(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.runner.ImageStatus(s.registry.All()))
 }
 
-// handleKVStats reports per-namespace key counts and byte totals for the
-// state store (admin port). This level stays value-free (and its shape is
-// stable for existing consumers); keys and values are inspectable one level
-// down via /kv/{namespace} and /kv/{namespace}/{key} (see kvadmin.go).
+// handleKVStats reports per-namespace key counts and byte totals for the state store (admin port).
 func (s *Server) handleKVStats(w http.ResponseWriter, _ *http.Request) {
 	if s.kv == nil {
 		writeJSON(w, http.StatusOK, []kv.NamespaceStat{})
@@ -563,9 +493,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	if s.reloadSecret != "" {
 		cfg["reload_secret"] = s.reloadSecret
 	}
-	// The persisted-history window, compacted like stats.retention ("48h") —
-	// how far back /runs?before= paging can ever reach, so a client can mark
-	// "history ends here". Absent when no run store is configured.
+	// The persisted-history window, compacted like stats.retention ("48h") — how far back /runs?before= paging can ever reach, so a client can.
 	if s.runstore != nil {
 		cfg["run_retention"] = compactDuration(s.runstore.Retention())
 	}

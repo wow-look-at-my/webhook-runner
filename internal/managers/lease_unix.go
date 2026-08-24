@@ -31,11 +31,7 @@ func (s *Supervisor) acquireLease(ctx context.Context) (release func(), ok bool)
 	}
 	f, err := os.OpenFile(s.leasePath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		// Refusing to supervise without the single-instance guarantee is
-		// the fail-closed choice; the error is loud and the operator fixes
-		// the data dir. (Never run leaseless "to be helpful" — two
-		// processes double-running managers is the one thing this exists
-		// to prevent.)
+		// Refusing to supervise without the single-instance guarantee is the fail-closed choice; the error is loud and the operator fixes the data.
 		s.log.Error("manager lease file unavailable; managers will NOT run", "path", s.leasePath, "err", err)
 		if s.events != nil {
 			s.events.Record("manager.lease_error",

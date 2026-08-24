@@ -1,5 +1,3 @@
-package server
-
 // POST /spawn on the state API — the runner-native spawn primitive: a
 // permitted MANAGER starts runs of ANOTHER hook through the runner
 // itself, replacing the retired pattern of a coordinator POSTing
@@ -23,6 +21,7 @@ package server
 // machinery's own doing, not an unwanted delivery — the target's in-code
 // guards still run. Each spawned run carries spawned_by {run_id, hook_id}
 // attribution (see internal/runs).
+package server
 
 import (
 	"bytes"
@@ -42,19 +41,13 @@ const (
 	maxSpawnCount = 100
 	// maxSpawnPayloadBytes bounds the payload handed to EACH spawned run.
 	maxSpawnPayloadBytes = 256 * 1024
-	// maxSpawnBody bounds the whole request body: the payload plus slack
-	// for the JSON envelope around it.
+	// maxSpawnBody bounds the whole request body: the payload plus slack for the JSON envelope around it.
 	maxSpawnBody = maxSpawnPayloadBytes + 4096
-	// maxSpawnEventLen bounds the optional synthetic X-GitHub-Event value
-	// (real GitHub event names are short words).
+	// maxSpawnEventLen bounds the optional synthetic X-GitHub-Event value (real GitHub event names are short words).
 	maxSpawnEventLen = 100
 )
 
-// spawnRequest is the POST /spawn body. Payload is REQUIRED and must be a
-// JSON object — it becomes each spawned run's payload file verbatim. Event,
-// when set, becomes the spawned runs' X-GitHub-Event header value (hooks
-// legitimately branch on the event header; e.g. the gha coordinator passes
-// "workflow_job").
+// spawnRequest is the POST /spawn body. Payload is REQUIRED and must be a JSON object — it becomes each spawned run's payload file verbatim.
 type spawnRequest struct {
 	Hook    string          `json:"hook"`
 	Count   int             `json:"count"`
@@ -62,12 +55,7 @@ type spawnRequest struct {
 	Event   string          `json:"event"`
 }
 
-// spawnResult is the POST /spawn response: the spawned run IDs in start
-// order. Start is async dispatch, so /spawn returns the moment the runs are
-// accepted — spawned runs may still be pending (queued on the target's
-// concurrency group); the caller never waits on slots. On a mid-loop start
-// failure the response (a 500) still lists every run that DID start, plus
-// the error — an honest partial report, never a silent gap.
+// spawnResult is the POST /spawn response: the spawned run IDs in start order.
 type spawnResult struct {
 	RunIDs []string `json:"run_ids"`
 	Error  string   `json:"error,omitempty"`
@@ -126,14 +114,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 		writeError(w, http.StatusServiceUnavailable, "spawn not configured")
 		return
 	}
-	// The parent must be live — the /wait and /title rule: a token always
-	// names a real (namespace, id) pair, but the run can be over or evicted
-	// from the bounded tracker, and a dead parent has nothing to attribute
-	// its spawns to. The HookID check mirrors handleCancelRun's cross-hook
-	// guard (belt-only — the HMAC already binds the pair). MANAGER
-	// instances are valid parents too (first-class identity, not a run):
-	// the liveness check goes to the supervisor — a stale instance's token
-	// 409s here, the API-level single-instance guard.
+	// The parent must be live — the /wait and /title rule: a token always names a real (namespace, id) pair, but the run can be over or evicted from the.
 	parent := s.tracker.Get(runID)
 	if parent == nil || parent.HookID() != ns || parent.Status().Terminal() {
 		if !s.managerCaller(ns, runID) {
@@ -151,10 +132,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 		writeError(w, http.StatusNotFound, "no such hook")
 		return
 	}
-	// Deny-by-default, manifest-sourced: the caller's OWN manager.json
-	// spawn_targets is the allowlist. Checked after existence (the brief
-	// 404/403 split). Hook-run callers have no manifest field to grant
-	// them (the published hook schema is frozen) and are denied.
+	// Deny-by-default, manifest-sourced: the caller's OWN manager.json spawn_targets is the allowlist.
 	caller, isManager := s.registry.GetManager(ns)
 	if !isManager {
 		s.events.Record("spawn.denied",
@@ -181,14 +159,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 		return
 	}
 
-	// Dispatch: the scheduler-Fire shape — runner start with a background
-	// context (never the request context: the caller's container outlives
-	// this request, and the runs must outlive both) and a synthetic
-	// payload/headers pair. skip_if is deliberately NOT evaluated (the
-	// scheduled-fire rule: a spawn is the operator's own machinery asking,
-	// not an unwanted delivery); the run title renders from the target's
-	// run_title template against the spawned payload/headers, same as a
-	// delivery would.
+	// Dispatch: the scheduler-Fire shape — runner start with a background context (never the request context: the caller's container outlives.
 	payload := []byte(req.Payload)
 	headers := spawnHeaders(ns, runID, event)
 	title := target.RenderRunTitle(payload, headers)
@@ -196,11 +167,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 	for i := 0; i < req.Count; i++ {
 		run, err := s.runner.StartSpawned(s.runRequestContext(), target, payload, headers, title, ns, runID)
 		if err != nil {
-			// Report honestly: the runs that DID start, and exactly which
-			// start failed (the failed run itself exists in history with a
-			// terminal error status). No rollback — started runs are real
-			// work in flight, and the remaining starts are skipped (the
-			// same failure would repeat, e.g. a draining runner).
+			// Report honestly: the runs that DID start, and exactly which start failed (the failed run itself exists in history with a terminal error.
 			s.log.Error("spawned run failed to start",
 				"parent_hook", ns, "parent_run", runID, "target", target.ID, "err", err)
 			writeJSON(w, http.StatusInternalServerError, spawnResult{
@@ -217,22 +184,13 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request, ns, runID s
 	writeJSON(w, http.StatusOK, spawnResult{RunIDs: runIDs})
 }
 
-// isJSONObject reports whether raw is a JSON object. The enclosing
-// json.Unmarshal already validated the document, so the first non-space
-// byte settles it; nil (payload absent) and null both fail. Spawned
-// payloads must be objects: hooks parse their payload file as a JSON
-// document, and skip_if-style traversal, run titles, and the webhooks sdk
-// all expect an object at the top.
+// isJSONObject reports whether raw is a JSON object.
 func isJSONObject(raw json.RawMessage) bool {
 	t := bytes.TrimSpace(raw)
 	return len(t) > 0 && t[0] == '{'
 }
 
-// spawnHeaders are the synthetic request headers a spawned run receives in
-// HOOK_HEADERS_FILE (the scheduleHeaders convention in cli/serve.go): the
-// parent's identity, plus — when the caller asked — the X-GitHub-Event
-// value hooks branch on. Set through http.Header so key canonicalization
-// matches a real delivery's parsed headers byte-for-byte.
+// spawnHeaders are the synthetic request headers a spawned run receives in HOOK_HEADERS_FILE (the scheduleHeaders convention in cli/serve.go): the parent's identity, plus — when the caller asked — the X-GitHub-Event value hooks branch on.
 func spawnHeaders(parentHookID, parentRunID, event string) http.Header {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")

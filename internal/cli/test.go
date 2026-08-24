@@ -37,9 +37,7 @@ to load or any test command fails.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			layout := hooks.DetectLayout(args[0])
 			loaded, errs := hooks.LoadLayout(layout)
-			// Managers test exactly like hooks: their declared `tests`
-			// commands run in the built image (same contract — no env, no
-			// secrets, no state socket; self-contained).
+			// Managers test exactly like hooks: their declared `tests` commands run in the built image (same contract — no env, no secrets, no state.
 			loadedManagers, merrs := hooks.LoadManagers(layout)
 			errs = append(errs, merrs...)
 			if len(errs) > 0 {

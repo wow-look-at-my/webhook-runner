@@ -43,8 +43,7 @@ func TestRunnerQueuedRunExposesGroupWait(t *testing.T) {
 	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
-	// B is pending and its waiting_on names the group, the holder (A), and
-	// position 1 (next in line).
+	// B is pending and its waiting_on names the group, the holder (A), and position 1 (next in line).
 	deadline := time.After(2 * time.Second)
 	for {
 		snap := runB.Snapshot(0)
@@ -64,7 +63,6 @@ func TestRunnerQueuedRunExposesGroupWait(t *testing.T) {
 
 	r.Wait()
 	assert.Equal(t, runs.StatusSuccess, runB.Status())
-	// The terminal snapshot must not read as waiting (acquire cleared it,
-	// and Finish clears any leftover as a backstop).
+	// The terminal snapshot must not read as waiting (acquire cleared it, and Finish clears any leftover as a backstop).
 	assert.Nil(t, runB.Snapshot(0).WaitingOn)
 }

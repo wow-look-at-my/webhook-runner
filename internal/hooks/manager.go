@@ -10,66 +10,14 @@ import (
 	"time"
 )
 
-// Manager is the parsed in-memory representation of a manager.json file — a
-// persistent, single-instance watcher the runner supervises as ONE
-// long-lived container (restarted flat on exit, exactly one instance
-// fleet-wide via the supervisor's lease), as opposed to a hook's
-// per-delivery containers.
-//
-// The model wraps a *Hook carrying the FULL hook feature set — auth trio,
-// env, container knobs, skip_if, tests, timeout, script/command, dind,
-// concurrency_group, run_title, github_status, synchronous — so every
-// existing mechanism works on a manager, with manager-shaped semantics
-// where the per-delivery-run concepts need remapping:
-//
-//   - timeout: the wedged-instance bound — the watchdog runs only while an
-//     inbox event is checked out (or queued unconsumed); an idle parked
-//     manager is never reaped.
-//   - concurrency_group: the INSTANCE holds one slot of the group for its
-//     whole session (acquired before the container starts, queued like any
-//     run while the group is full, released when the session ends). Do not
-//     share a group between a manager and bursty hooks unless that is the
-//     intent — a persistent holder is a persistent slot.
-//   - run_title: the INSTANCE's panel title template (rendered at session
-//     start; the manager overrides it live via POST /title).
-//   - synchronous: a DELIVERY is held until the manager finishes
-//     processing that inbox event (its next /inbox/next call), then
-//     answered; the hold degrades to the async 202 on the sync timeout,
-//     exactly the hook rule.
-//   - github_status: posted per DELIVERY — pending when the delivery is
-//     accepted, success when the manager finishes processing its event,
-//     error when the event is abandoned (dropped on overflow, or the
-//     session died mid-event).
-//   - schedule is the ONE hook field with no manager form: it is
-//     SUPERSEDED by reconcile_interval (a schedule boots containers; a
-//     manager is already running — the tick is its schedule).
-//
-// State is forced true (a manager cannot function without its inbox and
-// KV); it is implied, never a field.
-//
-// Manager IDs share ONE namespace with hook IDs — the public endpoint
-// (POST /hook/{id}), the KV namespace, the overrides store, and the spawn
-// allowlist are all keyed by bare id, which is what makes a hook→manager
-// migration a directory move with full state continuity. A collision is a
-// load error (the loader side drops the manager, loudly).
+// Manager is the parsed in-memory representation of a manager.json file — a persistent, single-instance watcher the runner supervises as ONE long-lived container (restarted flat on exit, exactly one instance fleet-wide via the supervisor's lease), as opposed to a hook's per-delivery containers.
 type Manager struct {
 	*Hook
 
-	// ReconcileIntervalRaw is the manager.json reconcile_interval field: a
-	// Go duration on which the runner enqueues synthetic {"kind":"tick"}
-	// inbox events (flat cadence, coalesced, plus one at session start).
-	// Empty means EVENT-ONLY: no ticks ever — the manager receives a
-	// {"kind":"start"} event at session start and otherwise only
-	// deliveries.
+	// ReconcileIntervalRaw is the manager.json reconcile_interval field: a Go duration on which the runner enqueues synthetic.
 	ReconcileIntervalRaw string
 
-	// SpawnTargets is the manager.json spawn_targets field: the hook ids
-	// this manager may start via POST /spawn. THE manifest-sourced spawn
-	// allowlist — deny-by-default (absent/empty = this manager spawns
-	// nothing), loaded from the hooks tree like every other declaration,
-	// so granting a spawn is a GitHub change, never host env. Entries must
-	// name declared HOOKS (managers are supervised, never spawnable);
-	// unknown ids fail load/validation loudly.
+	// SpawnTargets is the manager.json spawn_targets field: the hook ids this manager may start via POST /spawn.
 	SpawnTargets []string
 }
 
@@ -114,9 +62,7 @@ func CheckSpawnTargets(loaded map[string]*Hook, managers map[string]*Manager) []
 // means enabled, exactly like hooks; the persisted dashboard override
 // outranks the default in both directions.
 
-// ReconcileInterval returns the parsed reconcile cadence, or 0 for an
-// event-only manager. Validation happened at load time, so a parse failure
-// here reads as event-only rather than panicking.
+// ReconcileInterval returns the parsed reconcile cadence, or 0 for an event-only manager.
 func (m *Manager) ReconcileInterval() time.Duration {
 	if m.ReconcileIntervalRaw == "" {
 		return 0
@@ -128,8 +74,7 @@ func (m *Manager) ReconcileInterval() time.Duration {
 	return d
 }
 
-// ManagerFileName is the declaration file every manager ships, next to its
-// mandatory Dockerfile, under <root>/src/managers/<id>/.
+// ManagerFileName is the declaration file every manager ships, next to its mandatory Dockerfile, under <root>/src/managers/<id>/.
 const ManagerFileName = "manager.json"
 
 // managerJSON is the exact manager.json field set — the FULL hook set
@@ -212,8 +157,7 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 		Secret:           mj.Secret,
 		SkipIf:           mj.SkipIf,
 
-		// A manager cannot function without the state socket (its inbox,
-		// KV, locks, /spawn all ride it) — State is implied, never a field.
+		// A manager cannot function without the state socket (its inbox, KV, locks, /spawn all ride it) — State is implied, never a field.
 		State: true,
 	}
 	m := &Manager{Hook: h, ReconcileIntervalRaw: mj.ReconcileInterval, SpawnTargets: mj.SpawnTargets}
@@ -243,18 +187,14 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 			return nil, fmt.Errorf("reconcile_interval must be positive, got %s", d)
 		}
 	}
-	// Same gate as hooks, and last for the same reason: the published manager
-	// schema, enforced by the implementation the hooks repo's CI runs (see
-	// schemacheck.go).
+	// Same gate as hooks, and last for the same reason: the published manager schema, enforced by the implementation the hooks repo's CI runs (see.
 	if err := ValidateManagerJSON(sourcePath, data); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-// ManagerLoadError attributes one manager directory's load/validation
-// failure to its id — the HookLoadError analog, so the attention surface
-// can pin the problem without string-parsing.
+// ManagerLoadError attributes one manager directory's load/validation failure to its id — the HookLoadError analog, so the attention.
 type ManagerLoadError struct {
 	ManagerID string
 	Err       error
@@ -313,9 +253,7 @@ func LoadManagers(l Layout) (map[string]*Manager, []error) {
 			errs = append(errs, ManagerLoadError{ManagerID: id, Err: err})
 			continue
 		}
-		// SDK build-context + content-hash semantics, exactly like hooks:
-		// the docker context is src/, the hash covers managers/<id>/ plus
-		// src/sdk (an sdk edit re-tags every manager AND every hook).
+		// SDK build-context + content-hash semantics, exactly like hooks: the docker context is src/, the hash covers managers/<id>/ plus src/sdk.
 		m.SrcRoot = srcRoot
 		managers[id] = m
 	}

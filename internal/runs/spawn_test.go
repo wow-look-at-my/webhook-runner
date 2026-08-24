@@ -22,8 +22,7 @@ func TestSetSpawnedBy(t *testing.T) {
 	assert.Equal(t, "parent", sb.HookID)
 	assert.Equal(t, "prun", sb.RunID)
 
-	// Snapshots copy, never alias: mutating a snapshot's attribution must
-	// not reach the live run (the WaitingOn rule).
+	// Snapshots copy, never alias: mutating a snapshot's attribution must not reach the live run (the WaitingOn rule).
 	snap := r.Snapshot(0)
 	require.NotNil(t, snap.SpawnedBy)
 	snap.SpawnedBy.RunID = "mutated"
@@ -37,8 +36,7 @@ func TestSetSpawnedByRefusesFinishedRun(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
 	r.Finish(StatusSuccess, 0, "")
-	// The SetTitle rule: the terminal snapshot already persisted, so a late
-	// stamp would diverge live state from history.
+	// The SetTitle rule: the terminal snapshot already persisted, so a late stamp would diverge live state from history.
 	r.SetSpawnedBy("parent", "prun")
 	assert.Nil(t, r.SpawnedBy())
 	assert.Nil(t, r.Snapshot(0).SpawnedBy)

@@ -2,20 +2,9 @@ package reloadgate
 
 import "time"
 
-// Recorded gating verdicts: every terminal gating status the gate accepts is
-// written down, whether or not it was applicable at the time. A status event
-// carries the verdict the reconciliation poll would otherwise have to buy from
-// the GitHub API, and the gate used to discard it whenever the ordering rule
-// refused the switch — so a tree that moved backwards (a manual rollback, which
-// ManualSwitch supports on purpose) left the poll asking for a fact it had
-// already been told and thrown away.
-//
-// The store answers "is this sha green?", never "should the tree switch to it?"
-// — trySwitch's recent-history and not-older-than-serving checks still gate
-// every apply, so a recorded verdict is an input to that rule, not a bypass.
+// Recorded gating verdicts: every terminal gating status the gate accepts is written down, whether or not it was applicable at the time.
 const (
-	// Verdicts older than the ordering window are dead weight: a sha too old
-	// to be within fetchDepth of the tip can never pass trySwitch anyway.
+	// Verdicts older than the ordering window are dead weight: a sha too old to be within fetchDepth of the tip can never pass trySwitch anyway.
 	verdictTTL = 7 * 24 * time.Hour
 	// Count cap so the state file stays small on a busy repo.
 	maxVerdicts = 200

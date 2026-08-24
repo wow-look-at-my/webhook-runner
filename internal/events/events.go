@@ -26,14 +26,7 @@ type Recorder struct {
 	next  int
 	total int
 
-	// onRecord, when set, is invoked with each recorded event,
-	// synchronously on the recording goroutine (under the ring mutex, so
-	// keep it trivial). It is the server's "activity happened" seam — the
-	// stream hub turns it into dashboard section-changed signals, and the
-	// attention aggregator derives entries from recognized kinds. It must
-	// be fast, must never block, and must never call back into the
-	// Recorder. Set once at wiring time, before concurrent Records (the
-	// SetOnChange convention).
+	// onRecord, when set, is invoked with each recorded event, synchronously on the recording goroutine (under the ring mutex, so keep it.
 	onRecord func(ev Event)
 }
 
@@ -45,9 +38,7 @@ func NewRecorder(max int) *Recorder {
 	return &Recorder{buf: make([]Event, max)}
 }
 
-// SetOnRecord registers fn to be invoked after every recorded event with
-// that event. Nil-receiver safe like Record; a nil fn disables the
-// callback. See the field comment for the contract.
+// SetOnRecord registers fn to be invoked after every recorded event with that event.
 func (r *Recorder) SetOnRecord(fn func(ev Event)) {
 	if r == nil {
 		return
@@ -73,10 +64,7 @@ func (r *Recorder) Record(kind, msg string, fields map[string]string) {
 	}
 }
 
-// Family is the first dot-separated segment of an event kind — the family
-// every kind belongs to ("run" for run.started/run.finished/run.skipped,
-// "image" for image.built/image.build_failed). Kinds without a dot are
-// their own family.
+// Family is the first dot-separated segment of an event kind — the family every kind belongs to ("run" for.
 func Family(kind string) string {
 	if i := strings.IndexByte(kind, '.'); i >= 0 {
 		return kind[:i]
@@ -86,16 +74,10 @@ func Family(kind string) string {
 
 // Filter narrows a listing. The zero Filter matches everything.
 type Filter struct {
-	// Hook, when set, keeps only events whose "hook" field names it — the
-	// convention every hook-scoped recorder call already follows.
-	// Server-wide activity (reloads, git pulls) carries no hook field and
-	// so never matches a hook-scoped listing.
+	// Hook, when set, keeps only events whose "hook" field names it — the convention every hook-scoped recorder call already follows.
 	Hook string
 
-	// ExcludeFamilies drops every event whose kind family (see Family) is
-	// listed. The dashboard excludes "run" from both activity feeds: run
-	// lifecycle already has a richer home in the runs table, where each run
-	// is one row with status, timings, and its output.
+	// ExcludeFamilies drops every event whose kind family (see Family) is listed.
 	ExcludeFamilies []string
 }
 
@@ -114,16 +96,7 @@ func (f Filter) match(ev Event) bool {
 	return true
 }
 
-// ListFiltered returns up to max events matching f, newest first. max <= 0
-// returns every retained match.
-//
-// FILTERING HAPPENS BEFORE THE CAP, and that ordering is the whole point:
-// max bounds the events RETURNED, never the events EXAMINED. Capping first
-// and filtering the page after is the bug that makes a busy hook's feed go
-// blank — a burst of excluded events fills the page, the filter empties it,
-// and the surface reports "nothing here" while the ring still holds plenty
-// of matches just behind them. Any future listing walks the whole ring the
-// same way.
+// ListFiltered returns up to max events matching f, newest first. max <= 0 returns every retained match. FILTERING HAPPENS BEFORE THE CAP, and that ordering is the whole point: max bounds the events RETURNED, never the events EXAMINED.
 func (r *Recorder) ListFiltered(f Filter, max int) []Event {
 	if r == nil {
 		return nil

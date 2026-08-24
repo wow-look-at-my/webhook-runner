@@ -11,9 +11,7 @@ import (
 	"strings"
 )
 
-// ErrNoContextStatus reports that a commit's combined status carries no
-// entry for the requested context — CI may not have started yet, or the
-// status poster never ran for that commit.
+// ErrNoContextStatus reports that a commit's combined status carries no entry for the requested context — CI may not have started yet, or the.
 var ErrNoContextStatus = errors.New("github_status: no status for context")
 
 // ContextState fetches the combined commit status for sha in repo

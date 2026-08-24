@@ -10,8 +10,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// A manifest holding one of every shape that matters: secrets, non-secret
-// config, a nested block, and a key nobody whitelisted.
+// A manifest holding one of every shape that matters: secrets, non-secret config, a nested block, and a key nobody whitelisted.
 const sampleManifest = `{
   "description": "d",
   "secret": "SUPERSECRET_HMAC",

@@ -150,9 +150,7 @@ func TestNoBacklogBurstAfterLongPause(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": time.Minute})
 	s.fireDue() // 1
-	// Simulate a long pause (slept/restarted process): many intervals elapse
-	// before the next tick. The hook should fire ONCE, not once per missed
-	// minute.
+	// Simulate a long pause (slept/restarted process): many intervals elapse before the next tick.
 	clk.advance(time.Hour)
 	s.fireDue()
 	require.Equal(t, 2, rec.count("sweep"))

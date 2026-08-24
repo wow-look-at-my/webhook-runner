@@ -32,9 +32,7 @@ func buildReloadPath(repo *hooks.Repo, o *serveOptions, dataDir string, loadAndA
 	if repo == nil || o.gateContext == "" {
 		return buildReloadFunc(repo, loadAndApply, rec), nil, nil
 	}
-	// Same derivation the poll's status reader uses; here it only decorates
-	// held-commit messages with a run-details link, so an unparseable URL
-	// costs the link, never the gating.
+	// Same derivation the poll's status reader uses; here it only decorates held-commit messages with a run-details link, so an unparseable URL.
 	repoSlug, _ := githubstatus.RepoFromGitURL(o.hooksRepo)
 	gate, err := reloadgate.New(reloadgate.Config{
 		Repo:      repo,
@@ -75,8 +73,7 @@ func buildGateStatusFunc(gh *githubstatus.Client, o *serveOptions, logger *slog.
 	return func(ctx context.Context, sha string) (string, error) {
 		state, err := gh.ContextState(ctx, repoSlug, sha, gateContext)
 		if errors.Is(err, githubstatus.ErrNoContextStatus) {
-			// No status for the context yet — a determinate answer the
-			// gate holds as pending (CI hasn't reported), not blindness.
+			// No status for the context yet — a determinate answer the gate holds as pending (CI hasn't reported), not blindness.
 			return "", nil
 		}
 		return state, err

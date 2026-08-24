@@ -10,13 +10,9 @@ import (
 )
 
 const (
-	// maxBacklogBody bounds a push. A backlog push is a list of short ids
-	// ("owner/repo#123"), and the depth cap is what actually bounds the
-	// queue — this only keeps one request from being a denial of service.
+	// maxBacklogBody bounds a push.
 	maxBacklogBody = 256 * 1024
-	// maxBacklogTake bounds one drain. A caller that wants more calls again;
-	// an unbounded take would hand a run more work than its own timeout can
-	// possibly cover, which is the failure the backlog exists to prevent.
+	// maxBacklogTake bounds one drain.
 	maxBacklogTake = 1000
 )
 

@@ -36,8 +36,7 @@ func TestRecordSpawnedByRoundtrip(t *testing.T) {
 	require.NotNil(t, list[0].SpawnedBy, "history reads must return the attribution")
 	assert.Equal(t, "parentrunid", list[0].SpawnedBy.RunID)
 
-	// The index value is the SAME bytes an unspawned run would produce —
-	// the attribution must never leak into the summary format.
+	// The index value is the SAME bytes an unspawned run would produce — the attribution must never leak into the summary format.
 	want := summaryValue(spawned.Status, spawned.Finished, spawned.StartedAt)
 	require.NoError(t, s.db.View(func(tx *bolt.Tx) error {
 		hb := tx.Bucket(bucketByHook).Bucket([]byte("h"))

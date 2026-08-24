@@ -66,11 +66,7 @@ func TestContextStateMissingContext(t *testing.T) {
 }
 
 func TestContextStateNoToken(t *testing.T) {
-	// No credential = statuses on a private repo are unreadable: an
-	// immediate, loud error — never a guessed answer, and no HTTP call to
-	// fail slow. The message names BOTH ways to supply one, because a
-	// deployment that was never handed the environment variable is exactly
-	// how this error gets read.
+	// No credential = statuses on a private repo are unreadable: an immediate, loud error — never a guessed answer, and no HTTP call to fail slow.
 	c := New("", newSilentLogger())
 	_, err := c.ContextState(context.Background(), "o/r", "abc123", "all-builds")
 	require.Error(t, err)
@@ -79,10 +75,7 @@ func TestContextStateNoToken(t *testing.T) {
 }
 
 func TestContextStateCredentialSourceFailure(t *testing.T) {
-	// A configured-but-failing source (secret-server down, credential not
-	// attached) must fail closed with the underlying reason, NOT with
-	// "nothing configured" — the two need different fixes, and conflating
-	// them sends the operator to the wrong one.
+	// A configured-but-failing source (secret-server down, credential not attached) must fail closed with the underlying reason, NOT with "nothing configured" — the two need different.
 	c := NewFromSource(func(context.Context) (string, error) {
 		return "", errors.New("secret-server: HTTP 401 (machine token missing, revoked or malformed)")
 	}, newSilentLogger())

@@ -1,5 +1,3 @@
-package server
-
 // Admin KV inspection: GET /kv/{namespace} and GET /kv/{namespace}/{key}.
 //
 // Unlike the bare /kv stats and /hooks/{id} — which stay value-free — these
@@ -9,6 +7,7 @@ package server
 // dedup markers, revive SHAs, describe hashes) means reading what it actually
 // stored, and the admin port is operator-only behind Zero Trust. Values still
 // never appear on the public hook port.
+package server
 
 import (
 	"encoding/base64"
@@ -20,18 +19,13 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 )
 
-// kvNamespaceView is the GET /kv/{namespace} response: one namespace's keys
-// with per-key metadata (name, size, expiry), values one more click away.
+// kvNamespaceView is the GET /kv/{namespace} response: one namespace's keys with per-key metadata (name, size, expiry), values one more.
 type kvNamespaceView struct {
 	Namespace string       `json:"namespace"`
 	Keys      []kv.KeyInfo `json:"keys"`
 }
 
-// handleKVNamespace lists one namespace's keys (admin port): name, value
-// size, and — for keys with a TTL — the absolute expiry plus remaining
-// seconds. Sorted by key; ?prefix= narrows it (same cheap semantics as the
-// store's List). A namespace with no data returns an empty list, matching
-// the state API's list behavior; namespace == hook ID.
+// handleKVNamespace lists one namespace's keys (admin port): name, value size, and — for keys with a TTL — the absolute expiry plus remaining seconds. Sorted by key; ?prefix= narrows it (same cheap semantics as the store's List). A namespace with no data returns an empty list, matching the state API's list behavior; namespace == hook ID.
 func (s *Server) handleKVNamespace(w http.ResponseWriter, r *http.Request) {
 	if s.kv == nil {
 		writeError(w, http.StatusServiceUnavailable, "state store not configured")
@@ -44,11 +38,7 @@ func (s *Server) handleKVNamespace(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// kvEntryView is the GET /kv/{namespace}/{key} response: the key's metadata
-// plus its value. Values are arbitrary bytes (≤64 KiB), so value_base64 is
-// always present; value_utf8 rides along only when the bytes are valid UTF-8
-// (the common case — hooks mostly store small strings/JSON), because a JSON
-// string cannot carry invalid UTF-8 byte-faithfully.
+// kvEntryView is the GET /kv/{namespace}/{key} response: the key's metadata plus its value.
 type kvEntryView struct {
 	Namespace   string     `json:"namespace"`
 	Key         string     `json:"key"`

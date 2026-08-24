@@ -25,14 +25,7 @@ const (
 	StatusError     Status = "error"     // failed to start, never produced an exit code
 	StatusCancelled Status = "cancelled" // killed by an explicit cancel request
 
-	// StatusSkipped is a first-class "no work was done" terminal state: the
-	// delivery matched one of the hook's skip_if conditions, so NO container
-	// was ever booted (no image build, no concurrency slot). The run is real
-	// — tracked, persisted, on the dashboard — with near-zero duration, a
-	// zero StartedAt (nothing launched), ExitCode 0 as a placeholder (there
-	// was no container to exit), and its output naming the matched
-	// condition. Stats count skips in their own bucket, never against
-	// success rates or durations (see HookRunStats.Skipped).
+	// StatusSkipped is a first-class "no work was done" terminal state: the delivery matched one of the hook's skip_if conditions, so NO.
 	StatusSkipped Status = "skipped"
 )
 
@@ -58,18 +51,10 @@ func (s Status) Terminal() bool {
 	return false
 }
 
-// MaxOutputLines is the most recent stdout/stderr lines retained per run.
-// Older lines are dropped as new ones arrive. Sized so a hook that echoes
-// its working data for the dashboard (pr-describe logs the model's input
-// and reply — several hundred lines) fits without evicting its own verdict;
-// worst case is ~MaxRunsPerHook*MaxOutputLines lines (~10-20MB) per hook.
+// MaxOutputLines is the most recent stdout/stderr lines retained per run. Older lines are dropped as new ones arrive.
 const MaxOutputLines = 2000
 
 // MaxRunsPerHook is the most recent TERMINAL runs retained per hook ID.
-// It bounds history, never truth: the trim in New evicts oldest terminal
-// runs only — a run that has not finished is CURRENT STATE and is never
-// evicted, however many pile up (a flood of queued spawns must not make
-// the tracker forget work that is genuinely still pending/running).
 const MaxRunsPerHook = 50
 
 // RunState is the value-type, mutex-free, JSON-marshalable view of a run.
@@ -79,101 +64,48 @@ type RunState struct {
 	ID     string `json:"id"`
 	HookID string `json:"hook_id"`
 
-	// Title is the run's friendly display title — "owner/repo#47" instead
-	// of the opaque run id — rendered from the hook's run_title template at
-	// run creation, or set mid-run by the hook itself via the state API's
-	// POST /title (fleet sweeps only know their subject once they reach
-	// it). Optional and purely additive: "" means untitled, and every
-	// consumer (the dashboard feature-detects it) falls back to the id.
+	// Title is the run's friendly display title — "owner/repo#47" instead of the opaque run id — rendered from the hook's run_title template at.
 	Title string `json:"title,omitempty"`
 
-	// SpawnedBy identifies the run that started this one through the state
-	// API's POST /spawn — the parent's run and hook IDs — so the dashboard
-	// and run history can answer "who started this". nil for runs started
-	// by a delivery or a schedule tick. Additive and omitempty like Title,
-	// and like Title it persists in the run store's per-run metadata blob
-	// only — never the per-hook index value format.
+	// SpawnedBy identifies the run that started this one through the state API's POST /spawn — the parent's run and hook IDs — so the dashboard and.
 	SpawnedBy *SpawnedBy `json:"spawned_by,omitempty"`
 
-	// Started is when the run was accepted and began tracking — the moment
-	// it was QUEUED, before any concurrency-group wait. The JSON name
-	// predates the queue-wait/processing split and is kept for
-	// compatibility; read it as "queued". Queue wait = StartedAt − Started.
+	// Started is when the run was accepted and began tracking — the moment it was QUEUED, before any concurrency-group wait.
 	Started time.Time `json:"started"`
 
-	// StartedAt is when the container actually launched — the
-	// pending→running transition stamped by SetRunning. Zero means the run
-	// never started (cancelled or failed while still pending/queued), and
-	// runs persisted before this field existed also read back as zero.
-	// Processing time = Finished − StartedAt.
+	// StartedAt is when the container actually launched — the pending→running transition stamped by SetRunning.
 	StartedAt time.Time `json:"started_at,omitzero"`
 
 	Finished time.Time `json:"finished,omitempty"`
 	Status   Status    `json:"status"`
 	ExitCode int       `json:"exit_code"`
 
-	// Output is the most recent MaxOutputLines lines of merged
-	// stdout+stderr. The slice is newline-free.
+	// Output is the most recent MaxOutputLines lines of merged stdout+stderr. The slice is newline-free.
 	Output []string `json:"output,omitempty"`
 
-	// OutputTimes carries one UTC timestamp per Output line: the moment
-	// the server recorded that line (≈ when the container emitted it).
-	// Kept as a parallel slice rather than folded into Output so Output
-	// stays []string for the commit-status LastLines caller and the
-	// existing JSON contract. AppendOutput/Snapshot append, evict, and
-	// slice the two together, so OutputTimes always has the same length
-	// as Output (or is nil when output is stripped, as in the list view).
+	// OutputTimes carries one UTC timestamp per Output line: the moment the server recorded that line (≈ when the container emitted it).
 	OutputTimes []time.Time `json:"output_times,omitempty"`
 
-	// Error is set when the run failed before or outside the container
-	// (for example, "docker: command not found"). When the container
-	// itself ran and exited non-zero, Error stays empty and the failure
-	// is reflected by ExitCode and Status.
+	// Error is set when the run failed before or outside the container (for example, "docker: command not found").
 	Error string `json:"error,omitempty"`
 
-	// CancelRequested is set the moment a cancel is requested; the run
-	// stays in its current status until the container actually dies and
-	// the runner records StatusCancelled.
+	// CancelRequested is set the moment a cancel is requested; the run stays in its current status until the container actually dies and the.
 	CancelRequested bool `json:"cancel_requested,omitempty"`
 
-	// CancelRequestedAt is when the first cancel request arrived (zero =
-	// never requested). Additive: CancelRequested stays the boolean it
-	// always was; this timestamp lets renderers style the kill tail — the
-	// span from the request to the actual death — instead of repainting
-	// the run's whole bar as cancelled from birth.
+	// CancelRequestedAt is when the first cancel request arrived (zero = never requested).
 	CancelRequestedAt time.Time `json:"cancel_requested_at,omitzero"`
 
-	// WaitHistory is the run's accumulated wait segments — one entry per
-	// SetWaitingOn stamp, closed (End set) when the pause ends or the run
-	// finishes. It is what lets the dashboard render a wait as HISTORICAL
-	// STATE (hatching that ends exactly when the wait ended) instead of
-	// deriving an open-ended hatch from current status. Bounded by
-	// MaxWaitSegments; WaitHistoryTruncated flags a capped run. Additive;
-	// persisted with the terminal snapshot like every RunState field.
+	// WaitHistory is the run's accumulated wait segments — one entry per SetWaitingOn stamp, closed (End set) when the pause ends or the run.
 	WaitHistory          []WaitSegment `json:"wait_history,omitempty"`
 	WaitHistoryTruncated bool          `json:"wait_history_truncated,omitempty"`
 
-	// WaitingOn describes what the run is currently paused on — a declared
-	// sleep or a contended cooperative lock (see the WaitingOn type). nil
-	// when the run isn't waiting. Transient: cleared when the pause ends
-	// and by Finish, so a terminal run — including the snapshot persisted
-	// to the run store — is never waiting.
+	// WaitingOn describes what the run is currently paused on — a declared sleep or a contended cooperative lock (see the WaitingOn type). nil.
 	WaitingOn *WaitingOn `json:"waiting_on,omitempty"`
 
-	// Phases carries the run's lifecycle instrumentation marks (see
-	// phases.go): when the image was ready, when slots were held, when
-	// `docker run` was spawned, when the container's first instruction ran,
-	// when output first appeared, when the container was reaped. They make
-	// per-run container overhead measurable instead of estimated. Additive
-	// and feature-detected: absent for pre-upgrade history and for marks a
-	// given run never reaches; every consumer treats a missing mark as
-	// "unknown", never as zero.
+	// Phases carries the run's lifecycle instrumentation marks (see phases.go): when the image was ready, when slots were held, when `docker.
 	Phases map[Phase]time.Time `json:"phases,omitempty"`
 
-	// Waiters lists the runs currently blocked on cooperative locks THIS
-	// run holds. It is DERIVED, never stored: the Run itself doesn't set
-	// it — the server computes it from live runs' WaitingOn at
-	// serialization time, so it only ever appears on read-path snapshots.
+	// Waiters lists the runs currently blocked on cooperative locks THIS run holds.
 	Waiters []Waiter `json:"waiters,omitempty"`
 }
 
@@ -181,13 +113,9 @@ type RunState struct {
 const (
 	// WaitingOnWait is a declared sleep (POST /wait on the state API).
 	WaitingOnWait = "wait"
-	// WaitingOnLock is a blocking lock acquire (POST /kv/{key}/acquire
-	// with "block": true) contending against another run's lock.
+	// WaitingOnLock is a blocking lock acquire (POST /kv/{key}/acquire with "block": true) contending against another run's lock.
 	WaitingOnLock = "lock"
-	// WaitingOnGroup is a queued concurrency-group acquire: the run is
-	// still pending, waiting for a slot in its hook's concurrency_group.
-	// Key names the group; HolderRunIDs/Position say who holds the slots
-	// and how deep the queue is.
+	// WaitingOnGroup is a queued concurrency-group acquire: the run is still pending, waiting for a slot in its hook's concurrency_group.
 	WaitingOnGroup = "group"
 )
 
@@ -203,30 +131,19 @@ type WaitingOn struct {
 	Reason string    `json:"reason,omitempty"`
 	Until  time.Time `json:"until,omitzero"`
 	Key    string    `json:"key,omitempty"`
-	// HolderRunID/HolderHookID name the current holder of the contended
-	// lock (kind "lock"); re-stamped as holders change while blocked.
+	// HolderRunID/HolderHookID name the current holder of the contended lock (kind "lock"); re-stamped as holders change while blocked.
 	HolderRunID  string `json:"holder_run_id,omitempty"`
 	HolderHookID string `json:"holder_hook_id,omitempty"`
-	// HolderRunIDs lists every run currently holding a slot of the
-	// contended resource (kind "group": the group's active runs), in
-	// acquire order. Advisory display data, re-stamped as holders change
-	// while the run waits. Callers must pass a fresh slice per stamp
-	// (SetWaitingOn replaces the pointer and never deep-copies).
+	// HolderRunIDs lists every run currently holding a slot of the contended resource (kind "group": the group's active runs), in acquire order.
 	HolderRunIDs []string `json:"holder_run_ids,omitempty"`
-	// Position is the run's 1-based place in the wait queue (1 = next in
-	// line, so "N ahead" renders as Position-1). 0/omitted = unknown or
-	// not a queued kind (lock contention has no queue order).
+	// Position is the run's 1-based place in the wait queue (1 = next in line, so "N ahead" renders as Position-1).
 	Position int `json:"position,omitempty"`
 }
 
-// MaxWaitSegments bounds a run's recorded wait history. A run cycling
-// through more waits than this keeps its FIRST MaxWaitSegments segments
-// and sets WaitHistoryTruncated — bounded memory, explicit truncation.
+// MaxWaitSegments bounds a run's recorded wait history.
 const MaxWaitSegments = 32
 
-// WaitSegment is one historical pause: which kind (wait/lock/group), what
-// it contended on (Key), and exactly when it started and ended. End is
-// zero while the pause is still live.
+// WaitSegment is one historical pause: which kind (wait/lock/group), what it contended on (Key), and exactly when it started and ended.
 type WaitSegment struct {
 	Kind  string    `json:"kind"`
 	Key   string    `json:"key,omitempty"`
@@ -251,37 +168,22 @@ type Run struct {
 	done   chan struct{}
 	cancel chan struct{}
 
-	// onFinish is copied from the tracker at New and immutable after —
-	// read without the mutex. See Tracker.SetOnFinish.
+	// onFinish is copied from the tracker at New and immutable after — read without the mutex. See Tracker.SetOnFinish.
 	onFinish func(RunState)
 
-	// onChange is copied from the tracker at New and immutable after —
-	// read without the mutex. See Tracker.SetOnChange. Invoked (with an
-	// output-stripped snapshot, outside the run mutex) after every
-	// observable lifecycle mutation; nil disables notifications.
+	// onChange is copied from the tracker at New and immutable after — read without the mutex. See Tracker.SetOnChange.
 	onChange func(RunState)
 
-	// touch resets the runner's idle watchdog for this run. The runner
-	// registers it when it arms the watchdog (container launch); the state
-	// API's declared waits and blocking lock acquires call it (via
-	// TouchActivity) so a waiting run counts as active, never as silent.
-	// nil until registered.
+	// touch resets the runner's idle watchdog for this run.
 	touch func()
 
-	// onTerminal is bookkeeping the RUNNER does about this run that must
-	// land before the run is observably finished — see SetOnTerminal. nil
-	// until registered. Read under the mutex: unlike onFinish/onChange it is
-	// registered mid-flight, not copied at New.
+	// onTerminal is bookkeeping the RUNNER does about this run that must land before the run is observably finished — see SetOnTerminal. nil.
 	onTerminal func(RunState)
 
-	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from
-	// a pause that a newer one overlapped — cannot clear the newer pause's
-	// dashboard state. 0 is never a live sequence.
+	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from a pause that a newer one overlapped — cannot clear the newer pause's.
 	waitSeq uint64
 
-	// cancelReason optionally explains a cancel request (e.g. "lock stolen
-	// by run X"); the runner uses it in place of the generic "cancelled"
-	// when recording the terminal state. Set by the first cancel only.
+	// cancelReason optionally explains a cancel request (e.g. "lock stolen by run X"); the runner uses it in place of the generic "cancelled".
 	cancelReason string
 }
 
@@ -291,8 +193,7 @@ func (r *Run) ID() string { return r.state.ID }
 // HookID returns the hook ID this run belongs to.
 func (r *Run) HookID() string { return r.state.HookID }
 
-// Started returns the time the run was created, i.e. accepted and queued
-// (immutable after New). See StartedAt for when processing actually began.
+// Started returns the time the run was created, i.e. accepted and queued (immutable after New).
 func (r *Run) Started() time.Time { return r.state.Started }
 
 // Status returns the current lifecycle status.
@@ -316,25 +217,17 @@ func (r *Run) Error() string {
 	return r.state.Error
 }
 
-// Done returns a channel closed when the run has reached a terminal
-// status.
+// Done returns a channel closed when the run has reached a terminal status.
 func (r *Run) Done() <-chan struct{} { return r.done }
 
-// notifyChange invokes the tracker's OnChange observer, when one is set,
-// with an output-stripped snapshot (Snapshot(0) — the same shape /runs list
-// entries have). Callers invoke it OUTSIDE the run mutex, only after an
-// actual state mutation: no-op calls (a stale ClearWaitingOn, a SetTitle on
-// a finished run) must not emit.
+// notifyChange invokes the tracker's OnChange observer, when one is set, with an output-stripped snapshot (Snapshot(0) — the same shape.
 func (r *Run) notifyChange() {
 	if r.onChange != nil {
 		r.onChange(r.Snapshot(0))
 	}
 }
 
-// RequestCancel asks the runner to kill this run's container. It only
-// signals; the run reaches StatusCancelled when the runner observes the
-// signal and the container is actually gone. Calling it on a finished
-// run is a harmless no-op (Finish wins).
+// RequestCancel asks the runner to kill this run's container.
 func (r *Run) RequestCancel() { r.RequestCancelWithReason("") }
 
 // RequestCancelWithReason is RequestCancel carrying an explanation — e.g. a
@@ -392,10 +285,7 @@ func (r *Run) Snapshot(tail int) RunState {
 		}
 	}
 	if cp.WaitingOn != nil {
-		// SetWaitingOn always replaces the pointer, never mutates the
-		// pointee — but copy anyway so a snapshot can't alias live state.
-		// The holder slice gets the same treatment (stampers hand over a
-		// fresh slice, but a snapshot must not rely on caller discipline).
+		// SetWaitingOn always replaces the pointer, never mutates the pointee — but copy anyway so a snapshot can't alias live state.
 		w := *cp.WaitingOn
 		w.HolderRunIDs = append([]string(nil), w.HolderRunIDs...)
 		cp.WaitingOn = &w
@@ -415,9 +305,7 @@ func (r *Run) AppendOutput(line string) {
 	now := time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// The first line IS the first-output mark: stamped here, under the same
-	// lock and from the same instant, so the two streams racing to produce it
-	// cannot disagree and no separate call site can drift from the buffer.
+	// The first line IS the first-output mark: stamped here, under the same lock and from the same instant, so the two streams racing to produce it.
 	if len(r.state.Output) == 0 {
 		r.markAtLocked(PhaseFirstOutput, now)
 	}
@@ -430,26 +318,7 @@ func (r *Run) AppendOutput(line string) {
 	}
 }
 
-// Finish records the terminal state, settles every terminal side effect,
-// and only THEN closes the done channel. Calling Finish more than once on
-// the same run is a no-op for the second call — which is also what
-// guarantees the OnTerminal and OnFinish observers fire exactly once.
-//
-// THE ORDERING IS THE CONTRACT. Everything an observer could reach for must
-// already be in place when the channel closes, so that <-run.Done() is a
-// sufficient barrier on its own:
-//
-//	onTerminal  the runner's own bookkeeping (the run.finished activity line)
-//	onFinish    the run-store write, lock release
-//	notifyChange the /runs/stream terminal delta
-//	close(done) ← observers unblock here, with all of the above settled
-//
-// Closing first would make Done() mean only "the status field flipped",
-// and every caller would need a second, separate barrier to see the rest.
-// That is exactly the trap this ordering exists to remove: three tests
-// raced these writes before the close moved to the end. Do not hoist it
-// back up, and register new terminal work through SetOnTerminal rather
-// than running it after Finish returns.
+// Finish records the terminal state, settles every terminal side effect, and only THEN closes the done channel. Calling Finish more than once on the same run is a no-op for the second call — which is also what guarantees the OnTerminal and OnFinish observers fire exactly once. THE ORDERING IS THE CONTRACT. Everything an observer could reach for must already be in place when the channel closes, so that <-run.Done() is a sufficient barrier on its own: onTerminal the runner's own bookkeeping (the run.finished activity line) onFinish the run-store write, lock release notifyChange the /runs/stream terminal delta close(done) ← observers unblock here, with all of the above settled Closing first would make Done() mean only "the status field flipped", and every caller would need a second, separate barrier to see the rest.
 func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -462,14 +331,10 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	if errMsg != "" {
 		r.state.Error = errMsg
 	}
-	// A terminal run is never waiting: clear any in-flight pause so neither
-	// the dashboard nor the persisted history (the onFinish snapshot below
-	// is what the run store writes) shows a finished run as waiting — and
-	// close its wait-history segment at the same instant.
+	// A terminal run is never waiting: clear any in-flight pause so neither the dashboard nor the persisted history (the onFinish snapshot below.
 	r.state.WaitingOn = nil
 	r.closeOpenWaitSegmentLocked(r.state.Finished)
-	// Captured under the lock: unlike onFinish/onChange, onTerminal is
-	// registered mid-flight by the runner.
+	// Captured under the lock: unlike onFinish/onChange, onTerminal is registered mid-flight by the runner.
 	onTerminal := r.onTerminal
 	r.mu.Unlock()
 	if onTerminal != nil {
@@ -478,21 +343,12 @@ func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	if r.onFinish != nil {
 		r.onFinish(r.Snapshot(-1))
 	}
-	// Terminal notification AFTER the onFinish seam: by the time stream
-	// consumers hear it, the run store write has already been attempted, so
-	// a client reacting to the delta (e.g. fetching /runs/{id}) sees the
-	// persisted state too.
+	// Terminal notification AFTER the onFinish seam: by the time stream consumers hear it, the run store write has already been attempted, so a.
 	r.notifyChange()
 	close(r.done)
 }
 
-// SetTitle records the run's friendly display title (trimmed; the empty
-// string is ignored — titles are never cleared, only replaced, so a later
-// /title override wins over a template title but nothing un-names a run).
-// A finished run is immutable: its terminal snapshot already flowed through
-// OnFinish into the run store, so a late title would diverge live state
-// from history. Callers bound the length (the template renderer clamps,
-// the /title route rejects) — this is the model, not the gate.
+// SetTitle records the run's friendly display title (trimmed; the empty string is ignored — titles are never cleared, only replaced, so a later /title override wins over a template title but nothing un-names a run).
 func (r *Run) SetTitle(title string) {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -515,10 +371,7 @@ func (r *Run) Title() string {
 	return r.state.Title
 }
 
-// SetRunning marks the run as actively executing and stamps StartedAt — the
-// zero point of the processing clock, splitting queue wait (Started→here)
-// from processing time (here→Finished). Useful for the dashboard to
-// differentiate "queued" from "spawned".
+// SetRunning marks the run as actively executing and stamps StartedAt — the zero point of the processing clock, splitting queue wait (Started→here) from processing time (here→Finished).
 func (r *Run) SetRunning() {
 	r.mu.Lock()
 	changed := false
@@ -533,50 +386,28 @@ func (r *Run) SetRunning() {
 	}
 }
 
-// StartedAt returns when the container actually launched (pending→running),
-// or the zero time while the run is still pending — and forever, for a run
-// that never started.
+// StartedAt returns when the container actually launched (pending→running), or the zero time while the run is still pending — and forever.
 func (r *Run) StartedAt() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state.StartedAt
 }
 
-// SetActivityTouch registers fn as the run's idle-watchdog reset. The runner
-// calls this when it arms the watchdog at container launch; the state API's
-// declared waits and blocking lock acquires then keep the run alive through
-// TouchActivity. Touching a finished run's watchdog is harmless (its firing
-// loop has exited), so nothing ever needs to deregister.
+// SetActivityTouch registers fn as the run's idle-watchdog reset.
 func (r *Run) SetActivityTouch(fn func()) {
 	r.mu.Lock()
 	r.touch = fn
 	r.mu.Unlock()
 }
 
-// SetOnTerminal registers work that must land BEFORE the run is observably
-// finished. Finish invokes fn once the terminal state is set and BEFORE it
-// closes the done channel, so a <-run.Done() observer never sees a run
-// whose bookkeeping is still in flight.
-//
-// It exists because some terminal work belongs to the RUNNER, not the run
-// — recording the run.finished activity line needs the image name and the
-// spawn note, which RunState does not carry. Doing that work after Finish
-// returns is what put it on the far side of the close: three tests raced
-// it and had to bolt on a second barrier (Runner.Wait) to read the feed.
-// Register it here instead and Done() stays the one barrier anyone needs.
-//
-// fn runs on the finishing goroutine, outside the run mutex, and must not
-// block: it delays every Done() observer. Exactly-once is inherited from
-// Finish's own once-guard.
+// SetOnTerminal registers work that must land BEFORE the run is observably finished.
 func (r *Run) SetOnTerminal(fn func(RunState)) {
 	r.mu.Lock()
 	r.onTerminal = fn
 	r.mu.Unlock()
 }
 
-// TouchActivity resets the run's idle watchdog, if one is registered. Safe
-// at any lifecycle stage: before the watchdog is armed and after the run
-// finished it is a no-op.
+// TouchActivity resets the run's idle watchdog, if one is registered.
 func (r *Run) TouchActivity() {
 	r.mu.Lock()
 	fn := r.touch
@@ -601,14 +432,7 @@ func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
 	r.waitSeq++
 	seq := r.waitSeq
 	r.state.WaitingOn = &w
-	// A re-stamp of the SAME logical wait — same kind and key, e.g. a
-	// queued group acquire whose position or holder set just changed, or a
-	// blocked lock changing hands — CONTINUES the trailing open segment:
-	// one logical wait is one history entry. (Without this, every restamp
-	// closed and reopened the segment — a single 7-deep queue wait
-	// accumulated 14 entries in reproduction — bloating each SSE delta and
-	// fragmenting the rendered hatch.) Only a different wait closes the
-	// open segment and opens a new one.
+	// A re-stamp of the SAME logical wait — same kind and key, e.g. a queued group acquire whose position or holder set just changed, or a blocked lock changing hands — CONTINUES the trailing open.
 	if n := len(r.state.WaitHistory); n > 0 {
 		if last := &r.state.WaitHistory[n-1]; last.End.IsZero() && last.Kind == w.Kind && last.Key == w.Key {
 			r.mu.Unlock()
@@ -637,10 +461,7 @@ func (r *Run) closeOpenWaitSegmentLocked(at time.Time) {
 	}
 }
 
-// ClearWaitingOn clears the pause recorded by the SetWaitingOn that
-// returned seq. A stale token (a newer SetWaitingOn happened since) or 0
-// leaves the current state untouched. Calling it after Finish is a harmless
-// no-op — Finish already cleared the field.
+// ClearWaitingOn clears the pause recorded by the SetWaitingOn that returned seq. A stale token (a newer SetWaitingOn happened since) or 0 leaves the current state untouched.
 func (r *Run) ClearWaitingOn(seq uint64) {
 	r.mu.Lock()
 	if seq == 0 || seq != r.waitSeq || r.state.WaitingOn == nil {

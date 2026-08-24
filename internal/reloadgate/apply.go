@@ -1,5 +1,3 @@
-package reloadgate
-
 // The APPLY half of the gate: turning a recorded switch into a reloaded
 // fleet, and undoing it when the fleet refuses.
 //
@@ -10,6 +8,8 @@ package reloadgate
 // of it -- so the gate resets the working tree to the previously-serving
 // commit, re-applies THAT, and keeps its old serving record. The deploy is
 // held, loudly, and the fleet keeps running.
+package reloadgate
+
 import (
 	"fmt"
 

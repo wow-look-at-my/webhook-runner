@@ -1,5 +1,3 @@
-package server
-
 // The admin drill-down's config view: the hook's OWN hook.json, filtered
 // through an explicit key whitelist.
 //
@@ -14,6 +12,7 @@ package server
 // passed through, so a future hook.json field that happens to hold a
 // credential cannot leak by default -- it simply does not appear until
 // someone adds it to the whitelist deliberately.
+package server
 
 import (
 	"encoding/json"
@@ -22,19 +21,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// publicHookKeys are the hook.json keys safe to return verbatim: they carry
-// configuration, never credentials. Anything absent here is dropped.
-//
-// DELIBERATELY EXCLUDED (each holds or can hold key material):
-//   - api_key: a bearer token. Surfaced as the boolean api_key_set instead.
-//   - secret:  the HMAC webhook secret. Surfaced as secret_set.
-//   - settings: the hook's own config document, which routinely holds
-//     credentials (secret-server tokens, app private-key names). Surfaced
-//     as settings_keys -- TOP-LEVEL KEY NAMES ONLY, never values.
-//
-// public_key is intentionally INCLUDED: an ed25519 public key is public by
-// construction, and an operator checking which key verifies a hook's
-// deliveries needs to see it.
+// publicHookKeys are the hook.json keys safe to return verbatim: they carry configuration, never credentials. Anything absent here is dropped. DELIBERATELY EXCLUDED (each holds or can hold key material): - api_key: a bearer token. Surfaced as the boolean api_key_set instead. - secret: the HMAC webhook secret. Surfaced as secret_set.
 var publicHookKeys = set.Of(
 	"api_key_header",
 	"command",
@@ -64,16 +51,12 @@ var publicHookKeys = set.Of(
 // HookConfig is the filtered hook.json plus the presence-only summaries
 // standing in for the keys that cannot be shown.
 type HookConfig struct {
-	// Config holds the whitelisted keys exactly as hook.json spelled them:
-	// `seccomp` stays a nested object, `skip_if` stays the real conditions.
-	// What the operator reads here matches what they would edit.
+	// Config holds the whitelisted keys exactly as hook.json spelled them: `seccomp` stays a nested object, `skip_if` stays the real.
 	Config map[string]json.RawMessage `json:"config"`
-	// APIKeySet and SecretSet report that a credential is configured
-	// without disclosing it.
+	// APIKeySet and SecretSet report that a credential is configured without disclosing it.
 	APIKeySet bool `json:"api_key_set"`
 	SecretSet bool `json:"secret_set"`
-	// SettingsKeys are the TOP-LEVEL key names of the hook's settings
-	// document. Names only: a settings object routinely holds credentials.
+	// SettingsKeys are the TOP-LEVEL key names of the hook's settings document. Names only: a settings object routinely holds credentials.
 	SettingsKeys []string `json:"settings_keys,omitempty"`
 }
 

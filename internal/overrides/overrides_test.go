@@ -103,9 +103,7 @@ func TestHookOverrideTriState(t *testing.T) {
 	assert.False(t, s.HookDisabled("h", true), "default-enabled + no override = enabled")
 	assert.True(t, s.HookDisabled("h", false), "default-disabled + no override = disabled")
 
-	// Explicit ENABLE beats a default-disabled hook (the enable:false case)
-	// — and creating it counts as a change even though nothing was stored
-	// before, because the stored state machine moved.
+	// Explicit ENABLE beats a default-disabled hook (the enable:false case) — and creating it counts as a change even though nothing was stored.
 	changed, err := s.SetHookDisabled("h", false)
 	require.NoError(t, err)
 	assert.True(t, changed)
@@ -121,8 +119,7 @@ func TestHookOverrideTriState(t *testing.T) {
 	assert.True(t, changed)
 	assert.True(t, s.HookDisabled("h", true))
 
-	// Both directions survive a reopen, and the legacy field is written for
-	// binary downgrades.
+	// Both directions survive a reopen, and the legacy field is written for binary downgrades.
 	s2, err := Open(path)
 	require.NoError(t, err)
 	assert.True(t, s2.HookDisabled("h", true))
@@ -181,8 +178,7 @@ func TestPersistFailureRollsBack(t *testing.T) {
 	_, err = s.SetHookDisabled("kept", true)
 	require.NoError(t, err)
 
-	// Sabotage: replace the parent dir with a regular file so the next
-	// temp-file creation fails.
+	// Sabotage: replace the parent dir with a regular file so the next temp-file creation fails.
 	require.NoError(t, os.RemoveAll(dir))
 	require.NoError(t, os.WriteFile(dir, []byte("not a dir"), 0o644))
 
@@ -283,8 +279,7 @@ func TestGlobalRunLimitPersistFailureRollsBack(t *testing.T) {
 	_, err = s.SetGlobalRunLimit(10)
 	require.NoError(t, err)
 
-	// Sabotage: replace the parent dir with a regular file so the next
-	// temp-file creation fails.
+	// Sabotage: replace the parent dir with a regular file so the next temp-file creation fails.
 	require.NoError(t, os.RemoveAll(dir))
 	require.NoError(t, os.WriteFile(dir, []byte("not a dir"), 0o644))
 

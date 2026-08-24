@@ -75,23 +75,15 @@ import (
 // statuses dropped before a request is built, so the reload names it
 // rather than letting the entity run green and publish nothing.
 func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, sup *managers.Supervisor, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, ghStatusConfigured bool, logger *slog.Logger, rec *events.Recorder) func() error {
-	// Orphan announcements are deduped per target across reloads: one event
-	// when a reload first finds an override pointing at nothing, not one
-	// per reload tick. A target that comes back is forgotten here, so a
-	// later re-orphaning is announced again.
+	// Orphan announcements are deduped per target across reloads: one event when a reload first finds an override pointing at nothing, not one.
 	var orphanMu sync.Mutex
 	announced := set.New[string]()
 	return func() error {
-		// Layout detection runs on EVERY reload: a hooks-repo pull can
-		// restructure the tree (legacy <-> src), and the load must follow
-		// it without a restart.
+		// Layout detection runs on EVERY reload: a hooks-repo pull can restructure the tree (legacy <-> src), and the load must follow it without a.
 		layout := hooks.DetectLayout(hooksDir)
 		loaded, errs := hooks.LoadLayout(layout)
 
-		// Managers load alongside hooks (src/managers under the SDK
-		// layout; legacy trees have none). One id namespace: a manager
-		// colliding with a hook is dropped loudly — the hook wins, since
-		// it predates the entity.
+		// Managers load alongside hooks (src/managers under the SDK layout; legacy trees have none).
 		loadedManagers, merrs := hooks.LoadManagers(layout)
 		errs = append(errs, merrs...)
 		for id := range loadedManagers {
@@ -104,16 +96,12 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 
 		cfg, cerr := concurrency.LoadFile(layout.ConcurrencyPath())
 		if cerr != nil {
-			// An unparseable concurrency.json means we can't trust any
-			// group reference; treat the set as empty so referencing hooks
-			// fail closed below rather than running unbounded.
+			// An unparseable concurrency.json means we can't trust any group reference; treat the set as empty so referencing hooks fail closed below.
 			errs = append(errs, cerr)
 			cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
 		}
 
-		// A hook (or manager) naming an undeclared group is a
-		// misconfiguration: drop it so it can't be triggered (and can't run
-		// without its intended backpressure).
+		// A hook (or manager) naming an undeclared group is a misconfiguration: drop it so it can't be triggered (and can't run without its intended.
 		refs := make(map[string]string, len(loaded)+len(loadedManagers))
 		for id, h := range loaded {
 			refs[id] = h.ConcurrencyGroup
@@ -127,20 +115,13 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			delete(loadedManagers, re.HookID)
 		}
 
-		// A manager's spawn_targets must name declared hooks — the
-		// manifest IS the spawn allowlist, so an undeclared target is a
-		// misconfiguration and the manager is dropped (fail closed), the
-		// undeclared-group rule. Checked against the post-rejection sets.
+		// A manager's spawn_targets must name declared hooks — the manifest IS the spawn allowlist, so an undeclared target is a misconfiguration.
 		for _, se := range hooks.CheckSpawnTargets(loaded, loadedManagers) {
 			errs = append(errs, se)
 			delete(loadedManagers, se.ManagerID)
 		}
 
-		// Operator settings overrides are applied to the freshly loaded
-		// entities, AFTER the manifest passed its own validation and
-		// BEFORE anything is served. Deliberately not part of `errs`: see
-		// applySettingsOverrides for why a bad override must not be able
-		// to refuse the tree.
+		// Operator settings overrides are applied to the freshly loaded entities, AFTER the manifest passed its own validation and BEFORE anything.
 		applySettingsOverrides(loaded, loadedManagers, ov, logger, rec)
 
 		for _, e := range errs {
@@ -166,8 +147,7 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			return refusal
 		}
 
-		// Extract the per-hook schedules from the (post-rejection) set so a
-		// dropped hook is never scheduled.
+		// Extract the per-hook schedules from the (post-rejection) set so a dropped hook is never scheduled.
 		schedules := make(map[string]time.Duration, len(loaded))
 		for id, h := range loaded {
 			if iv := h.ScheduleInterval(); iv > 0 {
@@ -185,8 +165,7 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 			sup.Update(loadedManagers)
 		}
 
-		// A clean load clears every entry the refusal path may have left:
-		// the problem is gone precisely because this tree loaded whole.
+		// A clean load clears every entry the refusal path may have left: the problem is gone precisely because this tree loaded whole.
 		agg.ReplaceSource(attention.SourceLoad, nil)
 		agg.ReplaceSource(attention.SourceZeroHooks, nil)
 		agg.ReplaceSource(attention.SourceTreeRefused, nil)
@@ -205,25 +184,7 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 	}
 }
 
-// applySettingsOverrides merges the operator's pinned settings fields into
-// the freshly loaded entities.
-//
-// A REJECTED OVERRIDE MUST NEVER REFUSE THE TREE. Everything else in this
-// file fails the whole load when one entity is bad, and that is right for a
-// manifest: the tree is reviewed, CI-gated, and rollback-able. An override
-// is none of those — it is a value typed into a dashboard and stored under
-// the data dir, and the tree it was valid against can move underneath it
-// (a manifest that renames the field, a schema that tightens the range).
-// If that could refuse the load, one stale override would take the entire
-// fleet down on the next reload, with the fix reachable only by hand-editing
-// overrides.json on the runner host. So the degrade is per entity: drop THAT
-// entity's overrides for this load, serve its manifest values, and be loud.
-//
-// Loud means all three surfaces an operator actually reads: the log, the
-// activity feed, and (via the settings API's `rejected` field) the editor
-// itself, which shows the exact schema error next to the field. The stored
-// override is NOT deleted — the operator may be mid-way through a manifest
-// change, and silently discarding what they typed is its own failure.
+// applySettingsOverrides merges the operator's pinned settings fields into the freshly loaded entities. A REJECTED OVERRIDE MUST NEVER REFUSE THE TREE. Everything else in this file fails the whole load when one entity is bad, and that is right for a manifest: the tree is reviewed, CI-gated, and rollback-able. An override is none of those — it is a value typed into a dashboard and stored under the data dir, and the tree it was valid against can move underneath it (a manifest that renames the field, a schema that tightens the range). If that could refuse the load, one stale override would take the entire fleet down on the next reload, with the fix reachable only by hand-editing overrides.json on the runner host. So the degrade is per entity: drop THAT entity's overrides for this load, serve its manifest values, and be loud.
 func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[string]*hooks.Manager, ov *overrides.Store, logger *slog.Logger, rec *events.Recorder) {
 	all := ov.AllSettingsOverrides()
 	if len(all) == 0 {
@@ -237,9 +198,7 @@ func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[st
 	for _, id := range ids {
 		h, ok := loaded[id]
 		if !ok {
-			// A Manager embeds *Hook and shares the id namespace, so the
-			// same merge applies to both. An override for neither is
-			// orphaned, which announceOrphanedOverrides already reports.
+			// A Manager embeds *Hook and shares the id namespace, so the same merge applies to both.
 			m, mok := loadedManagers[id]
 			if !mok {
 				continue
@@ -256,23 +215,18 @@ func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[st
 	}
 }
 
-// serving reports how many entities the registry is currently serving —
-// zero means nothing has ever been applied, i.e. this is the startup load.
+// serving reports how many entities the registry is currently serving — zero means nothing has ever been applied, i.e. this is the startup.
 func serving(registry *hooks.Registry) int {
 	return len(registry.All()) + len(registry.AllManagers())
 }
 
-// refusedError is what a refused load returns. It names the count and the
-// first few offending entities, because the actionable part of a
-// binary/tree mismatch is WHICH field the two disagree about.
+// refusedError is what a refused load returns.
 type refusedError struct {
 	errs    []error
 	serving int
 }
 
-// refusedErrorSamples bounds the entity list in the message: a
-// contract mismatch fails EVERY entity, and a 13-line error string buries
-// the one sentence that says what to do.
+// refusedErrorSamples bounds the entity list in the message: a contract mismatch fails EVERY entity, and a 13-line error string buries the.
 const refusedErrorSamples = 3
 
 func (e refusedError) Error() string {

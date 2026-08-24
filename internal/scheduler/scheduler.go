@@ -29,10 +29,7 @@ import (
 	"time"
 )
 
-// DefaultTick is how often the run loop checks for due hooks. Schedules are
-// minute-scale in practice, so one-second resolution is plenty and cheap; it
-// also naturally caps the effective firing rate at ~1/s regardless of how
-// short an interval a hook declares.
+// DefaultTick is how often the run loop checks for due hooks.
 const DefaultTick = time.Second
 
 // Scheduler fires hooks on fixed intervals via a caller-supplied callback.
@@ -52,9 +49,7 @@ type entry struct {
 
 // Options configure a Scheduler. Fire is required.
 type Options struct {
-	// Fire dispatches a run for the given hook. It must not block for long
-	// (it is called inline on the tick goroutine); the serve.go wiring kicks
-	// off an async run and returns immediately.
+	// Fire dispatches a run for the given hook.
 	Fire func(hookID string)
 	// Now is an injectable clock for tests; defaults to time.Now.
 	Now func() time.Time
@@ -101,9 +96,7 @@ func (s *Scheduler) Update(schedules map[string]time.Duration) {
 	s.entries = next
 }
 
-// Run drives the scheduler until ctx is cancelled. Cancelling ctx stops
-// scheduling but never affects runs already dispatched (Fire uses
-// context.Background()).
+// Run drives the scheduler until ctx is cancelled.
 func (s *Scheduler) Run(ctx context.Context) {
 	t := time.NewTicker(s.tick)
 	defer t.Stop()
@@ -132,8 +125,7 @@ func (s *Scheduler) fireDue() {
 		}
 	}
 	s.mu.Unlock()
-	// Deterministic order so behavior (and tests) don't depend on map
-	// iteration order when several hooks come due on the same tick.
+	// Deterministic order so behavior (and tests) don't depend on map iteration order when several hooks come due on the same tick.
 	sort.Strings(due)
 	for _, id := range due {
 		s.fire(id)

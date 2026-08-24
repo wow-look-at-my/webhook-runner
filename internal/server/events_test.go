@@ -43,8 +43,7 @@ func TestEventsAndImagesEndpoints(t *testing.T) {
 	assert.Contains(t, evRec.Body.String(), "github.push")
 	assert.Contains(t, evRec.Body.String(), "push to repo-x")
 
-	// The exit-0 mock docker reports every tag as built and lists no
-	// images on disk.
+	// The exit-0 mock docker reports every tag as built and lists no images on disk.
 	imRec := httptest.NewRecorder()
 	admin(s).ServeHTTP(imRec, httptest.NewRequest(http.MethodGet, "/images", nil))
 	require.Equal(t, http.StatusOK, imRec.Code)
@@ -98,8 +97,7 @@ func TestTriggerRejectionsRecordEvents(t *testing.T) {
 	assert.Equal(t, "hook.unknown", latest().Kind)
 	assert.Contains(t, latest().Msg, "cancel")
 
-	// Wrong key: 401 + hook.denied — and the presented key must never appear
-	// in the feed.
+	// Wrong key: 401 + hook.denied — and the presented key must never appear in the feed.
 	require.Equal(t, http.StatusUnauthorized, post("/hook/locked", "wrong-key"))
 	assert.Equal(t, "hook.denied", latest().Kind)
 	assert.Contains(t, latest().Msg, "locked")
@@ -108,9 +106,7 @@ func TestTriggerRejectionsRecordEvents(t *testing.T) {
 	assert.Equal(t, "hook.denied", latest().Kind)
 	assert.Contains(t, latest().Msg, "cancel")
 
-	// Unresolvable api_key reference: the caller sees a generic 401 (no
-	// config detail for anonymous callers), the operator sees
-	// hook.misconfigured naming the exact broken reference.
+	// Unresolvable api_key reference: the caller sees a generic 401 (no config detail for anonymous callers), the operator sees.
 	require.Equal(t, http.StatusUnauthorized, post("/hook/broken", "anything"))
 	kinds := []string{}
 	misconfigured := ""

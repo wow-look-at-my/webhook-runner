@@ -8,12 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// An operator override is config typed into a dashboard, so every one of
-// these cases is about the same question: can a value the operator set reach
-// a container WITHOUT having passed the entity's own schema, or WITHOUT the
-// manifest having declared the field? The answer has to be no in every
-// direction, and a refusal must leave the document untouched rather than
-// half-merged.
+// An operator override is config typed into a dashboard, so every one of these cases is about the same question: can a value the operator set.
 
 const overrideSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",

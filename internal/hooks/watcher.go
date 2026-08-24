@@ -10,12 +10,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// Watch observes the hooks directory and replaces the registry from disk
-// on every change. It is a thin wrapper over WatchFunc for callers that
-// only need the default "reload the registry" behavior.
-//
-// Watch blocks until ctx is canceled. It returns nil on graceful shutdown
-// or an error if the watcher cannot be initialized.
+// Watch observes the hooks directory and replaces the registry from disk on every change. It is a thin wrapper over WatchFunc for callers that only need the default "reload the registry" behavior. Watch blocks until ctx is canceled.
 func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) error {
 	return WatchFunc(ctx, root, func() {
 		hooks, errs := LoadDir(root)
@@ -89,11 +84,7 @@ func WatchFunc(ctx context.Context, root string, onChange func(), log *slog.Logg
 	}
 }
 
-// isRelevantEvent reports whether a filesystem event should trigger a
-// reload. The config files (hook.json and the central concurrency.json)
-// and directory-level changes matter; edits to a hook's own code/assets
-// (anything else with a file extension, e.g. a *.ts script) do not — those
-// are baked into the image at build time, on the next run.
+// isRelevantEvent reports whether a filesystem event should trigger a reload.
 func isRelevantEvent(name string) bool {
 	base := filepath.Base(name)
 	if base == "hook.json" || base == "concurrency.json" || base == "manager.json" {
@@ -102,19 +93,7 @@ func isRelevantEvent(name string) bool {
 	return filepath.Ext(base) == ""
 }
 
-// addRecursive adds the directories whose config files drive reloads. For
-// a legacy tree that is the root plus every immediate child (hook.json is
-// one level down). For a src-layout tree it additionally covers src/,
-// src/hooks/ and its children, and cfg/ at the root (concurrency.json's
-// home; addChildren(root) usually covers it already — the explicit Add
-// states intent, and a cfg/ created later arrives via the Create handler
-// like any new dir under the watched root). src/sdk is deliberately NOT
-// watched: shared-code edits matter at
-// image-build time (they change content hashes, so the next run rebuilds)
-// — they don't change the loaded config. A tree that flips layout on a
-// pull still reloads: new directories arriving under a watched parent are
-// added by the Create handler above, and the webhook/admin reload path
-// re-detects the layout on every invocation anyway.
+// addRecursive adds the directories whose config files drive reloads. For a legacy tree that is the root plus every immediate child (hook.json is one level down). For a src-layout tree it additionally covers src/, src/hooks/ and its children, and cfg/ at the root (concurrency.json's home; addChildren(root) usually covers it already — the explicit Add states intent, and a cfg/ created later arrives via the Create handler like any new dir under the watched root). src/sdk is deliberately NOT watched: shared-code edits matter at image-build time (they change content hashes, so the next run rebuilds) — they don't change the loaded config.
 func addRecursive(w *fsnotify.Watcher, root string) error {
 	if err := w.Add(root); err != nil {
 		return err
@@ -135,9 +114,7 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 		_ = w.Add(l.SrcDir())
 		_ = w.Add(l.HooksDir())
 		addChildren(l.HooksDir())
-		// Managers live beside hooks under src/; their manager.json edits
-		// drive reloads exactly like hook.json (a managers dir created
-		// later arrives via the Create handler, same as cfg/).
+		// Managers live beside hooks under src/; their manager.json edits drive reloads exactly like hook.json (a managers dir created later.
 		_ = w.Add(l.ManagersDir())
 		addChildren(l.ManagersDir())
 		_ = w.Add(filepath.Join(root, "cfg"))

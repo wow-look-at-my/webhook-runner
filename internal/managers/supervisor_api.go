@@ -8,9 +8,7 @@ import (
 	"time"
 )
 
-// Poke nudges a manager's loop to re-evaluate now (operator flipped the
-// kill switch back on). Missing ids are a no-op; the ParkPoll cadence
-// backstops a missed poke anyway.
+// Poke nudges a manager's loop to re-evaluate now (operator flipped the kill switch back on).
 func (s *Supervisor) Poke(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -19,9 +17,7 @@ func (s *Supervisor) Poke(id string) {
 	}
 }
 
-// RequestStop gracefully stops a manager's RUNNING instance with the given
-// reason (the operator disable/restart path). No-op when no instance is
-// live — a parked loop just needs the Poke.
+// RequestStop gracefully stops a manager's RUNNING instance with the given reason (the operator disable/restart path).
 func (s *Supervisor) RequestStop(id, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -31,10 +27,7 @@ func (s *Supervisor) RequestStop(id, reason string) {
 	}
 }
 
-// Deliver pushes an authenticated delivery into a manager's inbox
-// (buffering while the manager restarts; overflow drops oldest, loudly)
-// and returns its completion handle — the synchronous hold and
-// per-delivery github_status await it. nil = no such manager declared.
+// Deliver pushes an authenticated delivery into a manager's inbox (buffering while the manager restarts; overflow drops oldest, loudly) and returns its completion handle — the synchronous hold and per-delivery.
 func (s *Supervisor) Deliver(id string, headers http.Header, payload []byte) *Delivered {
 	s.mu.Lock()
 	mg := s.states[id]
@@ -67,11 +60,7 @@ func (s *Supervisor) IsCurrentInstance(id, instanceID string) bool {
 	return mg != nil && mg.instanceID != "" && mg.instanceID == instanceID
 }
 
-// AnyCurrentInstance reports whether instanceID is the live instance of ANY
-// manager — the id-only liveness question, for callers holding an identity
-// without knowing which manager it belongs to (the KV lock sweeper, deciding
-// whether an expired lock's holder is certainly gone; a live instance's lock
-// must never be reaped out from under it).
+// AnyCurrentInstance reports whether instanceID is the live instance of ANY manager — the id-only liveness question, for callers holding an identity without knowing which manager it belongs to (the KV lock sweeper, deciding whether an.
 func (s *Supervisor) AnyCurrentInstance(instanceID string) bool {
 	if instanceID == "" {
 		return false
@@ -200,12 +189,7 @@ func (s *Supervisor) outputSink(mg *managed) func(string) {
 			mg.output = mg.output[len(mg.output)-OutputTailLines:]
 		}
 		s.mu.Unlock()
-		// The drill-down's log tail just moved. This is the seam's
-		// highest-rate source by far; it stays unthrottled because the
-		// consumer coalesces (the stream hub's per-subscriber dirty SET,
-		// then the dashboard's 1s section coalescing) — a throttle here
-		// could only lose the LAST line's signal, which is exactly the
-		// stale-tail bug this fixes.
+		// The drill-down's log tail just moved.
 		s.changed()
 	}
 }

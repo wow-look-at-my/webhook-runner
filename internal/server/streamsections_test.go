@@ -84,8 +84,7 @@ func TestStreamSectionSignals(t *testing.T) {
 	rec.Record("git.pulled", "pulled", nil)
 	waitChangedCovering(t, evs, "events")
 
-	// An image event dirties images too (the runner records through the
-	// same shared recorder, so this is exactly the build-status path).
+	// An image event dirties images too (the runner records through the same shared recorder, so this is exactly the build-status path).
 	rec.Record("image.built", "hook x image built", nil)
 	waitChangedCovering(t, evs, "images")
 
@@ -93,13 +92,11 @@ func TestStreamSectionSignals(t *testing.T) {
 	rec.Record("hooks.reloaded", "5 hooks", nil)
 	waitChangedCovering(t, evs, "hooks", "images", "concurrency")
 
-	// A kv entry mutation signals kv — the store's own seam, no activity
-	// event involved (successful writes are deliberately not events).
+	// A kv entry mutation signals kv — the store's own seam, no activity event involved (successful writes are deliberately not events).
 	require.NoError(t, store.Set("ns", "k", []byte("v"), 0))
 	waitChangedCovering(t, evs, "kv")
 
-	// Run lifecycle dirties concurrency: group active/waiting/holder state
-	// moves exactly with run mutations (the OnChange superset signal).
+	// Run lifecycle dirties concurrency: group active/waiting/holder state moves exactly with run mutations (the OnChange superset signal).
 	r := tr.New("h")
 	waitChangedCovering(t, evs, "concurrency")
 	r.Finish(runs.StatusSuccess, 0, "")
@@ -157,8 +154,7 @@ func TestStreamSectionSignalsOnManagerSurface(t *testing.T) {
 	waitChangedCovering(t, evs, "managers")
 	assert.Empty(t, rec.List(0), "the manager surface must signal without recording an event")
 
-	// The inbox's own seam: a delivery moves depth and the last-delivered
-	// stamp, both on the roster row.
+	// The inbox's own seam: a delivery moves depth and the last-delivered stamp, both on the roster row.
 	require.NotNil(t, f.Deliver("coord", http.Header{}, []byte(`{"x":1}`)))
 	waitChangedCovering(t, evs, "managers")
 }
@@ -177,8 +173,7 @@ func TestSectionSignalsCoalesceAndNeverDrop(t *testing.T) {
 	}
 	assert.Equal(t, 1, hub.clients(), "signals must never drop a client")
 
-	// Exactly one wake is pending; its drain carries the coalesced union,
-	// sorted.
+	// Exactly one wake is pending; its drain carries the coalesced union, sorted.
 	<-sub.kick
 	assert.Equal(t, []string{"events", "images", "kv"}, sub.drainSections())
 	assert.Empty(t, sub.drainSections(), "second drain must be empty")
@@ -207,17 +202,12 @@ func TestSectionsForEvent(t *testing.T) {
 		"hook.denied":            {"events"}, // rejections don't change the roster
 		"hook.unknown":           {"events"},
 		"hook.disabled_rejected": {"events"},
-		// A reload can also change effective disabled states (a changed
-		// enable default), and a kill-switch flip changes which hook-scoped
-		// entries GET /attention's read-time filter hides — both dirty
-		// "attention" so the banner count tracks the toggle.
+		// A reload can also change effective disabled states (a changed enable default), and a kill-switch flip changes which hook-scoped entries.
 		"hooks.reloaded":  {"events", "hooks", "managers", "images", "concurrency", "reload", "attention"},
 		"hook.load_error": {"events", "hooks", "managers"},
 		"hook.disabled":   {"events", "hooks", "attention"},
 		"hook.enabled":    {"events", "hooks", "attention"},
-		// Manager lifecycle moves the Managers panel; the manager kill
-		// switch also changes which attention entries the read-time
-		// disabled filter hides.
+		// Manager lifecycle moves the Managers panel; the manager kill switch also changes which attention entries the read-time disabled filter.
 		"manager.disabled":             {"events", "managers", "attention"},
 		"manager.enabled":              {"events", "managers", "attention"},
 		"manager.started":              {"events", "managers"},
@@ -232,8 +222,7 @@ func TestSectionsForEvent(t *testing.T) {
 		"image.inspect_failed":         {"events", "images"},
 		"concurrency.overridden":       {"events", "concurrency"},
 		"concurrency.override_cleared": {"events", "concurrency"},
-		// Everything that moves the reload panel's view: gate verdicts,
-		// git pulls, hooks-repo pushes.
+		// Everything that moves the reload panel's view: gate verdicts, git pulls, hooks-repo pushes.
 		"git.pulled":            {"events", "reload"},
 		"git.pull_failed":       {"events", "reload"},
 		"github.push":           {"events", "reload"},

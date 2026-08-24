@@ -24,8 +24,7 @@ func TestContainerEntryStampsTheRun(t *testing.T) {
 	snap := run.Snapshot(0)
 	require.Contains(t, snap.Phases, runs.PhaseContainerEntry)
 
-	// The mark closes the span the host opened at launch — this pair IS the
-	// container-overhead measurement.
+	// The mark closes the span the host opened at launch — this pair IS the container-overhead measurement.
 	d, exact, ok := snap.BootDuration()
 	require.True(t, ok)
 	assert.True(t, exact, "the in-container mark makes the boot figure exact")
@@ -37,14 +36,11 @@ func TestContainerEntryRequiresAuthButNeverFailsARun(t *testing.T) {
 	run := tr.New("h")
 	run.SetRunning()
 
-	// Auth is the same gate as every other state route: an unauthenticated
-	// caller must not be able to stamp somebody else's run.
+	// Auth is the same gate as every other state route: an unauthenticated caller must not be able to stamp somebody else's run.
 	require.Equal(t, 401, stateReq(t, s, "POST", "/phase/container-entry", "", nil).Code)
 	require.Equal(t, 401, stateReq(t, s, "POST", "/phase/container-entry", "h.bogus", nil).Code)
 
-	// Past the gate, everything the shim cannot control answers 204 rather
-	// than an error: instrumentation must never be able to fail a run. An
-	// unknown run, a cross-hook token, and a finished run all no-op.
+	// Past the gate, everything the shim cannot control answers 204 rather than an error: instrumentation must never be able to fail a run. An unknown run, a cross-hook token, and a finished run all no-op.
 	for _, tok := range []string{
 		store.Token("h", "nosuchrun"),
 		store.Token("other", run.ID()),

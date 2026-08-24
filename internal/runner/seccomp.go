@@ -1,5 +1,3 @@
-package runner
-
 // Seccomp profile plumbing for the hook.json `seccomp.userns` opt-in.
 //
 // WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly two
@@ -22,6 +20,7 @@ package runner
 // accepted cost of the docker CLI having no compose-a-profile syntax;
 // TestVendoredDefaultMatchesUpstream documents the provenance so a refresh
 // is a deliberate, reviewable bump.
+package runner
 
 import (
 	_ "embed"
@@ -34,35 +33,7 @@ import (
 //go:embed seccomp/moby-default-v27.5.1.json
 var mobyDefaultSeccomp []byte
 
-// usernsSyscalls are the calls bubblewrap (and anything else creating an
-// unprivileged user namespace) needs. The vendored default already allows
-// most of them, but ONLY for a container holding CAP_SYS_ADMIN -- an
-// ordinary hook container has no such capability, so the gated rule never
-// matches and the call falls through to the profile's SCMP_ACT_ERRNO
-// default. Appending an UNGATED allow for just these names is the whole
-// relaxation: last rule wins in libseccomp's evaluation for a given
-// syscall, and every other syscall keeps whatever the default profile said.
-//
-// CREATING the namespace is only half of what a sandbox does. Inside its
-// new user + mount namespace bubblewrap builds the filesystem it promised
-// -- the read-only bind of /, the private /tmp, the fresh /proc -- and
-// those are mount/umount2/pivot_root, which the default profile gates on
-// CAP_SYS_ADMIN exactly as it gates unshare (pivot_root it does not name at
-// all, so that one hits the default deny). Allowing only the namespace
-// calls produced a container where `unshare --user` succeeded and bwrap
-// still failed, reporting the misleading "Creating new namespace failed:
-// Operation not permitted" -- the namespace was made; the first mount in it
-// was refused.
-//
-// These are namespaced operations, not host ones: a mount inside an
-// unprivileged user namespace can only affect that namespace's own mount
-// table, which is the isolation the sandbox exists to build.
-// NEVER add --security-opt systempaths=unconfined alongside this. Docker's
-// /proc masking is the other reason bwrap fails in a container, so clearing it
-// reads as the missing half of this opt-in. It is not: a hook container runs
-// as root, /proc/sysrq-trigger is 0200 root-owned, and one write there reboots
-// the HOST. A hook may not be able to do that. The sandbox does not need it
-// either -- see docs/internals/hooks-images-and-reload.md, "the /proc masking".
+// usernsSyscalls are the calls bubblewrap (and anything else creating an unprivileged user namespace) needs.
 var usernsSyscalls = []string{
 	// Make the namespaces.
 	"unshare", "clone", "clone3", "setns",
@@ -121,14 +92,7 @@ func writeUsernsProfile(tmpDir, runID string) (path string, cleanup func(), err 
 	return path, cleanup, nil
 }
 
-// seccompArgs returns the docker flags implementing a hook's seccomp block,
-// plus a cleanup for anything it had to materialize. A hook that did not
-// opt in gets NO flags at all, so its container keeps the daemon's builtin
-// profile and the docker command line is byte-identical to before.
-//
-// A plain function, not a Runner method: the `webhook-runner test` path
-// (runOneTest) has no Runner, and run/test parity means both paths must go
-// through this exact code.
+// seccompArgs returns the docker flags implementing a hook's seccomp block, plus a cleanup for anything it had to materialize. A hook that did not opt in gets NO flags at all, so its container keeps the daemon's builtin profile and the docker command line is byte-identical to before.
 func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup func(), err error) {
 	if !hook.UsernsAllowed() {
 		return nil, func() {}, nil

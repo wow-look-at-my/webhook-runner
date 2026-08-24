@@ -86,8 +86,7 @@ func TestManualSwitchGreenSwitches(t *testing.T) {
 }
 
 func TestManualSwitchRollbackToOlderGreen(t *testing.T) {
-	// The rollback shape trySwitch's ordering rule would refuse: the target
-	// is OLDER than the serving commit. Manual authority allows it.
+	// The rollback shape trySwitch's ordering rule would refuse: the target is OLDER than the serving commit. Manual authority allows it.
 	repo := &fakeRepo{tip: "C", commits: []string{"C", "B", "A"}, srcAt: set.Of("A")}
 	f := servingFixture(t, repo, "C")
 	f.gate.status = statusFor(map[string]string{"A": "success"})
@@ -159,9 +158,7 @@ func TestManualSwitchRefusedWithoutOverride(t *testing.T) {
 }
 
 func TestManualSwitchOverrideSwitchesLoudly(t *testing.T) {
-	// Src missing, and under override the CI state is deliberately not
-	// probed — the fully wedged shape. The override must still work (the
-	// documented escape hatch) and be recorded loudly with both named.
+	// Src missing, and under override the CI state is deliberately not probed — the fully wedged shape.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 	f.gate.status = statusFor(map[string]string{})
@@ -201,10 +198,7 @@ func TestManualSwitchWorksWhenFetchFails(t *testing.T) {
 	out, err := f.gate.ManualSwitch(context.Background(), "A", true)
 	require.NoError(t, err)
 	assert.True(t, out.Switched)
-	// An OVERRIDE does not probe CI at all — the answer changes nothing once
-	// the operator has decided, and the probe is a GitHub call that hangs
-	// when GitHub is the thing that is broken. Reported as not-probed, never
-	// as a green nobody saw.
+	// An OVERRIDE does not probe CI at all — the answer changes nothing once the operator has decided, and the probe is a GitHub call that hangs when.
 	assert.Equal(t, ciStateNotProbed, out.CIState)
 	assert.Equal(t, []string{"A"}, repo.resets)
 }
@@ -263,8 +257,7 @@ func TestManualSwitchPendingBookkeeping(t *testing.T) {
 	})
 
 	t.Run("rollback keeps a hold for a different commit visible", func(t *testing.T) {
-		// C (the tip) is held red; the operator rolls back to A. The C hold
-		// must survive — that commit is STILL awaiting its green.
+		// C (the tip) is held red; the operator rolls back to A. The C hold must survive — that commit is STILL awaiting its green.
 		repo := &fakeRepo{tip: "C", commits: []string{"C", "B", "A"}, srcAt: set.Of("A")}
 		f := servingFixture(t, repo, "B")
 		_, err := f.gate.HandleEvent("status", statusBody(t, "C", "failure", "all-builds", "master"))
@@ -284,8 +277,7 @@ func TestManualSwitchPendingBookkeeping(t *testing.T) {
 	})
 
 	t.Run("switching to the tip clears a hold for an intermediate commit", func(t *testing.T) {
-		// B is held red, the operator force-picks the newer tip C: nothing
-		// is awaited anymore.
+		// B is held red, the operator force-picks the newer tip C: nothing is awaited anymore.
 		repo := &fakeRepo{tip: "C", commits: []string{"C", "B", "A"}, srcAt: set.Of("C")}
 		f := servingFixture(t, repo, "A")
 		_, err := f.gate.HandleEvent("status", statusBody(t, "B", "failure", "all-builds", "master"))
@@ -304,8 +296,7 @@ func TestManualSwitchPendingBookkeeping(t *testing.T) {
 }
 
 func TestManualSwitchResolvesUnverifiedServing(t *testing.T) {
-	// An unverified boot (fresh clone, no recorded green): any manual
-	// switch — the operator vouching — resolves the unverified entry.
+	// An unverified boot (fresh clone, no recorded green): any manual switch — the operator vouching — resolves the unverified entry.
 	repo := &fakeRepo{head: "A", tip: "A", commits: []string{"A"}, srcAt: set.Of("A")}
 	f := newFixture(t, repo)
 	f.gate.Startup()

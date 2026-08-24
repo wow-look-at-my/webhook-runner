@@ -53,8 +53,7 @@ func TestListRunsExcludeFiltersBeforeTheCap(t *testing.T) {
 		require.Equal(t, runs.StatusSkipped, r.Status)
 	}
 
-	// Filtered: the limit now counts only what survives the filter, so the
-	// runs behind the wall of skips are reachable at the SAME max.
+	// Filtered: the limit now counts only what survives the filter, so the runs behind the wall of skips are reachable at the SAME max.
 	got := get("/runs?hook=h&max=50&exclude=skipped")
 	var ids []string
 	for _, r := range got {
@@ -77,8 +76,7 @@ func TestListRunsExcludeFiltersBeforeTheCap(t *testing.T) {
 func TestListRunsExcludeCoversLiveRuns(t *testing.T) {
 	s, _, tr, _ := newTestServerWithStore(t)
 
-	// Ordering is by Started, so the finished run is created FIRST to make
-	// the active one unambiguously newest.
+	// Ordering is by Started, so the finished run is created FIRST to make the active one unambiguously newest.
 	fin := tr.New("h")
 	fin.Finish(runs.StatusSuccess, 0, "")
 	act := tr.New("h")
@@ -103,8 +101,7 @@ func TestListRunsExcludeCoversLiveRuns(t *testing.T) {
 		"hiding running hides the active run: the always-include-active rule guards the CAP, not an explicit filter")
 	assert.Equal(t, []string{act.ID()}, get("/runs?hook=h&exclude=success"))
 
-	// ?live=1 honors it as well, so a client cannot get an unfiltered answer
-	// by asking for the active set.
+	// ?live=1 honors it as well, so a client cannot get an unfiltered answer by asking for the active set.
 	assert.Equal(t, []string{act.ID()}, get("/runs?hook=h&live=1"))
 	assert.Empty(t, get("/runs?hook=h&live=1&exclude=running"))
 }

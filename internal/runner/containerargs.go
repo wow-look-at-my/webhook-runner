@@ -1,5 +1,3 @@
-package runner
-
 // The ONE place `docker run` arguments are assembled.
 //
 // There used to be three: a live hook run (runner.go), a manager instance
@@ -18,6 +16,7 @@ package runner
 //
 // Both now hold by construction: the first because this builder injects it,
 // the second because there is no field to ask for it and one function to read.
+package runner
 
 import (
 	"sort"
@@ -34,32 +33,24 @@ import (
 type containerSpec struct {
 	name  string
 	image string
-	// label is the orphan-sweep marker, set only where a later serve boot has
-	// to be able to find and reap the container (a live hook run).
+	// label is the orphan-sweep marker, set only where a later serve boot has to be able to find and reap the container (a live hook run).
 	label string
 	// entrypoint overrides the image's, for the paths that inject the KV shim.
 	entrypoint string
-	// mounts are -v values in the caller's order: the payload/headers/settings
-	// files, the KV shim and socket, and a hook's declared volumes.
+	// mounts are -v values in the caller's order: the payload/headers/settings files, the KV shim and socket, and a hook's declared volumes.
 	mounts []string
-	// env are -e KEY=VALUE values in the caller's order, applied BEFORE the
-	// mirror injection and the secrets below.
+	// env are -e KEY=VALUE values in the caller's order, applied BEFORE the mirror injection and the secrets below.
 	env []string
-	// secrets are injected after env and sorted by key, so one run's argv is
-	// reproducible instead of depending on map iteration. Docker keeps the last
-	// -e for a key, so a hook's own env still wins over a secret of that name.
+	// secrets are injected after env and sorted by key, so one run's argv is reproducible instead of depending on map iteration.
 	secrets map[string]string
-	// onReservedSecret is called for a secret shadowing a reserved key, which
-	// is skipped. Nil means the caller does not log them.
+	// onReservedSecret is called for a secret shadowing a reserved key, which is skipped. Nil means the caller does not log them.
 	onReservedSecret func(key string)
 	networks         []string
 	user             string
 	workdir          string
-	// dind gives the container storage a nested dockerd can use. It grants no
-	// privilege at all -- see dind.go.
+	// dind gives the container storage a nested dockerd can use. It grants no privilege at all -- see dind.go.
 	dind bool
-	// seccomp is whatever seccompArgs produced for this entity, already
-	// rendered. Empty for an entity that opted into nothing.
+	// seccomp is whatever seccompArgs produced for this entity, already rendered. Empty for an entity that opted into nothing.
 	seccomp []string
 	// argv trails the image: the command the container runs.
 	argv []string
@@ -85,9 +76,7 @@ func (s containerSpec) args() []string {
 	for _, e := range s.env {
 		args = append(args, "-e", e)
 	}
-	// Unconditional, and unconditional HERE so it cannot be forgotten by a
-	// fourth caller: every container's GitHub traffic rides the mirror. It
-	// precedes the secrets and a hook's own env, both of which may override it.
+	// Unconditional, and unconditional HERE so it cannot be forgotten by a fourth caller: every container's GitHub traffic rides the mirror.
 	args = append(args, gsmInjectArgs()...)
 	for _, n := range s.networks {
 		args = append(args, "--network", n)

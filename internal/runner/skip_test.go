@@ -61,8 +61,7 @@ func TestRunnerSkipBootsNoContainer(t *testing.T) {
 	}
 	assert.Zero(t, callbacks, "onStart/onFinish report container work; none happened")
 
-	// The finish seam fired exactly once — the same write-once path that
-	// persists every other terminal run.
+	// The finish seam fired exactly once — the same write-once path that persists every other terminal run.
 	require.Len(t, finished, 1)
 	assert.Equal(t, runs.StatusSkipped, finished[0].Status)
 	assert.Equal(t, "h", finished[0].HookID)

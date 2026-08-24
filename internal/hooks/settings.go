@@ -11,29 +11,10 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// Per-entity settings: the hook's OWN configuration, kept in one `settings`
-// object and separated from the keys this runner parses.
-//
-// The flaw this replaces: hook-specific config lived in `env`, a runner-parsed
-// key, so every hook's private configuration was mixed into the runner's own
-// manifest surface, spelled as strings, and validated by nobody. A hook read it
-// back out of the process environment (or worse, opened hook.json itself) and
-// discovered a missing or misspelled value at RUN time — usually as a silent
-// default rather than a failure.
-//
-// Now: `settings` is an arbitrary JSON object the runner never interprets, and
-// each entity ships a settings.schema.json next to its manifest describing what
-// it accepts. The runner validates one against the other AT LOAD, so a hook
-// whose configuration is wrong never runs at all — it is dropped with the
-// schema's own error message, the same fail-closed rule as an undeclared
-// concurrency group.
-//
-// Declaring settings without a schema is itself an error: config with no
-// contract is exactly the state this is meant to end.
+// Per-entity settings: the hook's OWN configuration, kept in one `settings` object and separated from the keys this runner parses.
 const SettingsSchemaFile = "settings.schema.json"
 
-// EmptySettings is what a hook that declares none is handed — a hook always
-// gets a readable, parseable settings document.
+// EmptySettings is what a hook that declares none is handed — a hook always gets a readable, parseable settings document.
 var EmptySettings = json.RawMessage("{}")
 
 // SettingsJSON is the document handed to the container: the declared settings,
@@ -70,11 +51,7 @@ func (h *Hook) ValidateSettings() error {
 		if _, ok := probe.(map[string]any); !ok {
 			return errors.New("settings must be a JSON object")
 		}
-		// ${settings:...} references resolve HERE, before the schema runs, so
-		// the schema validates real values rather than reference text -- and a
-		// typo'd path is a load error instead of a surprise mid-run. The
-		// expanded document is what the container is handed. ${env:...} is
-		// left for the run path (see settingsref.go).
+		// ${settings:...} references resolve HERE, before the schema runs, so the schema validates real values rather than reference text -- and a.
 		expanded, err := ExpandSettingsSelfRefs(h.Settings)
 		if err != nil {
 			return fmt.Errorf("settings references: %w", err)

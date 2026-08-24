@@ -71,9 +71,7 @@ var (
 	ErrTooManyNS     = errors.New("backlog: namespace limit reached")
 )
 
-// namePattern is the queue-name alphabet: lowercase kebab-case, like hook ids
-// and KV namespaces. Names appear in URLs and in one JSON file per namespace,
-// so they stay boring on purpose.
+// namePattern is the queue-name alphabet: lowercase kebab-case, like hook ids and KV namespaces.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 func validNamespace(ns string) bool {
@@ -84,22 +82,16 @@ func validName(name string) bool {
 	return name != "" && len(name) <= 128 && namePattern.MatchString(name)
 }
 
-// ValidName exposes the name rule to the HTTP layer, so a bad name is a 400
-// from the router rather than an error only the mutating verbs can produce.
+// ValidName exposes the name rule to the HTTP layer, so a bad name is a 400 from the router rather than an error only the mutating verbs can.
 func ValidName(name string) bool { return validName(name) }
 
-// Stat is one queue's observable state: what it is called and how much work
-// is waiting. Never the items — a depth is an operational fact, the contents
-// are the owner's business.
+// Stat is one queue's observable state: what it is called and how much work is waiting.
 type Stat struct {
 	Name  string `json:"name"`
 	Depth int    `json:"depth"`
 }
 
-// PushResult reports what a push actually did. `Duplicates` are items already
-// queued (kept at their original position, not re-queued); `Dropped` are items
-// the depth cap refused — a full backlog means the consumer is not keeping up,
-// which the caller must be able to SEE rather than infer from a silent gap.
+// PushResult reports what a push actually did.
 type PushResult struct {
 	Queued     int `json:"queued"`
 	Duplicates int `json:"duplicates"`
@@ -237,8 +229,7 @@ func (s *Store) Push(ns, name string, items []string) (PushResult, error) {
 	res.Depth = len(q)
 
 	if err := s.persist(ns); err != nil {
-		// Roll back to what is on disk: an in-memory queue the file does not
-		// know about would silently un-queue itself on the next restart.
+		// Roll back to what is on disk: an in-memory queue the file does not know about would silently un-queue itself on the next restart.
 		s.rollback(ns, name, q[:len(q)-res.Queued], qExisted, nsExisted)
 		return PushResult{}, err
 	}
@@ -289,9 +280,7 @@ func (s *Store) Take(ns, name string, count int) ([]string, int, error) {
 		if len(qs) == 0 {
 			delete(s.ns, ns)
 		}
-		// Best-effort tidy: the file now describes an empty namespace. A
-		// failure here costs nothing (the next push rewrites it), so it is
-		// logged rather than surfaced — the take itself already succeeded.
+		// Best-effort tidy: the file now describes an empty namespace.
 		if err := s.persist(ns); err != nil {
 			s.log.Error("backlog: persist after drain", "ns", ns, "err", err)
 		}

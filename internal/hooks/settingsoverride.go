@@ -1,14 +1,3 @@
-package hooks
-
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"sort"
-	"strconv"
-	"strings"
-)
-
 // Operator settings overrides: the dashboard's settings editor writes one
 // field at a time (internal/overrides holds them, keyed by RFC 6901 JSON
 // Pointer), and this is where they meet the manifest.
@@ -29,9 +18,18 @@ import (
 //     at container start; letting an override introduce either would mean a
 //     value the operator typed is not the value they get. Overrides are
 //     literals.
+package hooks
 
-// SettingsRefPrefix is the marker both reference forms share. An override
-// value containing it is refused (see ApplySettingsOverrides).
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// SettingsRefPrefix is the marker both reference forms share. An override value containing it is refused (see ApplySettingsOverrides).
 const SettingsRefPrefix = "${"
 
 // ApplySettingsOverrides overlays ptrs onto the entity's settings document
@@ -75,18 +73,14 @@ func (h *Hook) ApplySettingsOverrides(ptrs map[string]json.RawMessage) error {
 		h.Settings = prev
 		return err
 	}
-	// Remember what the manifest said, once: a second apply on the same
-	// Hook (the API's probe, a re-merge) must not record already-merged
-	// values as the manifest, or "revert" would restore an override.
+	// Remember what the manifest said, once: a second apply on the same Hook (the API's probe, a re-merge) must not record already-merged values.
 	if h.manifestSettings == nil {
 		h.manifestSettings = prev
 	}
 	return nil
 }
 
-// ManifestSettingsJSON is the settings document as hook.json declared it,
-// before any operator override. Identical to SettingsJSON for an entity
-// with no accepted overrides.
+// ManifestSettingsJSON is the settings document as hook.json declared it, before any operator override.
 func (h *Hook) ManifestSettingsJSON() []byte {
 	if len(h.manifestSettings) == 0 {
 		return h.SettingsJSON()
@@ -106,9 +100,7 @@ func (h *Hook) validateSettingsAgainstSchema() error {
 		return err
 	}
 	if raw == nil {
-		// No schema. ValidateSettings already refused settings-without-schema
-		// at load, so reaching here means the entity declares no settings and
-		// there is nothing an override could legally pin.
+		// No schema.
 		return nil
 	}
 	schema, err := compileSettingsSchema(path, raw)
@@ -144,11 +136,7 @@ func sortedPointers(ptrs map[string]json.RawMessage) []string {
 	return out
 }
 
-// ManifestPointerValue reads the value at an RFC 6901 pointer in the
-// entity's MANIFEST settings — what reverting this pin would restore.
-// ok=false when the pointer does not resolve, which is how the API reports
-// "this override has no manifest counterpart any more" instead of inventing
-// a null. Reading the merged document here would show the override itself.
+// ManifestPointerValue reads the value at an RFC 6901 pointer in the entity's MANIFEST settings — what reverting this pin would restore. ok=false when the pointer does not resolve, which is how the API reports "this override has no manifest counterpart any more" instead of inventing a null.
 func (h *Hook) ManifestPointerValue(pointer string) (json.RawMessage, bool) {
 	var doc any
 	if err := json.Unmarshal(h.ManifestSettingsJSON(), &doc); err != nil {

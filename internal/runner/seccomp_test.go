@@ -1,5 +1,3 @@
-package runner
-
 // What these cover: that the userns profile actually permits the operations
 // a sandbox performs, and that it relaxes nothing else.
 //
@@ -9,6 +7,7 @@ package runner
 // namespace failed: Operation not permitted" -- pointing at the step that
 // actually succeeded -- so the profile looked correct from the error alone
 // and only a real sandbox run disproved it.
+package runner
 
 import (
 	"encoding/json"
@@ -46,8 +45,7 @@ func profileAllowsUngated(t *testing.T, profile []byte, syscall string) bool {
 	return allowed
 }
 
-// The operations bubblewrap performs, split by the phase that misled us:
-// creating the namespaces is not the same as being able to furnish them.
+// The operations bubblewrap performs, split by the phase that misled us: creating the namespaces is not the same as being able to furnish them.
 var (
 	namespaceCalls = []string{"unshare", "clone", "clone3", "setns"}
 	sandboxCalls   = []string{"mount", "umount2", "pivot_root"}
@@ -89,8 +87,7 @@ func TestTheOldNamespaceOnlyListWouldNotBuildASandbox(t *testing.T) {
 	saved := usernsSyscalls
 	t.Cleanup(func() { usernsSyscalls = saved })
 
-	// The list exactly as it shipped, and exactly as it failed on a real
-	// gha-runner container.
+	// The list exactly as it shipped, and exactly as it failed on a real gha-runner container.
 	usernsSyscalls = []string{"unshare", "clone", "clone3", "setns"}
 	profile, err := usernsProfile()
 	require.Nil(t, err)

@@ -8,9 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tryAcquire attempts a non-blocking acquire by passing an already-closed
-// cancel channel: a free slot is taken (ok=true), a saturated group returns
-// immediately (ok=false) instead of blocking.
+// tryAcquire attempts a non-blocking acquire by passing an already-closed cancel channel: a free slot is taken (ok=true), a saturated group returns.
 func tryAcquire(m *Manager, group string) (func(), bool, error) {
 	closed := make(chan struct{})
 	close(closed)
@@ -206,8 +204,7 @@ func TestSetLimitOverrideSwapIsSafeWithRunsInFlight(t *testing.T) {
 	_, ok, _ = tryAcquire(m, "g")
 	assert.False(t, ok, "the overridden limit (2) must gate new acquires")
 
-	// The pre-swap run releases into the OLD semaphore: it must not free a
-	// slot in the new one (that would double-count), and it must not panic.
+	// The pre-swap run releases into the OLD semaphore: it must not free a slot in the new one (that would double-count), and it must not panic.
 	rel1()
 	rel1() // double release stays idempotent across the swap
 	_, ok, _ = tryAcquire(m, "g")
@@ -218,9 +215,7 @@ func TestSetLimitOverrideSwapIsSafeWithRunsInFlight(t *testing.T) {
 	rel4, ok, _ := tryAcquire(m, "g")
 	require.True(t, ok, "a new-semaphore release must free a slot")
 
-	// Clearing the override reverts to the declared limit (1) with the same
-	// swap semantics: the two in-flight holders drain into their own
-	// channel, and new acquires see exactly one declared slot.
+	// Clearing the override reverts to the declared limit (1) with the same swap semantics: the two in-flight holders drain into their own.
 	m.ClearLimitOverride("g")
 	st = m.Status()
 	assert.Equal(t, 1, st[0].Limit)
@@ -250,9 +245,7 @@ func TestUpdateReappliesOverride(t *testing.T) {
 	m := NewManager(cfg)
 	require.NoError(t, m.SetLimitOverride("g", 1))
 
-	// Saturate the overridden limit, then reload with the same declared
-	// config: the override must still be in effect, and — because the
-	// effective limit didn't change — the in-flight slot must survive.
+	// Saturate the overridden limit, then reload with the same declared config: the override must still be in effect, and — because the effective.
 	rel, ok, _ := tryAcquire(m, "g")
 	require.True(t, ok)
 	m.Update(&Config{Groups: map[string]Group{"g": {Limit: 3}}})
@@ -347,8 +340,7 @@ func TestAcquireQueueStateNotifications(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	// B queues: its first notification must name A as the holder and put
-	// it first in line.
+	// B queues: its first notification must name A as the holder and put it first in line.
 	bStates := make(chan QueueState, 16)
 	bAcquired := make(chan func(), 1)
 	go func() {
@@ -381,8 +373,7 @@ func TestAcquireQueueStateNotifications(t *testing.T) {
 	assert.Equal(t, "run-b", waiting[0].ID)
 	assert.Equal(t, "run-c", waiting[1].ID)
 
-	// A releases: B takes the slot; C is re-notified — the line advanced
-	// (position 1) and the holder set eventually reads {run-b}.
+	// A releases: B takes the slot; C is re-notified — the line advanced (position 1) and the holder set eventually reads {run-b}.
 	relA()
 	var relB func()
 	select {
@@ -400,8 +391,7 @@ func TestAcquireQueueStateNotifications(t *testing.T) {
 	require.Len(t, waiting, 1)
 	assert.Equal(t, "run-c", waiting[0].ID)
 
-	// B releases: C acquires; the queue record drains away entirely once
-	// C releases too.
+	// B releases: C acquires; the queue record drains away entirely once C releases too.
 	relB()
 	select {
 	case relC := <-cAcquired:
@@ -429,8 +419,7 @@ func TestAcquireCancelledWaiterLeavesQueueAndNotifies(t *testing.T) {
 		assert.False(t, ok)
 		close(bDone)
 	}()
-	// B must be registered (its first notification arrived) before C starts,
-	// or the two goroutines could enqueue in either order.
+	// B must be registered (its first notification arrived) before C starts, or the two goroutines could enqueue in either order.
 	drainUntil(t, bStates, func(qs QueueState) bool { return qs.Position == 1 }, "B queued")
 	// C behind B; wait for its position-2 state so registration order is fixed.
 	cStates := make(chan QueueState, 16)
@@ -444,8 +433,7 @@ func TestAcquireCancelledWaiterLeavesQueueAndNotifies(t *testing.T) {
 	}()
 	drainUntil(t, cStates, func(qs QueueState) bool { return qs.Position == 2 }, "C queued behind B")
 
-	// Cancel B: C must be re-notified at position 1, and the detail must
-	// drop B from the wait line.
+	// Cancel B: C must be re-notified at position 1, and the detail must drop B from the wait line.
 	close(cancelB)
 	<-bDone
 	drainUntil(t, cStates, func(qs QueueState) bool { return qs.Position == 1 }, "C advanced after B's cancel")
@@ -485,9 +473,7 @@ func TestQueueBookkeepingSurvivesLimitOverrideSwap(t *testing.T) {
 	relA, ok, _ := m.Acquire("g", "run-a", nil, nil)
 	require.True(t, ok)
 
-	// Swap the semaphore live (limit 1 -> 2). The advisory holder list is
-	// name-keyed, so run-a must still be listed even though its token lives
-	// in the retired channel.
+	// Swap the semaphore live (limit 1 -> 2).
 	require.NoError(t, m.SetLimitOverride("g", 2))
 	holders, _ := m.QueueDetail("g")
 	require.Len(t, holders, 1)

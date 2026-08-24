@@ -11,11 +11,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// Declared-wait bounds. One call blocks for at most maxWaitSeconds (10
-// minutes) — a hook that needs to sleep longer loops, so a single forgotten
-// request can't pin a connection for hours. The reason is mandatory and
-// bounded: waits must be explained (the dashboard and the activity feed show
-// it verbatim), never silent.
+// Declared-wait bounds.
 const (
 	minWaitSeconds   = 1
 	maxWaitSeconds   = 600
@@ -23,11 +19,7 @@ const (
 	maxWaitBody      = 4096
 )
 
-// Watchdog-touch cadence for an in-flight wait. The default 5s is plenty for
-// any realistic idle `timeout` (minutes); a hook with a shorter limit gets a
-// proportionally faster cadence (at least ~3 touches per idle window) so a
-// declared wait can never lose the race against its own watchdog. The floor
-// keeps a pathologically tiny timeout from turning the ticker into a hot loop.
+// Watchdog-touch cadence for an in-flight wait.
 const (
 	maxWaitTouchInterval = 5 * time.Second
 	minWaitTouchInterval = 50 * time.Millisecond
@@ -37,8 +29,7 @@ const (
 // {"waited": N}; an interrupted one adds "interrupted": true plus the cause,
 // so a hook can tell "my time is up" from "my run is being torn down".
 type waitResult struct {
-	// Waited is the whole seconds actually spent waiting — the requested
-	// amount after a full wait, less when interrupted.
+	// Waited is the whole seconds actually spent waiting — the requested amount after a full wait, less when interrupted.
 	Waited      int    `json:"waited"`
 	Interrupted bool   `json:"interrupted,omitempty"`
 	Cause       string `json:"cause,omitempty"`
@@ -104,11 +95,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	// connection nobody owns. The HookID check mirrors handleCancelRun's
 	// cross-hook guard; the HMAC already binds the pair, so it's belt-only.
 	if run == nil || run.HookID() != ns || run.Status().Terminal() {
-		// Manager instances are not runs (first-class identity): their
-		// tokens land here and get the manager-shaped wait — same hold,
-		// same watchdog credit (TouchInstance feeds the instance's idle
-		// watchdog, exactly what a mid-event declared sleep needs), no
-		// run bookkeeping (there is no run row to badge).
+		// Manager instances are not runs (first-class identity): their tokens land here and get the manager-shaped wait — same hold, same watchdog.
 		if s.managerCaller(ns, runID) {
 			s.managerWait(w, r, ns, runID, req.Seconds, reason)
 			return
@@ -137,8 +124,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	for {
 		select {
 		case <-deadline.C:
-			// One last touch so the hook starts its next step with a full
-			// idle window, not one partially burned by the final tick gap.
+			// One last touch so the hook starts its next step with a full idle window, not one partially burned by the final tick gap.
 			run.TouchActivity()
 			writeJSON(w, http.StatusOK, waitResult{Waited: req.Seconds})
 			return
@@ -151,8 +137,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 			writeJSON(w, http.StatusOK, interruptedResult(started, "run cancelled"))
 			return
 		case <-r.Context().Done():
-			// Client hung up (the container is going away); nothing left to
-			// tell it. The deferred EndWait clears the dashboard state.
+			// Client hung up (the container is going away); nothing left to tell it. The deferred EndWait clears the dashboard state.
 			return
 		}
 	}
@@ -181,8 +166,7 @@ func (s *Server) managerWait(w http.ResponseWriter, r *http.Request, ns, instanc
 			return
 		case <-touch.C:
 			if !s.managers.TouchInstance(ns, instanceID) {
-				// No longer the current instance: the container is being
-				// replaced/stopped underneath this hold.
+				// No longer the current instance: the container is being replaced/stopped underneath this hold.
 				writeJSON(w, http.StatusOK, interruptedResult(started, "instance stopped"))
 				return
 			}

@@ -58,8 +58,7 @@ func TestGoValidationMessagesWinOverTheSchema(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid schedule")
 
-	// Same for a timeout the Go parser rejects: the schema's pattern would
-	// also catch it, but "invalid timeout" names what to fix.
+	// Same for a timeout the Go parser rejects: the schema's pattern would also catch it, but "invalid timeout" names what to fix.
 	err = parseHookDoc(t, `{`+schemaURL+`, "command":["x"], "timeout":"5 minutes"}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeout")

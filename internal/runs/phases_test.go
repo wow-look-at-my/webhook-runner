@@ -16,8 +16,7 @@ func TestMarkStampsOnceAndIgnoresUnknownPhases(t *testing.T) {
 	first := run.Phase(PhaseSpawned)
 	require.False(t, first.IsZero(), "spawned should be stamped")
 
-	// First write wins: a phase is a point the run passed through once, and
-	// both output streams race to stamp first_output.
+	// First write wins: a phase is a point the run passed through once, and both output streams race to stamp first_output.
 	time.Sleep(2 * time.Millisecond)
 	run.Mark(PhaseSpawned)
 	assert.Equal(t, first, run.Phase(PhaseSpawned), "a second mark must not move the stamp")
@@ -77,8 +76,7 @@ func TestSpanRequiresBothMarks(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 180*time.Millisecond, d)
 
-	// A missing mark yields no duration — never one measured against the
-	// zero time, which would report a span of ~2000 years.
+	// A missing mark yields no duration — never one measured against the zero time, which would report a span of ~2000 years.
 	_, ok = s.Span(PhaseSpawned, PhaseFirstOutput)
 	assert.False(t, ok)
 
@@ -105,9 +103,7 @@ func TestBootDurationSplitsExactFromBound(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 300*time.Millisecond, rt, "runtime start is entry to first output")
 
-	// Without it: only an upper bound, and it must announce itself as one —
-	// quoting this number as docker's cost is the conflation the split exists
-	// to prevent.
+	// Without it: only an upper bound, and it must announce itself as one — quoting this number as docker's cost is the conflation the split exists.
 	noEntry := RunState{Phases: map[Phase]time.Time{
 		PhaseSpawned:     base,
 		PhaseFirstOutput: base.Add(500 * time.Millisecond),

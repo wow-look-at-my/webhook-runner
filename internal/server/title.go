@@ -10,8 +10,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// maxTitleBody caps the tiny JSON body of a title update — same bound as a
-// /wait request, its sibling on the state API.
+// maxTitleBody caps the tiny JSON body of a title update — same bound as a /wait request, its sibling on the state API.
 const maxTitleBody = 4096
 
 // handleRunTitle implements POST /title on the state API: the running hook
@@ -64,9 +63,7 @@ func (s *Server) handleRunTitle(w http.ResponseWriter, r *http.Request, ns, runI
 	// mirrors handleCancelRun's cross-hook guard (belt-only — the HMAC
 	// already binds the pair).
 	if run == nil || run.HookID() != ns || run.Status().Terminal() {
-		// Manager instances are not runs: /title names the INSTANCE on the
-		// Managers panel (the run_title template's mid-flight override —
-		// e.g. the coordinator titling itself with its reconcile summary).
+		// Manager instances are not runs: /title names the INSTANCE on the Managers panel (the run_title template's mid-flight override — e.g. the.
 		if s.managerCaller(ns, runID) && s.managers.SetInstanceTitle(ns, runID, title) {
 			w.WriteHeader(http.StatusNoContent)
 			return

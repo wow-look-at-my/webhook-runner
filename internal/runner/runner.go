@@ -37,34 +37,21 @@ import (
 const (
 	mountedPayload = "/var/run/webhook-runner/payload"
 	mountedHeaders = "/var/run/webhook-runner/headers.json"
-	// The hook's own configuration (hook.json `settings`), validated at load
-	// against its settings.schema.json. Mounted read-only like the payload:
-	// the hook reads its config, and never the manifest that carries it.
+	// The hook's own configuration (hook.json `settings`), validated at load against its settings.schema.json.
 	mountedSettings = "/var/run/webhook-runner/settings.json"
-	// mountedStateSocket is where a state hook's container sees the KV API's
-	// Unix socket (bind-mounted from the host-shared tmp dir).
+	// mountedStateSocket is where a state hook's container sees the KV API's Unix socket (bind-mounted from the host-shared tmp dir).
 	mountedStateSocket = "/run/webhook-runner/state.sock"
-	// mountedShim is where the container sees webhook-runner's own binary,
-	// bind-mounted in and set as the entrypoint of a state hook: it proxies
-	// HOOK_KV_URL (http://localhost:9002) to the Unix socket, then execs the
-	// hook's real command, so hooks use a plain URL with any HTTP client.
+	// mountedShim is where the container sees webhook-runner's own binary, bind-mounted in and set as the entrypoint of a state hook: it proxies.
 	mountedShim = "/run/webhook-runner/whr-shim"
 )
 
-// HookFinishedFunc is invoked once the container exits (or fails to
-// start). Implementations typically push GitHub commit-status updates.
+// HookFinishedFunc is invoked once the container exits (or fails to start). Implementations typically push GitHub commit-status updates.
 type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
-// HookStartedFunc is invoked just before the container is launched.
-// Implementations typically push the GitHub "pending" commit status.
+// HookStartedFunc is invoked just before the container is launched. Implementations typically push the GitHub "pending" commit status.
 type HookStartedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
-// KVInjector mints the per-run bearer token injected into containers that
-// opt into the state store — bound to both the hook's namespace and THIS
-// run's identity, which is what lets the state API attribute cooperative
-// locks to their holding run (and the finish seam free them). It is a
-// one-method seam (satisfied by *kv.Store) so the runner needn't import the
-// kv package's whole surface.
+// KVInjector mints the per-run bearer token injected into containers that opt into the state store — bound to both the hook's namespace and.
 type KVInjector interface {
 	Token(namespace, runID string) string
 }
@@ -80,21 +67,10 @@ type Runner struct {
 	events   *events.Recorder
 	groups   *concurrency.Manager
 
-	// globalCap is the server-wide ceiling on simultaneously RUNNING hook
-	// containers (all hooks together) — the Docker-bridge IPv4 guard. nil
-	// applies no cap. Acquired in execute strictly AFTER the hook's
-	// concurrency-group slot (group-then-global everywhere: no ordering
-	// cycles, and global slots are never consumed by runs still parked on
-	// a group queue), released when the run finishes. Manager instances
-	// and image builds deliberately sit outside the cap.
+	// globalCap is the server-wide ceiling on simultaneously RUNNING hook containers (all hooks together) — the Docker-bridge IPv4 guard. nil.
 	globalCap *concurrency.Global
 
-	// kv, kvSocket, and kvShim inject state-store access into containers whose
-	// hook sets state: true. kv == nil (or an empty socket/shim path) disables
-	// injection. kvSocket is the host path of the KV API's Unix socket and
-	// kvShim is the host path of webhook-runner's own binary; both are
-	// bind-mounted in, and the shim (set as the container entrypoint) proxies
-	// localhost:9002 to the socket so the hook uses a plain http URL.
+	// kv, kvSocket, and kvShim inject state-store access into containers whose hook sets state: true. kv == nil (or an empty socket/shim path).
 	kv       KVInjector
 	kvSocket string
 	kvShim   string
@@ -104,10 +80,7 @@ type Runner struct {
 
 	wg sync.WaitGroup
 
-	// draining is set once shutdown begins: no NEW runs may start (a run
-	// launched by a dying process races the state-socket handover and the
-	// docker-kill teardown). In-flight runs are unaffected — Wait drains
-	// them. See BeginShutdown.
+	// draining is set once shutdown begins: no NEW runs may start (a run launched by a dying process races the state-socket handover and the.
 	draining atomic.Bool
 }
 
@@ -123,15 +96,10 @@ type Options struct {
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
 
-	// GlobalCap bounds how many hook executions run containers at once,
-	// across ALL hooks (excess runs queue as pending). nil = no cap. See
-	// concurrency.Global; serve always wires one (default 64).
+	// GlobalCap bounds how many hook executions run containers at once, across ALL hooks (excess runs queue as pending). nil = no cap.
 	GlobalCap *concurrency.Global
 
-	// KV mints per-hook state tokens; KVSocket is the host path of the KV
-	// API's Unix socket and KVShim is the host path of webhook-runner's own
-	// binary (the in-container proxy entrypoint), both bind-mounted into
-	// state-hook containers. KV nil or either path empty disables KV injection.
+	// KV mints per-hook state tokens; KVSocket is the host path of the KV API's Unix socket and KVShim is the host path of webhook-runner's own.
 	KV       KVInjector
 	KVSocket string
 	KVShim   string
@@ -165,21 +133,10 @@ func New(opts Options) *Runner {
 	}
 }
 
-// Wait blocks until all in-flight runs have finished. Useful for tests
-// and graceful shutdown.
+// Wait blocks until all in-flight runs have finished. Useful for tests and graceful shutdown.
 func (r *Runner) Wait() { r.wg.Wait() }
 
-// Start launches a hook in the background. The returned Run is already
-// registered with the tracker and will be updated as the container runs.
-//
-// Caller-supplied payload and headers are written to disk before the
-// container starts; the temp files are removed when the run finishes.
-//
-// title is the run's friendly display title, resolved by the caller from
-// the hook's run_title template ("" = untitled; the dashboard falls back
-// to the run id). The caller resolves it — not this package — because
-// resolution context is the caller's: the HTTP path renders it once before
-// skip evaluation, and the scheduler applies its own "schedule" fallback.
+// Start launches a hook in the background. The returned Run is already registered with the tracker and will be updated as the container runs.
 func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title string) (*runs.Run, error) {
 	return r.start(parent, hook, payload, headers, title, "", "")
 }
@@ -189,15 +146,10 @@ func (r *Runner) Start(parent context.Context, hook *hooks.Hook, payload []byte,
 func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte, headers http.Header, title, parentHookID, parentRunID string) (*runs.Run, error) {
 	run := r.tracker.New(hook.ID)
 	run.SetTitle(title)
-	// Parent attribution stamps BEFORE any path that can Finish the run
-	// (drain refusal below included), so every terminal snapshot — and the
-	// persisted history — carries it. No-op for the empty IDs Start passes.
+	// Parent attribution stamps BEFORE any path that can Finish the run (drain refusal below included), so every terminal snapshot — and the.
 	run.SetSpawnedBy(parentHookID, parentRunID)
 
-	// Drain gate: a run launched by a dying process races the state-socket
-	// handover and the shutdown teardown — refuse loudly instead. The run
-	// record exists (status error, the reason in run history); the caller
-	// maps ErrDraining to a retryable 503.
+	// Drain gate: a run launched by a dying process races the state-socket handover and the shutdown teardown — refuse loudly instead.
 	if r.draining.Load() {
 		run.Finish(runs.StatusError, -1, ErrDraining.Error())
 		if r.onFinish != nil {
@@ -240,9 +192,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	default:
 	}
 
-	// Decrypt the hook's repo-stored secrets (if any) before building the
-	// container env. A hook that ships a secrets file expects them, so a
-	// decrypt failure fails the run loudly instead of starting without them.
+	// Decrypt the hook's repo-stored secrets (if any) before building the container env.
 	var secrets map[string]string
 	if r.secrets != nil {
 		var err error
@@ -263,10 +213,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 
-	// Every hook runs an image built from its directory, tagged by content
-	// hash — code is baked in, so a concurrent hooks-repo pull can't
-	// change what an in-flight run executes. The build is a cheap no-op
-	// when the image for the current content already exists.
+	// Every hook runs an image built from its directory, tagged by content hash — code is baked in, so a concurrent hooks-repo pull can't change what.
 	buildLog := &slogLineWriter{logFn: func(line string) {
 		r.log.Info("hook image build", "hook", hook.ID, "run", run.ID(), "line", line)
 	}}
@@ -298,14 +245,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	default:
 	}
 
-	// Queue: reserve a slot in the hook's concurrency group before doing
-	// any actual processing. When a hook (or several hooks sharing a group)
-	// is flooded, the excess runs wait here — staying "pending", not
-	// "running" — instead of all launching containers at once. The timeout
-	// watchdog is deliberately NOT armed yet: a run must not burn its
-	// budget while sitting in the queue. While queued, the run's waiting_on
-	// mirrors its place in the line (kind "group": holders + position) so
-	// the dashboard can answer "what is it stuck behind".
+	// Queue: reserve a slot in the hook's concurrency group before doing any actual processing.
 	release, acquired, clearQueued, qErr := r.acquireSlot(hook, run)
 	if qErr != nil {
 		// An undeclared group is a misconfiguration; fail closed rather
@@ -319,8 +259,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	if !acquired {
-		// Cancelled while waiting in the queue. (Finish clears waiting_on
-		// itself, so no explicit clearQueued is needed on this path.)
+		// Cancelled while waiting in the queue. (Finish clears waiting_on itself, so no explicit clearQueued is needed on this path.)
 		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
 		if r.onFinish != nil {
 			r.onFinish(hook, run, payload)
@@ -330,12 +269,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	clearQueued()
 	defer release()
 
-	// The GLOBAL run cap: after the group slot (group-then-global ordering
-	// everywhere — no lock-order cycles, and the global slots can never
-	// fill up with runs still parked on tiny group queues), before the
-	// container starts. Same queue semantics as a group: the run stays
-	// pending, the watchdog stays unarmed, waiting_on mirrors its place in
-	// line, and cancellation is honored while queued.
+	// The GLOBAL run cap: after the group slot (group-then-global ordering everywhere — no lock-order cycles, and the global slots can never.
 	gRelease, gAcquired, gClearQueued := r.acquireGlobalSlot(hook, run)
 	if !gAcquired {
 		run.Finish(runs.StatusCancelled, -1, "cancelled before start")
@@ -346,20 +280,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}
 	gClearQueued()
 	defer gRelease()
-	// Both slots held: from here to PhaseSpawned is pure launch preparation
-	// (argv assembly, and for state hooks the imageCommand inspect), with no
-	// queueing left in it.
+	// Both slots held: from here to PhaseSpawned is pure launch preparation (argv assembly, and for state hooks the imageCommand inspect), with.
 	run.Mark(runs.PhaseSlotAcquired)
 
-	// The timeout clock starts now — we hold a slot and are about to launch
-	// — so it bounds only real container processing, never the time spent
-	// decrypting secrets, building the image, or queued behind other runs.
-	// A hook with no timeout gets NO deadline at all: the run is bounded
-	// only by its idle_timeout (if set) or by the container exiting. ctx
-	// itself is only watched below (ctx.Done()/ctx.Err()) to distinguish the
-	// absolute-ceiling case from an ordinary parent teardown; the actual
-	// kill still goes through exec.Command + docker kill/stop by name, since
-	// SIGKILLing the docker CLI can leave the container itself running.
+	// The timeout clock starts now — we hold a slot and are about to launch — so it bounds only real container processing, never the time spent.
 	ctx, cancel := runContext(parent, timeout)
 	defer cancel()
 
@@ -368,9 +292,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	spec := containerSpec{
 		name:  containerName,
 		image: image,
-		// The orphan-sweep marker (see orphans.go): lets the next serve
-		// boot find and reap containers whose owning server process died
-		// before their run finished.
+		// The orphan-sweep marker (see orphans.go): lets the next serve boot find and reap containers whose owning server process died before their.
 		label: RunContainerLabel + "=" + runContainerLabelValue,
 		mounts: []string{
 			payloadPath + ":" + mountedPayload + ":ro",
@@ -395,14 +317,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		dind:     hook.Dind,
 	}
 	spec.mounts = append(spec.mounts, hook.Volumes...)
-	// State store: opted-in hooks reach the KV API at a plain
-	// http://localhost:9002 URL. The runner bind-mounts the KV Unix socket and
-	// webhook-runner's own binary, sets the binary as the container entrypoint
-	// (the shim) — it proxies that port to the socket, then execs the hook's
-	// real command — so there's no networking and any HTTP client works. Only
-	// state hooks get the mounts + token. Injected among the reserved env
-	// entries (before secrets/hook env) so these keys can't be shadowed —
-	// ReservedEnvKey already covers them, but docker's last--e-wins matters too.
+	// State store: opted-in hooks reach the KV API at a plain http://localhost:9002 URL.
 	stateForwarding := hook.State && r.kv != nil && r.kvSocket != "" && r.kvShim != ""
 	if stateForwarding {
 		spec.entrypoint = mountedShim
@@ -416,10 +331,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			"HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
 		)
 	}
-	// seccomp.userns: a profile file the DAEMON reads while starting the
-	// container, so it must outlive `docker run`'s startup -- the cleanup is
-	// deferred for the whole run rather than fired here. A hook that did not
-	// opt in adds no flags at all.
+	// seccomp.userns: a profile file the DAEMON reads while starting the container, so it must outlive `docker run`'s startup -- the cleanup is.
 	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, run.ID())
 	if err != nil {
 		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for %s failed: %v", hook.ID, err),
@@ -433,9 +345,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	defer seccompCleanup()
 	spec.seccomp = seccompFlags
 	if stateForwarding {
-		// The shim is the entrypoint; hand it the command the image would have
-		// run (its ENTRYPOINT+CMD, or hook.Command when set) to exec after
-		// starting the proxy.
+		// The shim is the entrypoint; hand it the command the image would have run (its ENTRYPOINT+CMD, or hook.Command when set) to exec after.
 		childArgv, err := imageCommand(r.dockerBin, image, hook.Command)
 		if err != nil {
 			r.events.Record("image.inspect_failed", fmt.Sprintf("inspect %s for %s failed: %v", image, hook.ID, err),
@@ -463,17 +373,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		r.onStart(hook, run, payload)
 	}
 
-	// We use exec.Command (not exec.CommandContext) so that on context
-	// cancellation we can issue an explicit "docker kill <name>" — that
-	// reliably stops the container even when the docker CLI is the one
-	// being killed by the kernel. exec.CommandContext would SIGKILL the
-	// docker CLI process, which races against the actual container.
+	// We use exec.Command (not exec.CommandContext) so that on context cancellation we can issue an explicit "docker kill <name>" — that.
 	cmd := exec.Command(r.dockerBin, args...)
 
-	// Use os.Pipe instead of cmd.StdoutPipe/StderrPipe. The cmd
-	// variants add the read end to closeAfterWait, meaning cmd.Wait
-	// closes the pipe before we finish reading — dropping output in
-	// a race. With our own pipes, Wait does not touch them.
+	// Use os.Pipe instead of cmd.StdoutPipe/StderrPipe.
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		run.Finish(runs.StatusError, -1, fmt.Sprintf("stdout pipe: %v", err))
@@ -509,9 +412,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// Close write ends in the parent; only the child holds them now.
 	stdoutW.Close()
 	stderrW.Close()
-	// The handoff instant: everything after this and before the container's
-	// own first instruction (PhaseContainerEntry, reported by the injected
-	// shim) is Docker's create/namespace/overlay/entrypoint cost.
+	// The handoff instant: everything after this and before the container's own first instruction (PhaseContainerEntry, reported by the.
 	run.Mark(runs.PhaseSpawned)
 	run.SetRunning()
 
@@ -520,19 +421,10 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	cancelled := make(chan struct{})
 	stopWatcher := make(chan struct{})
 
-	// The idle watchdog arms NOW — only after the concurrency slot was
-	// acquired and the container actually launched, so a queued run never
-	// ticks — and any output byte on either stream resets it via the
-	// touchReader wrappers. It fires only after `idle_timeout` of NO
-	// output, so a run that keeps logging progress runs as long as it
-	// needs; `timeout` (via ctx below) is the separate, optional absolute
-	// wall-clock ceiling.
+	// The idle watchdog arms NOW — only after the concurrency slot was acquired and the container actually launched, so a queued run never ticks —.
 	wd := newIdleWatchdog(idleTimeout, time.Now)
 	wd.Arm()
-	// Declared waits (the state API's POST /wait) count as activity: hand
-	// the run a handle to this watchdog so an in-flight wait keeps touching
-	// it — an announced sleep is forward progress, not silence. Touches on
-	// a finished run are harmless, so this is never deregistered.
+	// Declared waits (the state API's POST /wait) count as activity: hand the run a handle to this watchdog so an in-flight wait keeps touching it —.
 	run.SetActivityTouch(wd.Touch)
 	silent := wd.Watch(stopWatcher)
 	stdout := &touchReader{r: stdoutR, touch: wd.Touch}
@@ -552,32 +444,18 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	go func() {
 		select {
 		case <-silent:
-			// Already produced no output for the full timeout: there is
-			// nothing to wait out. Hard kill, same as always.
+			// Already produced no output for the full timeout: there is nothing to wait out. Hard kill, same as always.
 			close(timedOut)
 			r.killContainer(containerName)
 		case <-ctx.Done():
-			// ctx wraps parent with the hook's absolute timeout, if any:
-			// DeadlineExceeded means the ceiling fired; anything else
-			// (Canceled) means the parent itself tore down, and
-			// cmd.Wait's error shapes the terminal status for that case.
+			// ctx wraps parent with the hook's absolute timeout, if any: DeadlineExceeded means the ceiling fired; anything else (Canceled) means the.
 			if ctx.Err() == context.DeadlineExceeded {
 				close(deadlineExceeded)
 			}
 			r.killContainer(containerName)
 		case <-run.Cancelled():
 			close(cancelled)
-			// Graceful: SIGTERM, grace, then docker's own SIGKILL — the same
-			// stopContainer a manager instance gets on a supervisor-requested
-			// stop. Blocking is fine, this goroutine has nothing else to do,
-			// and cmd.Wait unblocks the moment the container dies. This path
-			// is explicit cancellation: an operator's Cancel button, a lock
-			// steal, or the KV lock's own TTL-expiry enforcement killing a
-			// still-live holder — exactly the case where the holder can be
-			// seconds from finishing real work (a publish, a settle-window
-			// confirm) that a hard SIGKILL would throw away and force a
-			// contender to redo. A hook that ignores the signal gets no worse
-			// than the hard-kill outcome, just runCancelGraceSeconds later.
+			// Graceful: SIGTERM, grace, then docker's own SIGKILL — the same stopContainer a manager instance gets on a supervisor-requested stop.
 			r.stopContainer(containerName, runCancelGraceSeconds)
 		case <-stopWatcher:
 			return
@@ -592,17 +470,11 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	}()
 
 	waitErr := cmd.Wait()
-	// The docker CLI has returned: the container exited AND `--rm` teardown
-	// is done. Whatever separates this from Finished is the runner's own
-	// bookkeeping, not container cost.
+	// The docker CLI has returned: the container exited AND `--rm` teardown is done.
 	run.Mark(runs.PhaseExited)
 	close(stopWatcher)
 
-	// In the normal case the process has exited and its pipe ends
-	// are closed, so streamWG.Wait returns immediately. On a kill
-	// (timeout or cancel), orphaned child processes (e.g. the real docker
-	// container's descendants) can keep the write end open; force-close
-	// the read ends so the scanner goroutines unblock.
+	// In the normal case the process has exited and its pipe ends are closed, so streamWG.Wait returns immediately.
 	killedByWatcher := false
 	for _, ch := range []chan struct{}{timedOut, cancelled} {
 		select {
@@ -638,8 +510,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		if exitCode == 0 {
 			exitCode = -1
 		}
-		// Distinguishable from the absolute-ceiling message below: the run
-		// died for going silent, not for running long.
+		// Distinguishable from the absolute-ceiling message below: the run died for going silent, not for running long.
 		errMsg = fmt.Sprintf("idle timeout after %s (no output)", idleTimeout)
 	default:
 	}
@@ -676,33 +547,22 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	run.SetOnTerminal(func(runs.RunState) {
 		r.log.Info("hook finished",
 			"hook", hook.ID, "run", run.ID(), "status", status, "exit", exitCode)
-		// runRef, not run.ID(): a title set mid-run via the state API's /title
-		// lands here too, so the feed's terminal line names the subject.
+		// runRef, not run.ID(): a title set mid-run via the state API's /title lands here too, so the feed's terminal line names the subject.
 		finishedMsg := fmt.Sprintf("%s run %s finished: %s (exit %d)%s", hook.ID, runRef(run), status, exitCode, spawnNote(run))
 		if errMsg != "" && (status == runs.StatusTimeout ||
 			(status == runs.StatusCancelled && errMsg != "cancelled")) {
-			// Carry the reason (a timeout's "no output" verdict, a cancel's
-			// steal explanation) so the activity feed shows what killed the run.
+			// Carry the reason (a timeout's "no output" verdict, a cancel's steal explanation) so the activity feed shows what killed the run.
 			finishedMsg += ": " + errMsg
 		}
 		r.events.Record("run.finished", finishedMsg,
 			map[string]string{"hook": hook.ID, "run": run.ID(), "status": string(status)})
 	})
 	run.Finish(status, exitCode, errMsg)
-	// The GitHub commit-status POST stays OUTSIDE the terminal seam: it is a
-	// network call, and blocking every Done() observer on it would trade one
-	// footgun for a worse one.
+	// The GitHub commit-status POST stays OUTSIDE the terminal seam: it is a network call, and blocking every Done() observer on it would trade.
 	if r.onFinish != nil {
 		r.onFinish(hook, run, payload)
 	}
 }
 
-// runCancelGraceSeconds is how long an explicitly-cancelled run's container
-// gets between SIGTERM and docker's own SIGKILL (see stopContainer, defined
-// alongside the manager analog in managersession.go — one implementation,
-// two callers). Shorter than managerStopGraceSeconds: a run is normally a
-// short request/response pass, not a long-lived service, so a stuck cancel
-// should not make an operator wait as long as a manager's graceful restart.
-// A hook that never installs a SIGTERM handler is unaffected either way — it
-// still dies, just up to this many seconds later than a hard kill would have.
+// runCancelGraceSeconds is how long an explicitly-cancelled run's container gets between SIGTERM and docker's own SIGKILL (see.
 const runCancelGraceSeconds = 10

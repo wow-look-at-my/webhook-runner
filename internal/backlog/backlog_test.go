@@ -122,8 +122,7 @@ func TestValidationRejectsBadInput(t *testing.T) {
 	_, err = s.Push("h", "q", []string{"waaaaaaaaay too long"})
 	require.ErrorIs(t, err, ErrItemTooLarge)
 
-	// A rejected push mutates nothing — not even the namespace it would have
-	// created.
+	// A rejected push mutates nothing — not even the namespace it would have created.
 	require.Empty(t, s.List("h"))
 
 	_, err = s.Push("h", "q", []string{"ok"})

@@ -244,13 +244,11 @@ func TestListBeforeRetentionBreak(t *testing.T) {
 		require.NoError(t, s.Record(st))
 	}
 
-	// A cursor between the retained runs pages to the older retained one and
-	// stops at the expired key.
+	// A cursor between the retained runs pages to the older retained one and stops at the expired key.
 	assert.Equal(t, []string{older.ID}, idsOf(s.ListAllBefore(now.Add(-20*time.Minute), 0)))
 	assert.Equal(t, []string{older.ID}, idsOf(s.ListByHookBefore("h", now.Add(-20*time.Minute), 0)))
 
-	// A cursor older than every retained run: the first key the walk sees is
-	// already expired, so the page is empty.
+	// A cursor older than every retained run: the first key the walk sees is already expired, so the page is empty.
 	assert.Empty(t, s.ListAllBefore(now.Add(-90*time.Minute), 0))
 	assert.Empty(t, s.ListByHookBefore("h", now.Add(-90*time.Minute), 0))
 }
@@ -308,8 +306,7 @@ func TestSweepReclaimsExpired(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, removed)
 
-	// The fresh run is intact, the expired ones are gone from every bucket
-	// (a second sweep finding nothing proves the indexes went too).
+	// The fresh run is intact, the expired ones are gone from every bucket (a second sweep finding nothing proves the indexes went too).
 	_, ok := s.Get(fresh.ID)
 	assert.True(t, ok)
 	_, ok = s.Get(old1.ID)
@@ -406,9 +403,7 @@ func TestSplitSummaryLegacyAndNew(t *testing.T) {
 	assert.True(t, fin.Equal(now))
 	assert.True(t, startedAt.IsZero())
 
-	// Legacy two-field form (pre-upgrade rows): still parses; StartedAt is
-	// zero, so its duration falls back to Finished−Started downstream and it
-	// is excluded from wait stats.
+	// Legacy two-field form (pre-upgrade rows): still parses; StartedAt is zero, so its duration falls back to Finished−Started downstream.
 	st, fin, startedAt, ok = splitSummary(fmt.Appendf(nil, "timeout %d", now.UnixNano()))
 	require.True(t, ok)
 	assert.Equal(t, runs.StatusTimeout, st)

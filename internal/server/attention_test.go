@@ -126,9 +126,7 @@ func TestAttentionFiltersEffectivelyDisabledHooks(t *testing.T) {
 	// Baseline: all three show.
 	assert.Equal(t, 3, getAttention(t, admin(s)).Count)
 
-	// Disable h: its entry is filtered and the count matches; the
-	// server-wide entry and the (unloaded, therefore default-enabled)
-	// broken hook's entry stay. The aggregator itself keeps all three.
+	// Disable h: its entry is filtered and the count matches; the server-wide entry and the (unloaded, therefore default-enabled) broken.
 	_, err = ov.SetHookDisabled("h", true)
 	require.NoError(t, err)
 	got := getAttention(t, admin(s))
@@ -139,8 +137,7 @@ func TestAttentionFiltersEffectivelyDisabledHooks(t *testing.T) {
 	}
 	assert.Equal(t, 3, agg.Count(), "the filter is read-time only — entries are never deleted")
 
-	// A load-failed hook has no hook.json default to read: an explicit
-	// override disables (and so filters) it too.
+	// A load-failed hook has no hook.json default to read: an explicit override disables (and so filters) it too.
 	_, err = ov.SetHookDisabled("broken", true)
 	require.NoError(t, err)
 	got = getAttention(t, admin(s))
@@ -190,10 +187,7 @@ func TestStreamSectionSignalsOnAttention(t *testing.T) {
 	agg.Report(attention.Entry{Source: attention.SourceServer, Key: attention.KeyTmpDir, Message: "hazard"})
 	waitChangedCovering(t, evs, "attention")
 
-	// The event seam through the RECORDER: auth.go records
-	// hook.misconfigured; the server's OnRecord wiring must feed the
-	// aggregator, whose change signals attention (and the event itself
-	// dirties events as always).
+	// The event seam through the RECORDER: auth.go records hook.misconfigured; the server's OnRecord wiring must feed the aggregator, whose change signals attention (and.
 	rec.Record("hook.misconfigured",
 		"h: api_key reference ${X} did not resolve (secrets.sops.env / host env); all callers are denied",
 		map[string]string{"hook": "h"})

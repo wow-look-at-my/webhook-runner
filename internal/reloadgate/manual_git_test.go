@@ -56,8 +56,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 	assert.False(t, date.IsZero())
 	assert.False(t, repo.TreeHasDir(c2, SrcMarkerDir))
 
-	// A full sha the shallow clone does not hold yet: ResolveRef fetches it
-	// by sha from origin, after which its objects are inspectable locally.
+	// A full sha the shallow clone does not hold yet: ResolveRef fetches it by sha from origin, after which its objects are inspectable locally.
 	sha, err := repo.ResolveRef(c1)
 	require.NoError(t, err)
 	assert.Equal(t, c1, sha)
@@ -67,8 +66,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 	assert.True(t, repo.TreeHasDir(c1, SrcMarkerDir))
 	assert.False(t, repo.TreeHasDir(c1, "no/such/dir"))
 
-	// Abbreviated shas resolve against LOCAL history only; deepen first
-	// (exactly what ManualSwitch's leading FetchBranch does).
+	// Abbreviated shas resolve against LOCAL history only; deepen first (exactly what ManualSwitch's leading FetchBranch does).
 	_, err = repo.FetchBranch(100)
 	require.NoError(t, err)
 	sha, err = repo.ResolveRef(c1[:10])
@@ -100,8 +98,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 	require.NoError(t, err)
 	g.Startup() // fresh clone: serving c2 (the tip), unverified
 
-	// Rolling back to the OLDER c1 with CI unreadable: refused without the
-	// override (unknown counts as not green)...
+	// Rolling back to the OLDER c1 with CI unreadable: refused without the override (unknown counts as not green)...
 	out, err := g.ManualSwitch(context.Background(), c1, false)
 	require.NoError(t, err)
 	assert.False(t, out.Switched)
@@ -127,8 +124,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 	assert.Equal(t, 1, applies)
 	assert.Contains(t, eventKinds(rec), "reload.forced")
 
-	// Trying the tip commit (missing src/hooks) without override: refused,
-	// naming the broken tree.
+	// Trying the tip commit (missing src/hooks) without override: refused, naming the broken tree.
 	out, err = g.ManualSwitch(context.Background(), c2, false)
 	require.NoError(t, err)
 	assert.False(t, out.Switched)

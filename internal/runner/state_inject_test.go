@@ -46,8 +46,7 @@ func TestRunnerInjectsStateEnv(t *testing.T) {
 	r.Wait()
 
 	out := run.Snapshot(-1).Output
-	// Reaches the KV API at a plain localhost URL via the injected proxy shim —
-	// no networking.
+	// Reaches the KV API at a plain localhost URL via the injected proxy shim — no networking.
 	assert.NotContains(t, out, "arg=--network")
 	assert.Contains(t, out, "arg=--entrypoint")
 	assert.Contains(t, out, "arg=/run/webhook-runner/whr-shim")
@@ -82,8 +81,7 @@ func TestRunnerSkipsStateEnvWhenNotOptedIn(t *testing.T) {
 
 func TestImageCommandReconstructs(t *testing.T) {
 	dir := t.TempDir()
-	// A docker mock whose `inspect` prints an image's Entrypoint then Cmd as
-	// JSON arrays (the format imageCommand asks for).
+	// A docker mock whose `inspect` prints an image's Entrypoint then Cmd as JSON arrays (the format imageCommand asks for).
 	docker := filepath.Join(dir, "docker")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = inspect ]; then printf '%s\\n%s\\n' '[\"node\"]' '[\"app.js\"]'; exit 0; fi\nexit 0\n"

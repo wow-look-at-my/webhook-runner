@@ -1,5 +1,3 @@
-package server
-
 // The settings editor's API (admin port, behind Zero Trust — same trust
 // model as the kill switches next door in overrides.go):
 //
@@ -21,6 +19,7 @@ package server
 // Overrides), because the tree can move under a stored override. Neither
 // check makes the other redundant: this one is about the value being typed,
 // that one about the value still being legal later.
+package server
 
 import (
 	"encoding/json"
@@ -31,9 +30,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// maxSettingsValueBytes bounds one pinned value. Settings are configuration
-// — an endpoint that accepts megabytes is a memory sink, and any value this
-// large belongs in the manifest where it can be reviewed.
+// maxSettingsValueBytes bounds one pinned value.
 const maxSettingsValueBytes = 64 << 10
 
 // SettingsField is one pinned field as the editor sees it.
@@ -41,33 +38,22 @@ type SettingsField struct {
 	Pointer string `json:"pointer"`
 	// Value is what the operator pinned.
 	Value json.RawMessage `json:"value"`
-	// Manifest is what hook.json says at that pointer, so the editor can
-	// show what "revert" would restore. Omitted when the pointer no longer
-	// resolves in the manifest — an override whose field was renamed or
-	// removed. That is not an error here: the load path reports it, and the
-	// editor needs to SHOW the stale pin so it can be cleared.
+	// Manifest is what hook.json says at that pointer, so the editor can show what "revert" would restore.
 	Manifest json.RawMessage `json:"manifest,omitempty"`
-	// Stale marks exactly that case, so the UI does not have to infer it
-	// from an absent field.
+	// Stale marks exactly that case, so the UI does not have to infer it from an absent field.
 	Stale bool `json:"stale,omitempty"`
 }
 
 // SettingsView is GET /hooks/{id}/settings.
 type SettingsView struct {
 	Hook string `json:"hook"`
-	// Schema is the entity's settings.schema.json verbatim (comments
-	// stripped). Null when the entity ships none — the editor then says the
-	// hook takes no configuration rather than rendering an empty form.
+	// Schema is the entity's settings.schema.json verbatim (comments stripped).
 	Schema json.RawMessage `json:"schema,omitempty"`
-	// Effective is the document the next run will be handed: the manifest
-	// with every accepted override already merged in.
+	// Effective is the document the next run will be handed: the manifest with every accepted override already merged in.
 	Effective json.RawMessage `json:"effective"`
 	// Overrides are the operator's pins, sorted by pointer.
 	Overrides []SettingsField `json:"overrides,omitempty"`
-	// Rejected is set when this entity's overrides did not survive the last
-	// load and it is serving manifest values instead. The editor shows the
-	// reason inline — the same text the log and the activity feed carry —
-	// so "I set it and nothing happened" has an answer on the page.
+	// Rejected is set when this entity's overrides did not survive the last load and it is serving manifest values instead.
 	Rejected string `json:"rejected,omitempty"`
 }
 
@@ -92,9 +78,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.settingsView(h, id)
 	if err != nil {
-		// An unreadable schema is a real fault, not an empty form: the
-		// editor must never present "no configuration" for an entity whose
-		// contract simply could not be read.
+		// An unreadable schema is a real fault, not an empty form: the editor must never present "no configuration" for an entity whose contract.
 		writeError(w, http.StatusInternalServerError, "read settings schema: "+err.Error())
 		return
 	}
@@ -128,9 +112,7 @@ func (s *Server) settingsView(h *hooks.Hook, id string) (SettingsView, error) {
 		}
 		view.Overrides = append(view.Overrides, field)
 	}
-	// A pin the served document does not carry means the merge refused this
-	// entity's overrides at the last load. Re-deriving it (rather than
-	// caching a flag) keeps the answer true after any reload.
+	// A pin the served document does not carry means the merge refused this entity's overrides at the last load.
 	if reason := s.settingsRejection(h, view.Overrides); reason != "" {
 		view.Rejected = reason
 	}
@@ -177,10 +159,7 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the MERGED document before storing anything. A stored
-	// override that cannot be applied is a trap: it survives restarts,
-	// reports nothing at the moment it was set, and only shows up as an
-	// entity quietly serving manifest values.
+	// Validate the MERGED document before storing anything.
 	merged := s.overrides.SettingsOverrides(id)
 	if merged == nil {
 		merged = map[string]json.RawMessage{}
@@ -281,9 +260,7 @@ func (s *Server) applySettingsChange(w http.ResponseWriter, id string, changed b
 	writeJSON(w, http.StatusOK, view)
 }
 
-// sortedOverridePointers orders the pins so the editor renders them in a
-// stable order across refreshes — map order would reshuffle the list on
-// every poll, which reads as the page flickering for no reason.
+// sortedOverridePointers orders the pins so the editor renders them in a stable order across refreshes — map order would reshuffle the list on every poll, which reads as the page flickering for.
 func sortedOverridePointers(ptrs map[string]json.RawMessage) []string {
 	out := make([]string, 0, len(ptrs))
 	for ptr := range ptrs {
@@ -293,9 +270,7 @@ func sortedOverridePointers(ptrs map[string]json.RawMessage) []string {
 	return out
 }
 
-// truncateForEvent bounds a value in an activity-feed line. The feed is a
-// bounded ring shared by every hook: one operator pasting a large value must
-// not evict everyone else's entries.
+// truncateForEvent bounds a value in an activity-feed line.
 func truncateForEvent(v json.RawMessage) string {
 	const max = 120
 	if len(v) <= max {

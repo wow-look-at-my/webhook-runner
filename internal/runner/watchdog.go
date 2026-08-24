@@ -6,21 +6,7 @@ import (
 	"time"
 )
 
-// idleWatchdog fires when a run's container produces no output for longer
-// than a configured limit. It is what implements the hook `idle_timeout`:
-// a hook that keeps logging is making forward progress and may run
-// indefinitely under this watchdog alone (the separate `timeout` field
-// bounds total wall-clock time, if set); one that has gone silent for the
-// whole limit is stuck and gets killed. A limit of zero means no idle
-// limit — the watchdog never fires.
-//
-// Like the scheduler, the decision logic is pure and takes an injected clock
-// (now), so it is unit-testable without sleeping: Arm/Touch/check hold every
-// decision, and Watch is a thin timer loop around check.
-//
-// The watchdog is armed only after the concurrency-group slot is acquired
-// and the container has actually launched (see execute). An unarmed watchdog
-// never fires, whatever the clock says — a queued run cannot time out.
+// idleWatchdog fires when a run's container produces no output for longer than a configured limit.
 type idleWatchdog struct {
 	limit time.Duration
 	now   func() time.Time
@@ -33,8 +19,6 @@ type idleWatchdog struct {
 }
 
 // noIdleLimitRecheck is the wait check() returns for a limit-less watchdog.
-// It can never fire, so the exact value only bounds how promptly Watch's
-// loop notices its stop channel closing — a day is plenty.
 const noIdleLimitRecheck = 24 * time.Hour
 
 // newIdleWatchdog constructs an unarmed watchdog. now defaults to time.Now.
@@ -45,8 +29,7 @@ func newIdleWatchdog(limit time.Duration, now func() time.Time) *idleWatchdog {
 	return &idleWatchdog{limit: limit, now: now, fired: make(chan struct{})}
 }
 
-// Arm starts the clock. Called at container launch — never earlier, so
-// secrets decryption, the image build, and queue time can't count as silence.
+// Arm starts the clock.
 func (w *idleWatchdog) Arm() {
 	w.mu.Lock()
 	w.armed = true
@@ -61,12 +44,7 @@ func (w *idleWatchdog) Touch() {
 	w.mu.Unlock()
 }
 
-// Disarm stops the clock without firing. Manager sessions arm the watchdog
-// only while an inbox event is checked out (delivered and not yet followed
-// by the manager's next /inbox/next call) — a manager parked in its
-// long-poll with an empty inbox owes no output and must never be reaped,
-// however long it idles. Hook runs never disarm (their whole lifetime is
-// the checked-out section).
+// Disarm stops the clock without firing.
 func (w *idleWatchdog) Disarm() {
 	w.mu.Lock()
 	w.armed = false
@@ -80,12 +58,7 @@ func (w *idleWatchdog) Disarm() {
 func (w *idleWatchdog) check() (wait time.Duration, fire bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// limit <= 0 means no idle limit at all (a hook that omits
-	// `idle_timeout` runs uncapped) — never fire. Without this,
-	// idle >= w.limit below is vacuously true the instant the watchdog is
-	// armed (idle can never be negative), so every run without an idle
-	// limit would time out immediately instead of running until it exits.
-	// Re-check on a long interval rather than busy-looping on a zero wait.
+	// limit <= 0 means no idle limit at all (a hook that omits `idle_timeout` runs uncapped) — never fire.
 	if w.limit <= 0 {
 		return noIdleLimitRecheck, false
 	}
@@ -122,10 +95,7 @@ func (w *idleWatchdog) Watch(stop <-chan struct{}) <-chan struct{} {
 	return w.fired
 }
 
-// touchReader stamps the watchdog on every successful read from a container
-// output pipe. Wrapping the read side (rather than the line scanner) means
-// ANY output byte resets the idle clock — a hook midway through emitting a
-// very long line without a newline still counts as producing output.
+// touchReader stamps the watchdog on every successful read from a container output pipe.
 type touchReader struct {
 	r     io.Reader
 	touch func()

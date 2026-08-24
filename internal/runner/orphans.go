@@ -1,5 +1,3 @@
-package runner
-
 // Orphaned hook-container reaping.
 //
 // Every hook-run container is stamped with a marker label (RunContainerLabel,
@@ -34,9 +32,11 @@ package runner
 //     manager instances are not swept: they use deterministic names with
 //     their own rm -f-on-acquire orphan handling (managersession.go), and
 //     `webhook-runner test` containers are never labeled.
+//
 // A run in flight during a restart "never completed and exists nowhere
 // afterwards" (the tracker/runstore doctrine) — the sweep extends that to
 // the container itself instead of leaving an unowned zombie holding an IP.
+package runner
 
 import (
 	"fmt"
@@ -45,11 +45,7 @@ import (
 )
 
 const (
-	// RunContainerLabel marks every hook-run container this runner starts
-	// (value runContainerLabelValue), so a later serve boot can find and
-	// reap orphans. Exported for tests; treat the pair as part of the
-	// on-daemon contract — changing it strands containers started by older
-	// binaries.
+	// RunContainerLabel marks every hook-run container this runner starts (value runContainerLabelValue), so a later serve boot can find and.
 	RunContainerLabel       = "io.webhook-runner.run"
 	runContainerLabelValue  = "1"
 	runContainerLabelFilter = "label=" + RunContainerLabel + "=" + runContainerLabelValue
@@ -62,8 +58,7 @@ const (
 // unreachable docker daemon logs a warning and the server boots anyway
 // (the first real run will surface the daemon problem loudly enough).
 func (r *Runner) SweepOrphanContainers() {
-	// -a catches created-but-never-started strays too (rm -f handles any
-	// state); exited ones were already auto-removed by --rm.
+	// -a catches created-but-never-started strays too (rm -f handles any state); exited ones were already auto-removed by --rm.
 	out, err := exec.Command(r.dockerBin, "ps", "-aq", "--filter", runContainerLabelFilter).Output()
 	if err != nil {
 		r.log.Warn("orphan container sweep: docker ps failed", "err", err)
