@@ -70,9 +70,8 @@ usable. This job pins the dind fleet, where bubblewrap is measured working.
 
 The suites also declare `sandbox: false`, so they need no backend at all — see
 CLAUDE.md "CLI contract tests (dats/)". That makes the pinning
-belt-and-braces rather than load-bearing. The slim fleet can now supply
-bubblewrap too, via the `seccomp.userns` + `seccomp.systempaths` opt-ins; see
-`docs/internals/hooks-images-and-reload.md`.
+belt-and-braces rather than load-bearing. The slim fleet can supply bubblewrap
+too, via `seccomp.userns` alone; see `docs/internals/hooks-images-and-reload.md`.
 
 ### test: the generate hash and the freshness gate
 

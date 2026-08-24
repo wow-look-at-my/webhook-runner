@@ -110,15 +110,17 @@ docker-free, offline, secret-free tests of our own freshly built CLI. The
 opt-out also means the suites need NO sandbox backend at all — dats probes
 lazily — so the dind pinning below is now belt-and-braces rather than load-bearing.
 
-**dats itself is not runner-free**: without the opt-out it fails a run outright
-when neither backend is usable. Both jobs that run dats (`dats`, and `test` via
-go-toolchain's dats phase) pin `vars.CI_RUNNER_DIND`, where bubblewrap is
-measured working. The slim `wow-linux` fleet gets bubblewrap too, via the
-`seccomp.userns` opt-in — the syscall allow plus the `/proc` unmasking that
-makes it usable (see the `seccomp` bullet in
-[docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md))
-— so the dind pinning here is belt-and-braces on both counts now, not a
-statement that slim cannot sandbox.
+**dats itself is not runner-free** (the ruling that put these jobs on dind):
+without the opt-out it fails a run outright when neither backend is usable.
+**Both jobs that run dats (`dats`, and `test` via go-toolchain's dats phase)
+use `vars.CI_RUNNER_DIND`**, where bubblewrap is measured working. The slim
+`wow-linux` fleet can supply bubblewrap too, via `seccomp.userns` alone —
+docker is deleted from that image by design, and the `/proc` masking that used
+to defeat bwrap there is now dats' problem, not a privilege to hand out (see
+the seccomp bullet in
+[docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md)).
+So the dind pinning is belt-and-braces on both counts, not a statement that
+slim cannot sandbox.
 
 Every suite command execs the binary as
 `"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare

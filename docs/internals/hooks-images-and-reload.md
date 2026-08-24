@@ -266,55 +266,45 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   is a named, reviewable field. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule` (old binaries reject it via
   DisallowUnknownFields).
-- **`seccomp.userns` and `seccomp.systempaths` are TWO audited opt-ins, and a
-  sandbox needs both.** They are separate fields because they widen different
-  things, and declaring one must never quietly grant the other. Each maps to
-  one docker-run flag, on both the live-run and the `webhook-runner test` path
-  (`internal/runner/seccomp.go`). `userns` alone is the trap: bubblewrap
-  creates its namespace and then fails on the first mount.
-  - `seccomp: {userns: true}` →
-    `--security-opt seccomp=<generated profile>` — the vendored moby default
-    plus an ungated allow for `unshare`/`clone`/`clone3`/`setns` (creating the
-    namespaces) and `mount`/`umount2`/`pivot_root` (furnishing them). The
-    default profile gates all of those on CAP_SYS_ADMIN, which a hook
-    container does not hold. There is no docker syntax for "the default, plus
-    X", which is why the profile is vendored and rewritten per run.
-  - `seccomp: {systempaths: "unconfined"}` →
-    `--security-opt systempaths=unconfined` — empties MaskedPaths and
-    ReadonlyPaths. `"unconfined"` is the only accepted value; anything else is
-    a load error, because a typo that reads as "masking off" to its author and
-    "masking on" to the runner is a security setting that looks applied and is
-    not. Docker masks parts of `/proc` in every container (a tmpfs
-    over `/proc/acpi`, a `/dev/null` bind over `/proc/kcore`, read-only binds
-    of `/proc/sys` and `/proc/sysrq-trigger`), and inside a user namespace the
-    kernel refuses a fresh procfs mount while any of those obscures the
-    container's own `/proc` (`mount_too_revealing`). Each shape is sufficient
-    on its own; with all of them gone the same suite passes. Without this flag
-    bwrap creates its namespace and then fails on the first mount, reporting
-    `Can't mount proc on /newroot/proc: Operation not permitted` — which reads
-    as a seccomp problem and is not one.
+- **`seccomp.userns` and the `/proc` masking — the opt-in that does NOT
+  exist.** `seccomp: { userns: true }` runs the container under docker's
+  default profile plus an ungated allow for
+  `unshare`/`clone`/`clone3`/`setns` and `mount`/`umount2`/`pivot_root`
+  (`internal/runner/seccomp.go`), so a hook can build an unprivileged user
+  namespace and furnish it. That is the whole grant: no capability, no
+  `--privileged`, every other syscall keeps the default policy.
 
-  What `systempaths` exposes, plainly. For a process running as ROOT in the
-  container: `/proc/sysrq-trigger` becomes writable, which is a host reboot or
-  panic in one line, and `/proc/irq/*/smp_affinity` becomes writable, which is
-  host IRQ steering. The `/proc/sys/kernel/sysrq` mask does NOT hold the first
-  one back — the proc handler calls `__handle_sysrq(c, false)`, and the
-  kernel's comment at the check reads "Should we check for enabled operations
-  (/proc/sysrq-trigger should not)". The file's mode is the gate: `0200`. For
-  ANY process, root or not: `/proc/sched_debug` and `/proc/timer_list`
-  enumerate host processes and kernel addresses straight through the PID
-  namespace, which both breaks the isolation illusion and helps defeat KASLR;
-  `/proc/keys` and `/sys/firmware` likewise disclose.
+  A container refuses bubblewrap for a SECOND, independent reason, and there
+  is deliberately no opt-in for it. Docker masks parts of `/proc` (a size-0
+  tmpfs over `/proc/acpi` and friends, a `/dev/null` bind over `/proc/kcore`
+  and friends, read-only self-binds of `/proc/sys` and `/proc/sysrq-trigger`),
+  and inside a user namespace the kernel refuses a fresh procfs while anything
+  obscures the one already visible (`mount_too_revealing`, `fs/namespace.c`),
+  so bwrap's `--proc` fails with `Can't mount proc on /newroot/proc: Operation
+  not permitted`. Measured: the tmpfs alone, the `/dev/null` bind alone, and
+  the read-only bind alone each reproduce it exactly.
 
-  What it does NOT give: no capability, no syscall, no host mount, no docker
-  socket. The classic escapes — cgroup `release_agent`, mounting the host
-  filesystem, the `/proc/self/exe` runc overwrite — all need `CAP_SYS_ADMIN` or
-  a host bind. `/proc/kcore` still needs `CAP_SYS_RAWIO` and most `/proc/sys`
-  writes still need `CAP_SYS_ADMIN` in the init user namespace, so the two
-  scariest-sounding paths stay refused. It is not an escape primitive; it is a
-  host-DoS and disclosure surface, and a removed layer of defence in depth in
-  front of kernel bugs — which matters most next to `userns`, the larger
-  privesc surface of the pair.
+  `--security-opt systempaths=unconfined` clears the masks and therefore looks
+  like the missing half of this opt-in. **It shipped for one afternoon and was
+  removed by operator ruling: a hook may not be able to disrupt the host.**
+  Every write-capable path it uncovers is root-owned — `/proc/sysrq-trigger` is
+  `0200`, `/proc/sys/*` and `/proc/irq/*/smp_affinity` are `0644` — and a hook
+  container runs as root, so one write to `/proc/sysrq-trigger` reboots the
+  host. `/proc/sys/kernel/sysrq` does not gate that: `write_sysrq_trigger`
+  calls `__handle_sysrq(c, false)`, and the kernel's comment there reads
+  "Should we check for enabled operations (/proc/sysrq-trigger should not)".
+  It is not an escape primitive (the classic escapes need `CAP_SYS_ADMIN` or a
+  host bind), but a reboot is disruption enough. `-o subset=pid` is not a way
+  round it either: mainline exempts restricted procfs variants from the
+  visibility rule, no shipping kernel has that branch (`v6.18` does not), and
+  measured on 6.18 both variants are refused under masking.
+
+  The masking is not the runner's problem to solve, because the SANDBOX can
+  solve it without any grant: dats binds the container's existing `/proc`
+  read-only where the kernel refuses a private one, keeping `--unshare-pid`
+  and every containment property, and announcing the reduction. See
+  [dats' docs/sandbox-masked-proc.md](https://github.com/wow-look-at-my/dats/blob/master/docs/sandbox-masked-proc.md).
+  If a future sandbox needs a fresh procfs in a container, fix it there.
 - `script` (hook.json) is parse-time sugar for `command`:
   `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
   pwsh, node, or tsx), resolving the file with `EvalSymlinks` and

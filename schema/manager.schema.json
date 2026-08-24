@@ -130,12 +130,6 @@
             "userns": {
               "type": "boolean",
               "default": false
-            },
-            "systempaths": {
-              "type": "string",
-              "enum": [
-                "unconfined"
-              ]
             }
           },
           "additionalProperties": false
@@ -312,7 +306,7 @@
       "description": "Parse-time sugar for command: run a script file from the manager directory with a named interpreter. The script is baked into the image like all code, so the interpreter must be installed in the image. An explicit command overrides the derived one."
     },
     "seccomp": {
-      "description": "Narrow the session container's syscall filter, exactly the hook seccomp contract. Absent means docker's builtin profile, unmodified. seccomp.userns (default false) allows unprivileged USER NAMESPACES by running the container under the default profile plus an ungated allow for unshare/clone/clone3/setns; every other syscall keeps the default policy. seccomp.systempaths (only accepted value \"unconfined\") is a SEPARATE opt-in that clears docker's MaskedPaths and ReadonlyPaths, without which the kernel refuses the fresh procfs mount a sandbox needs -- so /proc/sysrq-trigger and /proc/irq become writable to a root process and /proc/sched_debug discloses host processes. An in-container sandbox such as bubblewrap (and so `dats` on its default backend) needs BOTH. Note the manager's container is LONG-LIVED, so the relaxed profile applies for the whole session rather than one run. An AUDITED opt-in like dind: enable only for trusted, operator-curated managers."
+      "description": "Narrow the session container's syscall filter, exactly the hook seccomp contract. Absent means docker's builtin profile, unmodified. seccomp.userns (default false) allows unprivileged USER NAMESPACES by running the container under the default profile plus an ungated allow for unshare/clone/clone3/setns; every other syscall keeps the default policy. Needed by an in-container sandbox such as bubblewrap (and so `dats` on its default backend). Note the manager's container is LONG-LIVED, so the relaxed profile applies for the whole session rather than one run. An AUDITED opt-in like dind: enable only for trusted, operator-curated managers."
     },
     "secret": {
       "description": "GitHub-style HMAC-SHA256 webhook secret: deliveries must carry a valid X-Hub-Signature-256 over the raw body. The usual choice for managers fed by a GitHub App/org webhook."
