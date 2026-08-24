@@ -41,6 +41,10 @@
       "userns": {
         "type": "boolean",
         "default": false
+      },
+      "systempaths": {
+        "type": "string",
+        "enum": ["unconfined"]
       }
     },
     "additionalProperties": false
