@@ -99,27 +99,25 @@ paths, and version/help/argument/flag errors — the authoritative case list
 is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
 dashboard need Docker/network and stay in `e2e/`.
 
-**The suites declare `sandbox: false`, and must keep doing so.** dats
-SANDBOXES commands BY DEFAULT (bubblewrap, falling back to docker), and its
-bwrap sandbox gives a command a FRESH /tmp — while go-toolchain's dats phase
-stages the binaries the suites exec under an `os.MkdirTemp` there. Inside the
-sandbox that path does not exist, so every test exits 127 (all 23, the moment
-dats v49 turned sandboxing on). Nothing here needs isolating: these are
-docker-free, offline, secret-free tests of our own freshly built CLI. The
-opt-out also means the suites need NO sandbox backend at all — dats probes
-lazily — so the dind pinning below is now belt-and-braces rather than load-bearing.
+**The suites are SANDBOXED and a file cannot opt out.** dats sandboxes
+commands BY DEFAULT (bubblewrap, falling back to docker); a file-level
+`sandbox:` block only NARROWS, and `sandbox: false` is a parse error that
+stops the suite loading at all. Only `--no-sandbox` on the run disables it,
+which is the caller's decision, not the suite's. Both files declare
+`network: false` and nothing else — these tests are offline by
+construction. The binaries they exec stay reachable because go-toolchain's
+dats phase stages them under `build/`, inside the module root, which is the
+one host path a sandboxed command can read.
 
-**dats itself is not runner-free** (the ruling that put these jobs on dind):
-without the opt-out it fails a run outright when neither backend is usable.
-**Both jobs that run dats (`dats`, and `test` via go-toolchain's dats phase)
-use `vars.CI_RUNNER_DIND`**, where bubblewrap is measured working. The slim
-`wow-linux` fleet can supply bubblewrap too, via `seccomp.userns` alone —
-docker is deleted from that image by design, and the `/proc` masking that used
-to defeat bwrap there is now dats' problem, not a privilege to hand out (see
-the seccomp bullet in
-[docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md)).
-So the dind pinning is belt-and-braces on both counts, not a statement that
-slim cannot sandbox.
+**dats needs a sandbox backend, so both jobs that run it are GitHub-hosted**
+— `dats`, and `test` via go-toolchain's dats phase. They used to pin
+`vars.CI_RUNNER_DIND`; that fleet cannot serve a job at all while `dind`
+grants no privilege (docs/internals/nested-containers.md), and an unservable
+pin is a queue, not a runner. `ubuntu-latest` costs paid minutes on a private
+repo, which self-hosted-runners.md otherwise forbids — operator instruction,
+for the Docker-dependent jobs only. The slim `wow-linux` fleet can supply
+bubblewrap too, via `seccomp.userns` alone, so the jobs that need no daemon
+stay on it.
 
 Every suite command execs the binary as
 `"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare
