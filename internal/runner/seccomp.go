@@ -120,6 +120,19 @@ func writeUsernsProfile(tmpDir, runID string) (path string, cleanup func(), err 
 // opt in gets NO flags at all, so its container keeps the daemon's builtin
 // profile and the docker command line is byte-identical to before.
 //
+// SECCOMP IS ONLY HALF THE OPT-IN. Docker also binds /proc/bus, /proc/fs,
+// /proc/irq, /proc/sys and /proc/sysrq-trigger READ-ONLY, and masks a few
+// paths under /proc outright. The kernel refuses a fresh procfs mount inside
+// an unprivileged user namespace whenever the /proc already mounted is
+// obstructed like that, so bwrap builds its namespace, allows every syscall
+// it needs, and still dies on "Can't mount proc on /newroot/proc: Operation not
+// permitted". systempaths=unconfined removes both obstructions; docker offers
+// no finer control, and a dind hook gets the same effect from --privileged.
+//
+// The cost is real and belongs to whoever writes the opt-in into a manifest:
+// the container sees an unmasked /proc, including a writable
+// /proc/sysrq-trigger. Only a hook that must build a sandbox should ask.
+//
 // A plain function, not a Runner method: the `webhook-runner test` path
 // (runOneTest) has no Runner, and run/test parity means both paths must go
 // through this exact code.
@@ -131,7 +144,10 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return []string{"--security-opt", "seccomp=" + path}, cleanup, nil
+	return []string{
+		"--security-opt", "seccomp=" + path,
+		"--security-opt", "systempaths=unconfined",
+	}, cleanup, nil
 }
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test

@@ -123,6 +123,26 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	}
 }
 
+// The seccomp profile is only half the opt-in. Docker binds several paths
+// under /proc read-only, and the kernel refuses a fresh procfs inside an
+// unprivileged user namespace while the visible one is obstructed -- so a
+// container with every syscall allowed still cannot build a sandbox. Measured:
+// remounting /proc/sys read-only in a mount namespace reproduces the exact
+// bwrap message, "Can't mount proc on /newroot/proc: Operation not permitted".
+func TestUsernsOptInAlsoUnobstructsProc(t *testing.T) {
+	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test")
+	require.Nil(t, err)
+	defer cleanup()
+
+	assert.Contains(t, args, "systempaths=unconfined",
+		"the userns opt-in must also drop docker's read-only and masked /proc "+
+			"paths, or bwrap gets its namespace and cannot mount /proc in it")
+}
+
+type wantsUserns struct{}
+
+func (wantsUserns) UsernsAllowed() bool { return true }
+
 // The default is untouched: a hook that did not opt in gets no flags at all,
 // so its container keeps docker's builtin profile and its command line is
 // byte-identical to before the feature existed.
