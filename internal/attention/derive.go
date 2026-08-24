@@ -33,6 +33,11 @@ const (
 	KeyReportedPrefix = "reported:"
 	// KeyTmpDir: the boot-scoped containerized-without-TMPDIR verdict.
 	KeyTmpDir = "tmpdir"
+	// KeyDataRoot: the boot-scoped verdict that docker's store is NOT where
+	// the deployment said it would be (WEBHOOK_RUNNER_EXPECT_DATA_ROOT), so
+	// this runner's containers are writing to the wrong filesystem.
+	KeyDataRoot      = "data_root"
+	KeyHostIsolation = "host-isolation"
 	// KeyReloadHeld: a newer hooks-repo commit is held by the reload CI
 	// gate — awaiting the gating status, or that status came back red.
 	// Reported/resolved by internal/reloadgate ("reload" source, no hook).

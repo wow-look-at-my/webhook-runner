@@ -133,11 +133,9 @@ func TestParseAcceptsValidSettings(t *testing.T) {
 	assert.JSONEq(t, `{"app_id":"42"}`, string(h.SettingsJSON()))
 }
 
-// `env` is GONE. The fleet migrated to settings (its last entity on
-// 2026-08-01), so the field that could not be dropped in one step -- a runner
-// rejecting it could not have loaded the fleet still declaring it -- now
-// REJECTS: DisallowUnknownFields makes an unmigrated manifest a load error
-// naming the field, rather than a hook that comes up with no configuration.
+// `env` is GONE: DisallowUnknownFields makes a manifest that still declares
+// it a load error naming the field, rather than a hook that comes up with no
+// configuration at all.
 func TestParseRejectsTheRemovedEnvBlock(t *testing.T) {
 	src := writeSettingsFixture(t, "")
 	_, err := Parse("h", src, []byte(`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","description":"d","env":{"A":"b"}}`))

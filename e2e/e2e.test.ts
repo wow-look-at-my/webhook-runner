@@ -213,8 +213,8 @@ try {
     const output = run.output.join("\n");
     assert.ok(output.includes("id=env-hook"), "missing HOOK_ID");
     // The whole settings document, verbatim -- including the integer, which
-    // the retired string-only env block could not carry. Compared without
-    // whitespace: the runner hands over the manifest's bytes as written, so
+    // proves JSON types survive rather than collapsing to strings. Compared
+    // without whitespace: the runner hands over the manifest's bytes as written, so
     // the document's formatting is hook.json's, not a normalized re-encoding.
     const dense = output.replace(/\s+/g, "");
     assert.ok(dense.includes('"my_var":"e2e-value"'), `missing settings value: ${output}`);
@@ -245,17 +245,20 @@ try {
     assert.ok(run.output.join("\n").includes("hello-from-baked-image"), "missing baked file content");
   });
 
-  await test("dind hook runs a nested docker daemon (--privileged + /var/lib/docker volume)", async () => {
-    // dind:true → the runner adds --privileged and an anonymous
-    // /var/lib/docker volume, so the container hosts its own dockerd. Async
-    // + a generous poll: starting the nested daemon takes a few seconds.
+  await test("dind hook gets its volume and cannot reach the host", async () => {
+    // dind:true adds an anonymous /var/lib/docker volume and NO privilege, so
+    // this proves both halves against a real daemon: the volume an inner
+    // daemon needs is there, and /proc/sysrq-trigger and
+    // /proc/sys/kernel/core_pattern are still read-only. The argv is pinned by
+    // hostprimitives_test.go; this pins the outcome.
     const trigger = await fetch(`${base}/hook/dind-hook`, { method: "POST", body: "{}" });
     assert.equal(trigger.status, 202);
     const { run_id } = (await trigger.json()) as any;
     const result = await pollRun(adminBase, run_id, 120_000);
     assert.equal(result.status, "success", `dind run failed: ${(result.output ?? []).join("\n")}`);
     assert.equal(result.exit_code, 0);
-    assert.ok(result.output.join("\n").includes("dind-smoke-ok"), "nested dockerd smoke check did not confirm");
+    assert.ok(result.output.join("\n").includes("dind-storage-ok"),
+      "the dind checks did not confirm: either the volume is missing or a host path was writable");
   });
 
   await test("sops secrets: injected env and api_key both decrypt", async () => {
@@ -401,9 +404,9 @@ await test("webhook-runner test runs declared hook tests", async () => {
   const r = child_process.spawnSync(BINARY, ["test", HOOKS_DIR], { encoding: "utf8" });
   assert.equal(r.status, 0, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
   assert.ok(r.stdout.includes("built-tests-ok"), "missing built-image test output");
-  // The dind hook's declared test starts a nested daemon under the same
-  // --privileged + volume injection — the test-path capability parity.
-  assert.ok(r.stdout.includes("dind-smoke-ok"), "missing dind nested-daemon test output");
+  // The test path applies the same dind flags as the live path, so the host
+  // checks above run there too — an image is proved in CI, not on a runner.
+  assert.ok(r.stdout.includes("dind-storage-ok"), "missing dind volume/host-isolation test output");
   assert.ok(r.stdout.includes("test command(s) passed"), "missing summary line");
 });
 

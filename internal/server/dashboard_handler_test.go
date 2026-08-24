@@ -78,8 +78,8 @@ func TestDashboardDrilldownHiddenOnOverview(t *testing.T) {
 // The drill-down cards must contain their content. An unbreakable value (a
 // long trigger path, an image tag, a run id — or adjacent env-var <code>
 // chips, which have no whitespace between them and so no soft-wrap
-// opportunity at all) used to escape its fixed-width card sideways, and the
-// neighboring card's opaque panel painted over the escaped text (grid items
+// opportunity at all) escapes its fixed-width card sideways without them, and
+// the neighboring card's opaque panel paints over the escaped text (grid items
 // paint atomically in DOM order). Assert the CSS keeps the wrap/shrink
 // guards, and that the JS shows the hook path instead of a trigger URL
 // fabricated from location.origin — the dashboard lives on the ADMIN

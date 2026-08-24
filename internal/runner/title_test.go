@@ -132,10 +132,9 @@ func TestRunnerMidRunTitleReachesFinishedEvent(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
-	// Reading the recorder straight off Done() used to race the run.finished
-	// write and needed a Runner.Wait() barrier here (a real CI flake). Finish
-	// now settles that write before closing done, so the barrier is gone —
-	// and this test is what would catch it coming back.
+	// No Runner.Wait() barrier: Finish settles the run.finished write before
+	// closing done, so reading the recorder straight off Done() is safe.
+	// This test is what catches that ordering breaking.
 	var finishedMsg string
 	for _, ev := range rec.List(0) {
 		if ev.Kind == "run.finished" {

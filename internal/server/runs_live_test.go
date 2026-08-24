@@ -38,9 +38,9 @@ func getRuns(t *testing.T, s *Server, target string) []runs.RunState {
 // Any requested max must be harmless for live runs: with more active runs
 // than max, EVERY active run still comes back and only terminal rows are
 // capped. The flood here is SKIPPED records — the production shape: bursts
-// of zero-duration terminal instants whose sheer volume used to push
-// live-but-waiting runs out of every newest-max window (clients read
-// absence as termination).
+// of zero-duration terminal instants whose sheer volume pushes
+// live-but-waiting runs out of any newest-max window that pages first.
+// Clients read that absence as termination.
 func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
 	s, _, tr, _ := newTestServer(t)
 	activeIDs := set.New[string]()

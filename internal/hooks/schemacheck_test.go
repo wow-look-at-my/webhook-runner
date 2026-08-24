@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The published schema is now enforced at LOAD, by the same implementation the
-// hooks repo's CI runs. These cases are the ones the Go model CANNOT express --
-// exactly the drift that used to be caught in CI and nowhere else.
+// The published schema is enforced at LOAD, by the same implementation the
+// hooks repo's CI runs. These cases are the ones the Go model CANNOT express,
+// so nothing but the schema gate catches them.
 func parseHookDoc(t *testing.T, doc string) error {
 	t.Helper()
 	dir := t.TempDir()
@@ -35,7 +35,7 @@ func TestSchemaGateRejectsWhatTheGoModelCannotExpress(t *testing.T) {
 			doc:  `{` + schemaURL + `, "command":["x"], "run_title":""}`,
 			want: "run_title",
 		},
-		// The $schema field must be a URI: "s" used to load fine.
+		// The $schema field must be a URI; the Go model takes any string.
 		"$schema is not a URI": {
 			doc:  `{"$schema":"s", "command":["x"]}`,
 			want: "$schema",

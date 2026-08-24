@@ -301,14 +301,11 @@ let seeded = false; // first data application went through setData
 // While the stream delivers (run deltas, hb keepalives, changed signals),
 // every instant since the last claim IS vouched: the server pushes a delta
 // for every run change, so a quiet stretch is KNOWN-empty, not unknown.
-// This contract used to be met by ACCIDENT: every skipped-run delta forced a
-// debounced rebuildAll(), whose setData re-registered coverage up to
-// Date.now(), and this fleet skips constantly — so the trailing edge stayed
-// current. #73 removed the skip rebuild (correctly) and with it the only
-// thing extending coverage on a live stream: the hatch then grew from the
-// connect snapshot to the now-marker, over live bars (the 2026-07-15
-// full-window-crosshatch incident). claimLiveCoverage makes the contract
-// EXPLICIT: each claim covers [previous claim, now] — contiguous ranges the
+// Nothing else extends coverage on a live stream, so without an explicit
+// claim the hatch grows from the connect snapshot to the now-marker, over
+// live bars. Never leave this to a side effect of some other rebuild:
+// claimLiveCoverage states it directly, and each claim covers
+// [previous claim, now] — contiguous ranges the
 // component's tracker merges — bounding the trailing hatch to one heartbeat
 // (~10s) worst case. Deliberately NOT clock-driven: claims ride only real
 // feed bytes, so a dead stream's growing hatch (plus the component's stale
@@ -1420,15 +1417,15 @@ function aggTooltip(interval: TimelineInterval): Node {
 	return frag;
 }
 
-// (The adapter-side skip pre-merge that used to live here is GONE: skipped
-// runs — zero-duration instants — now feed through as INDIVIDUAL intervals
-// at their true timestamps, each with its own label/tooltip/modal link. The
-// component clusters visually-overlapping instant markers itself, scale-
-// aware: within ~12px they merge into ONE ×N point marker occupying ONE
-// packing slot — so a redelivery burst still can't blow up lane height —
-// and zooming in progressively splits every cluster back into true-time
-// pips. The old fixed 5s data-space buckets rendered as duration bars and
-// never split on zoom; a pile of instants has no length.)
+// Never pre-merge skipped runs here. They are zero-duration instants and
+// feed through as INDIVIDUAL intervals at their true timestamps, each with
+// its own label, tooltip and modal link. The component clusters
+// visually-overlapping instant markers itself, scale-aware: within ~12px
+// they merge into ONE ×N point marker occupying ONE packing slot, so a
+// redelivery burst cannot blow up lane height, and zooming in splits every
+// cluster back into true-time pips. Bucketing in data space instead renders
+// as duration bars that never split on zoom — a pile of instants has no
+// length.
 
 // -- The element + wiring --------------------------------------------------------
 

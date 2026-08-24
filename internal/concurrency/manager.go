@@ -401,7 +401,7 @@ func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue f
 	}
 
 	// Queue: register in the advisory wait line and tell the caller it is
-	// actually waiting (first onQueue call = the old one-shot onWait).
+	// actually waiting. The first onQueue call is that one-shot signal.
 	w := &waiterRec{id: runID, since: time.Now().UTC(), notify: onQueue}
 	if runID != "" {
 		m.queueFor(group).waiting = append(m.queueFor(group).waiting, w)
