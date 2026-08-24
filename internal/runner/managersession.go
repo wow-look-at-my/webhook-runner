@@ -199,51 +199,43 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		return fail(runs.StatusError, "manager requires the state store (KV socket/shim not configured)", false)
 	}
 
-	args := []string{
-		"run", "--rm",
-		"--name", containerName,
-		"-v", payloadPath + ":" + mountedPayload + ":ro",
-		"-v", headersPath + ":" + mountedHeaders + ":ro",
-		"-v", settingsPath + ":" + mountedSettings + ":ro",
-		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
-		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
-		"-e", "HOOK_SETTINGS_FILE=" + mountedSettings,
-		"-e", "HOOK_ID=" + hook.ID,
-		"-e", "HOOK_RUN_ID=" + instanceID,
-		"--entrypoint", mountedShim,
-		"-v", r.kvShim + ":" + mountedShim + ":ro",
-		"-v", r.kvSocket + ":" + mountedStateSocket,
-		"-e", "HOOK_KV_SOCKET=" + mountedStateSocket,
-		"-e", "HOOK_KV_URL=http://localhost:9002",
-		"-e", "HOOK_KV_TOKEN=" + r.kv.Token(hook.ID, instanceID),
-	}
-	args = append(args, r.gsmArgs()...)
-	for _, n := range hook.Networks {
-		args = append(args, "--network", n)
-	}
-	for _, v := range hook.Volumes {
-		args = append(args, "-v", v)
-	}
-	for k, v := range secrets {
-		if hooks.ReservedEnvKey(k) {
+	// Same builder as a hook run and a hook's tests: a manager is a different
+	// LIFECYCLE, not a different kind of container. What differs is stated as
+	// fields (no orphan label, the shim always injected), and everything a
+	// container must have regardless -- mirror routing, its own PID namespace
+	// -- comes from the builder rather than from remembering it here.
+	spec := containerSpec{
+		name:  containerName,
+		image: image,
+		mounts: []string{
+			payloadPath + ":" + mountedPayload + ":ro",
+			headersPath + ":" + mountedHeaders + ":ro",
+			settingsPath + ":" + mountedSettings + ":ro",
+			r.kvShim + ":" + mountedShim + ":ro",
+			r.kvSocket + ":" + mountedStateSocket,
+		},
+		entrypoint: mountedShim,
+		env: []string{
+			"HOOK_PAYLOAD_FILE=" + mountedPayload,
+			"HOOK_HEADERS_FILE=" + mountedHeaders,
+			"HOOK_SETTINGS_FILE=" + mountedSettings,
+			"HOOK_ID=" + hook.ID,
+			"HOOK_RUN_ID=" + instanceID,
+			"HOOK_KV_SOCKET=" + mountedStateSocket,
+			"HOOK_KV_URL=http://localhost:9002",
+			"HOOK_KV_TOKEN=" + r.kv.Token(hook.ID, instanceID),
+		},
+		secrets: secrets,
+		onReservedSecret: func(key string) {
 			r.log.Warn("manager secret shadows a reserved env key; skipped",
-				"manager", hook.ID, "instance", instanceID, "env", k)
-			continue
-		}
-		args = append(args, "-e", k+"="+v)
+				"manager", hook.ID, "instance", instanceID, "env", key)
+		},
+		networks: hook.Networks,
+		user:     hook.User,
+		workdir:  hook.Workdir,
+		dind:     hook.Dind,
 	}
-
-	if hook.User != "" {
-		args = append(args, "--user", hook.User)
-	}
-	if hook.Workdir != "" {
-		args = append(args, "--workdir", hook.Workdir)
-	}
-	// dind, exactly the hook flags (see execute): --privileged + an
-	// anonymous /var/lib/docker volume; --rm reaps the volume at exit.
-	if hook.Dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
-	}
+	spec.mounts = append(spec.mounts, hook.Volumes...)
 	// seccomp.userns, same as the hook paths. The profile file must outlive
 	// the daemon's read at container start; this cleanup shares the deferred
 	// lifetime of the session's other temp files above.
@@ -254,16 +246,15 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		return fail(runs.StatusError, fmt.Sprintf("seccomp profile: %v", err), false)
 	}
 	defer seccompCleanup()
-	args = append(args, seccompFlags...)
-	args = append(args, image)
+	spec.seccomp = seccompFlags
 	childArgv, err := imageCommand(r.dockerBin, image, hook.Command)
 	if err != nil {
 		r.events.Record("image.inspect_failed", fmt.Sprintf("inspect %s for manager %s failed: %v", image, hook.ID, err),
 			map[string]string{"hook": hook.ID})
 		return fail(runs.StatusError, fmt.Sprintf("inspect image command: %v", err), false)
 	}
-	args = append(args, "kv-forward")
-	args = append(args, childArgv...)
+	spec.argv = append([]string{"kv-forward"}, childArgv...)
+	args := spec.args()
 
 	if aborted() {
 		return requestedOutcome(runs.StatusCancelled)
@@ -457,17 +448,15 @@ func (r *Runner) stopContainer(name string, graceSeconds int) {
 // reintroduce a blackhole here.
 const GSMBaseURL = "https://github-state-mirror.pazer.io"
 
-// gsmArgs points a container's GitHub API traffic at the mirror. Applied to
-// EVERY hook, manager, and test container, no exemptions. Injected BEFORE
-// secrets and hook env (docker keeps the last -e), so a hook.json that
-// declares its own GITHUB_API_URL still wins — today pr-minder and
-// required-builds declare exactly this same mirror base, so the injection
+// gsmInjectArgs points a container's GitHub API traffic at the mirror. Applied
+// to EVERY hook, manager, and test container, no exemptions — which is now a
+// property of the code rather than of three call sites agreeing, because
+// containerSpec.args is its only caller and every container start goes through
+// it. Injected BEFORE secrets and hook env (docker keeps the last -e), so a
+// hook.json that declares its own GITHUB_API_URL still wins — today pr-minder
+// and required-builds declare exactly this same mirror base, so the injection
 // makes their per-hook lines redundant rather than conflicting, and every
 // other container gains the routing it never had.
-func (r *Runner) gsmArgs() []string {
-	return gsmInjectArgs()
-}
-
 func gsmInjectArgs() []string {
 	return []string{"-e", "GITHUB_API_URL=" + GSMBaseURL}
 }
