@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"strings"
 	"testing"
 )
 
@@ -123,6 +124,30 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	}
 }
 
+// The second half of the opt-in. A profile that permits mount is not enough:
+// docker masks parts of /proc in every container, and the kernel refuses a
+// fresh procfs mount inside a user namespace while anything obscures the one
+// already there. Measured on a real container: with the masks present dats
+// reports "no usable sandbox backend" and bwrap names the mount; with them
+// gone the same suite passes. So the opt-in must clear them, or it grants a
+// namespace the hook still cannot furnish.
+func TestUsernsOptInUnmasksTheSystemPaths(t *testing.T) {
+	args, cleanup, err := seccompArgs(yesUserns{}, t.TempDir(), "test")
+	require.Nil(t, err)
+	t.Cleanup(cleanup)
+
+	assert.Contains(t, args, "systempaths=unconfined",
+		"without it docker's /proc masking makes bwrap fail with "+
+			"\"Can't mount proc on /newroot/proc\", which reads as a seccomp problem and is not one")
+
+	// Both halves, and nothing else: this is an audited grant, so a third
+	// flag arriving here is a widening that must be argued for on purpose.
+	assert.Equal(t, 4, len(args), "expected exactly the seccomp profile and systempaths flags, got %v", args)
+	assert.Equal(t, "--security-opt", args[0])
+	assert.True(t, strings.HasPrefix(args[1], "seccomp="), "args[1] = %q", args[1])
+	assert.Equal(t, "--security-opt", args[2])
+}
+
 // The default is untouched: a hook that did not opt in gets no flags at all,
 // so its container keeps docker's builtin profile and its command line is
 // byte-identical to before the feature existed.
@@ -138,3 +163,7 @@ func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
 type noUserns struct{}
 
 func (noUserns) UsernsAllowed() bool { return false }
+
+type yesUserns struct{}
+
+func (yesUserns) UsernsAllowed() bool { return true }

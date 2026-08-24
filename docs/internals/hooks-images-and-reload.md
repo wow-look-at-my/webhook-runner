@@ -266,6 +266,34 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   is a named, reviewable field. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule` (old binaries reject it via
   DisallowUnknownFields).
+- `seccomp: {userns: true}` (hook.json / manager.json) is the audited opt-in
+  for a hook that sandboxes its OWN workload — bubblewrap, and so `dats` on
+  its default backend. It maps to EXACTLY two docker-run flags, on both the
+  live-run and the `webhook-runner test` path
+  (`internal/runner/seccomp.go`), because a sandbox needs two things and the
+  first one alone is a trap:
+  - `--security-opt seccomp=<generated profile>` — the vendored moby default
+    plus an ungated allow for `unshare`/`clone`/`clone3`/`setns` (creating the
+    namespaces) and `mount`/`umount2`/`pivot_root` (furnishing them). The
+    default profile gates all of those on CAP_SYS_ADMIN, which a hook
+    container does not hold. There is no docker syntax for "the default, plus
+    X", which is why the profile is vendored and rewritten per run.
+  - `--security-opt systempaths=unconfined` — empties MaskedPaths and
+    ReadonlyPaths. Docker masks parts of `/proc` in every container (a tmpfs
+    over `/proc/acpi`, a `/dev/null` bind over `/proc/kcore`, read-only binds
+    of `/proc/sys` and `/proc/sysrq-trigger`), and inside a user namespace the
+    kernel refuses a fresh procfs mount while any of those obscures the
+    container's own `/proc` (`mount_too_revealing`). Each shape is sufficient
+    on its own; with all of them gone the same suite passes. Without this flag
+    bwrap creates its namespace and then fails on the first mount, reporting
+    `Can't mount proc on /newroot/proc: Operation not permitted` — which reads
+    as a seccomp problem and is not one.
+
+  What it exposes, plainly: `/proc/sys` and `/proc/sysrq-trigger` become
+  writable to the container's root. No capability is added and every other
+  syscall keeps the default policy, so it stays strictly narrower than the
+  `--privileged` a `dind` hook already gets — but it is a real reach at the
+  host, and that is why it is an opt-in rather than a default.
 - `script` (hook.json) is parse-time sugar for `command`:
   `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
   pwsh, node, or tsx), resolving the file with `EvalSymlinks` and

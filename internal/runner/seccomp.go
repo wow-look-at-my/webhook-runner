@@ -1,6 +1,9 @@
 package runner
 
-// Seccomp profile plumbing for the hook.json `seccomp.userns` opt-in.
+// Container plumbing for the hook.json `seccomp.userns` opt-in. It emits TWO
+// docker flags, because a sandbox needs both halves: a seccomp profile that
+// permits the calls, and a /proc the kernel will let bwrap mount over. See
+// unmaskedSystemPaths below for the second half and what it exposes.
 //
 // WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly two
 // kinds of value -- the literal string "unconfined" (no syscall filtering
@@ -115,6 +118,30 @@ func writeUsernsProfile(tmpDir, runID string) (path string, cleanup func(), err 
 	return path, cleanup, nil
 }
 
+// unmaskedSystemPaths empties docker's MaskedPaths and ReadonlyPaths for the
+// container. Bubblewrap cannot build its sandbox without it, and no syscall
+// filter is what stands in the way.
+//
+// Docker mounts three shapes over /proc in every container: a size-0 tmpfs
+// over /proc/acpi, /proc/asound and /proc/scsi; a bind of /dev/null over
+// /proc/kcore, /proc/keys and friends; and read-only self-binds of /proc/bus,
+// /proc/fs, /proc/irq, /proc/sys and /proc/sysrq-trigger. Inside a user
+// namespace the kernel refuses to mount a fresh procfs unless it can already
+// see one procfs mount that nothing obscures (mount_too_revealing in
+// fs/namespace.c). Each of those three shapes obscures one on its own, so
+// bwrap's --proc fails with "Can't mount proc on /newroot/proc: Operation not
+// permitted" and dats reports "no usable sandbox backend".
+//
+// WHAT THIS EXPOSES, stated plainly: /proc/sys and /proc/sysrq-trigger become
+// writable to the container's root, and /proc/kcore and the rest become
+// visible. On a fleet running org CI jobs that is a real reach at the host, and
+// it is why this rides an audited opt-in rather than being on by default. It
+// adds NO capability and leaves every syscall filter in place, so it is
+// strictly narrower than the --privileged a dind hook already gets.
+//
+// see docs/internals/hooks-images-and-reload.md
+var unmaskedSystemPaths = []string{"--security-opt", "systempaths=unconfined"}
+
 // seccompArgs returns the docker flags implementing a hook's seccomp block,
 // plus a cleanup for anything it had to materialize. A hook that did not
 // opt in gets NO flags at all, so its container keeps the daemon's builtin
@@ -131,7 +158,8 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return []string{"--security-opt", "seccomp=" + path}, cleanup, nil
+	args = append([]string{"--security-opt", "seccomp=" + path}, unmaskedSystemPaths...)
+	return args, cleanup, nil
 }
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test
