@@ -11,9 +11,11 @@ package runner
 
 import (
 	"encoding/json"
+	"strings"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 // profileAllowsUngated reports whether the profile ends with a rule that
@@ -132,6 +134,26 @@ func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
 
 }
 
+// The opt-in must lift BOTH gates. Seccomp alone is what shipped, and on an
+// AppArmor-enforcing host it bought nothing: bwrap built its user namespace
+// and died at `Failed to make / slave: Permission denied`, so every .dats
+// suite in the fleet reported "no usable sandbox backend".
+func TestSeccompArgsLiftSeccompAndAppArmorTogether(t *testing.T) {
+	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test")
+	require.Nil(t, err)
+	defer cleanup()
+
+	joined := strings.Join(args, " ")
+	assert.Contains(t, joined, "seccomp=", "the relaxed syscall profile must be passed")
+	assert.Contains(t, joined, "apparmor=unconfined",
+		"docker-default denies mount independently of seccomp, so without this the "+
+			"opt-in is a no-op wherever AppArmor is enforcing")
+}
+
 type noUserns struct{}
 
 func (noUserns) UsernsAllowed() bool { return false }
+
+type wantsUserns struct{}
+
+func (wantsUserns) UsernsAllowed() bool { return true }

@@ -1,4 +1,18 @@
-// Seccomp profile plumbing for the hook.json `seccomp.userns` opt-in.
+// Security-profile plumbing for the hook.json `seccomp.userns` opt-in.
+//
+// The opt-in means "this container may build a user namespace and mount
+// inside it", and delivering that takes TWO layers, not one. Seccomp gates the
+// syscalls; AppArmor's docker-default independently denies `mount`. Lifting
+// only the first leaves bwrap creating its namespace and then dying at
+// `Failed to make / slave: Permission denied`, which is what dats reports as
+// "no usable sandbox backend" -- measured on GitHub's AppArmor-enforcing
+// runners, where the privileged dind image passed the same suite in the same
+// run because --privileged already implies apparmor=unconfined.
+//
+// So the slim fleet's sandbox worked only because the runner host happens not
+// to enforce AppArmor. An OS upgrade would have killed every .dats suite in
+// the fleet silently. Unconfining AppArmor adds no CAPABILITY: /proc stays
+// masked (systempaths is banned, bannedflags_test.go) and no device appears.
 //
 // WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly two
 // kinds of value -- the literal string "unconfined" (no syscall filtering
@@ -101,7 +115,11 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return []string{"--security-opt", "seccomp=" + path}, cleanup, nil
+	return []string{
+		"--security-opt", "seccomp=" + path,
+		// Both layers, or the opt-in is a no-op on an AppArmor host.
+		"--security-opt", "apparmor=unconfined",
+	}, cleanup, nil
 }
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test
