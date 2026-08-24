@@ -1,4 +1,5 @@
 {
   "data-root": "/mnt/pool/docker",
-  "storage-driver": "zfs"
+  "storage-driver": "zfs",
+  "userns-remap": "default"
 }

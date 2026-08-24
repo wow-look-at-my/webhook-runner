@@ -88,35 +88,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// the standard rules subscribe the recognized event-derived classes.
 	agg := attention.New()
 	attention.RegisterStandardEventRules(agg)
-	// A containerized server whose temp dir isn't host-shared breaks every
-	// hook run (payload mounts resolve on the docker HOST) — detect the
-	// topology at startup and say so loudly. See runner.WarnIfContainerized.
-	// The verdict is boot-scoped attention state: a running process's env
-	// can't change, so the entry stands until a restart with TMPDIR set.
-	if runner.WarnIfContainerized(logger, rec, "/.dockerenv", "/run/.containerenv") {
-		agg.Report(attention.Entry{
-			Source:  attention.SourceServer,
-			Key:     attention.KeyTmpDir,
-			Message: runner.TmpDirHazardMessage,
-		})
-	}
-	// The docker binary the runner shells out to.
-	dockerBin := os.Getenv("WEBHOOK_RUNNER_DOCKER_BIN")
-	if dockerBin == "" {
-		dockerBin = "docker"
-	}
-	// Which filesystem this runner's containers actually write to. A daemon
-	// rooted somewhere other than the intended dataset has no run-time symptom,
-	// and controlling which disk absorbs the writes is the whole arrangement.
-	// Boot-scoped like the TMPDIR verdict: neither the env nor the daemon's
-	// root changes under a running process, so it stands until a restart.
-	if msg := runner.CheckDataRoot(dockerBin, os.Getenv("WEBHOOK_RUNNER_EXPECT_DATA_ROOT"), logger, rec); msg != "" {
-		agg.Report(attention.Entry{
-			Source:  attention.SourceServer,
-			Key:     attention.KeyDataRoot,
-			Message: msg,
-		})
-	}
+	dockerBin := dockerBinary()
+	reportHostChecks(dockerBin, logger, rec, agg)
 
 	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
 	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
