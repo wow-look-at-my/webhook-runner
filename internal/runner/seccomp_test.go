@@ -123,22 +123,17 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	}
 }
 
-// systempaths=unconfined is deliberately NOT part of this opt-in. It is the
-// only docker flag that clears the read-only and masked /proc paths, it is
-// all-or-nothing, and on a uid-0 container it exposes a writable
-// /proc/sys/kernel/core_pattern -- a global file whose helper the host kernel
-// runs as real root. Measured: dropping CAP_SYS_ADMIN does not refuse that
-// write. So a hook opting into userns must not silently acquire it.
-func TestUsernsOptInDoesNotUnmaskProc(t *testing.T) {
-	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test")
+// The opt-in clears docker's masked and read-only /proc paths, because the
+// kernel refuses a fresh procfs inside a user namespace while the visible /proc
+// carries them -- syscalls alone leave bwrap dead. It is paired with remap
+// rather than shipped bare: see TestUsernsRunIsRefusedWithoutRemap.
+func TestUsernsOptInUnmasksProcUnderRemap(t *testing.T) {
+	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test", true)
 	require.Nil(t, err)
 	defer cleanup()
 
-	for _, arg := range args {
-		assert.NotContains(t, arg, "systempaths",
-			"the userns opt-in must never clear docker's /proc protections: on a "+
-				"uid-0 container that is a host-root primitive via core_pattern")
-	}
+	assert.Contains(t, args, "systempaths=unconfined")
+	assert.Contains(t, args, "--security-opt")
 }
 
 type wantsUserns struct{}
@@ -149,7 +144,7 @@ func (wantsUserns) UsernsAllowed() bool { return true }
 // so its container keeps docker's builtin profile and its command line is
 // byte-identical to before the feature existed.
 func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
-	args, cleanup, err := seccompArgs(noUserns{}, "", "test")
+	args, cleanup, err := seccompArgs(noUserns{}, "", "test", true)
 	require.Nil(t, err)
 
 	defer cleanup()

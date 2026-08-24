@@ -247,7 +247,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	// seccomp.userns, same as the hook paths. The profile file must outlive
 	// the daemon's read at container start; this cleanup shares the deferred
 	// lifetime of the session's other temp files above.
-	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, instanceID)
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, instanceID, r.usernsRemapped)
 	if err != nil {
 		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for manager %s failed: %v", hook.ID, err),
 			map[string]string{"hook": hook.ID})

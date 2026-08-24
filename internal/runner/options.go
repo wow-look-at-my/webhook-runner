@@ -22,6 +22,15 @@ type Options struct {
 	OnFinish HookFinishedFunc
 	Docker   string // docker binary path; "" = "docker"
 
+	// UsernsRemapped is what the daemon reported at startup: whether it maps
+	// container root to an unprivileged host uid. It gates the seccomp.userns
+	// opt-in, which has to clear docker's masked and read-only /proc paths
+	// before bubblewrap can mount a procfs -- safe under remap, host code
+	// execution without it. Boot-scoped: a daemon does not gain remap under a
+	// running process. false is the safe default, so a caller that never asks
+	// simply cannot hand a container an unmasked /proc.
+	UsernsRemapped bool
+
 	// ScratchDir is the host directory under which each run declaring
 	// hook.json `scratch` paths gets its own subtree, bind-mounted over
 	// those paths so the writes miss docker's data-root. "" = unconfigured,
@@ -58,19 +67,20 @@ func New(opts Options) *Runner {
 		opts.TmpDir = os.TempDir()
 	}
 	return &Runner{
-		tracker:   opts.Tracker,
-		log:       opts.Logger,
-		tmpDir:    opts.TmpDir,
-		onStart:   opts.OnStart,
-		onFinish:  opts.OnFinish,
-		secrets:   opts.Secrets,
-		events:    opts.Events,
-		groups:    opts.Groups,
-		globalCap: opts.GlobalCap,
-		kv:        opts.KV,
-		kvSocket:  opts.KVSocket,
-		kvShim:    opts.KVShim,
-		dockerBin: opts.Docker,
+		tracker:        opts.Tracker,
+		log:            opts.Logger,
+		tmpDir:         opts.TmpDir,
+		onStart:        opts.OnStart,
+		onFinish:       opts.OnFinish,
+		secrets:        opts.Secrets,
+		events:         opts.Events,
+		groups:         opts.Groups,
+		globalCap:      opts.GlobalCap,
+		kv:             opts.KV,
+		kvSocket:       opts.KVSocket,
+		kvShim:         opts.KVShim,
+		dockerBin:      opts.Docker,
+		usernsRemapped: opts.UsernsRemapped,
 
 		scratchDir: opts.ScratchDir,
 	}

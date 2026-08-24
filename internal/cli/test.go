@@ -68,6 +68,10 @@ to load or any test command fails.`,
 			}
 
 			out := cmd.OutOrStdout()
+			// Run/test parity for the seccomp.userns interlock: a hook whose
+			// tests exercise a sandbox needs the same daemon condition a live
+			// run needs, so an entity this daemon cannot serve fails here.
+			usernsRemapped := runner.IsUsernsRemapped(docker)
 			tested, commands := 0, 0
 			var failures []error
 			for _, id := range ids {
@@ -81,9 +85,10 @@ to load or any test command fails.`,
 				tested++
 				commands += len(h.Tests)
 				if err := runner.RunHookTests(h, runner.TestOptions{
-					Docker:  docker,
-					Timeout: timeout,
-					Out:     out,
+					Docker:         docker,
+					Timeout:        timeout,
+					Out:            out,
+					UsernsRemapped: usernsRemapped,
 				}); err != nil {
 					failures = append(failures, err)
 				}

@@ -89,7 +89,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	agg := attention.New()
 	attention.RegisterStandardEventRules(agg)
 	dockerBin := dockerBinary()
-	reportHostChecks(dockerBin, logger, rec, agg)
+	usernsRemapped := reportHostChecks(dockerBin, logger, rec, agg)
 
 	// Per-hook sops secrets (secrets.sops.env next to a hook.json). The sops
 	// binary comes from PATH unless WEBHOOK_RUNNER_SOPS_BIN overrides it;
@@ -233,16 +233,17 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 
 	rn := runner.New(runner.Options{
-		Tracker:   tracker,
-		Logger:    logger,
-		TmpDir:    tmpDir,
-		Secrets:   secrets,
-		Events:    rec,
-		Groups:    concurrencyMgr,
-		GlobalCap: globalCap,
-		KV:        kvStore,
-		KVSocket:  socketPath,
-		KVShim:    shimPath,
+		UsernsRemapped: usernsRemapped,
+		Tracker:        tracker,
+		Logger:         logger,
+		TmpDir:         tmpDir,
+		Secrets:        secrets,
+		Events:         rec,
+		Groups:         concurrencyMgr,
+		GlobalCap:      globalCap,
+		KV:             kvStore,
+		KVSocket:       socketPath,
+		KVShim:         shimPath,
 
 		ScratchDir: o.scratchDir,
 		OnStart: func(h *hooks.Hook, r *runs.Run, payload []byte) {

@@ -19,9 +19,15 @@ const DefaultTestTimeout = 10 * time.Minute
 
 // TestOptions configure RunHookTests.
 type TestOptions struct {
-	Docker  string        // docker binary; "" = "docker"
-	Timeout time.Duration // per-command cap; <= 0 = DefaultTestTimeout
-	Out     io.Writer     // combined progress + container output; nil = io.Discard
+	Docker string // docker binary; "" = "docker"
+
+	// UsernsRemapped mirrors Options.UsernsRemapped: run/test parity means a
+	// hook's declared tests meet the same seccomp.userns interlock a live run
+	// meets, so an entity that cannot be served here fails in CI rather than on
+	// a runner. false is the safe default.
+	UsernsRemapped bool
+	Timeout        time.Duration // per-command cap; <= 0 = DefaultTestTimeout
+	Out            io.Writer     // combined progress + container output; nil = io.Discard
 
 	// The enforced-GitHub-gateway injection is UNCONDITIONAL (see
 	// GSMBaseURL) and applies to test containers too — run/test parity,
@@ -65,7 +71,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 		label := fmt.Sprintf("%s: test %d/%d", hook.ID, i+1, len(hook.Tests))
 		fmt.Fprintf(out, "=== %s: %s\n", label, strings.Join(argv, " "))
 		start := time.Now()
-		if err := runOneTest(docker, hook, image, argv, timeout, out); err != nil {
+		if err := runOneTest(docker, hook, image, argv, timeout, out, opts.UsernsRemapped); err != nil {
 			fmt.Fprintf(out, "--- %s FAILED after %s: %v\n", label, time.Since(start).Round(time.Millisecond), err)
 			failures = append(failures, fmt.Sprintf("test %d (%s): %v", i+1, strings.Join(argv, " "), err))
 			continue
@@ -78,7 +84,7 @@ func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 	return nil
 }
 
-func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer) error {
+func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, timeout time.Duration, out io.Writer, usernsRemapped bool) error {
 	suffix := make([]byte, 8)
 	if _, err := rand.Read(suffix); err != nil {
 		return fmt.Errorf("generate container name: %w", err)
@@ -119,7 +125,7 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	// too, or its declared tests could never cover what its live runs do.
 	// No Runner here, so no configured tmpDir: "" means the OS default,
 	// which is right for a one-shot test container.
-	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix), usernsRemapped)
 	if err != nil {
 		return err
 	}

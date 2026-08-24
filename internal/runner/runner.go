@@ -75,6 +75,10 @@ type KVInjector interface {
 
 // Runner launches docker containers and tracks the resulting runs.
 type Runner struct {
+	// usernsRemapped is the daemon's startup answer to whether container root
+	// maps to an unprivileged host uid. See Options.UsernsRemapped.
+	usernsRemapped bool
+
 	tracker  *runs.Tracker
 	log      *slog.Logger
 	tmpDir   string
@@ -415,7 +419,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// container, so it must outlive `docker run`'s startup -- the cleanup is
 	// deferred for the whole run rather than fired here. A hook that did not
 	// opt in adds no flags at all.
-	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, run.ID())
+	seccompFlags, seccompCleanup, err := seccompArgs(hook, r.tmpDir, run.ID(), r.usernsRemapped)
 	if err != nil {
 		r.events.Record("run.seccomp_failed", fmt.Sprintf("seccomp profile for %s failed: %v", hook.ID, err),
 			map[string]string{"hook": hook.ID, "run": run.ID()})

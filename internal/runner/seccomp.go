@@ -26,6 +26,7 @@ package runner
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,38 +121,66 @@ func writeUsernsProfile(tmpDir, runID string) (path string, cleanup func(), err 
 // opt in gets NO flags at all, so its container keeps the daemon's builtin
 // profile and the docker command line is byte-identical to before.
 //
-// THIS OPT-IN IS NOT ENOUGH FOR BUBBLEWRAP, and that is deliberate. Docker
-// also binds /proc/bus, /proc/fs, /proc/irq, /proc/sys and /proc/sysrq-trigger
-// read-only and masks paths under /proc, and the kernel refuses a fresh procfs
-// mount inside an unprivileged user namespace while the visible /proc carries
-// those. So bwrap still dies on "Can't mount proc on /newroot/proc: Operation
-// not permitted" even with every syscall it needs allowed.
+// TWO obstructions stand between a container and a working bubblewrap, and
+// this clears both -- but only together with a daemon that remaps container
+// root, because clearing the second one alone hands the job the host.
 //
-// The docker flag that clears them, systempaths=unconfined, is NOT used here.
-// It is all-or-nothing, and on a container running as uid 0 it hands the job a
-// writable /proc/sys/kernel/core_pattern -- a global, non-namespaced file whose
-// helper the HOST kernel executes as real root on any core dump. Measured:
-// dropping CAP_SYS_ADMIN does not protect that write, only the read-only bind
-// does, and a scratch mount already gives the container a writable host path to
-// point it at. A container that needs to build a sandbox needs its privilege
-// reduced first (daemon-level userns-remap), not the host's protections
-// removed.
+// SYSCALLS. The default profile permits unshare/clone/clone3/setns and
+// mount/umount2/pivot_root only for a container holding CAP_SYS_ADMIN, which a
+// hook container does not. The vendored profile adds an ungated allow.
 //
-// see docs/internals/hooks-images-and-reload.md
+// PATHS. Docker also binds /proc/bus, /proc/fs, /proc/irq, /proc/sys and
+// /proc/sysrq-trigger read-only and masks paths under /proc, and the kernel
+// refuses a fresh procfs mount inside a user namespace while the visible /proc
+// carries those. bwrap dies on "Can't mount proc on /newroot/proc: Operation
+// not permitted" with every syscall it needs allowed.
+// systempaths=unconfined clears them, and docker offers no finer control.
+//
+// WHY THAT IS SAFE ONLY UNDER REMAP. On a container whose root IS the host's
+// root, an unmasked /proc means a writable /proc/sys/kernel/core_pattern -- a
+// global file whose helper the HOST kernel runs as real root on any core dump
+// -- and a scratch mount already supplies a writable host path to aim it at.
+// Dropping CAP_SYS_ADMIN does not refuse that write; only the read-only bind
+// does. Under userns-remap the container's root is an unprivileged host uid,
+// the host-root-owned file is owned by a uid OUTSIDE the container's map, so
+// the namespace's capabilities do not reach it and the write is refused on the
+// DAC check. Measured both ways: mapped-root refuses core_pattern,
+// sysrq-trigger and /proc/kcore while bwrap still mounts its /proc.
+//
+// So the two flags ship together or not at all, and a hook that asked for
+// userns on a daemon without remap FAILS rather than running half-configured:
+// without systempaths its sandbox cannot be built, and with systempaths and no
+// remap it would own the machine.
+//
+// see docs/internals/runner-isolation.md
 //
 // A plain function, not a Runner method: the `webhook-runner test` path
 // (runOneTest) has no Runner, and run/test parity means both paths must go
 // through this exact code.
-func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup func(), err error) {
+func seccompArgs(hook seccompHook, tmpDir, runID string, remapped bool) (args []string, cleanup func(), err error) {
 	if !hook.UsernsAllowed() {
 		return nil, func() {}, nil
+	}
+	if !remapped {
+		return nil, func() {}, errors.New(UsernsNeedsRemapMessage)
 	}
 	path, cleanup, err := writeUsernsProfile(tmpDir, runID)
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return []string{"--security-opt", "seccomp=" + path}, cleanup, nil
+	return []string{
+		"--security-opt", "seccomp=" + path,
+		"--security-opt", "systempaths=unconfined",
+	}, cleanup, nil
 }
+
+// UsernsNeedsRemapMessage is why a userns run is refused, shared by every path
+// so the log, the run output and the test runner all say the same thing.
+const UsernsNeedsRemapMessage = "this entity declares seccomp.userns, which needs docker's read-only and masked /proc paths cleared " +
+	"(systempaths=unconfined) before bubblewrap can mount a procfs in its namespace. That is only safe on a daemon that " +
+	"remaps container root to an unprivileged host uid, and this daemon does not: without remap the same flag makes " +
+	"/proc/sys/kernel/core_pattern writable, which is host code execution. " +
+	"Set {\"userns-remap\": \"default\"} in /etc/docker/daemon.json and restart dockerd (see deploy/pool-storage/)"
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test
 // path and the live-run path can share one implementation.

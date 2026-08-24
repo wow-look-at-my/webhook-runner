@@ -46,17 +46,35 @@ const UsernsMissingMessage = "docker is NOT userns-remapped, so a container's ro
 const UsernsUnknownMessage = "could not read docker's security options, so whether a container's root is confined to an " +
 	"unprivileged host user is UNVERIFIED"
 
+// IsUsernsRemapped asks the daemon whether it remaps container root. An
+// unreachable daemon answers false: unverified and correct look identical from
+// here, and only one of them is safe to act on.
+//
+// Exported because the `webhook-runner test` path needs the same fact with no
+// server, no logger and no activity feed around it.
+func IsUsernsRemapped(dockerBin string) bool {
+	opts, err := readSecurityOptions(dockerBin)
+	return err == nil && hasSecurityOption(opts, usernsSecurityOption)
+}
+
+func readSecurityOptions(dockerBin string) (string, error) {
+	out, err := exec.Command(dockerBin, "info", "--format", "{{.SecurityOptions}}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // CheckUsernsRemap asks the daemon whether it remaps container root, ALWAYS
 // logging what it saw, and returns a non-empty message when the answer is no or
 // unavailable. The message is an attention entry; the caller keeps serving.
 func CheckUsernsRemap(dockerBin string, logger *slog.Logger, rec *events.Recorder) string {
-	out, err := exec.Command(dockerBin, "info", "--format", "{{.SecurityOptions}}").Output()
+	opts, err := readSecurityOptions(dockerBin)
 	if err != nil {
 		logger.Warn(UsernsUnknownMessage, "err", err)
 		rec.Record("server.misconfigured", UsernsUnknownMessage, nil)
 		return UsernsUnknownMessage
 	}
-	opts := strings.TrimSpace(string(out))
 	remapped := hasSecurityOption(opts, usernsSecurityOption)
 	logger.Info("docker security options", "options", opts, "userns_remap", remapped)
 	if remapped {

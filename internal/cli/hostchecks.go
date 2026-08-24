@@ -28,9 +28,11 @@ func dockerBinary() string {
 	return "docker"
 }
 
-// reportHostChecks runs the probes and files an attention entry for each
-// verdict that is not clean.
-func reportHostChecks(dockerBin string, logger *slog.Logger, rec *events.Recorder, agg *attention.Aggregator) {
+// reportHostChecks runs the probes, files an attention entry for each verdict
+// that is not clean, and returns whether the daemon remaps container root --
+// the one verdict that also changes what a container is given, rather than only
+// what an operator is told. See runner.seccompArgs.
+func reportHostChecks(dockerBin string, logger *slog.Logger, rec *events.Recorder, agg *attention.Aggregator) (usernsRemapped bool) {
 	// A containerized server whose temp dir is not host-shared breaks every hook
 	// run: payload mounts resolve on the docker HOST, not in this process's
 	// namespace. See runner.WarnIfContainerized.
@@ -46,7 +48,9 @@ func reportHostChecks(dockerBin string, logger *slog.Logger, rec *events.Recorde
 	// user. What actually keeps a container off the host is docker's read-only
 	// /proc binds; remap is the layer that still holds when one of those is
 	// wrong. See docs/internals/runner-isolation.md.
+	usernsRemapped = true
 	if msg := runner.CheckUsernsRemap(dockerBin, logger, rec); msg != "" {
+		usernsRemapped = false
 		agg.Report(attention.Entry{
 			Source:  attention.SourceServer,
 			Key:     attention.KeyHostIsolation,
@@ -64,4 +68,5 @@ func reportHostChecks(dockerBin string, logger *slog.Logger, rec *events.Recorde
 			Message: msg,
 		})
 	}
+	return usernsRemapped
 }

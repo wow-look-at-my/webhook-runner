@@ -89,17 +89,18 @@ nothing else would ever say so.
   the same feature check, so they pass or fail exactly where this does, and none
   of them relocates the writes `data-root` already covers.
 
-- **`userns-remap: default`** -- container root maps to an unprivileged host
-  uid, so a write to `/proc/sys/kernel/core_pattern` or `/proc/sysrq-trigger`
-  is refused on the DAC check rather than only by docker's read-only `/proc`
-  bind. Defence in depth: those binds are what stop a container disturbing the
-  host today, and this is the layer that holds when one of them is wrong. The
-  runner reports a needs-attention entry when it is off, and keeps serving.
-  Note the store gains a subuid-owned subdirectory
-  (`/mnt/pool/docker/<uid>.<gid>/`); `WEBHOOK_RUNNER_EXPECT_DATA_ROOT` matches
-  by prefix, so it still resolves. Nothing in this fleet conflicts with it: no
-  manifest uses `networks` and the runner passes no host-namespace flag.
-  Depth: `docs/internals/runner-isolation.md`.
+- **`userns-remap: default`** -- REQUIRED, not hardening. Container root maps
+  to an unprivileged host uid, which is what makes it safe to clear docker's
+  masked and read-only `/proc` paths, which is in turn what bubblewrap needs to
+  mount a procfs in its own namespace. A hook declaring `seccomp.userns` FAILS
+  its run on a daemon without it, naming this setting. Measured: a mapped root
+  is refused `core_pattern`, `/proc/sysrq-trigger` and `/proc/kcore` while bwrap
+  still works; an unmapped root writes the first two. Note the store gains a
+  subuid-owned subdirectory (`/mnt/pool/docker/<uid>.<gid>/`);
+  `WEBHOOK_RUNNER_EXPECT_DATA_ROOT` matches by prefix, so it still resolves.
+  Nothing in this fleet conflicts with it: no manifest uses `networks` and the
+  runner passes no host-namespace flag. Depth:
+  `docs/internals/runner-isolation.md`.
 - **`RequiresMountsFor=/mnt/pool`** — without it a boot race starts dockerd
   against an empty mountpoint and it creates its store on the root filesystem
   underneath, silently, which is the failure this whole arrangement exists to
