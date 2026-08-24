@@ -14,8 +14,6 @@ import (
 	"encoding/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"slices"
-	"strings"
 	"testing"
 )
 
@@ -125,53 +123,6 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	}
 }
 
-// The two opt-ins are INDEPENDENT, and that is the point of them being two
-// fields. Building a sandbox needs both -- docker masks parts of /proc in
-// every container, and the kernel refuses a fresh procfs mount inside a user
-// namespace while anything obscures the one already there, so bwrap creates
-// its namespace and then fails on the first mount -- but they widen different
-// things, so declaring one must never quietly grant the other.
-func TestSeccompFlagsFollowTheirOwnOptIns(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		hook    seccompHook
-		profile bool
-		unmask  bool
-	}{
-		{"neither", fakeSeccompHook{}, false, false},
-		{"userns only", fakeSeccompHook{userns: true}, true, false},
-		{"systempaths only", fakeSeccompHook{unmask: true}, false, true},
-		{"both (what a sandbox needs)", fakeSeccompHook{userns: true, unmask: true}, true, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			args, cleanup, err := seccompArgs(tc.hook, t.TempDir(), "test")
-			require.Nil(t, err)
-			t.Cleanup(cleanup)
-
-			profile := false
-			for _, a := range args {
-				if strings.HasPrefix(a, "seccomp=") {
-					profile = true
-				}
-			}
-			assert.Equal(t, tc.profile, profile, "seccomp profile flag, args = %v", args)
-			assert.Equal(t, tc.unmask, slices.Contains(args, "systempaths=unconfined"),
-				"systempaths flag, args = %v", args)
-
-			// An audited grant emits exactly what was asked for: a third
-			// flag here is a widening that must be argued for on purpose.
-			want := 0
-			if tc.profile {
-				want += 2
-			}
-			if tc.unmask {
-				want += 2
-			}
-			assert.Equal(t, want, len(args), "args = %v", args)
-		})
-	}
-}
-
 // The default is untouched: a hook that did not opt in gets no flags at all,
 // so its container keeps docker's builtin profile and its command line is
 // byte-identical to before the feature existed.
@@ -186,10 +137,4 @@ func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
 
 type noUserns struct{}
 
-func (noUserns) UsernsAllowed() bool       { return false }
-func (noUserns) SystemPathsUnmasked() bool { return false }
-
-type fakeSeccompHook struct{ userns, unmask bool }
-
-func (h fakeSeccompHook) UsernsAllowed() bool       { return h.userns }
-func (h fakeSeccompHook) SystemPathsUnmasked() bool { return h.unmask }
+func (noUserns) UsernsAllowed() bool { return false }

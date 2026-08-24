@@ -260,42 +260,12 @@ type SeccompConfig struct {
 	// this is an AUDITED opt-in like dind, not a default, and it belongs
 	// only on trusted, operator-curated hooks.
 	Userns bool `json:"userns,omitempty"`
-
-	// SystemPaths clears docker's MaskedPaths and ReadonlyPaths for the
-	// container (`--security-opt systempaths=unconfined`). Empty keeps
-	// them. The ONLY other accepted value is "unconfined": an unknown
-	// string is a load error, never a silent no-op.
-	//
-	// It is a SEPARATE opt-in from Userns on purpose, because it is a
-	// separate grant with its own blast radius. Userns widens what the
-	// container may call; this widens what it may SEE and WRITE under
-	// /proc and /sys -- /proc/sysrq-trigger (a host reboot, for a process
-	// running as root), /proc/irq, and the /proc/sched_debug and
-	// /proc/timer_list host-process and kernel-address disclosure that
-	// reaches even an unprivileged process in a PID namespace. No
-	// capability is added, so /proc/kcore (CAP_SYS_RAWIO) and most of
-	// /proc/sys (CAP_SYS_ADMIN in the init userns) stay refused.
-	//
-	// A sandbox needs BOTH, which is the trap: the kernel refuses a fresh
-	// procfs mount inside a user namespace while anything obscures the
-	// container's own /proc, so bubblewrap creates its namespace and then
-	// fails on the first mount. see internal/runner/seccomp.go.
-	SystemPaths string `json:"systempaths,omitempty"`
 }
-
-// SystemPathsUnconfined is the one accepted value of seccomp.systempaths.
-const SystemPathsUnconfined = "unconfined"
 
 // UsernsAllowed reports whether the hook opted into unprivileged user
 // namespaces. Nil-safe: an absent seccomp block means the default profile.
 func (h *Hook) UsernsAllowed() bool {
 	return h != nil && h.Seccomp != nil && h.Seccomp.Userns
-}
-
-// SystemPathsUnmasked reports whether the hook opted out of docker's
-// /proc and /sys masking. Nil-safe: an absent seccomp block keeps it.
-func (h *Hook) SystemPathsUnmasked() bool {
-	return h != nil && h.Seccomp != nil && h.Seccomp.SystemPaths == SystemPathsUnconfined
 }
 
 // ManifestJSON returns the comment-stripped hook.json this Hook parsed
@@ -629,12 +599,6 @@ func (h *Hook) validate() error {
 	// decides to report.
 	if err := h.ValidateSettings(); err != nil {
 		return err
-	}
-	// An unknown value here would otherwise read as "masking off" to whoever
-	// wrote it and mean "masking on" to the runner -- the exact shape of a
-	// security setting that looks applied and is not.
-	if h.Seccomp != nil && h.Seccomp.SystemPaths != "" && h.Seccomp.SystemPaths != SystemPathsUnconfined {
-		return fmt.Errorf("invalid seccomp.systempaths %q: the only accepted value is %q", h.Seccomp.SystemPaths, SystemPathsUnconfined)
 	}
 	for i, tc := range h.Tests {
 		if len(tc) == 0 {
