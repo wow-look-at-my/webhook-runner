@@ -8,14 +8,14 @@ permissions:
   contents: write
   packages: write
   actions: read
-  # go-toolchain's no-all-builds-job guard reads check runs -- README.md "workflow permissions: checks read".
+  # go-toolchain's no-all-builds-job guard reads check runs.
   checks: read
-  # Publishing registers a Deployment and an artifact record -- README.md "workflow permissions: deployments and artifact-metadata".
+  # Publishing registers a Deployment and an artifact record.
   deployments: write
   artifact-metadata: write
 
 jobs:
-  # Fails when the committed dashboard bundle drifts from ts/ -- README.md "dashboard-assets".
+  # Fails when the committed dashboard bundle drifts from ts/.
   dashboard-assets:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
@@ -23,10 +23,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # ?v=N is an immutable pin: do NOT bump it blind -- README.md "dashboard-assets: installing ts0".
+      # ?v=N is an immutable pin: do NOT bump it blind.
       - name: Install ts0 (prebuilt, from buildhost)
         run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
-      # Type-checks ts/ and rebuilds the bundle in place -- README.md "dashboard-assets: regenerating the bundle".
+      # Type-checks ts/ and rebuilds the bundle in place.
       - name: Regenerate dashboard bundle
         run: node /tmp/ts0.cjs build
         working-directory: internal/server/dashboard
@@ -43,22 +43,22 @@ jobs:
           fi
           echo "assets/timeline.js matches its source."
 
-  # wow-dind, not wow-linux: go-toolchain's dats phase sandboxes -- README.md "test: why wow-dind".
+  # wow-dind, not wow-linux: go-toolchain's dats phase sandboxes.
   test:
     runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      # Do NOT add an explicit `cache-upload go-build` here -- README.md "test: no explicit cache-upload".
+      # Do NOT add an explicit `cache-upload go-build` here.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           autorelease: true
-          # Native binaries, not the default fat APE: bbolt needs a real libc -- README.md "test: native binaries, not the fat APE".
+          # Native binaries, not the default fat APE: bbolt needs a real libc.
           os: linux,darwin,windows
           arch: amd64,arm64
-          # The approval hash for dashboard.go's //go:generate -- README.md "test: the generate hash and the freshness gate".
+          # The approval hash for dashboard.go's //go:generate.
           generate: 884c0f21fd82
       - name: Generated assets are fresh
         run: git diff --exit-code -- internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/
@@ -68,21 +68,21 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      # Drives the real committed assets in vm sandboxes -- README.md "e2e: the dashboard client harnesses".
+      # Drives the real committed assets in vm sandboxes.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Dashboard client harness
         run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
-      # Restores the test job's go-build hand-off -- README.md "e2e: restoring the binary".
+      # Restores the test job's go-build hand-off.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
           path: build
-      # The harness runs ./build/webhook-runner, unsuffixed -- README.md "e2e: staging the binary".
+      # The harness runs ./build/webhook-runner, unsuffixed.
       - name: Stage e2e binary
         run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
-      # The sops e2e tests decrypt a committed test-only age key -- README.md "e2e: installing sops".
+      # The sops e2e tests decrypt a committed test-only age key.
       - name: Install sops
         run: |
           curl -fsSL https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64 -o /tmp/sops
@@ -92,7 +92,7 @@ jobs:
         with:
           file: e2e/e2e.test.ts
 
-  # Black-box CLI-contract tests against the built binary -- README.md "dats".
+  # Black-box CLI-contract tests against the built binary.
   dats:
     runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     needs: test
@@ -103,10 +103,10 @@ jobs:
         with:
           name: go-build
           path: build
-      # The suites fall back to build/webhook-runner here -- README.md "dats: staging the CLI binary".
+      # The suites fall back to build/webhook-runner here.
       - name: Stage CLI binary
         run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
-      # Prebuilt from buildhost into build/, so one PATH prepend covers both -- README.md "dats: installing dats".
+      # Prebuilt from buildhost into build/, so one PATH prepend covers both.
       - name: Install dats
         run: |
           curl -fSL "https://dl.pazer.build/dats?os=linux&arch=amd64" -o build/dats
@@ -115,7 +115,7 @@ jobs:
       - name: Run CLI contract tests
         run: PATH="$PWD/build:$PATH" dats test dats
 
-  # Would deploying THIS binary break the running fleet? -- README.md "fleet-compat".
+  # Would deploying THIS binary break the running fleet?
   fleet-compat:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: test
@@ -126,7 +126,7 @@ jobs:
           name: go-build
           path: build
       - uses: wow-look-at-my/actions@secret-server#latest
-      # An empty token must FAIL, never skip -- README.md "fleet-compat: why an empty token fails".
+      # An empty token must FAIL, never skip.
       - uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
@@ -143,7 +143,7 @@ jobs:
           ref: master
           path: _webhooks_master
           token: ${{ env.PRIVATE_ORG_REPO_READ }}
-      # The paired tree, when one exists; a missing branch is normal -- README.md "fleet-compat: the paired checkout".
+      # The paired tree, when one exists; a missing branch is normal.
       - uses: actions/checkout@v4
         id: paired
         continue-on-error: true
@@ -193,8 +193,8 @@ jobs:
               );
             }
 
-  # Builds the image; the push is gated to master by the reusable workflow -- README.md "publish-ghcr".
+  # Builds the image; the push is gated to master by the reusable workflow.
   publish-ghcr:
     needs: e2e
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
-    # updater-webhook-secret is deliberately unwired -- README.md "publish-ghcr".
+    # updater-webhook-secret is deliberately unwired.
