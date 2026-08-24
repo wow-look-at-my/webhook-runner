@@ -20,6 +20,17 @@ covers the writes nobody enumerated.
 
 ## Install
 
+`bootstrap.sh <pool> [mount-root]` runs the steps below as one idempotent
+script — create the datasets, migrate the existing store, merge
+`daemon.json`, install the systemd override, restart dockerd, and verify
+`data-root`/driver/`userns-remap` all actually took. Run it as root on the
+runner host; it refuses to declare success on a mismatch rather than assuming
+one. It does not install sysbox (see the `dind` note below) or create the
+pool itself.
+
+The manual steps it automates, for reference or if you want to run them by
+hand instead:
+
 `daemon.json` here says `/mnt/pool/docker`. Substitute your own path and pool
 name throughout — and make the dataset's mountpoint equal `data-root`, since the
 two are set independently and nothing warns when they disagree:
@@ -105,6 +116,20 @@ nothing else would ever say so.
   against an empty mountpoint and it creates its store on the root filesystem
   underneath, silently, which is the failure this whole arrangement exists to
   prevent.
+
+## dind after this: install sysbox
+
+`gha-runner-dind`'s nested dockerd needs `--privileged` to prep cgroup-v2
+nesting, and `bootstrap.sh` does not grant that -- host isolation is the
+point. Install [sysbox-runc](https://github.com/nestybox/sysbox) on this
+same host to get it back without `--privileged`: it gives each container its
+own user namespace and an unprivileged nested docker, needs no image
+changes, and is compatible with `userns-remap` (not required alongside it as
+of sysbox 0.5+). See its
+[install guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-package.md).
+Until this is done, `gha-runner-dind`'s own declared tests
+(`dockerd-smoke.test.ts`, `dats-smoke.test.ts`) fail loudly rather than
+silently -- that failure is this gap, not a regression.
 
 ## What is still not on the pool
 
