@@ -296,8 +296,11 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
 
   What `systempaths` exposes, plainly. For a process running as ROOT in the
   container: `/proc/sysrq-trigger` becomes writable, which is a host reboot or
-  panic in one line (further gated by `/proc/sys/kernel/sysrq`), and
-  `/proc/irq/*/smp_affinity` becomes writable, which is host IRQ steering. For
+  panic in one line, and `/proc/irq/*/smp_affinity` becomes writable, which is
+  host IRQ steering. The `/proc/sys/kernel/sysrq` mask does NOT hold the first
+  one back — the proc handler calls `__handle_sysrq(c, false)`, and the
+  kernel's comment at the check reads "Should we check for enabled operations
+  (/proc/sysrq-trigger should not)". The file's mode is the gate: `0200`. For
   ANY process, root or not: `/proc/sched_debug` and `/proc/timer_list`
   enumerate host processes and kernel addresses straight through the PID
   namespace, which both breaks the isolation illusion and helps defeat KASLR;
