@@ -1,18 +1,13 @@
 // Security-profile plumbing for the hook.json `seccomp.userns` opt-in.
 //
-// The opt-in means "this container may build a user namespace and mount
-// inside it", and delivering that takes TWO layers, not one. Seccomp gates the
-// syscalls; AppArmor's docker-default independently denies `mount`. Lifting
-// only the first leaves bwrap creating its namespace and then dying at
-// `Failed to make / slave: Permission denied`, which is what dats reports as
-// "no usable sandbox backend" -- measured on GitHub's AppArmor-enforcing
-// runners, where the privileged dind image passed the same suite in the same
-// run because --privileged already implies apparmor=unconfined.
-//
-// So the slim fleet's sandbox worked only because the runner host happens not
-// to enforce AppArmor. An OS upgrade would have killed every .dats suite in
-// the fleet silently. Unconfining AppArmor adds no CAPABILITY: /proc stays
-// masked (systempaths is banned, bannedflags_test.go) and no device appears.
+// Seccomp is the ONLY layer the opt-in can lift, and where AppArmor ENFORCES,
+// that is not enough for bubblewrap. No --security-opt pair closes the gap:
+// docker-default grants the user namespace and denies `mount`, so bwrap dies at
+// `Failed to make / slave`; apparmor=unconfined trades that for Ubuntu 24.04's
+// unprivileged-userns restriction, so bwrap dies EARLIER, at `setting up uid
+// map`. Both measured on GitHub's runners, one commit apart. Only a profile
+// loaded on the HOST lifts both, so apparmor=unconfined is a regression here,
+// not the missing half. The fleet's own host does not enforce AppArmor.
 //
 // WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly two
 // kinds of value -- the literal string "unconfined" (no syscall filtering
@@ -115,11 +110,7 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return []string{
-		"--security-opt", "seccomp=" + path,
-		// Both layers, or the opt-in is a no-op on an AppArmor host.
-		"--security-opt", "apparmor=unconfined",
-	}, cleanup, nil
+	return []string{"--security-opt", "seccomp=" + path}, cleanup, nil
 }
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test

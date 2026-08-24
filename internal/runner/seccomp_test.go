@@ -134,20 +134,21 @@ func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
 
 }
 
-// The opt-in must lift BOTH gates. Seccomp alone is what shipped, and on an
-// AppArmor-enforcing host it bought nothing: bwrap built its user namespace
-// and died at `Failed to make / slave: Permission denied`, so every .dats
-// suite in the fleet reported "no usable sandbox backend".
-func TestSeccompArgsLiftSeccompAndAppArmorTogether(t *testing.T) {
+// The opt-in passes the profile and NOTHING else. apparmor=unconfined looks
+// like the missing half -- docker-default does deny the mount bwrap needs --
+// and it is worse than the denial: it puts the container under Ubuntu 24.04's
+// unprivileged-userns restriction, where bwrap fails earlier still, at
+// "setting up uid map". Measured on GitHub's runners, one commit apart.
+func TestSeccompArgsPassTheProfileAndNothingElse(t *testing.T) {
 	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test")
 	require.Nil(t, err)
 	defer cleanup()
 
 	joined := strings.Join(args, " ")
 	assert.Contains(t, joined, "seccomp=", "the relaxed syscall profile must be passed")
-	assert.Contains(t, joined, "apparmor=unconfined",
-		"docker-default denies mount independently of seccomp, so without this the "+
-			"opt-in is a no-op wherever AppArmor is enforcing")
+	assert.NotContains(t, joined, "apparmor",
+		"unconfining AppArmor breaks the sandbox it looks like it would fix; only a "+
+			"profile loaded on the host lifts both gates")
 }
 
 type noUserns struct{}
