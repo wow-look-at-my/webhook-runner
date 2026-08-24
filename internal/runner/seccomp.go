@@ -120,7 +120,10 @@ func writeUsernsProfile(tmpDir, runID string) (path string, cleanup func(), err 
 
 // unmaskedSystemPaths empties docker's MaskedPaths and ReadonlyPaths for the
 // container. Bubblewrap cannot build its sandbox without it, and no syscall
-// filter is what stands in the way.
+// filter is what stands in the way. It is its OWN opt-in
+// (`seccomp.systempaths: "unconfined"`), never implied by seccomp.userns:
+// the two widen different things, and a grant nobody named is a grant nobody
+// reviewed.
 //
 // Docker mounts three shapes over /proc in every container: a size-0 tmpfs
 // over /proc/acpi, /proc/asound and /proc/scsi; a bind of /dev/null over
@@ -151,14 +154,18 @@ var unmaskedSystemPaths = []string{"--security-opt", "systempaths=unconfined"}
 // (runOneTest) has no Runner, and run/test parity means both paths must go
 // through this exact code.
 func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup func(), err error) {
-	if !hook.UsernsAllowed() {
-		return nil, func() {}, nil
+	cleanup = func() {}
+	if hook.UsernsAllowed() {
+		var path string
+		path, cleanup, err = writeUsernsProfile(tmpDir, runID)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		args = append(args, "--security-opt", "seccomp="+path)
 	}
-	path, cleanup, err := writeUsernsProfile(tmpDir, runID)
-	if err != nil {
-		return nil, func() {}, err
+	if hook.SystemPathsUnmasked() {
+		args = append(args, unmaskedSystemPaths...)
 	}
-	args = append([]string{"--security-opt", "seccomp=" + path}, unmaskedSystemPaths...)
 	return args, cleanup, nil
 }
 
@@ -166,4 +173,5 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 // path and the live-run path can share one implementation.
 type seccompHook interface {
 	UsernsAllowed() bool
+	SystemPathsUnmasked() bool
 }

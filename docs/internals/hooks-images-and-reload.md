@@ -266,20 +266,25 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   is a named, reviewable field. New hook.json field ⇒ same
   deploy-first rule as `state`/`schedule` (old binaries reject it via
   DisallowUnknownFields).
-- `seccomp: {userns: true}` (hook.json / manager.json) is the audited opt-in
-  for a hook that sandboxes its OWN workload — bubblewrap, and so `dats` on
-  its default backend. It maps to EXACTLY two docker-run flags, on both the
-  live-run and the `webhook-runner test` path
-  (`internal/runner/seccomp.go`), because a sandbox needs two things and the
-  first one alone is a trap:
-  - `--security-opt seccomp=<generated profile>` — the vendored moby default
+- **`seccomp.userns` and `seccomp.systempaths` are TWO audited opt-ins, and a
+  sandbox needs both.** They are separate fields because they widen different
+  things, and declaring one must never quietly grant the other. Each maps to
+  one docker-run flag, on both the live-run and the `webhook-runner test` path
+  (`internal/runner/seccomp.go`). `userns` alone is the trap: bubblewrap
+  creates its namespace and then fails on the first mount.
+  - `seccomp: {userns: true}` →
+    `--security-opt seccomp=<generated profile>` — the vendored moby default
     plus an ungated allow for `unshare`/`clone`/`clone3`/`setns` (creating the
     namespaces) and `mount`/`umount2`/`pivot_root` (furnishing them). The
     default profile gates all of those on CAP_SYS_ADMIN, which a hook
     container does not hold. There is no docker syntax for "the default, plus
     X", which is why the profile is vendored and rewritten per run.
-  - `--security-opt systempaths=unconfined` — empties MaskedPaths and
-    ReadonlyPaths. Docker masks parts of `/proc` in every container (a tmpfs
+  - `seccomp: {systempaths: "unconfined"}` →
+    `--security-opt systempaths=unconfined` — empties MaskedPaths and
+    ReadonlyPaths. `"unconfined"` is the only accepted value; anything else is
+    a load error, because a typo that reads as "masking off" to its author and
+    "masking on" to the runner is a security setting that looks applied and is
+    not. Docker masks parts of `/proc` in every container (a tmpfs
     over `/proc/acpi`, a `/dev/null` bind over `/proc/kcore`, read-only binds
     of `/proc/sys` and `/proc/sysrq-trigger`), and inside a user namespace the
     kernel refuses a fresh procfs mount while any of those obscures the
@@ -289,11 +294,24 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
     `Can't mount proc on /newroot/proc: Operation not permitted` — which reads
     as a seccomp problem and is not one.
 
-  What it exposes, plainly: `/proc/sys` and `/proc/sysrq-trigger` become
-  writable to the container's root. No capability is added and every other
-  syscall keeps the default policy, so it stays strictly narrower than the
-  `--privileged` a `dind` hook already gets — but it is a real reach at the
-  host, and that is why it is an opt-in rather than a default.
+  What `systempaths` exposes, plainly. For a process running as ROOT in the
+  container: `/proc/sysrq-trigger` becomes writable, which is a host reboot or
+  panic in one line (further gated by `/proc/sys/kernel/sysrq`), and
+  `/proc/irq/*/smp_affinity` becomes writable, which is host IRQ steering. For
+  ANY process, root or not: `/proc/sched_debug` and `/proc/timer_list`
+  enumerate host processes and kernel addresses straight through the PID
+  namespace, which both breaks the isolation illusion and helps defeat KASLR;
+  `/proc/keys` and `/sys/firmware` likewise disclose.
+
+  What it does NOT give: no capability, no syscall, no host mount, no docker
+  socket. The classic escapes — cgroup `release_agent`, mounting the host
+  filesystem, the `/proc/self/exe` runc overwrite — all need `CAP_SYS_ADMIN` or
+  a host bind. `/proc/kcore` still needs `CAP_SYS_RAWIO` and most `/proc/sys`
+  writes still need `CAP_SYS_ADMIN` in the init user namespace, so the two
+  scariest-sounding paths stay refused. It is not an escape primitive; it is a
+  host-DoS and disclosure surface, and a removed layer of defence in depth in
+  front of kernel bugs — which matters most next to `userns`, the larger
+  privesc surface of the pair.
 - `script` (hook.json) is parse-time sugar for `command`:
   `Hook.resolveScript` derives `<interpreter> <file> [args…]` (bash,
   pwsh, node, or tsx), resolving the file with `EvalSymlinks` and
