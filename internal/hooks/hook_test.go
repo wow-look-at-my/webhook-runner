@@ -18,8 +18,7 @@ func parseInDir(t *testing.T, doc string) (*Hook, error) {
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, DockerfileName), []byte("FROM alpine\n"), 0o644))
-	// A permissive settings contract, so cases that declare settings load;
-	// settings_test.go owns the contract's own behavior.
+	// A permissive settings contract, so cases that declare settings load; settings_test.go owns the contract's own behavior.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, SettingsSchemaFile), []byte(`{"type":"object"}`), 0o644))
 	return Parse("h", filepath.Join(dir, "hook.json"), []byte(doc))
 }
@@ -45,24 +44,19 @@ func TestParseValid(t *testing.T) {
 	assert.Equal(t, 30*time.Second, got)
 
 	assert.Equal(t, DefaultSignatureHeader, h.SigHeader())
-	// settings is the hook's own config, kept verbatim and never coerced --
-	// note the integer, which the old string-only env block could not express.
+	// settings is the hook's own config, kept verbatim and never coerced -- note the integer, which the old string-only env block could not.
 	assert.JSONEq(t, `{"foo":"bar","retries":3}`, string(h.SettingsJSON()))
 }
 
 func TestParseMinimal(t *testing.T) {
-	// Command is optional: the image's CMD (from the Dockerfile) runs.
-	// $schema is the only required field.
+	// Command is optional: the image's CMD (from the Dockerfile) runs. $schema is the only required field.
 	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json"}`)
 	require.Nil(t, err)
 	assert.Empty(t, h.Command)
 }
 
 func TestParseTimeoutAbsentMeansNoCeiling(t *testing.T) {
-	// timeout is optional: a hook that omits it passes validation and has
-	// NO absolute run ceiling — Timeout() == 0, which runner.execute reads
-	// as "arm no deadline" (the run is bounded only by idle_timeout, if
-	// set, or by the container exiting).
+	// timeout is optional: a hook that omits it passes validation and has NO absolute run ceiling — Timeout() == 0, which runner.execute reads as.
 	h, err := parseInDir(t, `{"$schema":"https://s"}`)
 	require.Nil(t, err)
 	assert.Equal(t, time.Duration(0), h.Timeout())
@@ -179,8 +173,7 @@ func TestSigHeaderLegacyDefault(t *testing.T) {
 
 func TestParseRejectsBadDocs(t *testing.T) {
 	cases := map[string]string{
-		// Go validation only checks that $schema is present (non-empty);
-		// json-validator enforces it points at the published schema.
+		// Go validation only checks that $schema is present (non-empty); json-validator enforces it points at the published schema.
 		"missing schema":             `{"command":["x"]}`,
 		"image is not a field":       `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","image":"alpine"}`,
 		"settings must be an object": `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","settings":[1,2]}`,

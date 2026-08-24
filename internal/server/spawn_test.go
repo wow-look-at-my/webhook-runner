@@ -47,9 +47,7 @@ exit 0
 	return path
 }
 
-// spawnFixture wires everything POST /spawn touches: token auth (kv), the
-// tracker, the registry + a real (mock-docker) runner, the events feed, and
-// the operator-override store behind effectiveDisabled.
+// spawnFixture wires everything POST /spawn touches: token auth (kv), the tracker, the registry + a real (mock-docker) runner, the events feed, and the operator-override store behind.
 type spawnFixture struct {
 	s       *Server
 	store   *kv.Store
@@ -145,8 +143,7 @@ func TestSpawnAuth(t *testing.T) {
 }
 
 func TestSpawnWithoutRunnerConfigured(t *testing.T) {
-	// A kv-only server (no registry/runner/tracker — odd wiring, and the
-	// shape non-state test servers have) must refuse, not nil-deref.
+	// A kv-only server (no registry/runner/tracker — odd wiring, and the shape non-state test servers have) must refuse, not nil-deref.
 	s, store := newStateServer(t, kv.Config{})
 	rr := stateReq(t, s, "POST", "/spawn", store.Token("parent", "r1"), strings.NewReader(spawnBody("t", 1)))
 	require.Equal(t, 503, rr.Code)
@@ -175,8 +172,7 @@ func TestSpawnValidation(t *testing.T) {
 		require.Equalf(t, 400, rr.Code, "body=%q -> %s", body, rr.Body.String())
 	}
 
-	// Payload bound: over maxSpawnPayloadBytes is refused even when the
-	// whole body still fits the reader cap...
+	// Payload bound: over maxSpawnPayloadBytes is refused even when the whole body still fits the reader cap...
 	big := fmt.Sprintf(`{"hook":"t","count":1,"payload":{"pad":%q}}`, strings.Repeat("a", maxSpawnPayloadBytes))
 	require.Less(t, len(big), maxSpawnBody, "test setup: body must fit the reader cap")
 	require.Equal(t, 413, stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(big)).Code)
@@ -220,8 +216,7 @@ func TestSpawnUnknownTarget(t *testing.T) {
 }
 
 func TestSpawnManifestDenyByDefault(t *testing.T) {
-	// A manager with NO spawn_targets spawns nothing: the manifest is the
-	// allowlist and absent/empty means deny.
+	// A manager with NO spawn_targets spawns nothing: the manifest is the allowlist and absent/empty means deny.
 	f := newSpawnFixture(t)
 	_, tok := f.managerParent(t)
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
@@ -233,8 +228,7 @@ func TestSpawnManifestDenyByDefault(t *testing.T) {
 }
 
 func TestSpawnHookCallerDenied(t *testing.T) {
-	// Hook-run callers carry no manifest field (the published hook schema
-	// is frozen) — a live hook run is denied even for an existing target.
+	// Hook-run callers carry no manifest field (the published hook schema is frozen) — a live hook run is denied even for an existing target.
 	f := newSpawnFixture(t)
 	_, tok := f.liveParent(t)
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
@@ -246,8 +240,7 @@ func TestSpawnHookCallerDenied(t *testing.T) {
 }
 
 func TestSpawnManifestTargetMissing(t *testing.T) {
-	// A manifest that grants a DIFFERENT target still denies: entries are
-	// explicit ids, never wildcards.
+	// A manifest that grants a DIFFERENT target still denies: entries are explicit ids, never wildcards.
 	f := newSpawnFixture(t)
 	_, tok := f.managerParent(t, "other-target")
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
@@ -259,8 +252,7 @@ func TestSpawnDisabledTarget(t *testing.T) {
 	f := newSpawnFixture(t)
 	_, tok := f.managerParent(t, "worker", "born-off")
 
-	// Operator kill switch: same effective-disabled state as handleTrigger
-	// and buildScheduleFire.
+	// Operator kill switch: same effective-disabled state as handleTrigger and buildScheduleFire.
 	f.targetHook(t, &hooks.Hook{ID: "worker", Command: []string{"x"}})
 	_, err := f.ov.SetHookDisabled("worker", true)
 	require.NoError(t, err)
@@ -318,8 +310,7 @@ func TestSpawnSuccess(t *testing.T) {
 		joined := strings.Join(snap.Output, "\n")
 		// The container saw the payload verbatim...
 		assert.Contains(t, joined, `payload:{"job":{"name":"build-42"}}`)
-		// ...and the synthetic headers: the requested event plus the
-		// parent identity.
+		// ...and the synthetic headers: the requested event plus the parent identity.
 		assert.Contains(t, joined, "X-Github-Event")
 		assert.Contains(t, joined, "workflow_job")
 		assert.Contains(t, joined, "X-Webhook-Runner-Spawned-By")
@@ -356,8 +347,7 @@ func TestSpawnBypassesSkipIf(t *testing.T) {
 		},
 	})
 
-	// Control: these exact inputs DO match the skip condition — a delivery
-	// carrying them would be skipped.
+	// Control: these exact inputs DO match the skip condition — a delivery carrying them would be skipped.
 	payload := []byte(`{"a":1}`)
 	_, skip := target.EvaluateSkip(payload, spawnHeaders("parent", parentInst, "workflow_job"))
 	require.True(t, skip, "test setup: the condition must match the spawn inputs")

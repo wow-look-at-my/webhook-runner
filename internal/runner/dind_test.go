@@ -39,9 +39,10 @@ func indexOfArg(lines []string, want string) int {
 	return -1
 }
 
-// A dind hook's live run gets exactly --privileged plus the anonymous
-// /var/lib/docker volume, both BEFORE the image argument.
-func TestRunnerDindAddsPrivilegedAndVolume(t *testing.T) {
+// A dind hook's live run gets --privileged and the anonymous /var/lib/docker
+// volume, both before the image argument. Removing the flag is what took the
+// wow-dind fleet down, so this pins it present rather than absent.
+func TestRunnerDindAddsPrivilegeAndVolume(t *testing.T) {
 	dir := t.TempDir()
 	r := New(Options{
 		Tracker: runs.NewTracker(),
@@ -58,21 +59,22 @@ func TestRunnerDindAddsPrivilegedAndVolume(t *testing.T) {
 	tag, err := ImageTag(hook)
 	require.NoError(t, err)
 
-	priv := indexOfArg(out, "arg=--privileged")
 	mnt := indexOfArg(out, "arg=--mount")
 	val := indexOfArg(out, "arg=type=volume,dst=/var/lib/docker")
 	img := indexOfArg(out, "arg="+tag)
+	priv := indexOfArg(out, "arg=--privileged")
 
 	require.NotEqual(t, -1, img, "image argument must be present")
-	require.NotEqual(t, -1, priv, "--privileged must be present")
 	require.NotEqual(t, -1, mnt, "--mount must be present")
 	require.NotEqual(t, -1, val, "the mount value must be present")
+	require.NotEqual(t, -1, priv,
+		"--privileged must be present: a nested dockerd must write /proc/sys and "+
+			"/sys/fs/cgroup, and without it every dind run dies at cgroup-prep")
 	// The --mount value must be the token immediately after the flag.
 	assert.Equal(t, mnt+1, val, "--mount value immediately follows --mount")
-	// Both capability flags precede the image (so extra args/command trail).
-	assert.Less(t, priv, img, "--privileged must precede the image")
 	assert.Less(t, mnt, img, "--mount must precede the image")
 	assert.Less(t, val, img, "the mount value must precede the image")
+	assert.Less(t, priv, img, "--privileged must precede the image")
 }
 
 // A hook without dind gets neither flag.
@@ -94,9 +96,8 @@ func TestRunnerNoDindNoPrivilegedNoVolume(t *testing.T) {
 	assert.NotContains(t, out, "arg=type=volume,dst=/var/lib/docker")
 }
 
-// The `webhook-runner test` path applies the SAME two flags before the image
-// for a dind hook, so a dind hook's declared tests can start a nested daemon.
-func TestRunHookTestsDindAddsPrivilegedAndVolume(t *testing.T) {
+// The `webhook-runner test` path applies the SAME flags before the image for a dind hook -- run/test parity.
+func TestRunHookTestsDindAddsPrivilegeAndVolume(t *testing.T) {
 	dir := t.TempDir()
 	docker := writeArgDumpDocker(t, dir)
 	hook := dindHook(t, dir, "dinder", true)
@@ -110,13 +111,13 @@ func TestRunHookTestsDindAddsPrivilegedAndVolume(t *testing.T) {
 	require.NoError(t, err)
 	got := out.String()
 
-	assert.Contains(t, got, "arg=--privileged")
+	assert.Contains(t, got, "arg=--privileged",
+		"the test path must grant --privileged exactly as a live run does, or a dind hook's tests cannot start a daemon")
 	assert.Contains(t, got, "arg=--mount")
 	assert.Contains(t, got, "arg=type=volume,dst=/var/lib/docker")
-	// Both flags (and the mount value) precede the image argument.
+	// The flag and its value precede the image argument.
 	imgIdx := strings.Index(got, "arg="+tag)
 	require.NotEqual(t, -1, imgIdx)
-	assert.Less(t, strings.Index(got, "arg=--privileged"), imgIdx, "--privileged must precede the image")
 	assert.Less(t, strings.Index(got, "arg=--mount"), imgIdx, "--mount must precede the image")
 	assert.Less(t, strings.Index(got, "arg=type=volume,dst=/var/lib/docker"), imgIdx, "the mount value must precede the image")
 }

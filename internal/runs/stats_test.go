@@ -121,9 +121,7 @@ func TestComputeStatsSplitsWaitFromProcessing(t *testing.T) {
 			Started:   base.Add(time.Minute),
 			StartedAt: base.Add(time.Minute + time.Second),
 			Finished:  base.Add(time.Minute + 4*time.Second)},
-		// Legacy pre-upgrade row: terminal success with no StartedAt —
-		// duration falls back to the queued-inclusive span (10s), and the
-		// row is excluded from the wait figures.
+		// Legacy row: no StartedAt, so duration falls back to the queued-inclusive span (10s).
 		{ID: "legacy", HookID: "h", Status: StatusSuccess,
 			Started:  base.Add(2 * time.Minute),
 			Finished: base.Add(2*time.Minute + 10*time.Second)},
@@ -165,8 +163,7 @@ func TestStatsByHookRespectsEviction(t *testing.T) {
 	tr.New("h").Finish(StatusSuccess, 0, "")
 	tr.New("h").Finish(StatusSuccess, 0, "")
 
-	// The failure fell out of the bounded window, so the rate reflects only
-	// what is retained.
+	// The failure fell out of the bounded window, so the rate reflects only what is retained.
 	got := tr.StatsByHook("h")
 	assert.Equal(t, 2, got.Tracked)
 	assert.Equal(t, 2, got.MaxTracked)

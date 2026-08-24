@@ -1,10 +1,9 @@
-package server
-
 // Manager entity server surface: delivery dispatch into the inbox (with
 // synchronous holds and per-delivery github_status), the state API's
 // POST /inbox/next, and the admin roster/kill-switch/restart endpoints.
 // Managers are FIRST-CLASS — never runs: nothing here touches the tracker,
 // the run store, or the timeline.
+package server
 
 import (
 	"context"
@@ -33,17 +32,11 @@ type ManagerControl interface {
 	OutputTail(id string) []string
 	RequestStop(id, reason string)
 	Poke(id string)
-	// SetOnChange is the manager surface's push seam: instance output,
-	// inbox depth/stamps, and state transitions move the Managers panel
-	// without recording any activity event, so the roster and the
-	// #manager=<id> drill-down go stale unless this dirties "managers".
+	// SetOnChange is the manager surface's push seam: instance output, inbox depth/stamps, and state transitions move the Managers panel.
 	SetOnChange(fn func())
 }
 
-// defaultInboxNextWait is POST /inbox/next's hold when the body names no
-// wait_seconds — long enough that a healthy manager's poll loop is cheap,
-// short enough that liveness (client disconnects, instance teardown) is
-// noticed promptly. Bounds mirror /wait.
+// defaultInboxNextWait is POST /inbox/next's hold when the body names no wait_seconds — long enough that a healthy manager's poll loop is.
 const defaultInboxNextWaitSeconds = 60
 
 // handleManagerTrigger is handleTrigger's manager branch: same kill-switch
@@ -110,8 +103,7 @@ func (s *Server) handleManagerTrigger(w http.ResponseWriter, r *http.Request, mg
 	}
 	d := s.managers.Deliver(id, r.Header, body)
 	if d == nil {
-		// Mid-reload race: the registry knows the manager but the
-		// supervisor's set hasn't caught up. Retryable — GitHub redelivers.
+		// Mid-reload race: the registry knows the manager but the supervisor's set hasn't caught up. Retryable — GitHub redelivers.
 		writeError(w, http.StatusServiceUnavailable, "manager not supervised yet; retry")
 		return
 	}
@@ -220,10 +212,7 @@ func (s *Server) handleInboxNext(w http.ResponseWriter, r *http.Request, ns, run
 	writeJSON(w, http.StatusOK, ev)
 }
 
-// managerCaller reports whether (ns, id) names a manager's CURRENT live
-// instance — the manager-flavored caller-liveness check /wait, /title,
-// /spawn, and the blocking lock acquire apply when the id is not a tracked
-// run.
+// managerCaller reports whether (ns, id) names a manager's CURRENT live instance — the manager-flavored caller-liveness check /wait.
 func (s *Server) managerCaller(ns, id string) bool {
 	return s.managers != nil && s.managers.IsCurrentInstance(ns, id)
 }
@@ -237,9 +226,7 @@ func (s *Server) handleListManagers(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.managers.Statuses())
 }
 
-// managerDetail is GET /managers/{id}: the roster row plus the live
-// instance's recent output tail (managers are not runs — their logs live
-// here, not in /runs/{id}).
+// managerDetail is GET /managers/{id}: the roster row plus the live instance's recent output tail (managers are not runs — their logs live.
 type managerDetail struct {
 	managers.Status
 	Output []string `json:"output,omitempty"`
@@ -259,10 +246,7 @@ func (s *Server) handleManagerDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, managerDetail{Status: st, Output: s.managers.OutputTail(id)})
 }
 
-// handleManagerDisable / handleManagerEnable are the manager kill switch —
-// the same persisted overrides store as hooks (ids share one namespace),
-// with manager semantics: disable gracefully stops the live instance and
-// parks the loop; enable starts it.
+// handleManagerDisable / handleManagerEnable are the manager kill switch — the same persisted overrides store as hooks (ids share one.
 func (s *Server) handleManagerDisable(w http.ResponseWriter, r *http.Request) {
 	s.setManagerDisabled(w, r, true)
 }

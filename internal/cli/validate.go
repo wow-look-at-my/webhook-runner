@@ -19,24 +19,18 @@ func init() {
 		Short: "Validate every hook.json in the given directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// One detection rule everywhere: serve, validate, and test all
-			// resolve the layout the same way (see internal/hooks/layout.go).
+			// One detection rule everywhere: serve, validate, and test all resolve the layout the same way (see internal/hooks/layout.go).
 			layout := hooks.DetectLayout(args[0])
 			fmt.Fprintf(cmd.OutOrStdout(), "layout: %s\n", layout)
 			loaded, errs := hooks.LoadLayout(layout)
 
-			// Load the central concurrency groups and verify every hook's
-			// concurrency_group is declared there — referencing an
-			// undeclared group is a validation failure.
+			// Load the central concurrency groups and verify every hook's concurrency_group is declared there — referencing an undeclared group is a.
 			cfg, cerr := concurrency.LoadFile(layout.ConcurrencyPath())
 			if cerr != nil {
 				errs = append(errs, cerr)
 				cfg = &concurrency.Config{Groups: map[string]concurrency.Group{}}
 			}
-			// Managers validate alongside hooks: same Dockerfile/$schema/
-			// skip_if/auth rules plus reconcile_interval, a hook/manager id
-			// collision check (one id namespace), and the same
-			// concurrency-group reference rule.
+			// Managers validate alongside hooks: same Dockerfile/$schema/ skip_if/auth rules plus reconcile_interval, a hook/manager id.
 			loadedManagers, merrs := hooks.LoadManagers(layout)
 			errs = append(errs, merrs...)
 			for id := range loadedManagers {
@@ -58,8 +52,7 @@ func init() {
 				errs = append(errs, re)
 				badRef.Add(re.HookID)
 			}
-			// spawn_targets must name declared hooks — the manifest is the
-			// spawn allowlist; an undeclared target fails validation.
+			// spawn_targets must name declared hooks — the manifest is the spawn allowlist; an undeclared target fails validation.
 			checkable := make(map[string]*hooks.Hook, len(loaded))
 			for id, h := range loaded {
 				if !badRef.Contains(id) {

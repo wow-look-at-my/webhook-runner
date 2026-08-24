@@ -7,40 +7,7 @@ import (
 	"sort"
 )
 
-// hook.schema.json and manager.schema.json are GENERATED from src/, and the
-// reason is a bug this repo already shipped: the two documents declared 24 of
-// the same properties, hand-copied, and drifted. The manager's `timeout` lost
-// the hook's `^[0-9]+(ns|us|ms|s|m|h)+$` pattern, so "banana" validated;
-// api_key_header and enable lost their defaults; run_title lost its examples.
-// Every one of those was a copy that stopped matching its twin, silently.
-//
-// The shared CONSTRAINTS therefore live once, in src/common.json, and each
-// published document carries them as a single `$defs.common` block it $refs --
-// composed, not merged, so the shared block is visible as one object in the
-// output instead of dissolved into 24 properties nobody can tell apart from
-// the entity's own.
-//
-// Two things about that composition are load-bearing:
-//
-//   - `unevaluatedProperties: false`, NEVER `additionalProperties: false`.
-//     additionalProperties does not compose through allOf: the $ref'd common
-//     block is evaluated on its own, sees the entity's own `schedule` /
-//     `spawn_targets`, and rejects a perfectly valid manifest.
-//     unevaluatedProperties is the 2020-12 keyword that accounts for what
-//     sibling subschemas evaluated. buildOverlay rejects an overlay that
-//     brings additionalProperties back.
-//   - The prose stays PER-ENTITY. All 24 descriptions differ, and not just in
-//     wording -- a manager's concurrency_group slot is held for the instance's
-//     whole lifetime, its run_title placeholders always resolve empty, its
-//     skip_if creates no run record. Sharing one neutral sentence would delete
-//     that. So common.json holds constraints only and each overlay supplies a
-//     description-only property entry, which annotates without weakening
-//     anything the $ref'd block constrains.
-//
-// Generated rather than $ref'd across files because the published schemas are
-// fetched by editors and by the hooks repo's CI at a canonical URL, and a
-// cross-file $ref would make every consumer fetch a second document to
-// validate one manifest -- json-validator does not resolve one at all.
+// hook.schema.json and manager.schema.json are GENERATED from src/, and the reason is a bug this repo already shipped: the two documents.
 
 const commonRef = "#/$defs/common"
 
@@ -165,8 +132,7 @@ func properties(common map[string]json.RawMessage, ov overlay) (json.RawMessage,
 	props := map[string]json.RawMessage{}
 	for name, def := range ov.Properties {
 		if _, clash := common[name]; clash {
-			// An entity redefining a shared property is the twin coming
-			// back: two definitions, one silently shadowing the other.
+			// An entity redefining a shared property is the twin coming back: two definitions, one silently shadowing the other.
 			return nil, fmt.Errorf("property %q is declared in both common.json and the overlay", name)
 		}
 		props[name] = def

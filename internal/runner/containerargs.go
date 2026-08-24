@@ -88,9 +88,7 @@ func (s containerSpec) args() []string {
 	// real filesystem -- its overlay driver cannot stack on the outer
 	// container's overlay rootfs -- and --rm above reaps it at exit, so inner
 	// storage never leaks between runs. The host's daemon is never exposed.
-	if s.dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
-	}
+	args = append(args, dindArgs(s.dind)...)
 	for _, d := range s.devices {
 		args = append(args, "--device", d)
 	}

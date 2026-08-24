@@ -66,8 +66,7 @@ func TestHookDetail(t *testing.T) {
 	assert.True(t, got.Info.State)
 	assert.Equal(t, "1m30s", got.Info.Timeout)
 	assert.True(t, got.Info.APIKey)
-	// Settings KEYS only: this port is operator-only, but a settings document
-	// can hold credentials, so no value ever renders here.
+	// Settings KEYS only: this port is operator-only, but a settings document can hold credentials, so no value ever renders here.
 	assert.Equal(t, []string{"ai_url", "token"}, got.Info.SettingsKeys)
 	body := rec.Body.String()
 	assert.NotContains(t, body, "super-secret-key")
@@ -106,8 +105,7 @@ func TestHookDetailDefaultsAndNoKV(t *testing.T) {
 
 	var got HookDetail
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	// No timeout in the hook means no absolute ceiling — reported as empty
-	// (omitted), not as some default.
+	// No timeout in the hook means no absolute ceiling — reported as empty (omitted), not as some default.
 	assert.Empty(t, got.Info.Timeout)
 	assert.False(t, got.Info.APIKey)
 	assert.Empty(t, got.Info.SettingsKeys)

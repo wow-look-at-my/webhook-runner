@@ -1,11 +1,10 @@
-package managers
-
 // The admin-surface change seam (Supervisor.SetOnChange): the dashboard's
 // Managers panel and #manager=<id> drill-down are PUSH-fed, and the things
 // that move them most — instance output lines, inbox depth, the
 // last-delivery stamp, supervision state transitions — record no activity
 // event at all. Every one of them must fire this seam, or the panel goes
 // stale until the operator hits F5 (the bug this covers).
+package managers
 
 import (
 	"context"
@@ -44,13 +43,11 @@ func TestSupervisorOnChangeCoversTheAdminSurface(t *testing.T) {
 		return ok && st.State == "running"
 	}, 2*time.Second, 10*time.Millisecond)
 
-	// The fake session already emitted an output line and the state walked
-	// waiting-lease → starting → running; all of that is seam traffic.
+	// The fake session already emitted an output line and the state walked waiting-lease → starting → running; all of that is seam traffic.
 	before := n.Load()
 	assert.Positive(t, before)
 
-	// A delivery: inbox depth and the last-delivered stamp are both on the
-	// roster row, and PushDelivery records nothing on the activity feed.
+	// A delivery: inbox depth and the last-delivered stamp are both on the roster row, and PushDelivery records nothing on the activity feed.
 	s.Deliver("m1", nil, []byte(`{"x":1}`))
 	assert.Greater(t, n.Load(), before, "an inbox delivery moves depth + stamps: signal it")
 

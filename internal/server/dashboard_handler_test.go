@@ -56,13 +56,7 @@ func TestDashboardTimelinePrimaryRunsView(t *testing.T) {
 		"timeline.js must be the generated bundle, not a hand-written file")
 }
 
-// The per-hook drill-down view must be invisible on the plain overview.
-// Two halves, both load-bearing: the shipped markup carries the hidden
-// attribute (so the drill-down is hidden before dashboard.js runs), and the
-// CSS carries a [hidden]{display:none !important} guard — the hidden
-// attribute's UA rule loses to any author display: on the same element
-// (main { display: grid } is what regressed it), so without the guard the
-// drill-down renders, empty, stacked below the overview.
+// The per-hook drill-down view must be invisible on the plain overview. Two halves, both load-bearing: the shipped markup carries the hidden attribute (so the drill-down is hidden before dashboard.js runs), and the CSS carries a [hidden]{display:none !important} guard — the hidden attribute's UA rule loses to any author display: on the same element (main { display: grid } is what regressed it), so without the guard the drill-down renders, empty, stacked below the overview.
 func TestDashboardDrilldownHiddenOnOverview(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
 	rec := getDashboard(t, s, "/")

@@ -34,9 +34,7 @@ func TestRecordTitleRoundtrip(t *testing.T) {
 	assert.Equal(t, "wow-look-at-my/go-toolchain#47", list[0].Title,
 		"history reads must return titles")
 
-	// The index value is the SAME bytes a title-less run would produce —
-	// the title must never leak into the summary format that
-	// SummariesByHook (and splitSummary's two-generation contract) parses.
+	// The index value is the SAME bytes a title-less run would produce — the title must never leak into the summary format that SummariesByHook.
 	want := summaryValue(titled.Status, titled.Finished, titled.StartedAt)
 	require.NoError(t, s.db.View(func(tx *bolt.Tx) error {
 		hb := tx.Bucket(bucketByHook).Bucket([]byte("h"))

@@ -95,7 +95,7 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 		argv:    argv,
 	}
 	// Same seccomp.userns relaxation as a live run, so a hook whose tests
-	// sandbox (bwrap) get the same profile. "" tmpDir means the OS default.
+	// sandbox (bwrap) get the same profile. Empty tmpDir means the OS default.
 	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
 	if err != nil {
 		return err
@@ -118,8 +118,7 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	case err := <-done:
 		return err
 	case <-timer.C:
-		// Kill by container name, not the docker CLI: a SIGKILLed CLI can
-		// leave the container running.
+		// Kill by container name, not the docker CLI: a SIGKILLed CLI can leave the container running.
 		_ = exec.Command(docker, "kill", name).Run()
 		killTimer := time.AfterFunc(2*time.Second, func() {
 			if cmd.Process != nil {

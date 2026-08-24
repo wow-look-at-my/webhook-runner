@@ -68,8 +68,7 @@ func TestEventsExcludeFiltersBeforeTheCap(t *testing.T) {
 		assert.Equal(t, "hook.denied", got[1].Kind)
 	}
 
-	// Without the exclusion the same window is nothing but the burst —
-	// which is the duplication the dashboard now drops.
+	// Without the exclusion the same window is nothing but the burst — which is the duplication the dashboard now drops.
 	unfiltered := getEvents(t, s, "/events?max=10")
 	require.Len(t, unfiltered, 10)
 	assert.Equal(t, "run.skipped", unfiltered[0].Kind)
@@ -96,7 +95,6 @@ func TestEventsExcludeAcceptsSeveralFamilies(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "hook.denied", got[0].Kind)
 
-	// An empty entry is ignored rather than treated as a family that
-	// matches everything.
+	// An empty entry is ignored rather than treated as a family that matches everything.
 	assert.Len(t, getEvents(t, s, "/events?exclude=run,,"), 2)
 }

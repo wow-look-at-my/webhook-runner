@@ -12,16 +12,7 @@ import (
 	"time"
 )
 
-// Connect-phase retry: a runner restart replaces the state socket (the new
-// process unlinks and re-binds $TMPDIR/whr-state.sock), so for a brief
-// handover window a dial hits ENOENT/ECONNREFUSED. That window must never
-// kill a run — a hook's lock/KV call during a deploy died with a
-// connection-level "fetch failed" exactly this way. The shim retries the
-// dial FLAT (no backoff, no give-up inside the window): dialRetryEvery for
-// up to dialRetryFor, while the hook's HTTP request simply waits on its
-// open TCP connection. Only the connect phase retries — an established
-// stream that breaks mid-flight stays broken (the caller must not see a
-// silently restarted request).
+// Connect-phase retry: a runner restart replaces the state socket (the new process unlinks and re-binds $TMPDIR/whr-state.sock), so for a.
 const (
 	dialRetryEvery = 250 * time.Millisecond
 	dialRetryFor   = 10 * time.Second

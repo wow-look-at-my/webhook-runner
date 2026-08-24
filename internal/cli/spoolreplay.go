@@ -41,8 +41,6 @@ func replaySpooledDeliveries(
 		hook, ok := registry.Get(e.HookID)
 		if !ok {
 			// Not an error to the Replay contract: returning nil deletes it.
-			// A hook that no longer exists can never run this delivery, and
-			// silently keeping it forever would wedge every later replay.
 			logger.Error("spooled delivery dropped: its hook is no longer in the tree",
 				"hook", e.HookID, "spool_id", e.ID, "received", e.Received)
 			rec.Record("spool.dropped",

@@ -42,8 +42,7 @@ func TestStateBacklogPushTakeAcrossRuns(t *testing.T) {
 	assert.Equal(t, 3, push.Queued)
 	assert.Equal(t, 3, push.Depth)
 
-	// A DIFFERENT run drains it — the backlog belongs to the hook, not to the
-	// run that filled it.
+	// A DIFFERENT run drains it — the backlog belongs to the hook, not to the run that filled it.
 	rr = stateReq(t, s, "POST", "/backlog/backlog/take", runB, strings.NewReader(`{"count":2}`))
 	require.Equal(t, http.StatusOK, rr.Code)
 	var take struct {
@@ -54,8 +53,7 @@ func TestStateBacklogPushTakeAcrossRuns(t *testing.T) {
 	assert.Equal(t, []string{"o/r#1", "o/r#2"}, take.Items)
 	assert.Equal(t, 1, take.Depth)
 
-	// Re-pushing the whole set adds only what is missing; the taken ones come
-	// back (the caller still lists them — that is the stateless usage).
+	// Re-pushing the whole set adds only what is missing; the taken ones come back (the caller still lists them — that is the stateless usage).
 	rr = stateReq(t, s, "POST", "/backlog/backlog/push", runB, strings.NewReader(`{"items":["o/r#1","o/r#2","o/r#3"]}`))
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &push))
@@ -115,8 +113,7 @@ func TestStateBacklogValidation(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &take))
 	assert.Equal(t, []string{"a"}, take.Items)
 
-	// A name outside the alphabet is refused by the read too, not only by the
-	// verbs that would create it.
+	// A name outside the alphabet is refused by the read too, not only by the verbs that would create it.
 	assert.Equal(t, http.StatusBadRequest, stateReq(t, s, "GET", "/backlog/Bad_Name", tok, nil).Code)
 }
 

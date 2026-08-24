@@ -8,12 +8,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 )
 
-// StatusFunc reads the gating commit-status context's current state for
-// sha from the GitHub API: "success", "pending", "failure", or "error".
-// An empty state with a nil error means the context has no status on the
-// commit yet (CI still starting, or the aggregator never posted one). A
-// non-nil error means the state could not be determined at all (no token
-// configured, API failure) — the gate fails closed on it.
+// StatusFunc reads the gating commit-status context's current state for sha from the GitHub API: "success", "pending", "failure", or.
 type StatusFunc func(ctx context.Context, sha string) (state string, err error)
 
 // Reconcile is one reconciliation-poll pass — the fallback that keeps a
@@ -49,9 +44,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 		return "fetch-failed"
 	}
 	if tip == serving {
-		// Nothing newer — done, with NO status API call. Mirror the push
-		// handler's up-to-date bookkeeping so a stale pending record
-		// (origin rewound back to serving) clears here too.
+		// Nothing newer — done, with NO status API call.
 		g.mu.Lock()
 		if tip == g.servingSHA { // re-check under the lock (an event may have switched)
 			if g.pendingSHA != "" {
@@ -64,17 +57,14 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 		return "already-current"
 	}
 
-	// The tip moved past what is serving: the poll must determine the
-	// gating status before anything can switch. Fail closed — an
-	// unreadable status HOLDS, loudly.
+	// The tip moved past what is serving: the poll must determine the gating status before anything can switch.
 	state, err := g.readGatingState(ctx, tip)
 	if err != nil {
 		g.holdBlind(tip, err.Error())
 		return "held-blind"
 	}
 
-	// Determined: whatever blindness there was is over. What follows
-	// re-reports whichever hold (if any) applies.
+	// Determined: whatever blindness there was is over. What follows re-reports whichever hold (if any) applies.
 	g.mu.Lock()
 	g.lastPollBlind = ""
 	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadPoll)
@@ -82,9 +72,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 
 	switch state {
 	case "success":
-		// The exact switch path the status event uses — trySwitch's own
-		// fresh fetch + ordering rules re-validate everything under the
-		// gate's lock, so a racing event delivery can never be trampled.
+		// The exact switch path the status event uses — trySwitch's own fresh fetch + ordering rules re-validate everything under the gate's lock, so.
 		status, err := g.trySwitch(tip)
 		if err != nil {
 			g.log.Error("reload poll: switch failed", "sha", tip, "err", err)
@@ -102,10 +90,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 		if g.alreadyHeld(tip, state) {
 			return "held-red"
 		}
-		// The tip's push webhook may have been missed too, leaving an
-		// older (or no) commit recorded pending: quietly point the hold at
-		// the tip first — what that push delivery would have recorded —
-		// then record its red state through the event path's own holdRed.
+		// The tip's push webhook may have been missed too, leaving an older (or no) commit recorded pending: quietly point the hold at the tip first —.
 		g.mu.Lock()
 		g.pendingSHA = tip
 		g.mu.Unlock()
@@ -114,9 +99,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 		}
 		return "held-red"
 	default:
-		// "pending", "" (no status reported for the context yet), or an
-		// unrecognized state: not affirmatively green — hold, exactly as a
-		// push delivery records a not-yet-green tip.
+		// "pending", "" (no status reported for the context yet), or an unrecognized state: not affirmatively green — hold, exactly as a push.
 		if g.alreadyHeld(tip, "pending") {
 			return "held-pending"
 		}
@@ -157,9 +140,7 @@ func (g *Gate) readGatingState(ctx context.Context, tip string) (string, error) 
 	return state, nil
 }
 
-// alreadyHeld reports whether the hold for sha with this state is already
-// recorded — the poll's repeat-tick dedupe (an unchanged verdict every
-// tick must not spam the feed or rewrite persisted state).
+// alreadyHeld reports whether the hold for sha with this state is already recorded — the poll's repeat-tick dedupe (an unchanged verdict every tick.
 func (g *Gate) alreadyHeld(sha, state string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()

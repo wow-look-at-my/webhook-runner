@@ -1,5 +1,3 @@
-package server
-
 // GET /runs/stream (admin port): the Server-Sent Events live tail of run
 // lifecycle changes — what lets the dashboard stop polling /runs.
 //
@@ -57,6 +55,7 @@ package server
 // after the snapshot (per-run duplicates are fine — clients merge by run
 // id, and buffered deltas are never older than the snapshot's own row for
 // long: every later mutation is buffered behind them in order).
+package server
 
 import (
 	"encoding/json"
@@ -73,19 +72,13 @@ import (
 )
 
 const (
-	// streamClientBuffer is each subscriber's channel capacity. A client
-	// this far behind (256 lifecycle changes) is not keeping up; it gets
-	// dropped and resyncs on reconnect.
+	// streamClientBuffer is each subscriber's channel capacity.
 	streamClientBuffer = 256
-	// streamSnapshotMax caps the connect snapshot (same merged live+history
-	// read as /runs) — enough for the dashboard's initial window without
-	// shipping the whole retention on every reconnect.
+	// streamSnapshotMax caps the connect snapshot (same merged live+history read as /runs) — enough for the dashboard's initial window.
 	streamSnapshotMax = 200
 )
 
-// streamHeartbeat is the heartbeat cadence. A var so tests can shrink it;
-// ~10s keeps intermediaries from idling the connection out and gives
-// clients a liveness signal to key staleness off.
+// streamHeartbeat is the heartbeat cadence.
 var streamHeartbeat = 10 * time.Second
 
 // streamHub fans runs.RunState updates out to the connected SSE clients.
@@ -98,10 +91,7 @@ type streamHub struct {
 type streamSub struct {
 	ch chan runs.RunState
 
-	// Section-signal state: dirty is the set of section names signaled
-	// since the handler last drained; kick (1-buffered) wakes the handler.
-	// A set + non-blocking wake coalesces bursts and is drop-proof by
-	// construction — see the package comment.
+	// Section-signal state: dirty is the set of section names signaled since the handler last drained; kick (1-buffered) wakes the handler.
 	mu    sync.Mutex
 	dirty set.Set[string]
 	kick  chan struct{}
@@ -154,9 +144,7 @@ func (h *streamHub) unsubscribe(sub *streamSub) {
 	h.mu.Unlock()
 }
 
-// publish delivers st to every subscriber without ever blocking: a full
-// buffer drops that subscriber (close wakes its handler). All sends and
-// closes happen under h.mu, so a send can never race a close.
+// publish delivers st to every subscriber without ever blocking: a full buffer drops that subscriber (close wakes its handler).
 func (h *streamHub) publish(st runs.RunState) {
 	h.mu.Lock()
 	for sub := range h.subs.All() {
@@ -170,11 +158,7 @@ func (h *streamHub) publish(st runs.RunState) {
 	h.mu.Unlock()
 }
 
-// signal marks the named dashboard sections dirty on every subscriber and
-// wakes their handlers. Never blocks and never drops anyone: the dirty set
-// is bounded by the section-name universe and the wake send is
-// non-blocking (a full kick just means a drain is already pending, which
-// will pick these sections up too).
+// signal marks the named dashboard sections dirty on every subscriber and wakes their handlers.
 func (h *streamHub) signal(sections ...string) {
 	if len(sections) == 0 {
 		return
@@ -205,22 +189,16 @@ func sectionsForEvent(kind string) []string {
 	out := []string{"events"}
 	switch {
 	case kind == "hooks.reloaded":
-		// A reload can change the hook roster, every content-hash image
-		// state, the declared concurrency groups, and the reload panel's
-		// live-commit view at once — and, via a changed hook.json `enable`
-		// default, the effective disabled states GET /attention filters on.
+		// A reload can change the hook roster, every content-hash image state, the declared concurrency groups, and the reload panel's live-commit.
 		out = append(out, "hooks", "managers", "images", "concurrency", "reload", "attention")
 	case kind == "hook.disabled", kind == "hook.enabled":
-		// A kill-switch flip changes the roster's disabled flags AND which
-		// hook-scoped attention entries the read-time filter hides.
+		// A kill-switch flip changes the roster's disabled flags AND which hook-scoped attention entries the read-time filter hides.
 		out = append(out, "hooks", "attention")
 	case kind == "manager.disabled", kind == "manager.enabled":
-		// The manager kill switch: same roster+attention consequences,
-		// manager panel instead of the hooks table.
+		// The manager kill switch: same roster+attention consequences, manager panel instead of the hooks table.
 		out = append(out, "managers", "attention")
 	case strings.HasPrefix(kind, "manager."):
-		// Manager lifecycle (started/exited/leased/wait/skipped/
-		// restart_requested) moves the Managers panel.
+		// Manager lifecycle (started/exited/leased/wait/skipped/ restart_requested) moves the Managers panel.
 		out = append(out, "managers")
 	case kind == "hook.load_error":
 		out = append(out, "hooks", "managers")
@@ -229,16 +207,13 @@ func sectionsForEvent(kind string) []string {
 	case strings.HasPrefix(kind, "concurrency."):
 		out = append(out, "concurrency")
 	case strings.HasPrefix(kind, "reload."), strings.HasPrefix(kind, "git."), kind == "github.push":
-		// Every reload-gate verdict, git pull, and hooks-repo push moves
-		// what the reload panel shows (live/pending commit, hold state).
+		// Every reload-gate verdict, git pull, and hooks-repo push moves what the reload panel shows (live/pending commit, hold state).
 		out = append(out, "reload")
 	}
 	return out
 }
 
-// closeAll disconnects every subscriber and marks the hub closed (used at
-// server shutdown so long-lived stream responses end and Shutdown's
-// handler-drain can finish).
+// closeAll disconnects every subscriber and marks the hub closed (used at server shutdown so long-lived stream responses end and Shutdown's.
 func (h *streamHub) closeAll() {
 	h.mu.Lock()
 	h.closed = true
@@ -256,10 +231,7 @@ func (h *streamHub) clients() int {
 	return h.subs.Len()
 }
 
-// CloseStreams disconnects every /runs/stream client. Call it at shutdown
-// BEFORE http.Server.Shutdown: Shutdown waits for in-flight handlers, and a
-// stream handler only returns when its client disconnects, its subscription
-// closes, or its request context ends.
+// CloseStreams disconnects every /runs/stream client.
 func (s *Server) CloseStreams() { s.stream.closeAll() }
 
 // handleRunsStream is GET /runs/stream (admin port).
@@ -274,9 +246,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe FIRST, snapshot second — see the package comment: changes
-	// landing while the snapshot is serialized are buffered and delivered
-	// right after it, so nothing falls in the gap.
+	// Subscribe FIRST, snapshot second — see the package comment: changes landing while the snapshot is serialized are buffered and delivered.
 	sub := s.stream.subscribe()
 	defer s.stream.unsubscribe(sub)
 
@@ -295,8 +265,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case st, ok := <-sub.ch:
 			if !ok {
-				// Dropped (slow client) or server shutdown: end the
-				// response; the client reconnects and resyncs.
+				// Dropped (slow client) or server shutdown: end the response; the client reconnects and resyncs.
 				return
 			}
 			if err := writeSSEEvent(w, "run", st); err != nil {
@@ -306,9 +275,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-sub.kick:
-			// Section signals: drain the coalesced dirty set into ONE
-			// changed event. An empty drain (a wake that raced an earlier
-			// drain) writes nothing.
+			// Section signals: drain the coalesced dirty set into ONE changed event. An empty drain (a wake that raced an earlier drain) writes nothing.
 			secs := sub.drainSections()
 			if len(secs) == 0 {
 				continue
@@ -320,12 +287,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-hb.C:
-			// Comment for proxies + event for the client, one write. The hb
-			// payload carries the ACTIVE (non-terminal) run-id set — the
-			// reconcile beat: reading the tracker here is cheap (ids only,
-			// ~26 bytes each, bounded by genuinely concurrent work), and an
-			// EMPTY set still serializes as {"active":[]} — a real "nothing
-			// is active" verdict clients must act on, never null.
+			// Comment for proxies + event for the client, one write.
 			if err := writeSSEHeartbeat(w, s.tracker.ActiveIDs()); err != nil {
 				return
 			}
@@ -347,10 +309,7 @@ func writeSSEEvent(w io.Writer, event string, v any) error {
 	return err
 }
 
-// writeSSEHeartbeat writes the combined proxy-comment + hb event in ONE
-// write (both ride one flush). The event payload is the active run-id set;
-// active is never nil (Tracker.ActiveIDs guarantees []), so the data line
-// is always {"active":[...]}.
+// writeSSEHeartbeat writes the combined proxy-comment + hb event in ONE write (both ride one flush).
 func writeSSEHeartbeat(w io.Writer, active []string) error {
 	b, err := json.Marshal(map[string][]string{"active": active})
 	if err != nil {

@@ -99,27 +99,25 @@ paths, and version/help/argument/flag errors — the authoritative case list
 is the `desc:` lines in `dats/*.dats`. `serve`, real `test` runs, and the
 dashboard need Docker/network and stay in `e2e/`.
 
-**The suites declare `sandbox: false`, and must keep doing so.** dats
-SANDBOXES commands BY DEFAULT (bubblewrap, falling back to docker), and its
-bwrap sandbox gives a command a FRESH /tmp — while go-toolchain's dats phase
-stages the binaries the suites exec under an `os.MkdirTemp` there. Inside the
-sandbox that path does not exist, so every test exits 127 (all 23, the moment
-dats v49 turned sandboxing on). Nothing here needs isolating: these are
-docker-free, offline, secret-free tests of our own freshly built CLI. The
-opt-out also means the suites need NO sandbox backend at all — dats probes
-lazily — so the dind pinning below is now belt-and-braces rather than load-bearing.
+**The suites are SANDBOXED and a file cannot opt out.** dats sandboxes
+commands BY DEFAULT (bubblewrap, falling back to docker); a file-level
+`sandbox:` block only NARROWS, and `sandbox: false` is a parse error that
+stops the suite loading at all. Only `--no-sandbox` on the run disables it,
+which is the caller's decision, not the suite's. Both files declare
+`network: false` and nothing else — these tests are offline by
+construction. The binaries they exec stay reachable because go-toolchain's
+dats phase stages them under `build/`, inside the module root, which is the
+one host path a sandboxed command can read.
 
-**dats itself is not runner-free** (the ruling that put these jobs on dind):
-without the opt-out it fails a run outright when neither backend is usable.
-**Both jobs that run dats (`dats`, and `test` via go-toolchain's dats phase)
-use `vars.CI_RUNNER_DIND`**, where bubblewrap is measured working. The slim
-`wow-linux` fleet can supply bubblewrap too, via `seccomp.userns` alone —
-docker is deleted from that image by design, and the `/proc` masking that used
-to defeat bwrap there is now dats' problem, not a privilege to hand out (see
-the seccomp bullet in
-[docs/internals/hooks-images-and-reload.md](docs/internals/hooks-images-and-reload.md)).
-So the dind pinning is belt-and-braces on both counts, not a statement that
-slim cannot sandbox.
+**dats needs a sandbox backend, so both jobs that run it are GitHub-hosted**
+— `dats`, and `test` via go-toolchain's dats phase. They used to pin
+`vars.CI_RUNNER_DIND`; that fleet cannot serve a job at all while `dind`
+grants no privilege (docs/internals/nested-containers.md), and an unservable
+pin is a queue, not a runner. `ubuntu-latest` costs paid minutes on a private
+repo, which self-hosted-runners.md otherwise forbids — operator instruction,
+for the Docker-dependent jobs only. The slim `wow-linux` fleet can supply
+bubblewrap too, via `seccomp.userns` alone, so the jobs that need no daemon
+stay on it.
 
 Every suite command execs the binary as
 `"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner"` — NEVER a bare
@@ -192,67 +190,7 @@ The server listens on two TCP ports plus a Unix socket:
   - **A manager instance is NOT a run**: its logs live under `/managers/{id}`, never in `/runs`.
   - `/kv/{namespace}/{key}` deliberately EXPOSES stored values (operator request; the admin port is operator-only). The hook port and `/hooks/{id}` stay value-free.
   - [docs/internals/admin-api.md](docs/internals/admin-api.md) -- every endpoint, the per-hook app page, and the realtime swimlane timeline.
-- **State KV API** — served on a **Unix socket** (NOT a TCP port), default
-  `$TMPDIR/whr-state.sock`: `GET/PUT/DELETE /kv/{key}`, `GET /kv` (list),
-  `POST /kv/{key}/incr`, the run-owned cooperative locks
-  `POST /kv/{key}/acquire` (holder-identified 409 on contention; opt-in
-  `{"block": true}` holds the request until acquired) /
-  `POST /kv/{key}/release` / `POST /kv/{key}/steal` (transfer + cancel the
-  holder — see the lock bullet under "Things easy to get wrong"), and the
-  first-class declared sleep `POST /wait` (`{"seconds": 1..600, "reason":
-  "..."}`, both required — blocks server-side, shows `waiting Ns: reason`
-  on the run's dashboard row, counts as activity for the idle `timeout`;
-  see the wait bullet under "Things easy to get wrong"), the shim-only
-  instrumentation report `POST /phase/container-entry` (no body; the server
-  stamps its receive time — the one lifecycle mark the host cannot see, and
-  what separates docker's container-create cost from the hook runtime's
-  cold start; docs/internals/run-phases.md), the friendly
-  run-title override `POST /title` (`{"title":"..."}`, trimmed, 1..200
-  chars — names the calling run mid-flight, replacing any run_title
-  template title; see the run-title bullet under "Things easy to get
-  wrong"), the pin toggle `POST /kv/{key}/pin` / `POST /kv/{key}/unpin`
-  (owner-only, idempotent — a pinned lock refuses steals with 409 +
-  `held_by.pinned:true`; acquire also takes `{"pinned":true}` for an
-  atomic take-and-pin; see the pinning bullet under "Things easy to get
-  wrong"), the spawn primitive `POST /spawn`
-  (`{"hook","count":1..100,"payload":<JSON object ≤256KiB>}` + optional
-  `"event"` — a MANAGER starts runs of ANOTHER hook through the
-  runner itself, authorized deny-by-default by its own manager.json
-  `spawn_targets` manifest; see the spawn bullet under "Things easy to get
-  wrong"), the durable BATCH BACKLOGS `POST /backlog/{name}/push` (a set
-  union that keeps order — re-push the whole candidate set every tick) /
-  `POST /backlog/{name}/take` (`{"count":1..1000}`; REMOVES a slice,
-  at-most-once, no leases) / `GET /backlog/{name}` / `GET /backlogs` (depths
-  only) — WHAT IS LEFT for a run that can only afford part of the work, the
-  sibling of internal/queue's WHEN-to-run scheduler (see
-  docs/internals/backlogs.md), and — for MANAGERS only — the inbox long-poll
-  `POST /inbox/next` (`{"wait_seconds":1..600}`; 200 = one event, 204 =
-  none in time, 409 = superseded instance; calling again settles the
-  previous event as processed — see the managers bullet under "Things
-  easy to get wrong"; hooks 404 here). Hooks don't touch the socket directly: the runner
-  injects a tiny proxy shim (webhook-runner's own binary, see `internal/kvproxy`)
-  as the container entrypoint, so the hook reaches the API at a plain
-  `http://localhost:9002` URL (`HOOK_KV_URL`) with any HTTP client — no
-  networking, no `--unix-socket`. Each request is authenticated by the per-hook
-  bearer token the runner injects, and the namespace is derived from that
-  token, never from the URL — so a hook can only ever reach its own data.
-  Backed by `internal/kv` (disk-backed under the data dir; see below). The
-  `Server` struct exposes `StateHandler()` (served on the socket listener)
-  alongside `HookHandler()`/`AdminHandler()`.
-  The dashboard's one-time webhook-setup instructions live in a
-  collapsed `<details>`; the page is about live state (hooks, images,
-  runs, activity). The `events.Recorder` is a nil-safe bounded ring fed
-  by the server (push webhooks, reloads, load errors, rejected hook
-  requests: `hook.unknown` / `hook.denied` / `hook.misconfigured` — the
-  last one names an unresolvable `${NAME}` api_key reference, logged to
-  the feed but never to the 401 body) and the runner (image builds, run
-  lifecycle)
-  — memory only (run history, by contrast, persists completed runs via
-  `internal/runstore`; see below). Rejections are events on purpose:
-  the dashboard must be able to answer "did you receive anything?" —
-  which is also why both feeds pass `?exclude=run` and show ONLY what has
-  no run (the runs table owns run lifecycle). Every listing filters
-  BEFORE the cap.
+- **State KV API** -- served on a **Unix socket** (NOT a TCP port), default `$TMPDIR/whr-state.sock`, reached by a `state: true` hook at a plain `http://localhost:9002` (`HOOK_KV_URL`) through the injected proxy shim. The bearer token DERIVES the namespace, never the URL, so a hook can only ever reach its own data. KV get/put/delete/list/incr, run-owned locks (try/block/steal/pin), the declared sleep `POST /wait`, the mid-flight `POST /title`, the manifest-authorized `POST /spawn`, the durable batch backlogs, and -- managers only -- the `POST /inbox/next` long-poll. Every endpoint, its body and its semantics: docs/internals/state-api.md.
 
 The `Server` struct has `HookHandler()` and `AdminHandler()` returning
 separate `http.Handler`s. Tests use the `hook(s)` and `admin(s)` helpers.
@@ -315,7 +253,7 @@ most often, plus where to read the rest.
 - **`fleet-compat` reports the deploy ORDER; it no longer has to be red to keep you safe — ci.yml.** It validates this binary against webhooks **master** (the deployed tree) AND the webhooks branch matching this branch's name (the tree this change is paired with — the same convention webhooks CI uses in reverse). It FAILS only when nothing the change ships with can be served, i.e. there is no order in which it becomes deployable. When master alone fails, that is a `DEPLOY ORDER` notice, because the all-or-nothing rule above makes the wrong order survivable: the worst case is a failed rollout or a held tree, both loud, neither destructive. Before that rule existed this job was the only thing between a contract change and a silent fleet-wide outage, so it had to red every coordinated pair until its partner merged — which meant shipping red PRs with a merge-order runbook attached. Don't reintroduce that: the runtime owns the safety, CI owns the telling.
 - **New hook.json fields are deploy-first — but no longer dangerously so.** `Parse` uses `DisallowUnknownFields`, so an older binary REJECTS a hook using a newer field. Deploy webhook-runner first; if you don't, the all-or-nothing rule above turns it into a held tree (the gate rolls back and keeps serving), not a fleet missing entities.
 - Hooks, concurrency groups, schedules and managers reload together through ONE closure (`buildLoadAndApply`). Never add a second reload path.
-- **ONE builder assembles every `docker run` argv** (`internal/runner/containerargs.go`). A hook run, a manager instance and a hook's tests are three lifecycles, not three kinds of container: they differ by FIELDS on a `containerSpec`, never by hand-built slices. This is what makes a fleet-wide property hold instead of being re-checked three times — mirror routing reaches every container because the builder injects it, and no container joins another PID namespace because there is no field to ask for one. **Never add `--pid`**: docker's fresh PID namespace is what keeps the container's `/proc` free of the host's processes, which is exactly what makes dats' read-only `/proc` bind safe on the slim fleet. `internal/runner/pidnamespace_test.go` fails the build on the flag; dats refuses the bind itself where it cannot prove the procfs is scoped.
+- **ONE builder assembles every `docker run` argv** (`internal/runner/containerargs.go`). A hook run, a manager instance and a hook's tests are three lifecycles, not three kinds of container: they differ by FIELDS on a `containerSpec`, never by hand-built slices. This is what makes a fleet-wide property hold instead of being re-checked three times — mirror routing reaches every container because the builder injects it, and no container joins another PID namespace because there is no field to ask for one. **`internal/runner/bannedflags_test.go` fails the build on `--pid`, `--privileged` and `systempaths=unconfined`** — each hands a hook a piece of the host, and docker's defaults already withhold all three, so every ban costs nothing until someone reaches for the first search hit. `--pid` would put the host's process table in the container's `/proc`, which is what makes dats' read-only `/proc` bind safe on the slim fleet; the other two are host root by another name. **`dind: true` is therefore a MOUNT and nothing else** (`internal/runner/dind.go`): a nested daemon started as root cannot come up in an unprivileged container, and neither can any other nested container runtime — the kernel refuses runc a fresh procfs while docker's ten locked `/proc` submounts are visible. Measured, with the reproduction: docs/internals/nested-containers.md.
 - **Filter BEFORE the cap, in every listing.** `max`/limit bounds what is RETURNED, never what is EXAMINED (`/runs?exclude=`, `/events?exclude=`+`?hook=`). Page-then-filter blanks a surface on exactly the busy hooks it exists for: a burst of excluded entries fills the page, the filter empties it, and the panel reports "nothing here" while the matches sit just behind them.
 - **An image tag is a content hash, so anything derived from it is cacheable.** `imageCommand`'s `docker inspect` is memoized per (tag, command) — it used to be a full CLI + daemon round trip on every state-hook run, between slot acquisition and container launch. Never cache an inspect FAILURE: that is a daemon condition, not a property of the tag.
 - **A phase mark that is missing means UNKNOWN, never zero.** Container overhead is measured, not estimated (`internal/runs` phase marks) — but only a hook whose container reports from the inside yields an EXACT boot figure; every other hook gets an upper bound that also contains its runtime's cold start. Never let the two meet in one number.

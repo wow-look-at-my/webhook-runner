@@ -146,8 +146,7 @@ func TestStateLockBlockingValidation(t *testing.T) {
 	require.Equal(t, 409, rr.Code)
 	assert.Contains(t, rr.Body.String(), "run is not active")
 
-	// Steal never blocks — it takes unconditionally, so the flag is a
-	// caller bug.
+	// Steal never blocks — it takes unconditionally, so the flag is a caller bug.
 	rr = stateReq(t, s, "POST", "/kv/gate/steal", tok, strings.NewReader(`{"block":true}`))
 	require.Equal(t, 400, rr.Code)
 }
@@ -221,8 +220,7 @@ func TestStateLockStealCancelsHolderAndTransfers(t *testing.T) {
 	require.NoError(t, err)
 	tr := runs.NewTracker()
 	rec := events.NewRecorder(50)
-	// The real finish seam, so the victim's terminal state exercises the
-	// transfer-vs-release invariant end to end.
+	// The real finish seam, so the victim's terminal state exercises the transfer-vs-release invariant end to end.
 	tr.SetOnFinish(RunFinishCallback(store, func(runs.RunState) error { return nil }, rec, logger))
 	s := New(Options{Logger: logger, KV: store, Tracker: tr, Events: rec})
 
@@ -251,14 +249,12 @@ func TestStateLockStealCancelsHolderAndTransfers(t *testing.T) {
 	assert.Equal(t, victim.ID(), res.StolenFrom.RunID)
 	assert.Equal(t, "h", res.StolenFrom.HookID)
 
-	// The victim was cancelled, and the reason names the steal — it will
-	// land in run history as the terminal error.
+	// The victim was cancelled, and the reason names the steal — it will land in run history as the terminal error.
 	assert.True(t, victim.Snapshot(0).CancelRequested)
 	assert.Contains(t, victim.CancelReason(), `lock "pr-7" stolen by run `+thief.ID())
 	assert.Contains(t, eventKinds(rec.ListByHook("h", 20)), "lock.stolen")
 
-	// Victim terminates (the runner does this after the kill); its OTHER
-	// lock frees, the stolen one stays the thief's.
+	// Victim terminates (the runner does this after the kill); its OTHER lock frees, the stolen one stays the thief's.
 	victim.Finish(runs.StatusCancelled, -1, victim.CancelReason())
 	_, err = store.AcquireLock("h", "other", "run-z", 0)
 	require.NoError(t, err, "the victim's other lock must release on finish")
@@ -388,8 +384,7 @@ func TestStateLockTTLKillsHolderThenHandsOver(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(5 * time.Millisecond) // over budget
 
-	// Stand in for the runner: the container dies on the cancel signal, and
-	// the run reaches a terminal state — which is what frees the lock.
+	// Stand in for the runner: the container dies on the cancel signal, and the run reaches a terminal state — which is what frees the lock.
 	died := make(chan struct{})
 	go func() {
 		<-victim.Cancelled()
@@ -481,5 +476,4 @@ func TestStateLockWithinTTLIsPlainContention(t *testing.T) {
 	assert.False(t, holder.Snapshot(0).CancelRequested, "a holder within its budget is never killed")
 }
 
-// Manager-instance lock blocking is covered in lockflow_manager_test.go —
-// see that file's header for why it lives separately.
+// Manager-instance lock blocking is covered in lockflow_manager_test.go.

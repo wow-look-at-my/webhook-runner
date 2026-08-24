@@ -75,8 +75,7 @@ func TestStateWaitValidation(t *testing.T) {
 }
 
 func TestStateWaitWithoutTracker(t *testing.T) {
-	// A server with a kv store but no tracker (possible in odd wiring) must
-	// refuse rather than dereference nil or block unattributed.
+	// A server with a kv store but no tracker (possible in odd wiring) must refuse rather than dereference nil or block unattributed.
 	s, store := newStateServer(t, kv.Config{})
 	rr := stateReq(t, s, "POST", "/wait", store.Token("h", "r1"), strings.NewReader(`{"seconds":1,"reason":"x"}`))
 	require.Equal(t, 503, rr.Code)
@@ -128,8 +127,7 @@ func TestStateWaitVisibleAndCancelInterrupts(t *testing.T) {
 	assert.Equal(t, "green-settle", snap.WaitingOn.Reason)
 	assert.WithinDuration(t, time.Now().Add(30*time.Second), snap.WaitingOn.Until, 3*time.Second)
 
-	// The dashboard reads these via /runs and /runs/{id}: field names are
-	// part of the contract.
+	// The dashboard reads these via /runs and /runs/{id}: field names are part of the contract.
 	detail := httptest.NewRecorder()
 	admin(s).ServeHTTP(detail, httptest.NewRequest("GET", "/runs/"+run.ID(), nil))
 	require.Equal(t, 200, detail.Code)
@@ -257,8 +255,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 	}
 	reg.Set(h)
 
-	// Control: the same silent container with no declared wait is killed
-	// for silence.
+	// Control: the same silent container with no declared wait is killed for silence.
 	ctrl, err := rn.Start(context.Background(), h, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	select {
@@ -269,8 +266,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 	require.Equal(t, runs.StatusTimeout, ctrl.Status())
 	require.Contains(t, ctrl.Error(), "no output")
 
-	// Protected: identical silence, but announced via /wait — the wait
-	// touches the watchdog, the container finishes on its own, success.
+	// Protected: identical silence, but announced via /wait — the wait touches the watchdog, the container finishes on its own, success.
 	run, err := rn.Start(context.Background(), h, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	respCh := make(chan *httptest.ResponseRecorder, 1)
@@ -291,8 +287,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 	select {
 	case rr := <-respCh:
 		require.Equal(t, 200, rr.Code)
-		// The run ended before the 10s wait elapsed, so the wait reports
-		// the interruption rather than a full wait.
+		// The run ended before the 10s wait elapsed, so the wait reports the interruption rather than a full wait.
 		assert.Contains(t, rr.Body.String(), `"interrupted": true`)
 	case <-time.After(5 * time.Second):
 		t.Fatal("wait call did not return after the run finished")

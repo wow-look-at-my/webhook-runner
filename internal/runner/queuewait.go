@@ -14,13 +14,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// acquireSlot reserves a concurrency-group slot for the run, recording a
-// one-time "queued" activity event the moment the run actually has to wait
-// (not when it gets a slot immediately). A hook with no concurrency_group
-// returns instantly with a no-op release. The returned release must be
-// called exactly once when the run finishes; clearQueued must be called
-// once the slot is acquired (it clears the waiting_on the queue observer
-// stamped — a no-op if the run never actually queued).
+// acquireSlot reserves a concurrency-group slot for the run, recording a one-time "queued" activity event the moment the run actually has to wait (not when it gets a slot immediately). A hook with no concurrency_group returns instantly with a no-op release.
 func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, clearQueued func(), err error) {
 	onQueue, clearQueued := r.groupQueueObserver(hook, run)
 	release, acquired, err = r.groups.Acquire(hook.ConcurrencyGroup, run.ID(), run.Cancelled(), onQueue)
@@ -72,12 +66,7 @@ func (r *Runner) groupQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue fu
 	return onQueue, clearQueued
 }
 
-// acquireGlobalSlot reserves a slot under the server-wide run cap, the
-// group acquire's sibling: a one-time run.queued event when the run
-// actually has to wait, waiting_on mirroring (kind "group", key
-// concurrency.GlobalWaitKey), cancellation honored while queued. A nil cap
-// returns instantly with a no-op release. release must be called exactly
-// once when the run finishes; clearQueued once the slot is acquired.
+// acquireGlobalSlot reserves a slot under the server-wide run cap, the group acquire's sibling: a one-time run.queued event when the run actually has to wait, waiting_on mirroring (kind "group", key concurrency.GlobalWaitKey), cancellation honored while queued.
 func (r *Runner) acquireGlobalSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, clearQueued func()) {
 	onQueue, clearQueued := r.globalQueueObserver(hook, run)
 	release, acquired = r.globalCap.Acquire(run.ID(), run.Cancelled(), onQueue)

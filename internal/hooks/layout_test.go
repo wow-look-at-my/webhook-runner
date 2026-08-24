@@ -98,8 +98,7 @@ func TestLoadLayoutSrcTree(t *testing.T) {
 	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].SrcRoot)
 	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].BuildContext())
 
-	// Exactly one error: the mixed-layout stray dir, named. It must read as
-	// a HARD ERROR, not a silent skip (the operator's failsafe).
+	// Exactly one error: the mixed-layout stray dir, named. It must read as a HARD ERROR, not a silent skip (the operator's failsafe).
 	require.Len(t, errs, 1)
 	var ignored IgnoredLegacyDirError
 	require.True(t, errors.As(errs[0], &ignored), "want IgnoredLegacyDirError, got %v", errs[0])
@@ -118,9 +117,7 @@ func TestLoadLayoutSrcTree(t *testing.T) {
 // clean, so the runner's own legacy fixtures (examples/hooks, e2e/hooks)
 // are unaffected.
 func TestMixedLayoutRejectsTopLevelHooks(t *testing.T) {
-	// (a) MIXED: src/hooks/<id> AND a top-level <other>/hook.json ⇒ the
-	//     typed error, naming the offending top-level dir, and it does NOT
-	//     leak into the loaded registry.
+	// (a) MIXED: src/hooks/<id> AND a top-level <other>/hook.json ⇒ the typed error, naming the offending top-level dir, and it does NOT leak.
 	mixed := t.TempDir()
 	writeSrcHook(t, mixed, "alpha")
 	writeLegacyHook(t, mixed, "leftover")
@@ -142,9 +139,7 @@ func TestMixedLayoutRejectsTopLevelHooks(t *testing.T) {
 	assert.Empty(t, errs, "a pure-src tree must load without errors")
 	assert.Len(t, loaded, 2)
 
-	// (c) PURE-LEGACY: only top-level hook dirs, no src/hooks/ ⇒ loads
-	//     clean and is never scanned for the mixed-layout error (this is
-	//     exactly the shape of examples/hooks and e2e/hooks).
+	// (c) PURE-LEGACY: only top-level hook dirs, no src/hooks/ ⇒ loads clean and is never scanned for the mixed-layout error (this is exactly the.
 	pureLegacy := t.TempDir()
 	writeLegacyHook(t, pureLegacy, "one")
 	writeLegacyHook(t, pureLegacy, "two")
@@ -185,11 +180,7 @@ func TestZeroHooksIsLoud(t *testing.T) {
 	require.True(t, errors.As(errs[0], &zero))
 	assert.Contains(t, zero.Error(), "no hooks loaded")
 
-	// The dry-run disaster shape: a src-restructured tree WITHOUT
-	// src/hooks (or scanned by anything that falls back to legacy rules)
-	// yields zero hooks. That must be equally loud — a silent zero here is
-	// how a premature restructure takes a whole fleet offline with green
-	// checks.
+	// The dry-run disaster shape: a src-restructured tree WITHOUT src/hooks (or scanned by anything that falls back to legacy rules) yields.
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "src", "misc", "note.txt"), "not hooks")
 	loaded, errs := LoadDir(root)

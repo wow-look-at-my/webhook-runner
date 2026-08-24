@@ -1,7 +1,4 @@
-// Supervision loops: one manager's whole supervised life (start an
-// instance, watch it end, restart flat) plus the small helpers the loop
-// runs on. Split out of supervisor.go, which owns the types, construction,
-// and the fleet-level entry points (Update/Run/Shutdown).
+// Supervision loops: one manager's whole supervised life (start an instance, watch it end, restart flat) plus the small helpers the loop.
 
 package managers
 
@@ -65,9 +62,7 @@ func (s *Supervisor) managerLoop(mg *managed) {
 		instanceID := NewInstanceID()
 		mg.instanceID = instanceID
 		mg.instanceStarted = time.Now().UTC()
-		// The instance's panel title: the run_title template's static
-		// render (placeholders resolve against nothing — a manager's title
-		// context is its own to set via POST /title mid-flight).
+		// The instance's panel title: the run_title template's static render (placeholders resolve against nothing — a manager's title context is.
 		mg.title = m.RenderRunTitle(nil, http.Header{})
 		hash, _ := m.ContentHash()
 		mg.runningHash = hash
@@ -77,14 +72,10 @@ func (s *Supervisor) managerLoop(mg *managed) {
 		s.changed()
 
 		name := ContainerName(mg.id)
-		// Reap any orphan/stale container first: a crashed predecessor
-		// process leaves its (dockerd-owned) instance running; the
-		// deterministic name is what makes it findable.
+		// Reap any orphan/stale container first: a crashed predecessor process leaves its (dockerd-owned) instance running; the deterministic.
 		s.runner.RemoveManagerContainer(name)
 
-		// Seed the instance's first event BEFORE it starts, so the very
-		// first /inbox/next returns it: the tick is the handover/crash
-		// recovery pass (event-only managers get the start event instead).
+		// Seed the instance's first event BEFORE it starts, so the very first /inbox/next returns it: the tick is the handover/crash recovery pass.
 		if m.ReconcileInterval() > 0 {
 			mg.inbox.PushTick()
 		} else {

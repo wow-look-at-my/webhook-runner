@@ -26,61 +26,31 @@ import (
 	"sync"
 )
 
-// Store holds the operator overrides, mirrored to one JSON file. A nil
-// *Store is valid for the read methods (no overrides), so servers built
-// without one — tests, mostly — need no nil checks on the hot paths; the
-// write methods on a nil Store return an error (never a silent no-op).
-//
-// The hook kill switch is TRI-STATE: per hook the store holds either no
-// override (the hook.json `enable` default applies) or an EXPLICIT
-// enabled/disabled override. Explicit both ways matters because a hook may
-// default to disabled (`"enable": false` in hook.json): enabling it must
-// persist a positive override, not merely remove a disable.
+// Store holds the operator overrides, mirrored to one JSON file. A nil *Store is valid for the read methods (no overrides), so servers built without one — tests, mostly — need no nil checks on the hot paths; the write methods on a nil Store return an error (never a silent no-op). The hook kill switch is TRI-STATE: per hook the store holds either no override (the hook.json `enable` default applies) or an EXPLICIT enabled/disabled override.
 type Store struct {
 	mu         sync.Mutex
 	path       string
 	hookEnable map[string]bool // hook ID -> explicit override (true=enabled, false=disabled); absent = no override
 	limits     map[string]int  // concurrency group -> operator limit override
 
-	// globalLimit is the operator override for the GLOBAL run cap (the
-	// server-wide ceiling on simultaneously running hook containers);
-	// globalSet marks it present. Absent = the configured default applies
-	// (WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS, else the built-in default).
+	// globalLimit is the operator override for the GLOBAL run cap (the server-wide ceiling on simultaneously running hook containers).
 	globalLimit int
 	globalSet   bool
 
-	// settings holds per-entity settings overrides: entity id -> RFC 6901
-	// JSON Pointer -> the operator's value. SPARSE by construction — an
-	// override pins one field, never the whole document — so a manifest
-	// edit to any field the operator has not touched still takes effect.
-	// Storing whole documents instead would silently freeze the rest of
-	// the entity's config at whatever it was when the operator last
-	// clicked, which is the failure mode this shape exists to avoid.
+	// settings holds per-entity settings overrides: entity id -> RFC 6901 JSON Pointer -> the operator's value.
 	settings map[string]map[string]json.RawMessage
 }
 
 // fileFormat is the on-disk JSON shape.
 type fileFormat struct {
-	// DisabledHooks is the legacy shape (a plain kill-switch set) and is
-	// still written — the IDs whose override is an explicit disable — so a
-	// binary downgrade keeps honoring kill switches (old readers ignore
-	// hook_enable). On read it seeds explicit-disable overrides;
-	// HookEnable entries win over it.
+	// DisabledHooks is the legacy shape (a plain kill-switch set) and is still written — the IDs whose override is an explicit disable — so a binary.
 	DisabledHooks []string `json:"disabled_hooks,omitempty"`
-	// HookEnable is the authoritative tri-state map: an entry is an
-	// explicit operator override (true=enabled, false=disabled) that takes
-	// precedence over the hook's hook.json `enable` default; an absent
-	// hook has no override and its default applies.
+	// HookEnable is the authoritative tri-state map: an entry is an explicit operator override (true=enabled, false=disabled) that takes.
 	HookEnable        map[string]bool `json:"hook_enable,omitempty"`
 	ConcurrencyLimits map[string]int  `json:"concurrency_limits,omitempty"`
 	// GlobalRunLimit is the operator override for the global run cap.
-	// A pointer so absent (no override) and a stored value stay distinct;
-	// old binaries ignore the unknown field on read (downgrade-safe).
 	GlobalRunLimit *int `json:"global_run_limit,omitempty"`
-	// SettingsOverrides is entity id -> JSON Pointer -> value. Unknown to
-	// older binaries, which ignore it on read: a downgrade serves the
-	// manifest values, which is the correct degrade (the manifest is
-	// always a valid document; a half-understood override might not be).
+	// SettingsOverrides is entity id -> JSON Pointer -> value.
 	SettingsOverrides map[string]map[string]json.RawMessage `json:"settings_overrides,omitempty"`
 }
 
@@ -113,10 +83,7 @@ func Open(path string) (*Store, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("overrides: parse %s (refusing to start with operator overrides unreadable): %w", path, err)
 	}
-	// Legacy compatibility: a pre-tri-state file carries only the disabled
-	// set — each entry reads back as an explicit-disable override, so an
-	// upgrade never loses a persisted kill switch. hook_enable entries
-	// (written alongside by this version) win over it.
+	// Legacy compatibility: a pre-tri-state file carries only the disabled set — each entry reads back as an explicit-disable override, so an.
 	for _, id := range f.DisabledHooks {
 		s.hookEnable[id] = false
 	}
@@ -149,9 +116,7 @@ func copyPointerMap(in map[string]json.RawMessage) map[string]json.RawMessage {
 	return out
 }
 
-// HookOverride returns the operator's explicit enable/disable override for
-// the hook: (state, true) when one exists, (_, false) when the operator has
-// never overridden this hook and its hook.json `enable` default applies.
+// HookOverride returns the operator's explicit enable/disable override for the hook: (state, true) when one exists, (_, false) when the operator has never overridden this hook.
 func (s *Store) HookOverride(id string) (enabled, ok bool) {
 	if s == nil {
 		return false, false
@@ -162,11 +127,7 @@ func (s *Store) HookOverride(id string) (enabled, ok bool) {
 	return enabled, ok
 }
 
-// HookDisabled reports the hook's EFFECTIVE kill-switch state: the
-// operator's explicit override when one exists, else the hook.json default
-// the caller passes (defaultEnabled — hooks.Hook.EnabledByDefault; callers
-// without a loaded hook to read it from pass true, so a hook that failed to
-// load counts as enabled unless explicitly overridden off).
+// HookDisabled reports the hook's EFFECTIVE kill-switch state: the operator's explicit override when one exists, else the hook.json default the caller.
 func (s *Store) HookDisabled(id string, defaultEnabled bool) bool {
 	if enabled, ok := s.HookOverride(id); ok {
 		return !enabled
@@ -189,8 +150,7 @@ func (s *Store) HookOverrides() map[string]bool {
 	return out
 }
 
-// DisabledHooks returns the sorted hook IDs with an explicit DISABLE
-// override (the same list the legacy disabled_hooks file field persists).
+// DisabledHooks returns the sorted hook IDs with an explicit DISABLE override (the same list the legacy disabled_hooks file field.
 func (s *Store) DisabledHooks() []string {
 	if s == nil {
 		return nil

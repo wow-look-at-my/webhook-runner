@@ -26,8 +26,7 @@ func TestListFilteredCountsOnlyKeptRuns(t *testing.T) {
 	s := newStore(t, Config{})
 	base := time.Now().UTC().Add(-time.Hour)
 
-	// 20 skips on top of 5 successes, interleaved so the newest 20 rows in
-	// both indexes are skips.
+	// 20 skips on top of 5 successes, interleaved so the newest 20 rows in both indexes are skips.
 	var wantSuccess []string
 	for i := range 5 {
 		id := fmt.Sprintf("succ%022d", i)
@@ -46,9 +45,7 @@ func TestListFilteredCountsOnlyKeptRuns(t *testing.T) {
 		require.Equal(t, runs.StatusSkipped, st.Status)
 	}
 
-	// Filtered at the SAME max, every success is reachable. Both index
-	// walks: the per-hook one (status read from the summary value) and the
-	// by-time one (status read from the decoded metadata).
+	// Filtered at the SAME max, every success is reachable.
 	assert.Equal(t, wantSuccess, filteredIDs(s.ListByHookBeforeFiltered("h", time.Time{}, 5, notSkipped)))
 	assert.Equal(t, wantSuccess, filteredIDs(s.ListAllBeforeFiltered(time.Time{}, 5, notSkipped)))
 

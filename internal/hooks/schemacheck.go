@@ -1,14 +1,3 @@
-package hooks
-
-import (
-	"fmt"
-	"sync"
-
-	"github.com/wow-look-at-my/json-validator/validator"
-
-	"github.com/wow-look-at-my/webhook-runner/schema"
-)
-
 // Every manifest is validated against the PUBLISHED schema at load, by the
 // same implementation the hooks repo's CI runs: wow-look-at-my/json-validator.
 //
@@ -27,6 +16,16 @@ import (
 //   - The EMBEDDED schema, never the network (see package schema): a reload
 //     must not depend on a fetch, and the binary's own contract is what it can
 //     honestly enforce.
+package hooks
+
+import (
+	"fmt"
+	"sync"
+
+	"github.com/wow-look-at-my/json-validator/validator"
+
+	"github.com/wow-look-at-my/webhook-runner/schema"
+)
 
 // Compiled once per process: the schemas are constants, and every hooks-repo
 // reload revalidates every manifest.
@@ -39,8 +38,7 @@ var (
 	managerValidatorErr  error
 )
 
-// Ids the embedded documents are registered under; they name the schema in
-// error messages and resolve its internal $refs -- they are never fetched.
+// Ids the embedded documents are registered under; they name the schema in error messages and resolve its internal $refs -- they are never.
 const (
 	hookSchemaID    = "embedded:hook.schema.json"
 	managerSchemaID = "embedded:manager.schema.json"
@@ -62,8 +60,7 @@ func managerSchemaValidator() (*validator.Validator, error) {
 
 func validateAgainstSchema(v *validator.Validator, compileErr error, filename string, raw []byte) error {
 	if compileErr != nil {
-		// A broken embedded schema is our bug, and it must not silently
-		// downgrade into "no schema validation" for the whole fleet.
+		// A broken embedded schema is our bug, and it must not silently downgrade into "no schema validation" for the whole fleet.
 		return fmt.Errorf("compiling the embedded schema: %w", compileErr)
 	}
 	res := v.ValidateBytes(raw, filename)

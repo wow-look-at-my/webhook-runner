@@ -95,9 +95,7 @@ func TestNoSpoolKeepsThe503Path(t *testing.T) {
 
 // A healthy server must not spool anything — this path is shutdown-only.
 func TestHealthyServerDoesNotSpool(t *testing.T) {
-	// This delivery is ACCEPTED, unlike its siblings above, so it starts a
-	// real async run; newTestServer drains the runner before its TempDir is
-	// removed, which is what keeps that from racing the cleanup.
+	// This delivery is ACCEPTED, unlike its siblings above, so it starts a real async run; newTestServer drains the runner before its TempDir is.
 	s, reg, _, _ := newTestServer(t)
 	reg.Set(&hooks.Hook{ID: "h", Description: "d", Command: []string{"x"}})
 	sp, err := spool.Open(filepath.Join(t.TempDir(), "spool"), nil)

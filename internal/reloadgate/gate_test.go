@@ -307,8 +307,7 @@ func TestRedHeld(t *testing.T) {
 }
 
 func TestRedForUnseenNewerCommitStillRecords(t *testing.T) {
-	// No pending (the push delivery was missed); a red for a foreign sha
-	// still records the hold so the operator sees it.
+	// No pending (the push delivery was missed); a red for a foreign sha still records the hold so the operator sees it.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 
@@ -358,10 +357,7 @@ func TestGreenNotInHistoryIgnoredStale(t *testing.T) {
 }
 
 func TestGreenAtBranchesCapBypassesPrefilter(t *testing.T) {
-	// GitHub caps the status payload's branches array at 10; with the sha
-	// on more branches than that the tracked one can be squeezed out. A
-	// green at exactly the cap must skip the prefilter and reach the
-	// ordering rule, which vouches for the sha via the fresh fetch.
+	// GitHub caps the status payload's branches array at 10; with the sha on more branches than that the tracked one can be squeezed out.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 
@@ -380,10 +376,7 @@ func TestGreenAtBranchesCapBypassesPrefilter(t *testing.T) {
 }
 
 func TestGreenSwitchesWhenServingFellOutOfWindow(t *testing.T) {
-	// Enough commits landed while the runner was held that the serving sha
-	// fell out of the fetchDepth window: RecentCommits no longer lists it.
-	// A green for the current tip must still switch — an absent serving
-	// position can never mean "older than the sha".
+	// Enough commits landed while the runner was held that the serving sha fell out of the fetchDepth window: RecentCommits no longer lists it.
 	repo := &fakeRepo{tip: "T", commits: []string{"T", "S", "R"}}
 	f := servingFixture(t, repo, "A")
 
@@ -422,8 +415,7 @@ func TestIntermediateGreenSwitchesAndKeepsPending(t *testing.T) {
 	_, err = f.gate.HandleEvent("push", pushBody(t, "refs/heads/master", "C"))
 	require.NoError(t, err)
 
-	// Green for the INTERMEDIATE commit B: switch to B (the evented sha,
-	// not the tip), keep C pending and the held entry alive.
+	// Green for the INTERMEDIATE commit B: switch to B (the evented sha, not the tip), keep C pending and the held entry alive.
 	status, err := f.gate.HandleEvent("status", statusBody(t, "B", "success", "all-builds", "master"))
 	require.NoError(t, err)
 	assert.Equal(t, "reloaded", status)
@@ -472,9 +464,7 @@ func TestIgnoredDeliveriesTouchNothing(t *testing.T) {
 			case "wrong context":
 				body = statusBody(t, "B", "success", "some-other-check", "master")
 			case "foreign branches below cap":
-				// Below statusBranchesCap the list is provably complete, so
-				// the prefilter drops a green whose branches miss the
-				// tracked one without a single git op.
+				// Below statusBranchesCap the list is provably complete, so the prefilter drops a green whose branches miss the tracked one without a single.
 				body = statusBody(t, "B", "success", "all-builds", "claude/x", "claude/y", "claude/z")
 			case "pending state":
 				body = statusBody(t, "B", "pending", "all-builds", "master")
@@ -554,8 +544,7 @@ func TestForceFallsBackToTheHeldCommitWhenGitHubIsDown(t *testing.T) {
 // With nothing local to fall back to, a dead origin is a real failure and
 // says so — never a success that moved nothing.
 func TestForceStillFailsWhenThereIsNothingLocalToForceTo(t *testing.T) {
-	// No pending hold and no resolvable origin/master: nothing local is newer
-	// than what is already serving.
+	// No pending hold and no resolvable origin/master: nothing local is newer than what is already serving.
 	repo := &fakeRepo{fetchErr: errors.New("origin unreachable")}
 	f := servingFixture(t, repo, "A")
 

@@ -116,8 +116,7 @@ func TestSupervisorRestartsFlat(t *testing.T) {
 	assert.Contains(t, fr.removed, ContainerName("m1"), "orphan reap precedes every start")
 	fr.mu.Unlock()
 
-	// Crash → flat restart with a FRESH instance id; the failure surfaces
-	// on attention until the next instance runs.
+	// Crash → flat restart with a FRESH instance id; the failure surfaces on attention until the next instance runs.
 	fr.exitOnce <- SessionOutcome{Status: runs.StatusFailure, Err: "exit 1"}
 	require.Eventually(t, func() bool { return fr.startedCount() >= 2 }, 2*time.Second, 10*time.Millisecond)
 	fr.mu.Lock()
@@ -200,9 +199,7 @@ func TestSupervisorReplaceAndRemove(t *testing.T) {
 	go s.Run(ctx)
 	require.Eventually(t, func() bool { return fr.startedCount() == 1 }, 2*time.Second, 10*time.Millisecond)
 
-	// Change the manager's content (a new file changes the content hash)
-	// and re-Update: the running instance is superseded and a new one
-	// starts.
+	// Change the manager's content (a new file changes the content hash) and re-Update: the running instance is superseded and a new one starts.
 	require.NoError(t, os.WriteFile(filepath.Join(m.Dir(), "code.ts"), []byte("v2"), 0o644))
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	require.Eventually(t, func() bool { return fr.startedCount() == 2 }, 2*time.Second, 10*time.Millisecond)
@@ -265,8 +262,7 @@ func TestSupervisorLeaseHandover(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	assert.Equal(t, 0, frB.startedCount(), "the lease holder's instances block the successor")
 
-	// Handover: A shuts down (instances stop BEFORE the flock releases);
-	// B acquires and starts its own instance.
+	// Handover: A shuts down (instances stop BEFORE the flock releases); B acquires and starts its own instance.
 	cancelA()
 	supA.Shutdown()
 	require.Eventually(t, func() bool { return frB.startedCount() == 1 }, 3*time.Second, 10*time.Millisecond)

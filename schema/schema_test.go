@@ -98,9 +98,7 @@ func TestSchemaAcceptsGoodRunTitle(t *testing.T) {
 func TestSchemaRejectsBadRunTitle(t *testing.T) {
 	sch := compileHookSchema(t)
 	bad := []string{
-		// Wrong types — the template is a string, full stop. (Malformed
-		// placeholder SYNTAX inside the string is the Go loader's check:
-		// JSON Schema can't parse templates.)
+		// Wrong types — the template is a string, full stop.
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":5}`,
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":["a"]}`,
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","run_title":{"tmpl":"a"}}`,
@@ -163,8 +161,7 @@ func TestSchemaManagerSpawnTargets(t *testing.T) {
 		assert.NoError(t, validateJSONC(t, sch, []byte(doc)), "should validate: %s", doc)
 	}
 	bad := []string{
-		// An id list, full stop: no bare string, no non-strings, no
-		// empties, no duplicates.
+		// An id list, full stop: no bare string, no non-strings, no empties, no duplicates.
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":"gha-runner"}`,
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":[1]}`,
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","spawn_targets":[""]}`,

@@ -6,17 +6,10 @@ import (
 	"time"
 )
 
-// DefaultPollTick is the poller run-loop resolution (the
-// internal/scheduler convention): intervals are hour-scale, so one-second
-// resolution is plenty and cheap.
+// DefaultPollTick is the poller run-loop resolution (the internal/scheduler convention): intervals are hour-scale, so one-second.
 const DefaultPollTick = time.Second
 
-// Poller drives Gate.Reconcile on a fixed interval — pure timing with an
-// injected clock, mirroring internal/scheduler: it owns nothing but the
-// clock and calls a caller-supplied Fire. It fires once immediately on
-// start (the startup catch-up for a green missed while the runner was
-// down), then every interval. An Interval <= 0 disables it entirely: Run
-// returns immediately and nothing ever fires.
+// Poller drives Gate.Reconcile on a fixed interval — pure timing with an injected clock, mirroring internal/scheduler: it owns nothing but.
 type Poller struct {
 	interval time.Duration
 	fire     func()
@@ -31,8 +24,7 @@ type Poller struct {
 type PollerOptions struct {
 	// Interval between reconcile passes; <= 0 disables the poller.
 	Interval time.Duration
-	// Fire runs one reconcile pass. It is called inline on the Run
-	// goroutine, so passes never overlap.
+	// Fire runs one reconcile pass. It is called inline on the Run goroutine, so passes never overlap.
 	Fire func()
 	// Now is an injectable clock for tests; defaults to time.Now.
 	Now func() time.Time
@@ -80,10 +72,7 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
-// fireDue fires when the next-fire time has passed, advancing it by the
-// interval from "now" — a long pause (slept/restarted process) fires once
-// and resumes one interval out, never bursting a backlog (the scheduler
-// convention).
+// fireDue fires when the next-fire time has passed, advancing it by the interval from "now" — a long pause (slept/restarted process) fires once and resumes one interval out, never.
 func (p *Poller) fireDue() {
 	if p.interval <= 0 {
 		return

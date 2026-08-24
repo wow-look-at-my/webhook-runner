@@ -8,20 +8,7 @@ import (
 	"strings"
 )
 
-// Token mints a bearer token that authorizes access to exactly one namespace
-// ON BEHALF OF exactly one run. It is a stateless HMAC —
-// "<ns>.<runID>.<base64url(HMAC-SHA256(secret, ns+"\n"+runID))>" — so there
-// is nothing to store or expire server-side: the runner mints a fresh token
-// per run, and the state API recovers both identities by verifying the MAC.
-// Because only the server holds the secret, a hook cannot forge a token for
-// another hook's namespace — nor for another run: the run identity is what
-// binds cooperative locks to their holder (AcquireLock/ReleaseLock) and what
-// lets the runner free a finished run's locks at the tracker's finish seam.
-//
-// Neither identity can contain '.' (hook IDs are lowercase [a-z0-9-], run
-// IDs are lowercase base32), so the dots are unambiguous separators; the
-// '\n' in the MAC input keeps (ns, runID) pairs from colliding across the
-// boundary.
+// Token mints a bearer token that authorizes access to exactly one namespace ON BEHALF OF exactly one run.
 func (s *Store) Token(namespace, runID string) string {
 	return namespace + "." + runID + "." + base64.RawURLEncoding.EncodeToString(tokenMAC(s.secret, namespace, runID))
 }

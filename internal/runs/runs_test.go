@@ -204,8 +204,7 @@ func TestSetRunningStampsStartedAt(t *testing.T) {
 	r.Finish(StatusSuccess, 0, "")
 	assert.True(t, r.Snapshot(0).StartedAt.Equal(startedAt))
 
-	// Cancelled while pending: never started, StartedAt stays zero through
-	// the terminal snapshot (the dashboard shows no duration for it).
+	// Cancelled while pending: never started, StartedAt stays zero through the terminal snapshot (the dashboard shows no duration for it).
 	never := tr.New("h")
 	never.Finish(StatusCancelled, -1, "cancelled before start")
 	assert.True(t, never.Snapshot(0).StartedAt.IsZero())
@@ -393,8 +392,7 @@ func TestWaitingOnJSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "waiting_on")
 
-	// Waiters marshals under its documented name too (it is server-derived,
-	// so set it on a detached snapshot the way the read path does).
+	// Waiters marshals under its documented name too (it is server-derived, so set it on a detached snapshot the way the read path does).
 	snap := r.Snapshot(-1)
 	snap.Waiters = []Waiter{{RunID: "w1", HookID: "h", Key: "pr-7"}}
 	b, err = json.Marshal(snap)

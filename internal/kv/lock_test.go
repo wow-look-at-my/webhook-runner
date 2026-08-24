@@ -37,8 +37,7 @@ func TestLockSameRunReacquireIsIdempotent(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	again, err := s.AcquireLock("ns", "l", "run-a", time.Minute)
 	require.NoError(t, err)
-	// Original take time kept; the backstop expiry refreshed (only the live
-	// owner can do this, so it can never prolong a dead run's lock).
+	// Original take time kept; the backstop expiry refreshed (only the live owner can do this, so it can never prolong a dead run's lock).
 	require.Equal(t, first.AcquiredAt, again.AcquiredAt)
 	require.False(t, again.ExpiresAt.Before(first.ExpiresAt))
 
@@ -58,8 +57,7 @@ func TestLockContendedAcquireMutatesNothing(t *testing.T) {
 	s.lockMu.Lock()
 	e := s.locks["ns"]["l"]
 	s.lockMu.Unlock()
-	// The holder, its take time, and crucially its expiry are untouched — a
-	// contender must never restamp (extend) the holder's backstop.
+	// The holder, its take time, and crucially its expiry are untouched — a contender must never restamp (extend) the holder's backstop.
 	require.Equal(t, "run-a", e.runID)
 	require.Equal(t, info.AcquiredAt, e.acquiredAt)
 	require.Equal(t, info.ExpiresAt, e.expiresAt)
@@ -90,8 +88,7 @@ func TestLockTTLBackstopExpiryDoesNotFreeTheLock(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(30 * time.Millisecond)
 
-	// A contender is refused — and told WHICH condition, so it can enforce
-	// the TTL rather than assume the lock is free.
+	// A contender is refused — and told WHICH condition, so it can enforce the TTL rather than assume the lock is free.
 	info, err := s.AcquireLock("ns", "l", "run-b", 0)
 	require.ErrorIs(t, err, ErrLockExpired)
 	require.Equal(t, "run-a", info.RunID, "the refusal names the over-budget holder")
@@ -165,8 +162,7 @@ func TestReleaseRunLocksFreesEverythingAcrossNamespaces(t *testing.T) {
 }
 
 func TestLockRestartStartsFree(t *testing.T) {
-	// Locks are memory-only ON PURPOSE: no run survives a restart, so a fresh
-	// store must start lock-free even over the same data dir.
+	// Locks are memory-only ON PURPOSE: no run survives a restart, so a fresh store must start lock-free even over the same data dir.
 	dir := t.TempDir()
 	s1, err := New(Config{Dir: dir}, []byte("secret"), nil)
 	require.NoError(t, err)
@@ -193,8 +189,7 @@ func TestLocksAreNotEntries(t *testing.T) {
 	require.False(t, ok)
 	require.Empty(t, s.List("ns"))
 
-	// And entry writes never disturb the lock (they are separate facilities
-	// sharing a key string at most).
+	// And entry writes never disturb the lock (they are separate facilities sharing a key string at most).
 	require.NoError(t, s.Set("ns", "l", []byte("data"), 0))
 	_, err = s.AcquireLock("ns", "l", "run-b", 0)
 	require.Equal(t, ErrLockHeld, err)
@@ -247,8 +242,7 @@ func TestLockSweeperReapsOnlyDeadHolders(t *testing.T) {
 }
 
 func TestLockAcquireRace(t *testing.T) {
-	// The whole point of the server-side primitive: of N simultaneous
-	// acquirers, exactly one holds.
+	// The whole point of the server-side primitive: of N simultaneous acquirers, exactly one holds.
 	s := newStore(t)
 	const goroutines = 64
 	var wg sync.WaitGroup
@@ -283,8 +277,7 @@ func TestLockContendedAcquireNamesHolder(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ns", held.HookID)
 
-	// The contender learns exactly who holds the lock — run, hook (== the
-	// lock's namespace), and since when — alongside the refusal.
+	// The contender learns exactly who holds the lock — run, hook (== the lock's namespace), and since when — alongside the refusal.
 	holder, err := s.AcquireLock("ns", "l", "run-b", 0)
 	require.Equal(t, ErrLockHeld, err)
 	require.Equal(t, "run-a", holder.RunID)

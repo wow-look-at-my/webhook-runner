@@ -18,17 +18,13 @@ const maxIncrBody = 512
 // maxLockBody caps the tiny JSON body of a lock acquire request.
 const maxLockBody = 512
 
-// Explicit lock TTL bounds (whole seconds). The TTL is a SECONDARY backstop
-// — run-finish release is the primary mechanism — so the range only keeps
-// callers from disabling the belt entirely (0/negative) or arming one so far
-// out it stops being a backstop.
+// Explicit lock TTL bounds (whole seconds).
 const (
 	minLockTTLSeconds = 1
 	maxLockTTLSeconds = 3600
 )
 
-// nsHandler is a state-port handler that has already had its caller's
-// namespace and run identity resolved from the bearer token.
+// nsHandler is a state-port handler that has already had its caller's namespace and run identity resolved from the bearer token.
 type nsHandler func(w http.ResponseWriter, r *http.Request, ns, runID string)
 
 // withNamespace authenticates a state-port request by its bearer token and
@@ -142,16 +138,10 @@ func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns, _ stri
 	writeJSON(w, http.StatusOK, map[string]int64{"value": n})
 }
 
-// lockRetryInterval is the poll cadence of a blocking acquire. Fairness is
-// deliberately best-effort (no FIFO queue): blocked contenders — and any
-// fresh caller — race on each poll, which keeps the lock table free of
-// waiter state and lets a steal trivially beat every waiter. The cadence
-// bounds handoff latency at ~250ms, plenty for lock-guarded hook work.
+// lockRetryInterval is the poll cadence of a blocking acquire.
 const lockRetryInterval = 250 * time.Millisecond
 
-// lockConflict is the 409 body for a contended acquire (immediate or after
-// a blocking acquire gave up): the error plus WHO holds the lock, so
-// contention is actionable — display it, keep waiting, or steal.
+// lockConflict is the 409 body for a contended acquire (immediate or after a blocking acquire gave up): the error plus WHO holds the lock, so.
 type lockConflict struct {
 	Error  string       `json:"error"`
 	HeldBy *kv.LockInfo `json:"held_by,omitempty"`
@@ -172,8 +162,7 @@ func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, kv.ErrNotInteger):
 		writeError(w, http.StatusConflict, err.Error())
-	// Lock contention/ownership outcomes are normal control flow for the
-	// caller (409/404), never write failures — no log, no event.
+	// Lock contention/ownership outcomes are normal control flow for the caller (409/404), never write failures — no log, no event.
 	case errors.Is(err, kv.ErrLockHeld):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, kv.ErrLockPinned):

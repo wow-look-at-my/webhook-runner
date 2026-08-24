@@ -25,10 +25,7 @@ func TestFinishClosesDoneLast(t *testing.T) {
 	r := tr.New("h")
 	r.SetOnTerminal(func(RunState) { order = append(order, "terminal") })
 
-	// Finish on ANOTHER goroutine, so the only thing ordering the write to
-	// `order` against the read below is the done channel's close. Under
-	// -race a close that preceded the seams shows up as a data race, not
-	// merely a failed assertion.
+	// Finish on ANOTHER goroutine, so the only thing ordering the write to `order` against the read below is the done channel's close.
 	go r.Finish(StatusSuccess, 0, "")
 
 	select {

@@ -1,9 +1,8 @@
-package server
-
 // Concurrency-group queue waits on the run read paths: /runs and /runs/{id}
 // carry waiting_on {kind: "group", key, holder_run_ids, position}, and
 // attachWaiters inverts the graph so every slot HOLDER lists the queued
 // runs as its waiters (key "group:<name>").
+package server
 
 import (
 	"encoding/json"
@@ -47,8 +46,7 @@ func TestRunsCarryGroupWait(t *testing.T) {
 	assert.Equal(t, []string{holder.ID()}, q.WaitingOn.HolderRunIDs)
 	assert.Equal(t, 1, q.WaitingOn.Position)
 
-	// Inversion: the HOLDER lists the queued run as a waiter, marked as a
-	// group wait so renderers can tell it from a lock wait.
+	// Inversion: the HOLDER lists the queued run as a waiter, marked as a group wait so renderers can tell it from a lock wait.
 	h := byID[holder.ID()]
 	require.Len(t, h.Waiters, 1)
 	assert.Equal(t, queued.ID(), h.Waiters[0].RunID)
@@ -64,8 +62,7 @@ func TestRunsCarryGroupWait(t *testing.T) {
 	require.Len(t, one.Waiters, 1)
 	assert.Equal(t, "group:model-gateway", one.Waiters[0].Key)
 
-	// Acquire clears the wait: after ClearWaitingOn the queued run shows no
-	// waiting_on and the holder no waiters.
+	// Acquire clears the wait: after ClearWaitingOn the queued run shows no waiting_on and the holder no waiters.
 	seq := queued.SetWaitingOn(runs.WaitingOn{Kind: runs.WaitingOnGroup, Key: "model-gateway"})
 	queued.ClearWaitingOn(seq)
 	rec = httptest.NewRecorder()

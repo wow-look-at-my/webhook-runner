@@ -84,8 +84,7 @@ func TestStateAuth(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "GET", "/kv/foo", "", nil).Code)
 	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "GET", "/kv/foo", "h.deadbeef", nil).Code)
 
-	// Namespaces are isolated: h's own token reads its data, a token for
-	// "other" gets 404 for the same key.
+	// Namespaces are isolated: h's own token reads its data, a token for "other" gets 404 for the same key.
 	require.NoError(t, store.Set("h", "secret", []byte("v"), 0))
 	require.Equal(t, http.StatusOK, stateReq(t, s, "GET", "/kv/secret", tok, nil).Code)
 	require.Equal(t, http.StatusNotFound,

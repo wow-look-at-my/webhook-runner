@@ -1,10 +1,9 @@
-package runner
-
 // Two guarantees about hook image builds, both learned from one outage:
 // the build must run under BuildKit (the legacy builder rejects `# syntax=`
 // frontends and flags like `ADD --unpack`), and a FAILED build must carry
 // docker's own error back to the caller — it used to surface as a bare
 // "exit status 1" with the real message only in the server's log.
+package runner
 
 import (
 	"os"
@@ -79,8 +78,7 @@ func TestTailWriterKeepsBoundedTail(t *testing.T) {
 	}
 	assert.Equal(t, "three\nfour\nfive", w.String(), "only the last max lines are retained")
 
-	// Blank lines are noise; an unterminated final line still counts (docker
-	// does not always end its last write with a newline).
+	// Blank lines are noise; an unterminated final line still counts (docker does not always end its last write with a newline).
 	w2 := &tailWriter{max: 5}
 	_, err := w2.Write([]byte("first\n\n   \nlast-no-newline"))
 	require.NoError(t, err)

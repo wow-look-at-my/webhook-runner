@@ -78,8 +78,7 @@ func TestSecretsLoaderDecryptsAndCaches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, sopsCalls(t, dir))
 
-	// A changed file (different size — mtime granularity is too coarse to
-	// rely on in a fast test) is re-decrypted.
+	// A changed file (different size — mtime granularity is too coarse to rely on in a fast test) is re-decrypted.
 	path := filepath.Join(filepath.Dir(h.SourcePath), SecretsFileName)
 	require.NoError(t, os.WriteFile(path, []byte("KEY_ONE=v2\n"), 0o600))
 	got, err = l.Load(h)

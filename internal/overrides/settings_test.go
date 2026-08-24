@@ -24,8 +24,7 @@ func TestSettingOverrideRoundTripsThroughDisk(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, changed)
 
-	// A restart must serve exactly what the operator set — the whole reason
-	// this is operational state on disk rather than in memory.
+	// A restart must serve exactly what the operator set — the whole reason this is operational state on disk rather than in memory.
 	reopened, err := Open(path)
 	require.NoError(t, err)
 	got := reopened.SettingsOverrides("pr-describe")
@@ -141,9 +140,7 @@ func TestSettingOverridePersistFailureRollsBack(t *testing.T) {
 	_, err = s.SetSettingOverride("h", "/a", json.RawMessage(`1`))
 	require.NoError(t, err)
 
-	// Sabotage the same way the sibling rollback tests do: replace the
-	// parent dir with a regular file so the temp-file creation fails.
-	// (Permissions would not do it — these tests run as root.)
+	// Sabotage the same way the sibling rollback tests do: replace the parent dir with a regular file so the temp-file creation fails.
 	require.NoError(t, os.RemoveAll(dir))
 	require.NoError(t, os.WriteFile(dir, []byte("not a dir"), 0o644))
 

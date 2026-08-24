@@ -43,9 +43,7 @@ func (r *Runner) writeTempFiles(runID string, payload []byte, headers http.Heade
 		cleanup()
 		return "", "", "", func() {}, err
 	}
-	// Loosen perms so the in-container user can read the files even if
-	// the container runs as a non-root user that doesn't share UID with
-	// the host process.
+	// Loosen perms so the in-container user can read the files even if the container runs as a non-root user that doesn't share UID with the host.
 	_ = os.Chmod(dir, 0o755)
 	_ = os.Chmod(payloadPath, 0o644)
 	_ = os.Chmod(headersPath, 0o644)

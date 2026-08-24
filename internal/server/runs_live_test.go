@@ -1,5 +1,3 @@
-package server
-
 // /runs' active-truth guarantees: the merged list ALWAYS carries every
 // active (non-terminal) run no matter how small the caller's max is — the
 // cap bounds terminal/history rows only — and ?live=1 answers exactly the
@@ -8,6 +6,7 @@ package server
 // recovering: any client can re-derive "what is happening right now" from
 // one bounded read, and absence from these reads is an authoritative
 // "not running" verdict.
+package server
 
 import (
 	"encoding/json"
@@ -51,8 +50,7 @@ func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
 		tr.New("flood").Finish(runs.StatusSkipped, 0, "")
 	}
 
-	// max=3 is smaller than either partition alone (5 pending + 6 skipped):
-	// ALL 5 pending runs are still present; exactly 3 skipped rows survive.
+	// max=3 is smaller than either partition alone (5 pending + 6 skipped): ALL 5 pending runs are still present; exactly 3 skipped rows survive.
 	got := getRuns(t, s, "/runs?max=3")
 	var gotActive, gotTerminal int
 	for _, st := range got {

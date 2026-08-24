@@ -17,15 +17,10 @@ import (
 // imageRepoPrefix namespaces the locally built hook images.
 const imageRepoPrefix = "whr-hook/"
 
-// buildTailLines is how much build output a failed build carries back in its
-// error. A build failure used to surface as a bare "exit status 1" with the
-// real docker error only in the server's own log — invisible on the dashboard,
-// which is where the operator looks.
+// buildTailLines is how much build output a failed build carries back in its error.
 const buildTailLines = 40
 
-// tailWriter keeps the last N lines written to it and nothing else, so a
-// failure path can quote what a subprocess actually printed without buffering
-// an entire build log.
+// tailWriter keeps the last N lines written to it and nothing else, so a failure path can quote what a subprocess actually printed without.
 type tailWriter struct {
 	max   int
 	lines []string
@@ -67,9 +62,7 @@ func (w *tailWriter) String() string {
 	return strings.Join(lines, "\n")
 }
 
-// ImageTag returns the local image tag for a Dockerfile hook at its
-// current content: whr-hook/<id>:<content-hash>. Hook IDs are directory
-// names (lowercase kebab-case by convention), which are valid repo names.
+// ImageTag returns the local image tag for a Dockerfile hook at its current content: whr-hook/<id>:<content-hash>.
 func ImageTag(hook *hooks.Hook) (string, error) {
 	h, err := hook.ContentHash()
 	if err != nil {
@@ -93,26 +86,16 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 	if exec.Command(dockerBin, "image", "inspect", tag).Run() == nil {
 		return tag, false, nil
 	}
-	// Legacy hooks build from their own directory with its Dockerfile (the
-	// docker default — invocation unchanged). SDK-layout hooks build with
-	// the repo's src/ directory as context and the hook's own Dockerfile
-	// via -f, so tree-mirror COPYs (sdk/ + hooks/<id>/) resolve.
+	// Legacy hooks build from their own directory with its Dockerfile (the docker default — invocation unchanged).
 	args := []string{"build", "-t", tag}
 	if hook.SDKLayout() {
 		args = append(args, "-f", filepath.Join(hook.Dir(), hooks.DockerfileName))
 	}
 	args = append(args, hook.BuildContext())
 	cmd := exec.Command(dockerBin, args...)
-	// Select BuildKit explicitly. Without this the CLI falls back to the
-	// LEGACY builder whenever the buildx plugin is absent — and the legacy
-	// parser rejects `# syntax=` frontends and flags like `ADD --unpack`
-	// with "dockerfile parse error: unknown flag", no matter what the host
-	// daemon supports. Hook Dockerfiles are written against BuildKit, so
-	// this must not depend on which plugins the runtime image happens to
-	// carry.
+	// Select BuildKit explicitly.
 	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
-	// Tee the build output: `out` is the live stream, `tail` retains the
-	// last lines so the FAILURE below can carry the actual docker error.
+	// Tee the build output: `out` is the live stream, `tail` retains the last lines so the FAILURE below can carry the actual docker error.
 	tail := &tailWriter{max: buildTailLines}
 	cmd.Stdout = io.MultiWriter(out, tail)
 	cmd.Stderr = cmd.Stdout
@@ -132,10 +115,7 @@ type ImageInfo struct {
 	Current bool   `json:"current"` // matches the hook's current content hash
 }
 
-// ImageStatus is the per-hook image state exposed on the admin port: the
-// tag the hook's current content resolves to, whether that image already
-// exists (false = the next run or test will build it), and every
-// whr-hook/<id> image currently on disk.
+// ImageStatus is the per-hook image state exposed on the admin port: the tag the hook's current content resolves to, whether that image already exists (false = the next run or test will build it), and every.
 type ImageStatus struct {
 	HookID string      `json:"hook_id"`
 	Tag    string      `json:"tag,omitempty"`
@@ -225,23 +205,7 @@ func (w *slogLineWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// imageCommandCache memoizes imageCommand's answer. An image TAG is a
-// content hash (see ImageTag), so a given tag's ENTRYPOINT/CMD can never
-// change — the answer is immutable for the life of the process, and every
-// state-hook run was paying a full docker CLI + daemon round trip to
-// re-derive it on the critical path between slot acquisition and container
-// launch.
-//
-// The key includes the hook's command override as well as the tag. That is
-// belt-and-braces: hook.json lives inside the hashed content, so a changed
-// `command` already yields a different tag. Keying on both means the cache
-// stays correct without depending on that, and costs one string join.
-//
-// Unbounded by design, and bounded in practice: entries are one small
-// []string per distinct (tag, command), and new tags only appear when a
-// hook's content changes — the same event that builds a new image. A server
-// that accumulated enough of these to matter would have filled its disk with
-// images first.
+// imageCommandCache memoizes imageCommand's answer.
 var imageCommandCache sync.Map // string -> []string
 
 // imageCommand reconstructs the argv an image would run — its ENTRYPOINT plus
@@ -253,13 +217,10 @@ var imageCommandCache sync.Map // string -> []string
 // never cached — a failed inspect is a transient daemon condition, not a
 // property of the tag.
 func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
-	// \x00 cannot appear in an argv element or a docker tag, so it cannot
-	// make two different keys collide.
+	// \x00 cannot appear in an argv element or a docker tag, so it cannot make two different keys collide.
 	key := image + "\x00" + strings.Join(hookCommand, "\x00")
 	if cached, ok := imageCommandCache.Load(key); ok {
-		// Copy: callers append the shim's own argv onto the result, which
-		// would otherwise write into the cached slice's spare capacity and
-		// corrupt the next run's command.
+		// Copy: callers append the shim's own argv onto the result, which would otherwise write into the cached slice's spare capacity and corrupt.
 		return append([]string(nil), cached.([]string)...), nil
 	}
 	out, err := exec.Command(dockerBin, "inspect", image,

@@ -37,12 +37,7 @@ func newOverrideTestServer(t *testing.T) (*Server, *hooks.Registry, *overrides.S
 	tr := runs.NewTracker()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker})
-	// Drain in-flight runs before the test's TempDir is removed. A delivery
-	// answers 202 and runs ASYNC, so without this the run's goroutine is
-	// still writing its workdir under `dir` while t.TempDir's cleanup walks
-	// it -- an intermittent "directory not empty" that has nothing to do
-	// with the assertions. Registered AFTER t.TempDir(), so LIFO cleanup
-	// waits first and removes second.
+	// Drain in-flight runs before the test's TempDir is removed.
 	t.Cleanup(rn.Wait)
 	mgr := concurrency.NewManager(&concurrency.Config{
 		Groups: map[string]concurrency.Group{"g": {Limit: 3}},
@@ -242,12 +237,7 @@ func TestDisablePersistFailureIsLoud(t *testing.T) {
 	tr := runs.NewTracker()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rn := runner.New(runner.Options{Tracker: tr, Logger: logger, TmpDir: dir, Docker: docker})
-	// Drain in-flight runs before the test's TempDir is removed. A delivery
-	// answers 202 and runs ASYNC, so without this the run's goroutine is
-	// still writing its workdir under `dir` while t.TempDir's cleanup walks
-	// it -- an intermittent "directory not empty" that has nothing to do
-	// with the assertions. Registered AFTER t.TempDir(), so LIFO cleanup
-	// waits first and removes second.
+	// Drain in-flight runs before the test's TempDir is removed.
 	t.Cleanup(rn.Wait)
 	s := New(Options{
 		Registry: reg, Runner: rn, Tracker: tr, Logger: logger,
@@ -274,8 +264,7 @@ func putLimit(s *Server, group, body string) *httptest.ResponseRecorder {
 func TestConcurrencyOverridePutValidation(t *testing.T) {
 	s, _, _, _ := newOverrideTestServer(t)
 
-	// A 0 limit would deadlock queued runs: rejected, disable hooks instead.
-	// (The encoder HTML-escapes ">", so assert on the deadlock phrase.)
+	// A 0 limit would deadlock queued runs: rejected, disable hooks instead. (The encoder HTML-escapes ">", so assert on the deadlock phrase.)
 	w := putLimit(s, "g", `{"limit": 0}`)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "would deadlock queued runs")
@@ -318,8 +307,7 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 	assert.Equal(t, 3, st[0].Declared)
 	assert.False(t, st[0].Overridden)
 
-	// Override to 1: persisted, applied live, one event with declared +
-	// effective in the message.
+	// Override to 1: persisted, applied live, one event with declared + effective in the message.
 	w := putLimit(s, "g", `{"limit": 1}`)
 	require.Equal(t, 200, w.Code)
 	st = getStatus()
@@ -354,8 +342,7 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, 1, countKind(rec, "concurrency.override_cleared"))
 
-	// Clearing again is idempotent (200, no event); a name that is neither
-	// declared nor overridden is a 404.
+	// Clearing again is idempotent (200, no event); a name that is neither declared nor overridden is a 404.
 	w = httptest.NewRecorder()
 	admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/concurrency/g/limit", nil))
 	require.Equal(t, 200, w.Code)

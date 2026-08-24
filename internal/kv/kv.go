@@ -44,11 +44,7 @@ type NamespaceStat struct {
 	Bytes     int    `json:"bytes"`
 }
 
-// KeyInfo is one key's metadata — name, value size, and expiry — for the
-// admin inspection endpoints. ExpiresAt/TTLSeconds are nil for keys without
-// a TTL; TTLSeconds is the remaining lifetime, computed at read time. The
-// entry model tracks nothing else (no created/updated stamps), so nothing
-// else is reported.
+// KeyInfo is one key's metadata — name, value size, and expiry — for the admin inspection endpoints.
 type KeyInfo struct {
 	Key        string     `json:"key"`
 	Size       int        `json:"size"`
@@ -70,9 +66,7 @@ var (
 	ErrBadNamespace  = errors.New("kv: invalid namespace")
 )
 
-// nsPattern is exactly the hook-ID alphabet (lowercase kebab-case). A
-// namespace maps 1:1 to a filename, so we constrain it tightly and reject
-// anything that could escape the directory.
+// nsPattern is exactly the hook-ID alphabet (lowercase kebab-case).
 var nsPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 func validNamespace(ns string) bool {
@@ -110,28 +104,14 @@ type Store struct {
 
 	secret []byte // HMAC key for namespace tokens (see token.go)
 
-	// Cooperative run-owned locks (see lock.go). Deliberately in-memory only
-	// — a lock's lifecycle is bounded by its holding run, and no run survives
-	// a restart — and under its own mutex, so lock verbs never contend with
-	// entry persistence.
+	// Cooperative run-owned locks (see lock.go).
 	lockMu sync.Mutex
 	locks  map[string]map[string]lockEntry
 
-	// runLive answers "is this run still going?" for the lock sweeper, which
-	// may only reap an expired lock once its holder is CERTAINLY dead (a TTL
-	// never frees a live holder's mutex — see lock.go's header). Wired to the
-	// run tracker in cli/serve.go; UNSET means the sweeper reaps no expired
-	// lock at all, which is the safe default: a lock outliving its use is an
-	// operator-visible wedge, a mutex held by two runs is silent corruption.
-	// Set once at wiring time, before traffic.
+	// runLive answers "is this run still going?" for the lock sweeper, which may only reap an expired lock once its holder is CERTAINLY dead (a TTL.
 	runLive func(runID string) bool
 
-	// onMutate, when set, is invoked after every successful ENTRY mutation
-	// (Set, a Delete that deleted, Incr, a sweep that reclaimed something)
-	// — synchronously on the mutating goroutine, under the store mutex, so
-	// it must be fast, never block, and never call back into the Store.
-	// It is the dashboard's "kv changed" push seam (locks are not entries
-	// and never fire it). Set once at wiring time, before traffic.
+	// onMutate, when set, is invoked after every successful ENTRY mutation (Set, a Delete that deleted, Incr, a sweep that reclaimed something).
 	onMutate func()
 
 	stop      chan struct{}
@@ -139,17 +119,14 @@ type Store struct {
 	closeOnce sync.Once
 }
 
-// SetOnMutate registers fn to run after every successful entry mutation.
-// A nil fn disables the callback. See the field comment for the contract.
+// SetOnMutate registers fn to run after every successful entry mutation. A nil fn disables the callback.
 func (s *Store) SetOnMutate(fn func()) {
 	s.mu.Lock()
 	s.onMutate = fn
 	s.mu.Unlock()
 }
 
-// SetRunLiveness registers the sweeper's "is this run still going?" oracle
-// (the run tracker). Without it the sweeper never reaps an expired lock —
-// see the field comment. Set once at wiring time, before traffic.
+// SetRunLiveness registers the sweeper's "is this run still going?" oracle (the run tracker).
 func (s *Store) SetRunLiveness(fn func(runID string) bool) {
 	s.lockMu.Lock()
 	s.runLive = fn
@@ -229,8 +206,7 @@ func (s *Store) load() error {
 	return nil
 }
 
-// MaxValueBytes is the configured per-value ceiling, exposed so the HTTP
-// layer can cap an incoming request body before buffering it.
+// MaxValueBytes is the configured per-value ceiling, exposed so the HTTP layer can cap an incoming request body before buffering it.
 func (s *Store) MaxValueBytes() int { return s.cfg.MaxValueBytes }
 
 // Get returns a copy of the value for key in ns, or ok=false if it is absent
@@ -495,9 +471,7 @@ func (s *Store) sweep() {
 			}
 		}
 	}
-	// One signal per sweep that reclaimed anything: expired entries change
-	// the admin /kv views (lazy expiry hides them from reads earlier, but
-	// the sweep is when counts/bytes actually move).
+	// One signal per sweep that reclaimed anything: expired entries change the admin /kv views (lazy expiry hides them from reads earlier, but.
 	if reclaimed {
 		s.notifyMutate()
 	}

@@ -1,21 +1,3 @@
-package server
-
-import (
-	"net/http"
-	"strconv"
-	"sync"
-	"time"
-)
-
-// The standard paths docker-updater discovers by itself, served on the admin
-// mux as aliases of /health and /restart-ready. RFC 8615 reserves
-// /.well-known/ for exactly this: a path an automated client may request
-// without prior arrangement.
-const (
-	wellKnownHealth    = "/.well-known/docker-updater/health"
-	wellKnownPreUpdate = "/.well-known/docker-updater/pre-update"
-)
-
 // The docker-updater PRE-CHECK: one GET that answers "is it safe to replace
 // this container right now?" — 200 yes, 503 no. Reachable two ways: the
 // standard pre-update path above, which needs only
@@ -36,19 +18,25 @@ const (
 // Manager instances deliberately do NOT block: a flat restart is their
 // declared contract, the supervisor brings them back, and gating on them
 // would mean never updating (an instance is always running).
+package server
 
-// DefaultRestartMaxDefer bounds how long a busy fleet may hold off an
-// update. docker-updater retries forever on a non-2xx and has no max-defer
-// of its own, so a fleet that is never simultaneously idle would pin this
-// binary at its current version indefinitely — a silent freeze that looks
-// exactly like a working gate. After this much CONTINUOUS blocking the check
-// answers 200 anyway, loudly: an update hours late is a bug, one that never
-// lands is a worse one.
+import (
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// The standard paths docker-updater discovers by itself, served on the admin mux as aliases of /health and /restart-ready.
+const (
+	wellKnownHealth    = "/.well-known/docker-updater/health"
+	wellKnownPreUpdate = "/.well-known/docker-updater/pre-update"
+)
+
+// DefaultRestartMaxDefer bounds how long a busy fleet may hold off an update. docker-updater retries forever on a non-2xx and has no.
 const DefaultRestartMaxDefer = 6 * time.Hour
 
-// restartGate tracks how long the check has been continuously blocked. The
-// clock starts at the first blocked answer and resets the moment one comes
-// back ready, so only an UNBROKEN busy stretch can reach the force.
+// restartGate tracks how long the check has been continuously blocked.
 type restartGate struct {
 	mu        sync.Mutex
 	blockedAt time.Time // zero = not currently blocked
@@ -73,8 +61,7 @@ func (g *restartGate) observe(blocked bool, maxDefer time.Duration, now time.Tim
 	return now.Sub(g.blockedAt) >= maxDefer, g.blockedAt
 }
 
-// firstForce reports whether this is the first forced answer of the current
-// blocked stretch, so the loud line is emitted once rather than every poll.
+// firstForce reports whether this is the first forced answer of the current blocked stretch, so the loud line is emitted once rather than.
 func (g *restartGate) firstForce() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -95,8 +82,7 @@ type restartReadyResponse struct {
 	Explanation string   `json:"explanation"`
 }
 
-// restartReadyRunIDCap bounds the id list in the response — the count is the
-// decision, the ids are a courtesy for whoever reads the skip reason.
+// restartReadyRunIDCap bounds the id list in the response — the count is the decision, the ids are a courtesy for whoever reads the skip reason.
 const restartReadyRunIDCap = 20
 
 func (s *Server) handleRestartReady(w http.ResponseWriter, _ *http.Request) {
