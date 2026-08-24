@@ -152,24 +152,25 @@ type Hook struct {
 	// every other hook. Omitted (the default) means no KV access.
 	State bool `json:"state,omitempty"`
 
-	// Dind, when true, grants the hook's container the privileges to run its
-	// OWN nested container daemon: the runner adds --privileged and an
-	// anonymous volume at /var/lib/docker (--mount
-	// type=volume,dst=/var/lib/docker), so a dockerd started inside the
-	// container has container-local storage on a real filesystem (an inner
-	// daemon can't run its overlay storage driver on top of the outer
-	// container's overlay — /var/lib/docker must be a volume, not the layered
-	// rootfs). The host's own docker daemon is NEVER exposed — no docker
-	// socket is mounted; the nested daemon is fully isolated from it. --rm
-	// (always passed) auto-removes the anonymous volume when the run ends, so
-	// inner storage never leaks between runs. The SAME two flags apply on the
-	// `webhook-runner test` path, so a dind hook's declared tests can start a
-	// nested daemon too.
+	// Dind, when true, gives the hook's container an anonymous volume at
+	// /var/lib/docker (--mount type=volume,dst=/var/lib/docker) for a nested
+	// container daemon: an inner daemon cannot run its overlay storage driver
+	// on top of the outer container's overlay, so that path must be a volume
+	// and not the layered rootfs. --rm (always passed) auto-removes it when the
+	// run ends, so inner storage never leaks between runs. The host's own
+	// docker daemon is NEVER exposed -- no socket is mounted. The same flags
+	// apply on the `webhook-runner test` path, so an image is proved in CI
+	// rather than on a runner.
 	//
-	// This is a host-root-equivalent capability (--privileged) — enable it
-	// only for trusted, operator-curated hooks. Like the other newer hook.json
-	// fields, old binaries reject it via DisallowUnknownFields: deploy a
-	// webhook-runner that supports it before merging a hook that sets it.
+	// NO PRIVILEGE IS ADDED. --privileged is refused by ruling: it is
+	// host-root-equivalent, and these containers execute other people's CI. So
+	// the nested daemon must be a ROOTLESS one; a root `dockerd` will not come
+	// up, and the run fails saying so rather than degrading quietly. See
+	// runner/dind.go.
+	//
+	// Like the other newer hook.json fields, old binaries reject it via
+	// DisallowUnknownFields: deploy a webhook-runner that supports it before
+	// merging a hook that sets it.
 	Dind bool `json:"dind,omitempty"`
 
 	// Scratch names absolute CONTAINER paths whose writes must land on the

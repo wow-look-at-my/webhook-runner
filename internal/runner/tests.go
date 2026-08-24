@@ -93,16 +93,13 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	// Mirror routing, run/test parity (unconditional): a test's GitHub
 	// reads ride the mirror exactly as a live run's do.
 	args = append(args, gsmInjectArgs()...)
-	// A dind hook gets the same --privileged + anonymous /var/lib/docker
-	// volume here as on the live-run path (execute()), so its declared tests
-	// can start a nested container daemon; without this parity a dind hook's
-	// smoke test could never run under `webhook-runner test`. --rm above
-	// auto-removes the volume when the test container exits.
+	// A dind hook gets exactly the live-run path's dind flags here (execute()),
+	// so a test that starts a nested daemon meets the same privilege it will
+	// meet in the fleet. That parity is the point: an image still launching
+	// root dockerd fails in CI rather than on a runner. --rm above auto-removes
+	// the volume when the test container exits.
 	if hook.Dind {
-		args = append(args, "--privileged")
-		if !hook.ScratchCovers(dindStorageDir) {
-			args = append(args, "--mount", "type=volume,dst="+dindStorageDir)
-		}
+		args = append(args, dindStorageArgs(hook.ScratchCovers(dindStorageDir))...)
 	}
 	// Storage parity with the live-run path, which is what makes
 	// read_only_rootfs PROVABLE instead of hopeful: a hook that writes

@@ -239,10 +239,10 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	if hook.Workdir != "" {
 		args = append(args, "--workdir", hook.Workdir)
 	}
-	// dind, exactly the hook flags (see execute): --privileged + an
-	// anonymous /var/lib/docker volume; --rm reaps the volume at exit.
+	// dind, exactly the hook flags (see execute and dind.go): the nested
+	// daemon's storage volume and no added privilege; --rm reaps it at exit.
 	if hook.Dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+		args = append(args, dindStorageArgs(false)...)
 	}
 	// seccomp.userns, same as the hook paths. The profile file must outlive
 	// the daemon's read at container start; this cleanup shares the deferred

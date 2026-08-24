@@ -120,18 +120,24 @@ func writeUsernsProfile(tmpDir, runID string) (path string, cleanup func(), err 
 // opt in gets NO flags at all, so its container keeps the daemon's builtin
 // profile and the docker command line is byte-identical to before.
 //
-// SECCOMP IS ONLY HALF THE OPT-IN. Docker also binds /proc/bus, /proc/fs,
-// /proc/irq, /proc/sys and /proc/sysrq-trigger READ-ONLY, and masks a few
-// paths under /proc outright. The kernel refuses a fresh procfs mount inside
-// an unprivileged user namespace whenever the /proc already mounted is
-// obstructed like that, so bwrap builds its namespace, allows every syscall
-// it needs, and still dies on "Can't mount proc on /newroot/proc: Operation not
-// permitted". systempaths=unconfined removes both obstructions; docker offers
-// no finer control, and a dind hook gets the same effect from --privileged.
+// THIS OPT-IN IS NOT ENOUGH FOR BUBBLEWRAP, and that is deliberate. Docker
+// also binds /proc/bus, /proc/fs, /proc/irq, /proc/sys and /proc/sysrq-trigger
+// read-only and masks paths under /proc, and the kernel refuses a fresh procfs
+// mount inside an unprivileged user namespace while the visible /proc carries
+// those. So bwrap still dies on "Can't mount proc on /newroot/proc: Operation
+// not permitted" even with every syscall it needs allowed.
 //
-// The cost is real and belongs to whoever writes the opt-in into a manifest:
-// the container sees an unmasked /proc, including a writable
-// /proc/sysrq-trigger. Only a hook that must build a sandbox should ask.
+// The docker flag that clears them, systempaths=unconfined, is NOT used here.
+// It is all-or-nothing, and on a container running as uid 0 it hands the job a
+// writable /proc/sys/kernel/core_pattern -- a global, non-namespaced file whose
+// helper the HOST kernel executes as real root on any core dump. Measured:
+// dropping CAP_SYS_ADMIN does not protect that write, only the read-only bind
+// does, and a scratch mount already gives the container a writable host path to
+// point it at. A container that needs to build a sandbox needs its privilege
+// reduced first (daemon-level userns-remap), not the host's protections
+// removed.
+//
+// see docs/internals/hooks-images-and-reload.md
 //
 // A plain function, not a Runner method: the `webhook-runner test` path
 // (runOneTest) has no Runner, and run/test parity means both paths must go
@@ -144,10 +150,7 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return []string{
-		"--security-opt", "seccomp=" + path,
-		"--security-opt", "systempaths=unconfined",
-	}, cleanup, nil
+	return []string{"--security-opt", "seccomp=" + path}, cleanup, nil
 }
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test

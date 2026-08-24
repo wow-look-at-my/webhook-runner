@@ -105,7 +105,8 @@ func TestDindScratchReplacesAnonymousVolume(t *testing.T) {
 	})
 
 	out, run := runWithScratch(t, scratch, hook)
-	assert.NotEqual(t, -1, indexOfArg(out, "arg=--privileged"), "dind still needs --privileged")
+	assert.Equal(t, -1, indexOfArg(out, "arg=--privileged"),
+		"dind never adds --privileged, scratch or not")
 	assert.Equal(t, -1, indexOfArg(out, "arg=type=volume,dst=/var/lib/docker"),
 		"the anonymous volume must be dropped when scratch covers it")
 	want := "arg=type=bind,src=" + filepath.Join(scratch, "run-"+run.ID(), "0-var_lib_docker") + ",dst=/var/lib/docker"

@@ -123,20 +123,22 @@ func TestUsernsProfileRelaxesNothingElse(t *testing.T) {
 	}
 }
 
-// The seccomp profile is only half the opt-in. Docker binds several paths
-// under /proc read-only, and the kernel refuses a fresh procfs inside an
-// unprivileged user namespace while the visible one is obstructed -- so a
-// container with every syscall allowed still cannot build a sandbox. Measured:
-// remounting /proc/sys read-only in a mount namespace reproduces the exact
-// bwrap message, "Can't mount proc on /newroot/proc: Operation not permitted".
-func TestUsernsOptInAlsoUnobstructsProc(t *testing.T) {
+// systempaths=unconfined is deliberately NOT part of this opt-in. It is the
+// only docker flag that clears the read-only and masked /proc paths, it is
+// all-or-nothing, and on a uid-0 container it exposes a writable
+// /proc/sys/kernel/core_pattern -- a global file whose helper the host kernel
+// runs as real root. Measured: dropping CAP_SYS_ADMIN does not refuse that
+// write. So a hook opting into userns must not silently acquire it.
+func TestUsernsOptInDoesNotUnmaskProc(t *testing.T) {
 	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test")
 	require.Nil(t, err)
 	defer cleanup()
 
-	assert.Contains(t, args, "systempaths=unconfined",
-		"the userns opt-in must also drop docker's read-only and masked /proc "+
-			"paths, or bwrap gets its namespace and cannot mount /proc in it")
+	for _, arg := range args {
+		assert.NotContains(t, arg, "systempaths",
+			"the userns opt-in must never clear docker's /proc protections: on a "+
+				"uid-0 container that is a host-root primitive via core_pattern")
+	}
 }
 
 type wantsUserns struct{}

@@ -402,20 +402,14 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// `scratch` has already supplied that mount, and docker refuses a second
 	// mount on the same destination.
 	args = append(args, storeArgs...)
-	// Docker-in-Docker: --privileged (host-root-equivalent) grants the
-	// container the capabilities to run its own nested dockerd, and
-	// /var/lib/docker gives that inner daemon container-local storage on a
-	// real filesystem — its overlay driver can't stack on the outer
-	// container's overlay rootfs. That storage comes from this run's scratch
-	// subtree when the hook declared it (removed when the run ends), else from
-	// an anonymous volume --rm auto-removes; either way inner storage never
-	// leaks between runs. The host's daemon is never exposed (no socket
-	// mount). Injected before the image so a hook's command still trails.
+	// Docker-in-Docker storage. The nested daemon gets NO added privilege --
+	// see dind.go for why --privileged is refused and what an image owes
+	// instead. Storage comes from this run's scratch subtree when the hook
+	// declared it, else from an anonymous volume --rm auto-removes; either way
+	// inner storage never leaks between runs, and the host's daemon is never
+	// exposed. Injected before the image so a hook's command still trails.
 	if hook.Dind {
-		args = append(args, "--privileged")
-		if !hook.ScratchCovers(dindStorageDir) {
-			args = append(args, "--mount", "type=volume,dst="+dindStorageDir)
-		}
+		args = append(args, dindStorageArgs(hook.ScratchCovers(dindStorageDir))...)
 	}
 	// seccomp.userns: a profile file the DAEMON reads while starting the
 	// container, so it must outlive `docker run`'s startup -- the cleanup is
