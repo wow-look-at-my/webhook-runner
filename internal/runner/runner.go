@@ -365,22 +365,36 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	containerName := "webhook-runner-" + run.ID()
 
-	args := []string{
-		"run", "--rm",
-		"--name", containerName,
+	spec := containerSpec{
+		name:  containerName,
+		image: image,
 		// The orphan-sweep marker (see orphans.go): lets the next serve
 		// boot find and reap containers whose owning server process died
 		// before their run finished.
-		"--label", RunContainerLabel + "=" + runContainerLabelValue,
-		"-v", payloadPath + ":" + mountedPayload + ":ro",
-		"-v", headersPath + ":" + mountedHeaders + ":ro",
-		"-v", settingsPath + ":" + mountedSettings + ":ro",
-		"-e", "HOOK_PAYLOAD_FILE=" + mountedPayload,
-		"-e", "HOOK_HEADERS_FILE=" + mountedHeaders,
-		"-e", "HOOK_SETTINGS_FILE=" + mountedSettings,
-		"-e", "HOOK_ID=" + hook.ID,
-		"-e", "HOOK_RUN_ID=" + run.ID(),
+		label: RunContainerLabel + "=" + runContainerLabelValue,
+		mounts: []string{
+			payloadPath + ":" + mountedPayload + ":ro",
+			headersPath + ":" + mountedHeaders + ":ro",
+			settingsPath + ":" + mountedSettings + ":ro",
+		},
+		env: []string{
+			"HOOK_PAYLOAD_FILE=" + mountedPayload,
+			"HOOK_HEADERS_FILE=" + mountedHeaders,
+			"HOOK_SETTINGS_FILE=" + mountedSettings,
+			"HOOK_ID=" + hook.ID,
+			"HOOK_RUN_ID=" + run.ID(),
+		},
+		secrets: secrets,
+		onReservedSecret: func(key string) {
+			r.log.Warn("hook secret shadows a reserved env key; skipped",
+				"hook", hook.ID, "run", run.ID(), "env", key)
+		},
+		networks: hook.Networks,
+		user:     hook.User,
+		workdir:  hook.Workdir,
+		dind:     hook.Dind,
 	}
+	spec.mounts = append(spec.mounts, hook.Volumes...)
 	// State store: opted-in hooks reach the KV API at a plain
 	// http://localhost:9002 URL. The runner bind-mounts the KV Unix socket and
 	// webhook-runner's own binary, sets the binary as the container entrypoint
@@ -391,51 +405,16 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// ReservedEnvKey already covers them, but docker's last--e-wins matters too.
 	stateForwarding := hook.State && r.kv != nil && r.kvSocket != "" && r.kvShim != ""
 	if stateForwarding {
-		args = append(args,
-			"--entrypoint", mountedShim,
-			"-v", r.kvShim+":"+mountedShim+":ro",
-			"-v", r.kvSocket+":"+mountedStateSocket,
-			"-e", "HOOK_KV_SOCKET="+mountedStateSocket,
-			"-e", "HOOK_KV_URL=http://localhost:9002",
-			"-e", "HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
+		spec.entrypoint = mountedShim
+		spec.mounts = append(spec.mounts,
+			r.kvShim+":"+mountedShim+":ro",
+			r.kvSocket+":"+mountedStateSocket,
 		)
-	}
-	// github-state-mirror routing (unconditional — see GSMBaseURL): the
-	// GITHUB_API_URL fleet default, injected BEFORE secrets/hook env so an
-	// explicit hook.json value still wins.
-	args = append(args, r.gsmArgs()...)
-	for _, n := range hook.Networks {
-		args = append(args, "--network", n)
-	}
-	for _, v := range hook.Volumes {
-		args = append(args, "-v", v)
-	}
-	// Decrypted secrets are injected first, so an explicit hook.json env
-	// entry wins on conflict (docker keeps the last -e for a key).
-	for k, v := range secrets {
-		if hooks.ReservedEnvKey(k) {
-			r.log.Warn("hook secret shadows a reserved env key; skipped",
-				"hook", hook.ID, "run", run.ID(), "env", k)
-			continue
-		}
-		args = append(args, "-e", k+"="+v)
-	}
-	if hook.User != "" {
-		args = append(args, "--user", hook.User)
-	}
-	if hook.Workdir != "" {
-		args = append(args, "--workdir", hook.Workdir)
-	}
-	// Docker-in-Docker: --privileged (host-root-equivalent) grants the
-	// container the capabilities to run its own nested dockerd, and the
-	// anonymous /var/lib/docker volume gives that inner daemon container-local
-	// storage on a real filesystem — its overlay driver can't stack on the
-	// outer container's overlay rootfs. --rm above auto-removes the anonymous
-	// volume, so inner storage never leaks between runs. The host's daemon is
-	// never exposed (no socket mount). Injected before the image so a hook's
-	// command still trails.
-	if hook.Dind {
-		args = append(args, "--privileged", "--mount", "type=volume,dst=/var/lib/docker")
+		spec.env = append(spec.env,
+			"HOOK_KV_SOCKET="+mountedStateSocket,
+			"HOOK_KV_URL=http://localhost:9002",
+			"HOOK_KV_TOKEN="+r.kv.Token(hook.ID, run.ID()),
+		)
 	}
 	// seccomp.userns: a profile file the DAEMON reads while starting the
 	// container, so it must outlive `docker run`'s startup -- the cleanup is
@@ -452,8 +431,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		return
 	}
 	defer seccompCleanup()
-	args = append(args, seccompFlags...)
-	args = append(args, image)
+	spec.seccomp = seccompFlags
 	if stateForwarding {
 		// The shim is the entrypoint; hand it the command the image would have
 		// run (its ENTRYPOINT+CMD, or hook.Command when set) to exec after
@@ -469,12 +447,12 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 			return
 		}
 		run.Mark(runs.PhaseInspected)
-		args = append(args, "kv-forward")
-		args = append(args, childArgv...)
+		spec.argv = append([]string{"kv-forward"}, childArgv...)
 	} else {
 		// With no command override, the image's CMD/ENTRYPOINT runs.
-		args = append(args, hook.Command...)
+		spec.argv = hook.Command
 	}
+	args := spec.args()
 
 	r.log.Info("hook starting",
 		"hook", hook.ID, "run", run.ID(), "image", image, "timeout", timeout)
