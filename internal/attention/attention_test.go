@@ -64,8 +64,7 @@ func TestSinceStableAcrossRederivationsResetsOnRecur(t *testing.T) {
 	require.Len(t, a.Snapshot(), 1)
 	assert.Equal(t, first, a.Snapshot()[0].Since, "an unchanged problem keeps its Since")
 
-	// The failure reason morphs while the hook stays broken: message
-	// updates in place, Since still marks when it FIRST broke.
+	// The message morphs; Since still marks when the hook first broke.
 	tick(5 * time.Minute)
 	a.ReplaceSource(SourceLoad, []Entry{{Hook: "h", Key: KeyLoad, Message: "reason two"}})
 	require.Len(t, a.Snapshot(), 1)
@@ -152,8 +151,7 @@ func TestObserveEventStandardRules(t *testing.T) {
 		"h: api_key reference ${NOPE} did not resolve (secrets.sops.env / host env); all callers are denied")
 	assert.Equal(t, 1, a.Count())
 
-	// The reserved hook-emitted class: one entry per distinct message,
-	// cleared all at once by the paired healthy signal from the same hook.
+	// One entry per distinct message, cleared by the hook's healthy signal.
 	a.ObserveEvent(KindHookReported, "g", "missing permission: contents write")
 	a.ObserveEvent(KindHookReported, "g", "feature inert: auto_merge label not found")
 	a.ObserveEvent(KindHookReported, "g", "missing permission: contents write") // repeat: same identity
@@ -164,8 +162,7 @@ func TestObserveEventStandardRules(t *testing.T) {
 	assert.Equal(t, 1, a.Count(), "the hook's all-clear resolves every reported entry")
 	assert.Equal(t, KeyAPIKey, a.Snapshot()[0].Key, "h's api_key event entry is untouched")
 
-	// Hook-less events of recognized kinds are dropped (nothing to pin
-	// the problem on).
+	// Hook-less events of recognized kinds are dropped.
 	a.ObserveEvent(KindHookReported, "", "no hook field")
 	assert.Equal(t, 1, a.Count())
 }

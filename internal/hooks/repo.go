@@ -50,12 +50,9 @@ func CloneRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, er
 	return r, nil
 }
 
-// OpenRepo opens the clone of url at dir WITHOUT moving an existing working
-// tree: if dir already contains a git repository it is used exactly as-is
-// (no fetch, no reset) — the reload CI gate decides when the tree moves. A
-// missing dir is still cloned fresh (branch tip; the gate then flags it
-// unverified until the first green). CloneRepo keeps the legacy
-// pull-on-open behavior.
+// OpenRepo opens the clone at dir without moving an existing working tree
+// (no fetch, no reset) — the reload gate decides when the tree moves. A
+// missing dir is cloned fresh, unverified until the gate's first green.
 func OpenRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, error) {
 	r := &Repo{
 		url:        url,
@@ -133,8 +130,8 @@ func (r *Repo) Head() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// FetchBranch fetches the tracked branch from origin at the given history
-// depth WITHOUT touching the working tree, and returns the fetched tip.
+// FetchBranch fetches the tracked branch at depth without touching the
+// working tree, and returns the fetched tip.
 func (r *Repo) FetchBranch(depth int) (string, error) {
 	return r.FetchBranchContext(context.Background(), depth)
 }
@@ -230,11 +227,9 @@ func (r *Repo) CommitInfo(sha string) (subject string, date time.Time, err error
 	return parts[1], when, nil
 }
 
-// TreeHasDir reports whether the commit's TREE contains the given path
-// (`git cat-file -e <sha>:<path>`) — pure object inspection, never a
-// checkout. False covers both "path absent" and "commit unknown locally";
-// callers that care resolve the commit first (ResolveRef errors on an
-// unknown ref).
+// TreeHasDir reports whether the commit's tree contains path, via pure
+// object inspection (never a checkout). False also covers an unknown
+// commit; resolve it first with ResolveRef if that distinction matters.
 func (r *Repo) TreeHasDir(sha, path string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -242,12 +237,11 @@ func (r *Repo) TreeHasDir(sha, path string) bool {
 	return r.gitCmd("-C", r.dir, "cat-file", "-e", sha+":"+path).Run() == nil
 }
 
-// resolveRefDepth bounds how much history a ResolveRef by-name fetch
-// pulls — the same order of magnitude as the reload gate's ordering window.
+// resolveRefDepth bounds how much history a by-name fetch in ResolveRef pulls.
 const resolveRefDepth = 100
 
-// validManualRef guards ResolveRef's user-supplied ref before it becomes a
-// git argument: plausible ref characters only, and never flag-shaped.
+// validManualRef guards ResolveRef's ref before it becomes a git argument:
+// plausible ref characters only, never flag-shaped.
 var validManualRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@-]{0,250}$`)
 
 // ResolveRef resolves ref — a full or abbreviated commit sha, or a

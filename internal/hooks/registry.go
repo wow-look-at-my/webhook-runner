@@ -5,12 +5,10 @@ import (
 	"sync"
 )
 
-// Registry is a concurrency-safe mapping from hook ID to the loaded hook
-// definition. The watcher updates it as hook.json files appear, change, or
-// disappear; the HTTP server reads it to dispatch requests. Managers ride
-// the same registry under the same id namespace (a collision is a load
-// error upstream), in their own map so hook consumers (the roster, image
-// status, schedules) never see them by accident.
+// Registry is a concurrency-safe mapping from hook ID to loaded hook. The
+// watcher updates it; the HTTP server reads it to dispatch requests.
+// Managers share the id namespace but live in their own map, so hook
+// consumers never see them by accident.
 type Registry struct {
 	mu       sync.RWMutex
 	hooks    map[string]*Hook
@@ -88,9 +86,7 @@ type Summary struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	Synchronous bool   `json:"synchronous,omitempty"`
-	// Schedule is the hook's fire interval (a Go duration, e.g. "5m") when it
-	// is scheduled, else empty. Surfaced so the dashboard/admin can show that
-	// a hook fires on a timer, not just on HTTP triggers.
+	// Fire interval (e.g. "5m") when scheduled, else empty.
 	Schedule string `json:"schedule,omitempty"`
 }
 

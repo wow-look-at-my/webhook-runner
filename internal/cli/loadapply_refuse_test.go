@@ -1,29 +1,8 @@
 package cli
 
-// THE FAIL-CLOSED FLEET CONTRACT.
-//
-// These tests exist because of a near-miss: removing the `env` manifest field
-// produced a binary that could not parse 11 of the fleet's 13 entities, and
-// the reload path would have applied the other 2 and called it a successful
-// reload. Every unparseable entity would have silently stopped serving, with
-// no rollback available -- on that side of the mismatch the TREE never
-// changed, only the binary, so there was nothing for the reload gate to roll
-// back to. Recovery was manual and the damage invisible.
-//
-// The rule that replaced it: a load in which ANY entity fails applies
-// NOTHING. What that buys is stated once, here, and asserted below:
-//
-//   1. a refused reload leaves the previous fleet serving, untouched;
-//   2. a refused STARTUP load returns an error (serve turns it into a
-//      non-zero exit) rather than serving a fraction of the fleet;
-//   3. the refusal is visible -- an event plus the needs-attention surface,
-//      naming the entities;
-//   4. a later clean load applies and clears all of it.
-//
-// The cost is deliberate and stated in buildLoadAndApply: one broken
-// manifest now blocks the whole reload. That is safe only because a broken
-// manifest cannot reach a gated deploy -- the reload gate requires the hooks
-// repo's CI green, and that CI runs `validate` through this same loader.
+// A load where any entity fails applies nothing: the previous fleet keeps
+// serving, the refusal names every entity, and a later clean load clears it.
+// See buildLoadAndApply.
 import (
 	"os"
 	"path/filepath"
@@ -91,8 +70,7 @@ func TestRefusedReloadKeepsThePreviousFleetServing(t *testing.T) {
 	require.NoError(t, h.load(), "a clean tree applies")
 	require.Len(t, h.reg.All(), 2)
 
-	// Now the tree grows an entity this binary cannot parse -- the shape of
-	// a deploy carrying a manifest field the running binary lacks.
+	// A manifest field this binary does not know about.
 	writeBadHook(t, h.root, "from-the-future")
 	err := h.load()
 
@@ -100,8 +78,7 @@ func TestRefusedReloadKeepsThePreviousFleetServing(t *testing.T) {
 	assert.Contains(t, err.Error(), "REFUSED")
 	assert.Contains(t, err.Error(), "from-the-future", "the error must name the offending entity")
 
-	// The fleet is untouched: still exactly the two that were serving, and
-	// NOT the three-minus-one set a partial apply would have installed.
+	// Still exactly the two that were serving, not a partial three-minus-one set.
 	ids := []string{}
 	for _, hk := range h.reg.All() {
 		ids = append(ids, hk.ID)

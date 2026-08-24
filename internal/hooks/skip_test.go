@@ -165,8 +165,7 @@ func TestEvaluateSkipHeaderNameCaseInsensitive(t *testing.T) {
 }
 
 func TestEvaluateSkipMissingHeaderNeverMatchesValues(t *testing.T) {
-	// A missing header is absence, not the empty string: eq "" and ne both
-	// refuse to match, so the work happens (fail toward work).
+	// absence is not the empty string: eq "" and ne both refuse to match
 	h := skipHook(t, `[{"header:x-absent": ""}]`)
 	_, matched := h.EvaluateSkip(nil, ghHeaders("push"))
 	assert.False(t, matched)
@@ -302,8 +301,7 @@ func TestEvaluateSkipTotality(t *testing.T) {
 		assert.False(t, matched, "payload %.40q must not match", p)
 	}
 
-	// A header condition still matches even when the payload is garbage —
-	// header-only conditions never need the body parsed.
+	// header-only conditions never need the body parsed
 	h = skipHook(t, `[{"header:x-github-event": "workflow_run"}]`)
 	_, matched := h.EvaluateSkip([]byte("*** not json ***"), ghHeaders("workflow_run"))
 	assert.True(t, matched)

@@ -15,21 +15,16 @@ import (
 // Stable entry keys within a source. Every entry carries a non-empty key
 // so a Resolution's ""-prefix wildcard is unambiguous.
 const (
-	// KeyLoad: the single per-hook "failed to load/validate, dropped" slot
-	// (a hook has at most one load error per reload; the message updates
-	// in place if the reason morphs while it stays broken).
+	// KeyLoad: the per-hook "failed to load, dropped" slot.
 	KeyLoad = "load"
 	// KeyZeroHooks: the one zero-hooks-discovered entry.
 	KeyZeroHooks = "zero"
 	// KeySops: the hook's secrets.sops.env failed to decrypt.
 	KeySops = "sops"
-	// KeyAPIKey: the hook's api_key does not resolve to a usable value —
-	// shared by the probe ("secrets" source) and the request-time event
-	// rule ("event" source).
+	// KeyAPIKey: the hook's api_key does not resolve. Shared by the probe
+	// and the request-time event rule.
 	KeyAPIKey = "api_key"
-	// KeyReportedPrefix + <message>: a hook-emitted misconfiguration
-	// signal (the reserved future event class; see
-	// RegisterStandardEventRules).
+	// KeyReportedPrefix + <message>: a hook-emitted misconfiguration signal.
 	KeyReportedPrefix = "reported:"
 	// KeyTmpDir: the boot-scoped containerized-without-TMPDIR verdict.
 	KeyTmpDir = "tmpdir"

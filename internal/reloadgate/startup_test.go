@@ -62,10 +62,7 @@ func TestStartupVanishedShaFallsToTipUnverified(t *testing.T) {
 }
 
 func TestStartupTotalGitFailureKeepsLastGoodRecord(t *testing.T) {
-	// Every git op fails (dead remote, broken clone): startup must degrade
-	// to serving whatever the tree holds — no apply, loud — and must NOT
-	// rewrite the state file, so the last-good record survives untouched
-	// for the next boot.
+	// Total git failure: startup degrades loud, with no apply and no state rewrite.
 	statePath := filepath.Join(t.TempDir(), "reload-gate.json")
 	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
 	repo := &fakeRepo{
@@ -83,8 +80,7 @@ func TestStartupTotalGitFailureKeepsLastGoodRecord(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "reload.failed")
 	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
 
-	// The no-persist-on-degrade guarantee: the on-disk record still names
-	// the original last-good sha.
+	// The on-disk record still names the original last-good sha.
 	st := readState(t, f.statePath)
 	assert.Equal(t, "A", st.ServingSHA)
 	assert.True(t, st.Verified)
@@ -102,8 +98,7 @@ func TestStartupFreshThenGreenVerifies(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "reload.unverified")
 	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
 
-	// The first green for the serving tree verifies it in place: no
-	// reset, no apply, entry resolved.
+	// The first green for the serving tree verifies it in place: no reset, no apply.
 	status, err := f.gate.HandleEvent("status", statusBody(t, "A", "success", "all-builds", "master"))
 	require.NoError(t, err)
 	assert.Equal(t, "already-serving", status)

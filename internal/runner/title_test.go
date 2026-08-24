@@ -35,9 +35,7 @@ func TestRunnerStartCarriesTitle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
-	// No second barrier: Finish settles the terminal feed line, the OnFinish
-	// seam and the stream delta BEFORE it closes done, so <-run.Done() alone
-	// is enough to read any of them. See runs.Run.Finish.
+	// Finish settles everything before closing done; see runs.Run.Finish.
 	assert.Equal(t, "wow-look-at-my/go-toolchain#47", run.Snapshot(-1).Title)
 	require.Len(t, finished, 1)
 	assert.Equal(t, "wow-look-at-my/go-toolchain#47", finished[0].Title,
@@ -132,10 +130,8 @@ func TestRunnerMidRunTitleReachesFinishedEvent(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not finish")
 	}
-	// Reading the recorder straight off Done() used to race the run.finished
-	// write and needed a Runner.Wait() barrier here (a real CI flake). Finish
-	// now settles that write before closing done, so the barrier is gone —
-	// and this test is what would catch it coming back.
+	// Finish settles the run.finished write before closing done, so no
+	// Runner.Wait() barrier is needed here.
 	var finishedMsg string
 	for _, ev := range rec.List(0) {
 		if ev.Kind == "run.finished" {

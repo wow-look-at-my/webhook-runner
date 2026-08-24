@@ -39,62 +39,32 @@ import (
 )
 
 // Sources — the derivation family of an entry, part of its identity.
+// See docs/internals/streaming-and-attention.md for each source's clear rule.
 const (
-	// SourceLoad: a hook (or the hooks tree / concurrency.json) failed to
-	// load or validate and was DROPPED. Re-derived per reload; clears on
-	// the first reload where it loads (or is removed).
+	// SourceLoad: a hook or the tree failed to load or validate.
 	SourceLoad = "load"
-	// SourceZeroHooks: the loader found NO hooks at all (hooks.ZeroHooksError
-	// — the fleet-offline guard). Clears on the first reload that loads one.
+	// SourceZeroHooks: the loader found no hooks at all.
 	SourceZeroHooks = "zero-hooks"
-	// SourceSecrets: the serve-time static probe — unresolvable ${NAME}
-	// api_key/env references and sops decrypt failures on LOADED hooks.
-	// Re-probed per reload; clears when the reference resolves, the
-	// secrets file decrypts, or the hook goes away.
+	// SourceSecrets: an unresolvable secret or env reference.
 	SourceSecrets = "secrets"
-	// SourceServer: boot-scoped server-topology verdicts (the containerized
-	// TMPDIR hazard). Cannot clear without a restart.
+	// SourceServer: a boot-scoped server-topology hazard.
 	SourceServer = "server"
-	// SourceEvent: entries derived from recognized activity-event kinds
-	// via registered rules. Clear rules are per-rule — see
-	// RegisterStandardEventRules.
+	// SourceEvent: derived from a recognized activity-event kind.
 	SourceEvent = "event"
-	// SourceReload: the hooks-repo reload CI gate (internal/reloadgate) —
-	// a newer commit held awaiting its gating status, or the serving tree
-	// not verified green. Reported and resolved by the gate itself as
-	// commits verify, switch, or the operator forces (admin /reload).
+	// SourceReload: the hooks-repo reload gate's held/pending state.
 	SourceReload = "reload"
-	// SourceTreeRefused: the whole hooks tree failed to apply. A load in
-	// which any entity errored is REFUSED rather than partially applied
-	// (internal/cli.buildLoadAndApply), so the fleet keeps serving what it
-	// was serving and the deploy is HELD. This is the entry that says so in
-	// one line -- the per-entity SourceLoad entries beside it say which
-	// entity and which field. Cleared by the next load that applies whole.
+	// SourceTreeRefused: the whole hooks tree failed to apply.
 	SourceTreeRefused = "tree-refused"
-	// SourceManager: a manager that should be running has no live instance
-	// (start failing, crash-looping, image unbuildable). Re-derived by the
-	// supervisor on every state change; clears the moment an instance runs
-	// — or the manager is disabled (the read-time disabled filter applies
-	// like every hook-scoped entry) or removed.
+	// SourceManager: a manager has no live instance.
 	SourceManager = "manager"
-	// SourceSchedule: a hook declaring a `schedule` interval has not
-	// SUCCEEDED within its staleness threshold (CheckStaleSchedules).
-	// Re-derived periodically (independent of reload — staleness is a
-	// function of elapsed time, not of a tree change); clears the moment
-	// a run of that hook succeeds.
+	// SourceSchedule: a scheduled hook missed its staleness window.
 	SourceSchedule = "schedule"
-	// SourceGitHubStatus: a loaded entity declares `github_status` while the
-	// runner holds no GitHub credential, so every status it should post is
-	// dropped. Re-derived on every reload like SourceSecrets; clears when
-	// the entity stops declaring it (the credential itself is fixed at
-	// construction, so the other direction needs a restart anyway).
+	// SourceGitHubStatus: github_status declared with no GitHub credential.
 	SourceGitHubStatus = "github-status"
 )
 
-// Entry is one active problem. Identity is (Source, Hook, Key); Message is
-// display text and may update in place without resetting Since. Messages
-// must be VALUE-FREE: name the hook, the reference (${NAME}), the file —
-// never a resolved secret value.
+// Entry is one active problem. Identity is (Source, Hook, Key); Message
+// must be value-free — name the hook or reference, never a secret value.
 type Entry struct {
 	Source  string    `json:"source"`
 	Hook    string    `json:"hook,omitempty"`
@@ -108,17 +78,14 @@ func (e Entry) identity() string {
 }
 
 // Resolution names entries an event rule clears: every entry under
-// (Source, Hook) whose Key starts with KeyPrefix ("" matches all keys for
-// that source+hook).
+// (Source, Hook) whose Key starts with KeyPrefix ("" matches all).
 type Resolution struct {
 	Source    string
 	Hook      string
 	KeyPrefix string
 }
 
-// RuleFunc maps one recorded activity event (its hook field and message)
-// onto attention mutations: entries to report (added, or refreshed in
-// place if the identity is already active) and resolutions to clear.
+// RuleFunc maps one activity event onto entries to report and resolutions to clear.
 type RuleFunc func(hook, message string) (report []Entry, resolve []Resolution)
 
 // Aggregator is the concurrency-safe current problem set. A nil
@@ -130,12 +97,8 @@ type Aggregator struct {
 	entries map[string]Entry
 	rules   map[string][]RuleFunc
 
-	// onChange, when set, is invoked after any mutation that actually
-	// changed the set (added, removed, or reworded an entry) —
-	// synchronously on the mutating goroutine, under the aggregator mutex,
-	// so keep it trivial: it must be fast, never block, and never call
-	// back into the Aggregator (the SetOnChange convention; the server
-	// wires it to the stream hub's "attention" section signal).
+	// onChange fires under the aggregator mutex after a real mutation —
+	// keep it fast and never call back into the Aggregator.
 	onChange func()
 }
 
@@ -148,8 +111,7 @@ func New() *Aggregator {
 	}
 }
 
-// SetOnChange registers fn to run after every real mutation. Set once at
-// wiring time, before concurrent use. Nil-receiver safe; nil fn disables.
+// SetOnChange registers fn to run after every real mutation. Nil disables.
 func (a *Aggregator) SetOnChange(fn func()) {
 	if a == nil {
 		return
@@ -233,9 +195,7 @@ func (a *Aggregator) Resolve(source, hook, key string) {
 	a.notifyLocked(true)
 }
 
-// RegisterEventRule registers a rule for one activity-event kind. Multiple
-// rules per kind run in registration order. Register at wiring time,
-// before concurrent ObserveEvent calls.
+// RegisterEventRule registers a rule for one event kind, in registration order.
 func (a *Aggregator) RegisterEventRule(kind string, rule RuleFunc) {
 	if a == nil || rule == nil {
 		return
@@ -341,9 +301,7 @@ func (a *Aggregator) resolveWhereLocked(pred func(Entry) bool) bool {
 	return changed
 }
 
-// notifyLocked fires onChange when a mutation actually happened; caller
-// holds a.mu (the callback contract says trivial, so invoking under the
-// mutex is fine — the events.Recorder onRecord precedent).
+// notifyLocked fires onChange when a mutation happened; caller holds a.mu.
 func (a *Aggregator) notifyLocked(changed bool) {
 	if changed && a.onChange != nil {
 		a.onChange()

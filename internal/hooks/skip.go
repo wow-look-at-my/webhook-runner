@@ -13,50 +13,21 @@ import (
 	"strings"
 )
 
-// Declarative skip conditions ("skip_if").
-//
-// A hook may declare conditions under which a delivery is SKIPPED: answered
-// immediately, recorded as a first-class run with status "skipped", and never
-// given a container — no image build, no concurrency slot, no docker run. The
-// motivating case is a webhook source that can't be narrowed at the sender
-// (GitHub's event checkboxes bundle events you want with events you don't):
-// the unwanted events used to boot a container just to exit, and "nothing
-// happened" was invisible.
-//
-// The matcher is deliberately NOT a language. It is a total, bounded,
-// declarative structure evaluated by this process outside any container, so
-// it must be provably safe: string comparisons over stringified JSON leaves
-// and header values, plus Go's regexp — RE2, guaranteed linear time, no
-// backtracking — compiled at load time. No jq, no CEL, no expressions, no
-// user code. Every evaluation terminates in time bounded by the (already
-// size-capped) payload.
-//
-// Semantics:
-//   - The skip_if LIST is ORed: the first condition that matches skips.
-//   - KEYS within one condition are ANDed: every key must match (the same
-//     convention as pr-minder's auto_update_pr.triggers).
-//   - A key addresses the parsed JSON payload via a dotted path ("action",
-//     "workflow_run.conclusion", "commits.0.message" — object fields by
-//     name, array elements by numeric index), or a request HEADER via the
-//     "header:" prefix ("header:x-github-event", name case-insensitive).
-//   - Values are compared as strings. Leaves stringify predictably: strings
-//     as themselves, numbers as their JSON literal text, true/false/null as
-//     those exact words. Objects and arrays are NOT leaves — a path landing
-//     on one simply doesn't match (only `exists` can see it).
-//   - Evaluation is total and fails TOWARD DOING THE WORK: a missing path,
-//     a non-leaf value, or an unparseable payload just means that key does
-//     not match, so the run happens. Skipping is never the failure mode.
+// Declarative skip conditions ("skip_if"): a hook can declare conditions
+// under which a delivery is answered right away, as a "skipped" run, with
+// no container. The matcher is total and bounded, not a language, so it is
+// safe to run outside a container: string comparisons plus RE2 regex, and
+// it fails toward doing the work on any unresolved path.
+// see docs/internals/runs-concurrency-and-overrides.md
 
-// HeaderKeyPrefix marks a skip_if condition key as addressing a request
-// header instead of a payload field: "header:x-github-event". The header
-// name is case-insensitive; multi-valued headers match on the first value.
+// HeaderKeyPrefix marks a skip_if key as a request header, not a payload
+// path: "header:x-github-event" (name case-insensitive).
 const HeaderKeyPrefix = "header:"
 
 // SkipConditions is the hook.json "skip_if" list. Entries are ORed.
 type SkipConditions []SkipCondition
 
-// SkipCondition maps payload paths / header keys to matchers. All keys must
-// match (AND) for the condition to match.
+// SkipCondition maps payload paths / header keys to matchers, ANDed.
 type SkipCondition map[string]*SkipMatcher
 
 // SkipMatcher is one condition key's test. In hook.json it is either a bare
@@ -65,22 +36,18 @@ type SkipCondition map[string]*SkipMatcher
 type SkipMatcher struct {
 	// Eq matches a leaf whose stringified value equals this exactly.
 	Eq *string
-	// Ne matches a leaf whose stringified value differs. A missing path
-	// does NOT match Ne — absence is not inequality (fail toward work).
+	// Ne matches a leaf that differs. A missing path does NOT match: absence
+	// is not inequality.
 	Ne *string
 	// In matches a leaf whose stringified value equals any listed value.
 	In []string
-	// Exists tests resolution itself: true matches when the path resolves
-	// to ANY value (object, array, or leaf — for headers: the header is
-	// present); false matches when it does not.
+	// Exists tests resolution itself, not the value: true matches any
+	// resolved path (object, array, or leaf); false matches none.
 	Exists *bool
 	// Prefix matches a leaf whose stringified value starts with this.
 	Prefix *string
-	// Regex matches a leaf whose stringified value contains a match of this
-	// pattern (anchor with ^ and $ for a full match). Go regexp is RE2:
-	// linear-time, no backtracking — which is the only reason a
-	// caller-supplied pattern is safe to run outside the container. Compiled
-	// at load time; a pattern that doesn't compile is a validation error.
+	// Regex matches a leaf containing this RE2 pattern (anchor with ^ and $
+	// for a full match), compiled at load time.
 	Regex *string
 
 	// re is the pattern compiled by compile() at load/validation time.
@@ -223,19 +190,9 @@ func (m *SkipMatcher) compile() error {
 	return nil
 }
 
-// EvaluateSkip reports whether this delivery matches one of the hook's
-// skip_if conditions. On a match it returns a rendered reason naming the
-// condition, e.g.
-//
-//	skip_if[0]: header x-github-event == "workflow_run"
-//
-// Callers must evaluate this only AFTER the request authenticated —
-// unauthenticated requests must never probe skip conditions — and a match
-// means the run pipeline is bypassed entirely (see runner.Skip).
-//
-// The payload JSON is parsed at most once, and only when some condition
-// actually addresses a payload path — the motivating header-only case never
-// parses the body at all.
+// EvaluateSkip reports whether this delivery matches a skip_if condition.
+// Callers must call this only AFTER the request authenticated; an
+// unauthenticated request must never probe skip conditions.
 func (h *Hook) EvaluateSkip(payload []byte, header http.Header) (reason string, matched bool) {
 	if len(h.SkipIf) == 0 {
 		return "", false
@@ -261,17 +218,14 @@ func (h *Hook) EvaluateSkip(payload []byte, header http.Header) (reason string, 
 func (c SkipCondition) matches(payloadTree func() any, header http.Header) bool {
 	for key, m := range c {
 		if m == nil {
-			// Only reachable on a hook built in code without validation;
-			// fail toward doing the work.
+			// unreachable on a validated hook; fail toward doing the work
 			return false
 		}
 		var leaf string
 		var isLeaf, exists bool
 		if name, ok := strings.CutPrefix(key, HeaderKeyPrefix); ok {
 			name = strings.TrimSpace(name)
-			// http.Header lookups are canonicalized, so the condition's
-			// header name is case-insensitive. Multi-valued headers match
-			// on the first value.
+			// http.Header lookups are canonicalized: case-insensitive name.
 			vals := header.Values(name)
 			if exists = len(vals) > 0; exists {
 				leaf, isLeaf = vals[0], true
@@ -314,9 +268,7 @@ func (m *SkipMatcher) matches(leaf string, isLeaf, exists bool) bool {
 		}
 		re := m.re
 		if re == nil {
-			// Normal loads compile at validation time; this fallback covers
-			// hooks constructed in code. A non-compiling pattern matches
-			// nothing (work happens).
+			// fallback for a hook constructed in code, skipping compile()
 			var err error
 			if re, err = regexp.Compile(*m.Regex); err != nil {
 				return false
@@ -330,10 +282,8 @@ func (m *SkipMatcher) matches(leaf string, isLeaf, exists bool) bool {
 }
 
 // parsePayloadTree decodes the payload for path lookups. UseNumber keeps
-// numeric leaves as their exact JSON literal text (no float mangling), which
-// is what makes number stringification predictable. A payload that isn't
-// JSON yields nil: every payload path is then unresolved, no condition keyed
-// on one matches, and the work happens.
+// numeric leaves as their exact JSON literal text. A non-JSON payload
+// yields nil, so every path is unresolved and the work happens.
 func parsePayloadTree(payload []byte) any {
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.UseNumber()

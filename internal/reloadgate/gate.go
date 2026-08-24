@@ -37,16 +37,12 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/events"
 )
 
-// fetchDepth is how much history every fetch pulls — the ordering window:
-// a green status only switches the tree when its sha is within this many
-// commits of the freshly-fetched tip and not older than what is already
-// serving. Deep enough for any realistic delivery reordering, cheap for a
-// hooks repo.
+// fetchDepth bounds the ordering-rule history window: a green status only
+// switches the tree when its sha is within this many commits of the tip.
 const fetchDepth = 100
 
 // statusBranchesCap is GitHub's hard cap on a status payload's branches
-// array: a list of exactly this length may have had the tracked branch
-// squeezed out by other branches holding the same sha.
+// array; a full list may have the tracked branch squeezed out.
 const statusBranchesCap = 10
 
 // GitRepo is the narrow slice of git the gate needs, implemented by
@@ -54,59 +50,41 @@ const statusBranchesCap = 10
 type GitRepo interface {
 	// Head returns the commit the working tree is checked out at.
 	Head() (string, error)
-	// FetchBranch fetches the tracked branch at the given depth without
-	// touching the working tree, and returns the fetched tip.
+	// FetchBranch fetches the tracked branch without touching the working tree.
 	FetchBranch(depth int) (tip string, err error)
-	// FetchBranchContext is FetchBranch bounded by ctx, which KILLS the git
-	// process when the remote stops answering. EVERY fetch in this package
-	// goes through it: an unbounded one hangs holding the gate mutex, which
-	// freezes the reload panel, both force paths, the status webhook and the
-	// poll at once — the tree then cannot move by any route until the
-	// process restarts.
+	// FetchBranchContext is FetchBranch bounded by ctx: it kills the git
+	// process on a stalled remote, so the gate mutex never wedges forever.
 	FetchBranchContext(ctx context.Context, depth int) (tip string, err error)
-	// RecentCommits lists up to max commits from the last fetch
-	// (FETCH_HEAD), newest first.
+	// RecentCommits lists up to max commits from the last fetch, newest first.
 	RecentCommits(max int) ([]string, error)
 	// ResetTo hard-resets the working tree to an already-fetched sha.
 	ResetTo(sha string) error
-	// FetchSHA fetches one commit by sha (GitHub serves reachable-sha
-	// fetches) — the startup last-good restore path.
+	// FetchSHA fetches one commit by sha — the startup last-good restore path.
 	FetchSHA(sha string, depth int) error
-	// TreeHasDir reports whether the commit's TREE contains the given path
-	// (git plumbing, never a checkout) — the manual switch's src-layout
-	// probe.
+	// TreeHasDir reports whether the commit's tree contains path (git
+	// plumbing, never a checkout).
 	TreeHasDir(sha, path string) bool
-	// ResolveRef resolves a full/abbreviated sha or branch/tag name to a
-	// full commit sha, fetching from origin when needed — the manual
-	// switch's ref input.
+	// ResolveRef resolves a sha or branch/tag name to a full commit sha.
 	ResolveRef(ref string) (string, error)
 }
 
 // Config wires a Gate.
 type Config struct {
 	Repo GitRepo
-	// Branch is the configured tracked branch; empty means the repo's
-	// default branch (resolved per delivery from the payload).
+	// Branch is the tracked branch; empty resolves to the payload's default branch.
 	Branch string
 	// Context is the gating commit-status context (e.g. "all-builds").
 	Context string
-	// StatePath is the persisted gate state file
-	// (<data-dir>/reload-gate.json).
+	// StatePath is the persisted gate state file.
 	StatePath string
-	// Apply reloads hooks from the (already reset) working tree — the
-	// serve loop's loadAndApply closure. An error means the tree was
-	// REFUSED (some entity failed to load, so NOTHING was applied and the
-	// previous fleet is still serving); the gate treats that as a failed
-	// switch and rolls the working tree back — see applyOrRollbackLocked.
+	// Apply reloads hooks from the reset working tree. An error means the
+	// tree was refused, so the gate rolls the working tree back.
 	Apply func() error
-	// Status reads the gating context's current commit-status state for a
-	// sha (the reconciliation poll's authority — see StatusFunc). Nil
-	// means the poll cannot determine status and fails closed, loudly.
+	// Status reads the gating context's status for a sha (the poll's
+	// authority). Nil fails the poll closed.
 	Status StatusFunc
-	// RepoSlug is the hooks repo as "owner/repo", used only to build the
-	// run-details link on messages that name a held commit. Empty (a local
-	// path, an unparseable remote) simply omits the link — it is never
-	// load-bearing for gating.
+	// RepoSlug is "owner/repo", used only for the checks link on held
+	// messages. Empty just omits the link.
 	RepoSlug  string
 	Events    *events.Recorder
 	Attention *attention.Aggregator
@@ -131,13 +109,9 @@ type Gate struct {
 	verified     bool   // a green gating status (or operator force) vouched for servingSHA
 	pendingSHA   string // a newer commit fetched but not yet green ("" = none)
 	pendingState string // "pending", "failure", or "error"
-	// verdicts records every terminal gating status seen, so the poll can
-	// answer from a delivery it already verified instead of the API. See
-	// verdicts.go.
+	// verdicts records every terminal gating status seen; see verdicts.go.
 	verdicts []verdictRecord
-	// lastPollBlind dedupes the poll's cannot-determine reporting: the
-	// event fires once per distinct problem, not once per hourly tick
-	// (the attention entry is the persistent surface). In-memory only.
+	// lastPollBlind dedupes the poll's cannot-determine event, in-memory only.
 	lastPollBlind string
 }
 
@@ -148,8 +122,7 @@ type gateState struct {
 	PendingSHA   string    `json:"pending_sha,omitempty"`
 	PendingState string    `json:"pending_state,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
-	// Verdicts is additive: an older binary ignores the field, and a file
-	// written without it loads as an empty store.
+	// Verdicts is additive; a file written without it loads as an empty store.
 	Verdicts []verdictRecord `json:"verdicts,omitempty"`
 }
 
@@ -215,8 +188,7 @@ func (g *Gate) HandleEvent(event string, body []byte) (string, error) {
 	case "ping":
 		return "ignored", nil
 	default:
-		// Never reload on an unrecognized event; admin POST /reload is
-		// the manual path.
+		// Never reload on an unrecognized event.
 		return fmt.Sprintf("ignored: unhandled event %q (push records, status switches; admin POST /reload forces)", event), nil
 	}
 }

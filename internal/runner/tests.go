@@ -12,9 +12,8 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// DefaultTestTimeout caps a single test command when the caller doesn't
-// specify one. Deliberately independent of the hook's run timeout: that
-// one is sized for production work (e.g. long LLM calls), not unit tests.
+// DefaultTestTimeout caps a single test command, independent of the hook's
+// (production-sized) run timeout.
 const DefaultTestTimeout = 10 * time.Minute
 
 // TestOptions configure RunHookTests.
@@ -85,14 +84,8 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	}
 	name := "webhook-runner-test-" + hex.EncodeToString(suffix)
 
-	// The same builder the live-run and manager paths use, which is what makes
-	// run/test parity a property rather than a habit: a test container gets the
-	// mirror routing and the dind privilege from the same code, and cannot
-	// quietly diverge on the isolation a hook's tests are supposed to cover.
-	//
-	// What a test deliberately does NOT get is stated by omission: no secrets,
-	// no payload/headers, no declared volumes or networks. Tests must be
-	// self-contained, so there is nothing to suppress -- the fields stay unset.
+	// The same builder live runs and managers use, so tests get the same
+	// isolation. No secrets, payload, volumes, or networks: those fields stay unset.
 	spec := containerSpec{
 		name:    name,
 		image:   image,
@@ -101,11 +94,8 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 		devices: hook.Devices,
 		argv:    argv,
 	}
-	// Same run/test parity for seccomp.userns: a hook whose tests exercise a
-	// sandbox (bwrap, dats' default backend) needs the relaxed profile here
-	// too, or its declared tests could never cover what its live runs do.
-	// No Runner here, so no configured tmpDir: "" means the OS default,
-	// which is right for a one-shot test container.
+	// Same seccomp.userns relaxation as a live run, so a hook whose tests
+	// sandbox (bwrap) get the same profile. "" tmpDir means the OS default.
 	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
 	if err != nil {
 		return err
@@ -128,9 +118,8 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	case err := <-done:
 		return err
 	case <-timer.C:
-		// Same rationale as execute(): kill the container by name, not the
-		// docker CLI — a SIGKILLed CLI can leave the container running. The
-		// fallback Process.Kill only fires if the CLI itself wedges.
+		// Kill by container name, not the docker CLI: a SIGKILLed CLI can
+		// leave the container running.
 		_ = exec.Command(docker, "kill", name).Run()
 		killTimer := time.AfterFunc(2*time.Second, func() {
 			if cmd.Process != nil {

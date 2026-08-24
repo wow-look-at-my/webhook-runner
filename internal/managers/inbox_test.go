@@ -142,9 +142,7 @@ func TestInboxWatchdogArming(t *testing.T) {
 	// Coming back disarms before parking.
 	done := make(chan struct{})
 	go func() {
-		// A generous ceiling, not a race window: the push below lands the
-		// instant we observe the park, so this wait never actually elapses --
-		// it only has to outlast the hand-off.
+		// The wait only needs to outlast the park hand-off, not race it.
 		_, _, _ = ib.Next(context.Background(), "i", 2*time.Second)
 		close(done)
 	}()
@@ -166,8 +164,7 @@ func TestInboxWatchdogArming(t *testing.T) {
 	}, time.Second, time.Millisecond)
 	assert.Equal(t, int32(1), disarmed.Load(), "coming back disarms before parking")
 
-	// A push while PARKED delivers immediately: no wedge-guard arm, one
-	// checkout arm.
+	// A push while PARKED delivers immediately; no wedge-guard arm fires.
 	ib.PushDelivery(nil, []byte(`{}`))
 	<-done
 	assert.Equal(t, int32(3), armed.Load())
