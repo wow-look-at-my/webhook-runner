@@ -61,8 +61,8 @@ type Hook struct {
 	// Settings is the hook's OWN configuration: arbitrary JSON this runner
 	// never interprets, validated at load against the settings.schema.json
 	// shipped next to the manifest, and handed to the container as a file
-	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
-	// hook-private config into the runner's own parsed keys. See settings.go.
+	// (HOOK_SETTINGS_FILE). Hook-private config lives HERE, never mixed into
+	// the runner's own parsed keys. See settings.go.
 	Settings json.RawMessage `json:"settings,omitempty"`
 	// manifestSettings preserves the document as hook.json declared it,
 	// before any operator override was merged into Settings. The editor
@@ -250,8 +250,8 @@ type Hook struct {
 
 	// RunTitle, when set, is a template for the friendly display title of
 	// this hook's runs — "{{repository.full_name}}#{{pull_request.number}}"
-	// renders "wow-look-at-my/go-toolchain#47" on the dashboard where the
-	// opaque run id used to be. {{...}} placeholders name a dotted payload
+	// renders "wow-look-at-my/go-toolchain#47" on the dashboard in place of
+	// the opaque run id. {{...}} placeholders name a dotted payload
 	// path or a request header via the "header:" prefix — skip_if's exact
 	// key syntax and bounded traversal (see title.go for the resolution
 	// semantics: graceful, never blocking, all-placeholders-empty means no

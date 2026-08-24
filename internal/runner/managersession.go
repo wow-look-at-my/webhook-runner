@@ -436,25 +436,15 @@ func (r *Runner) stopContainer(name string, graceSeconds int) {
 	}
 }
 
-// GSMBaseURL is the github-state-mirror every container's GitHub API
-// traffic rides. It is a CONSTANT, not a knob: routing through the mirror
-// is unconditional by operator ruling (2026-07-25) — "*Everything* must go
-// through GSM otherwise we are blowing up our API quota and github servers
-// for ZERO benefit". The former WEBHOOK_RUNNER_GSM_URL /
-// WEBHOOK_RUNNER_GITHUB_DIRECT / WEBHOOK_RUNNER_GITHUB_API_URL env knobs
-// are DELETED: the instruction was always to route through the mirror, and
-// wiring it as an opt-in service-env flip (webhook-runner#98) was never
-// requested. Do not reintroduce an off switch or a per-id carve-out.
+// GSMBaseURL is the github-state-mirror every container's GitHub API traffic
+// rides. It is a CONSTANT, not a knob: an off switch or a per-id carve-out
+// un-caches the fleet and blows the org's API quota.
 //
-// GSM IS A PROXY, NOT A FIREWALL (operator correction, 2026-07-25 —
-// "GSM is not a blackhole"). #98 also injected
-// `--add-host api.github.com:0.0.0.0` to make direct calls fail closed;
-// that was never asked for and is DELETED. The mirror passes through
-// whatever it does not model, so pointing GITHUB_API_URL at it is the
-// whole mechanism — severing api.github.com DNS would only break the
-// callers that cannot honor GITHUB_API_URL (tenant CI job steps: gh CLI,
-// octokit, actions/github-script), which is breakage, not routing. Never
-// reintroduce a blackhole here.
+// THE MIRROR IS A PROXY, NOT A FIREWALL. It passes through whatever it does
+// not model, so pointing GITHUB_API_URL at it is the whole mechanism. Never
+// blackhole api.github.com: that breaks only the callers which cannot honor
+// GITHUB_API_URL (gh CLI, octokit, actions/github-script in tenant CI steps).
+// see docs/internals/managers-and-gateway.md
 const GSMBaseURL = "https://github-state-mirror.pazer.io"
 
 // gsmArgs points a container's GitHub API traffic at the mirror. Applied to

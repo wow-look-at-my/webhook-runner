@@ -19,9 +19,9 @@ import (
 // immediately, recorded as a first-class run with status "skipped", and never
 // given a container — no image build, no concurrency slot, no docker run. The
 // motivating case is a webhook source that can't be narrowed at the sender
-// (GitHub's event checkboxes bundle events you want with events you don't):
-// the unwanted events used to boot a container just to exit, and "nothing
-// happened" was invisible.
+// (GitHub's event checkboxes bundle events you want with events you don't).
+// Without this, each unwanted event boots a container just to exit, and
+// "nothing happened" leaves no trace.
 //
 // The matcher is deliberately NOT a language. It is a total, bounded,
 // declarative structure evaluated by this process outside any container, so

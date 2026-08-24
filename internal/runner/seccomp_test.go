@@ -89,21 +89,21 @@ func TestTheOldNamespaceOnlyListWouldNotBuildASandbox(t *testing.T) {
 	saved := usernsSyscalls
 	t.Cleanup(func() { usernsSyscalls = saved })
 
-	// The list exactly as it shipped, and exactly as it failed on a real
-	// gha-runner container.
+	// The namespace-only list: enough to CREATE a user namespace, and not
+	// enough to furnish one, which is how a gha-runner container fails.
 	usernsSyscalls = []string{"unshare", "clone", "clone3", "setns"}
 	profile, err := usernsProfile()
 	require.Nil(t, err)
 
 	for _, call := range namespaceCalls {
 		assert.True(t, profileAllowsUngated(t, profile, call),
-			"%s: the old list did allow the namespace calls -- that half worked, "+
-				"which is what made the bug so hard to read", call)
+			"%s: the namespace-only list does allow the namespace calls -- that "+
+				"half works, which is what makes the failure hard to read", call)
 	}
 	for _, call := range sandboxCalls {
 		assert.False(t, profileAllowsUngated(t, profile, call),
-			"%s: the old list must NOT allow this, or this file is not testing "+
-				"the bug it claims to test", call)
+			"%s: the namespace-only list must NOT allow this, or this file is "+
+				"not testing the gap it claims to test", call)
 	}
 }
 

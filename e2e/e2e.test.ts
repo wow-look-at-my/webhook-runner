@@ -213,8 +213,8 @@ try {
     const output = run.output.join("\n");
     assert.ok(output.includes("id=env-hook"), "missing HOOK_ID");
     // The whole settings document, verbatim -- including the integer, which
-    // the retired string-only env block could not carry. Compared without
-    // whitespace: the runner hands over the manifest's bytes as written, so
+    // proves JSON types survive rather than collapsing to strings. Compared
+    // without whitespace: the runner hands over the manifest's bytes as written, so
     // the document's formatting is hook.json's, not a normalized re-encoding.
     const dense = output.replace(/\s+/g, "");
     assert.ok(dense.includes('"my_var":"e2e-value"'), `missing settings value: ${output}`);

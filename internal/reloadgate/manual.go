@@ -36,12 +36,12 @@ const ciStateNotProbed = "not-probed (override)"
 
 // gateFetchTimeout bounds EVERY fetch this package runs. A `git fetch` onto
 // a half-open socket does not fail, it hangs — indefinitely, since git sets
-// no timeout of its own — and most of these calls hold the gate mutex. One
-// such hang froze a production runner: /version and /reload/status stopped
-// answering, both force buttons hung, and the status webhook and hourly poll
-// could no longer switch the tree, so the fleet could not be deployed by ANY
-// route. The only symptom was requests that never returned, and the only
-// cure was restarting the process.
+// no timeout of its own — and most of these calls hold the gate mutex. An
+// unbounded hang therefore freezes the whole gate: /version and /reload/status
+// stop answering, both force buttons hang, and neither the status webhook nor
+// the hourly poll can switch the tree, so the fleet is undeployable by ANY
+// route. The only symptom is requests that never return, and the only cure is
+// restarting the process.
 //
 // Bounded, a degraded origin fails closed in 20s and the next event or tick
 // retries — which is what every caller here already handles.
@@ -175,19 +175,18 @@ func (g *Gate) ManualSwitch(ctx context.Context, ref string, override bool) (Swi
 
 	// LOCAL FIRST. This endpoint is the escape hatch for a wedged gate, and a
 	// wedged gate is usually GitHub being down — so it must not begin with a
-	// network round trip. It used to fetch unconditionally, holding g.mu
-	// across a `git fetch` that HANGS (not fails) when GitHub is degraded:
-	// the request never answered, Cloudflare 524'd at 100s, /reload/status
-	// timed out behind the same mutex, and the operator was left with a
-	// dashboard that could not show the problem or fix it. The commit an
-	// operator forces is nearly always already local — the push webhook
-	// fetched it when it recorded the hold — so resolve first and reach for
-	// the network only when that fails.
+	// network round trip. An unconditional fetch holds g.mu across a `git
+	// fetch` that HANGS (not fails) on a degraded GitHub: the request never
+	// answers, Cloudflare 524s at 100s, /reload/status times out behind the
+	// same mutex, and the operator has a dashboard that can neither show the
+	// problem nor fix it. The commit an operator forces is nearly always
+	// already local — the push webhook fetched it when it recorded the hold —
+	// so resolve first and reach for the network only when that fails.
 	sha, resolveErr := g.repo.ResolveRef(ref)
 
 	// THEN freshen, on a leash. The fetch still runs — the tip is what tells
-	// us whether this switch settles the pending hold — but it can no longer
-	// decide whether the switch happens at all, and it cannot run forever.
+	// us whether this switch settles the pending hold — but it never decides
+	// whether the switch happens at all, and it cannot run forever.
 	tip, tipErr := g.fetchBranchBounded()
 	if tipErr != nil {
 		g.log.Warn("manual switch: hooks repo fetch failed; continuing with local objects", "err", tipErr)
