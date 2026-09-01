@@ -45,8 +45,8 @@ func TestGeneratedSchemasMatchSources(t *testing.T) {
 	}
 }
 
-// The whole point of the base: ONE shared block, byte-identical in both
-// published documents, so a constraint cannot reach one and miss the other.
+// The whole point of the base: shared block, byte-identical in both
+// published documents, so a constraint cannot reach and miss the other.
 func TestSharedBlockIsIdenticalInBothSchemas(t *testing.T) {
 	hook, manager := sharedBlock(t, Hook), sharedBlock(t, Manager)
 	assert.Equal(t, string(hook), string(manager),
@@ -54,7 +54,7 @@ func TestSharedBlockIsIdenticalInBothSchemas(t *testing.T) {
 	assert.NotEmpty(t, hook, "$defs.common is missing -- the base is not wired up")
 }
 
-// The five that had drifted, pinned so they cannot drift back.
+// The that had drifted, pinned so they cannot drift back.
 func TestPreviouslyDriftedConstraintsSurvive(t *testing.T) {
 	for _, doc := range [][]byte{Hook, Manager} {
 		props := sharedProperties(t, doc)

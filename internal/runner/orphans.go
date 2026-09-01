@@ -1,10 +1,6 @@
 package runner
 
 // Reaps hook-run containers orphaned when the server dies with runs in
-// flight: docker's --rm only removes a container on clean exit, and
-// killing the server does not kill the containers its docker CLI children
-// launched.
-// see docs/internals/runs-concurrency-and-overrides.md
 
 import (
 	"fmt"
@@ -14,14 +10,13 @@ import (
 
 const (
 	// RunContainerLabel marks a hook-run container for orphan sweeps.
-	// Changing it strands containers started by older binaries.
 	RunContainerLabel       = "io.webhook-runner.run"
 	runContainerLabelValue  = "1"
 	runContainerLabelFilter = "label=" + RunContainerLabel + "=" + runContainerLabelValue
 )
 
 // SweepOrphanContainers force-removes hook-run containers left behind by a
-// previous server process. Call it ONCE, at serve startup, after the run
+// previous server process. Call it , at serve startup, after the run
 // store is open and before any run starts. Best-effort: a warning on an
 // unreachable daemon, then the server boots anyway.
 func (r *Runner) SweepOrphanContainers() {

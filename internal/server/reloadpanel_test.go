@@ -2,7 +2,7 @@ package server
 
 // Admin reload-panel endpoint tests: the status/commits read views, the
 // on-demand check, and — the load-bearing contract — the manual switch's
-// server-enforced informed override (409 + every reason without the flag;
+// server-enforced informed override ( + every reason without the flag;
 // switch only with override:true).
 
 import (
@@ -86,7 +86,7 @@ func (f *fakeReloadControl) ManualSwitch(ctx context.Context, ref string, overri
 	return f.switchOut, f.switchErr
 }
 
-// CIState is probed from a BACKGROUND goroutine now, so the fake has to be safe against a test mutating f.ci while one is in flight. ciDelay scripts a slow GitHub; ciCalls counts probes, which is how the in-flight dedupe is observed.
+// CIState is probed from a BACKGROUND goroutine now, so the fake has to be safe against a test mutating f.ci while is in flight. ciDelay scripts a slow GitHub; ciCalls counts probes, which is how the in-flight dedupe is observed.
 func (f *fakeReloadControl) CIState(ctx context.Context, sha string) string {
 	f.ciMu.Lock()
 	delay := f.ciDelay
@@ -352,8 +352,8 @@ func TestReloadCIStateCaching(t *testing.T) {
 // The failure this prevents: /reload/status is polled on every dashboard
 // tick, and a probe on the request path made it the slowest endpoint on the
 // admin port whenever GitHub was slow -- measured on the live server at
-// 4242ms, 1170ms and 593ms, and aborting outright, while everything else
-// answered in under 90ms. An EXPIRED entry must serve its stale value
+// ms, ms and ms, and aborting outright, while everything else
+// answered in under ms. An EXPIRED entry must serve its stale value
 // immediately and refresh behind.
 func TestReloadCIStateExpiredEntryServesStaleAndRefreshesBehind(t *testing.T) {
 	control := &fakeReloadControl{ci: map[string]string{"aaaa": "pending"}, ciDelay: 2 * time.Second}

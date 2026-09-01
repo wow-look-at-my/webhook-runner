@@ -175,7 +175,7 @@ func TestSettingOverridesReturnCopies(t *testing.T) {
 	assert.JSONEq(t, `"v"`, string(s.SettingsOverrides("h")["/a"]))
 }
 
-// A nil store is valid for reads (servers built without one), and its
+// A nil store is valid for reads (servers built without ), and its
 // writers return errors rather than pretending to have stored something.
 func TestNilStoreSettingsBehaviour(t *testing.T) {
 	var s *Store
@@ -189,7 +189,7 @@ func TestNilStoreSettingsBehaviour(t *testing.T) {
 	require.Error(t, err)
 }
 
-// Settings overrides share the file with the kill switches, so writing one
+// Settings overrides share the file with the kill switches, so writing
 // must never disturb the other.
 func TestSettingsOverridesCoexistWithTheOtherOverrides(t *testing.T) {
 	s, path := settingsStore(t)

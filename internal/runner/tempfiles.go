@@ -1,6 +1,6 @@
 package runner
 
-// Per-run temp-file plumbing — split from runner.go for the 750-line cap.
+// Per-run temp-file plumbing — split from runner.go for the -line cap.
 
 import (
 	"encoding/json"

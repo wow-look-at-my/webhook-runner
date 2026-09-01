@@ -73,7 +73,7 @@ func TestParseManagerFullFieldSet(t *testing.T) {
 
 // Managers share the hook enable default: absent `enable` means enabled;
 // only an explicit enable:false (or the operator's dashboard switch)
-// disables one.
+// disables .
 func TestManagerDefaultsEnabled(t *testing.T) {
 	root := writeManagerTree(t, "m1", minimalManager)
 	ms, errs := LoadManagers(DetectLayout(root))
@@ -86,7 +86,7 @@ func TestManagerDefaultsEnabled(t *testing.T) {
 	assert.False(t, ms2["m2"].EnabledByDefault(), "explicit enable:false loads disabled")
 }
 
-// The two deliberate non-fields fail loudly: `state` is implied and
+// The deliberate non-fields fail loudly: `state` is implied and
 // `schedule` is superseded by reconcile_interval.
 func TestParseManagerRejectsNonFields(t *testing.T) {
 	for _, bad := range []string{
@@ -127,7 +127,7 @@ func TestParseManagerRequiresDockerfile(t *testing.T) {
 
 // Legacy trees have no managers — LoadManagers never scans them, so a
 // pre-manager tree (or a stray src/managers under a legacy root) can never
-// load one. Zero managers is NOT an error (unlike ZeroHooksError).
+// load . managers is NOT an error (unlike ZeroHooksError).
 func TestLoadManagersLegacyAndAbsent(t *testing.T) {
 	legacy := t.TempDir() // no src/hooks — legacy layout
 	ms, errs := LoadManagers(DetectLayout(legacy))

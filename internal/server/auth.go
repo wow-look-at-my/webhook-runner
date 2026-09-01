@@ -26,7 +26,7 @@ func (s *Server) authenticate(hook *hooks.Hook, r *http.Request, body []byte) er
 }
 
 func (s *Server) checkAPIKey(hook *hooks.Hook, r *http.Request) error {
-	// api_key may reference a secret as ${NAME} — resolved from the hook's sops secrets file first, then the host environment — so the real key.
+	// api_key may reference a secret as ${NAME} — resolved from the hook's sops secrets file , then the host environment — so the real key.
 	var secrets map[string]string
 	if s.secrets != nil {
 		var err error
@@ -38,9 +38,9 @@ func (s *Server) checkAPIKey(hook *hooks.Hook, r *http.Request) error {
 	}
 	want, missing := hooks.ExpandEnvRefs(hook.APIKey, hooks.SecretsFirstLookup(secrets))
 	if want == "" {
-		// Every caller is about to get a 401 because of *server-side* config,
+		// Every caller is about to get a because of *server-side* config,
 		// not bad credentials. Name the broken reference where the operator
-		// looks (log + dashboard event) — but keep the 401 body generic; an
+		// looks (log + dashboard event) — but keep the body generic; an
 		// anonymous caller gets no config detail.
 		if len(missing) > 0 {
 			s.log.Error("hook api_key reference unresolvable; denying all callers",

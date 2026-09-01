@@ -1,8 +1,8 @@
 // Package runner spawns disposable Docker containers for hook executions.
 //
 // Each Run gets:
-//   - a temp file holding the raw request body (HOOK_PAYLOAD_FILE)
-//   - a temp file holding request headers as JSON (HOOK_HEADERS_FILE)
+// - a temp file holding the raw request body (HOOK_PAYLOAD_FILE)
+// - a temp file holding request headers as JSON (HOOK_HEADERS_FILE)
 //
 // Both are bind-mounted into the container read-only and the env
 // variables point at the mount paths — per-run data, never code. A hook's
@@ -45,7 +45,7 @@ const (
 	mountedShim = "/run/webhook-runner/whr-shim"
 )
 
-// HookFinishedFunc is invoked once the container exits (or fails to start). Implementations typically push GitHub commit-status updates.
+// HookFinishedFunc is invoked the container exits (or fails to start). Implementations typically push GitHub commit-status updates.
 type HookFinishedFunc func(hook *hooks.Hook, run *runs.Run, payload []byte)
 
 // HookStartedFunc is invoked just before the container is launched. Implementations typically push the GitHub "pending" commit status.
@@ -67,7 +67,7 @@ type Runner struct {
 	events   *events.Recorder
 	groups   *concurrency.Manager
 
-	// globalCap is the server-wide ceiling on simultaneously RUNNING hook containers (all hooks together) — the Docker-bridge IPv4 guard. nil.
+	// globalCap is the server-wide ceiling on simultaneously RUNNING hook containers (all hooks together) — the Docker-bridge IPv guard. nil.
 	globalCap *concurrency.Global
 
 	// kv, kvSocket, and kvShim inject state-store access into containers whose hook sets state: true. kv == nil (or an empty socket/shim path).
@@ -80,7 +80,7 @@ type Runner struct {
 
 	wg sync.WaitGroup
 
-	// draining is set once shutdown begins: no NEW runs may start (a run launched by a dying process races the state-socket handover and the.
+	// draining is set shutdown begins: no NEW runs may start (a run launched by a dying process races the state-socket handover and the.
 	draining atomic.Bool
 }
 
@@ -96,7 +96,7 @@ type Options struct {
 	Events   *events.Recorder     // activity feed for the dashboard; nil drops events
 	Groups   *concurrency.Manager // named concurrency groups; nil = no group is declared
 
-	// GlobalCap bounds how many hook executions run containers at once, across ALL hooks (excess runs queue as pending). nil = no cap.
+	// GlobalCap bounds how many hook executions run containers at , across ALL hooks (excess runs queue as pending). nil = no cap.
 	GlobalCap *concurrency.Global
 
 	// KV mints per-hook state tokens; KVSocket is the host path of the KV API's Unix socket and KVShim is the host path of webhook-runner's own.
@@ -177,8 +177,8 @@ func (r *Runner) start(parent context.Context, hook *hooks.Hook, payload []byte,
 }
 
 func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run, payload []byte, payloadPath, headersPath, settingsPath string) {
-	timeout := hook.Timeout()         // 0 = no absolute ceiling
-	idleTimeout := hook.IdleTimeout() // 0 = no idle limit
+	timeout := hook.Timeout()         // = no absolute ceiling
+	idleTimeout := hook.IdleTimeout() // = no idle limit
 
 	// A cancel that arrives while the run is still pending skips the
 	// container entirely.
@@ -318,7 +318,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 		devices:  hook.Devices,
 	}
 	spec.mounts = append(spec.mounts, hook.Volumes...)
-	// State store: opted-in hooks reach the KV API at a plain http://localhost:9002 URL.
+	// State store: opted-in hooks reach the KV API at a plain http://localhost: URL.
 	stateForwarding := hook.State && r.kv != nil && r.kvSocket != "" && r.kvShim != ""
 	if stateForwarding {
 		spec.entrypoint = mountedShim
@@ -413,7 +413,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// Close write ends in the parent; only the child holds them now.
 	stdoutW.Close()
 	stderrW.Close()
-	// The handoff instant: everything after this and before the container's own first instruction (PhaseContainerEntry, reported by the.
+	// The handoff instant: everything after this and before the container's own instruction (PhaseContainerEntry, reported by the.
 	run.Mark(runs.PhaseSpawned)
 	run.SetRunning()
 
@@ -438,7 +438,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 
 	// Watch for the no-output idle timeout, the absolute `timeout`
 	// deadline (or the parent context tearing down), and explicit cancel
-	// requests in parallel with cmd.Wait. Any one kills the container by
+	// requests in parallel with cmd.Wait. Any kills the container by
 	// name. A cancel requested before this goroutine started selects
 	// immediately (the channel is already closed), so the pre-start race
 	// is covered.
@@ -543,7 +543,7 @@ func (r *Runner) execute(parent context.Context, hook *hooks.Hook, run *runs.Run
 	// Registered rather than run after Finish returns: Finish invokes this
 	// BEFORE closing the done channel, so the terminal feed line is already
 	// there for anything that observes <-run.Done(). Doing it afterwards is
-	// what forced callers to add a second Runner.Wait() barrier. See
+	// what forced callers to add a Runner.Wait() barrier. See
 	// runs.Run.SetOnTerminal.
 	run.SetOnTerminal(func(runs.RunState) {
 		r.log.Info("hook finished",

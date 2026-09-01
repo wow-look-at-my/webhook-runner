@@ -46,7 +46,7 @@ func TestExecuteRecordsPhaseMarks(t *testing.T) {
 		assert.Contains(t, snap.Phases, p, "missing mark %q", p)
 	}
 
-	// The launch chain runs start-to-finish on one goroutine, so these marks
+	// The launch chain runs start-to-finish on goroutine, so these marks
 	// arrive in a strict sequence.
 	ordered := []runs.Phase{
 		runs.PhaseImageReady, runs.PhaseSlotAcquired, runs.PhaseSpawned,
@@ -73,7 +73,7 @@ func TestExecuteRecordsPhaseMarks(t *testing.T) {
 
 // A run that never launches a container must not carry launch marks — a
 // zeroed boot sample from a run that never booted would silently drag every
-// average toward zero.
+// average toward .
 func TestSkippedRunCarriesNoLaunchMarks(t *testing.T) {
 	tracker := runs.NewTracker()
 	r := New(Options{

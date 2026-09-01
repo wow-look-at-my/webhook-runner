@@ -1,19 +1,19 @@
 // Package spool durably parks webhook deliveries that arrive while the
-// server is draining for shutdown, and replays them once the next process
+// server is draining for shutdown, and replays them the next process
 // has loaded its hooks.
 //
 // WHY: the drain gate refuses new runs for a real reason — a run launched by
-// a dying process races the state-socket handover and dies on its first lock
-// call (see runner/drain.go). But refusing meant answering 503, and the
-// premise written beside that 503 ("the sender redelivers") is false:
+// a dying process races the state-socket handover and dies on its lock
+// call (see runner/drain.go). But refusing meant answering , and the
+// premise written beside that ("the sender redelivers") is false:
 // GitHub does NOT re-send a failed delivery. The hooks repo's own
 // delivery-gap replay SDK exists precisely because deliveries are
 // "consumed-and-lost during webhook-runner downtime", and it applies no
-// status filter because even a 202'd delivery can be lost. So every 503 in a
+// status filter because even a 'd delivery can be lost. So every in a
 // deploy window was an errored response AND a dropped webhook.
 //
 // Spooling keeps the protection and drops the loss: the delivery is written
-// to disk and answered 202, and the next process runs it. Deliveries are
+// to disk and answered , and the next process runs it. Deliveries are
 // spooled ONLY after they have passed authentication and skip_if, so the
 // spool never holds an unauthenticated body.
 package spool
@@ -36,15 +36,15 @@ import (
 // Bounds.
 const (
 	DefaultMaxEntries = 1000
-	DefaultMaxBytes   = 64 << 20 // 64 MiB
+	DefaultMaxBytes   = 64 << 20 // MiB
 )
 
-// ErrFull means the spool is at its bound; the caller should answer 503 (loudly) rather than drop the delivery silently.
+// ErrFull means the spool is at its bound; the caller should answer (loudly) rather than drop the delivery silently.
 var ErrFull = errors.New("spool is full")
 
-// Entry is one parked delivery. Headers carry the original request headers
+// Entry is parked delivery. Headers carry the original request headers
 // (X-GitHub-Event and friends) so the replayed run is indistinguishable from
-// the live one.
+// the live .
 type Entry struct {
 	ID       string              `json:"id"`
 	HookID   string              `json:"hook_id"`
@@ -54,7 +54,7 @@ type Entry struct {
 	Received time.Time           `json:"received"`
 }
 
-// Store is a directory of parked deliveries, oldest-first by filename.
+// Store is a directory of parked deliveries, oldest- by filename.
 type Store struct {
 	dir        string
 	maxEntries int
@@ -74,8 +74,8 @@ func Open(dir string, log *slog.Logger) (*Store, error) {
 	return &Store{dir: dir, maxEntries: DefaultMaxEntries, maxBytes: DefaultMaxBytes, log: log}, nil
 }
 
-// SetBounds overrides the entry/byte caps. Values <= 0 keep the current
-// bound, so a caller can raise one without knowing the other.
+// SetBounds overrides the entry/byte caps. Values <= keep the current
+// bound, so a caller can raise without knowing the other.
 func (s *Store) SetBounds(maxEntries int, maxBytes int64) {
 	if maxEntries > 0 {
 		s.maxEntries = maxEntries
@@ -86,13 +86,13 @@ func (s *Store) SetBounds(maxEntries int, maxBytes int64) {
 }
 
 // entryName sorts lexically by receipt instant, so a directory listing is
-// already oldest-first — replay preserves arrival order per hook.
+// already oldest- — replay preserves arrival order per hook.
 func entryName(received time.Time, id string) string {
 	return fmt.Sprintf("%020d-%s.json", received.UTC().UnixNano(), id)
 }
 
 // newID is the spool's own identifier space (the run-id generator is
-// unexported, and a parked delivery is not a run). Same alphabet so the two
+// unexported, and a parked delivery is not a run). Same alphabet so the
 // read alike in logs.
 func newID() string {
 	var b [10]byte
@@ -184,10 +184,10 @@ func (s *Store) Len() int {
 	return len(names)
 }
 
-// Replay hands every parked delivery to fn, oldest first, deleting each one
+// Replay hands every parked delivery to fn, oldest , deleting each
 // only after fn reports success. A failing entry is LEFT for the next boot
 // rather than dropped — the whole point is that a delivery is never lost —
-// and an unparseable one is quarantined by renaming it aside so a poison
+// and an unparseable is quarantined by renaming it aside so a poison
 // entry can't block the queue forever. Returns how many replayed.
 func (s *Store) Replay(fn func(Entry) error) int {
 	names, err := s.names()

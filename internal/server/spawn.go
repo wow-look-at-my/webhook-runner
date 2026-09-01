@@ -35,7 +35,7 @@ import (
 
 // Spawn request bounds. The payload is webhook-sized (it becomes each
 // spawned run's HOOK_PAYLOAD_FILE), not upload-sized; the count cap keeps a
-// misbehaving parent from fork-bombing the runner in one request.
+// misbehaving parent from fork-bombing the runner in request.
 const (
 	minSpawnCount = 1
 	maxSpawnCount = 100
@@ -62,10 +62,10 @@ type spawnResult struct {
 }
 
 // handleSpawn implements POST /spawn on the state API. Validation is
-// all-or-nothing BEFORE anything starts — bad request (400/413), parent run
-// not active (409, the /wait rule), unknown target (404), caller not
-// allowlisted (403), target effectively disabled by the operator kill
-// switch (409) — and only then does the loop start count runs. Denials are
+// all-or-nothing BEFORE anything starts — bad request (/), parent run
+// not active (, the /wait rule), unknown target (), caller not
+// allowlisted (), target effectively disabled by the operator kill
+// switch () — and only then does the loop start count runs. Denials are
 // loud: each records a spawn.denied activity event naming the parent and
 // target (rejections are events on purpose — the dashboard must answer
 // "did you receive anything?").

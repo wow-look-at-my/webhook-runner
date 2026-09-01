@@ -15,15 +15,15 @@ import (
 )
 
 // ?exclude= filters BEFORE the cap. The bug it fixes: the dashboard fetched
-// the newest 50 runs and hid statuses client-side, so a hook whose recent
+// the newest runs and hid statuses client-side, so a hook whose recent
 // history is nothing but skips (every gha-runner delivery that is not a
-// queued job) rendered an empty table reading "All 50 recent run(s) are
+// queued job) rendered an empty table reading "All recent run(s) are
 // hidden by the status filter above" — while the runs the operator actually
 // wanted sat just past the window, unreachable at any max.
 func TestListRunsExcludeFiltersBeforeTheCap(t *testing.T) {
 	s, _, _, st := newTestServerWithStore(t)
 
-	// The shape that broke: 60 consecutive skips on top of the real runs.
+	// The shape that broke: consecutive skips on top of the real runs.
 	// Anything that filters after limiting can only ever answer "nothing".
 	want := []string{
 		"successsuccesssuccesssucce",
@@ -46,7 +46,7 @@ func TestListRunsExcludeFiltersBeforeTheCap(t *testing.T) {
 		return got
 	}
 
-	// The pre-fix behavior, still the default: the newest 50 are all skips.
+	// The pre-fix behavior, still the default: the newest are all skips.
 	plain := get("/runs?hook=h&max=50")
 	require.Len(t, plain, 50)
 	for _, r := range plain {
@@ -76,7 +76,7 @@ func TestListRunsExcludeFiltersBeforeTheCap(t *testing.T) {
 func TestListRunsExcludeCoversLiveRuns(t *testing.T) {
 	s, _, tr, _ := newTestServerWithStore(t)
 
-	// Ordering is by Started, so the finished run is created FIRST to make the active one unambiguously newest.
+	// Ordering is by Started, so the finished run is created to make the active unambiguously newest.
 	fin := tr.New("h")
 	fin.Finish(runs.StatusSuccess, 0, "")
 	act := tr.New("h")
@@ -101,12 +101,12 @@ func TestListRunsExcludeCoversLiveRuns(t *testing.T) {
 		"hiding running hides the active run: the always-include-active rule guards the CAP, not an explicit filter")
 	assert.Equal(t, []string{act.ID()}, get("/runs?hook=h&exclude=success"))
 
-	// ?live=1 honors it as well, so a client cannot get an unfiltered answer by asking for the active set.
+	// ?live= honors it as well, so a client cannot get an unfiltered answer by asking for the active set.
 	assert.Equal(t, []string{act.ID()}, get("/runs?hook=h&live=1"))
 	assert.Empty(t, get("/runs?hook=h&live=1&exclude=running"))
 }
 
-// An unrecognized status is a 400. Silently matching nothing would look
+// An unrecognized status is a . Silently matching nothing would look
 // exactly like "this hook has no runs" — the failure mode the parameter
 // exists to remove.
 func TestListRunsExcludeRejectsUnknownStatus(t *testing.T) {

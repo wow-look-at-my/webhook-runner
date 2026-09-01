@@ -73,7 +73,7 @@ func TestHookDetail(t *testing.T) {
 	assert.NotContains(t, body, "hunter2")
 	assert.NotContains(t, body, "model.internal")
 
-	// Image state (the exit-0 mock docker reports the tag as built).
+	// Image state (the exit- mock docker reports the tag as built).
 	assert.Equal(t, "d", got.Image.HookID)
 	assert.True(t, got.Image.Built)
 	assert.Contains(t, got.Image.Tag, "whr-hook/d:")

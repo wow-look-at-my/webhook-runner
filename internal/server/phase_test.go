@@ -40,7 +40,7 @@ func TestContainerEntryRequiresAuthButNeverFailsARun(t *testing.T) {
 	require.Equal(t, 401, stateReq(t, s, "POST", "/phase/container-entry", "", nil).Code)
 	require.Equal(t, 401, stateReq(t, s, "POST", "/phase/container-entry", "h.bogus", nil).Code)
 
-	// Past the gate, everything the shim cannot control answers 204 rather than an error: instrumentation must never be able to fail a run. An unknown run, a cross-hook token, and a finished run all no-op.
+	// Past the gate, everything the shim cannot control answers rather than an error: instrumentation must never be able to fail a run. An unknown run, a cross-hook token, and a finished run all no-op.
 	for _, tok := range []string{
 		store.Token("h", "nosuchrun"),
 		store.Token("other", run.ID()),

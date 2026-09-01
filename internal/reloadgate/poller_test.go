@@ -59,12 +59,12 @@ func TestPollerFiresImmediatelyOnStart(t *testing.T) {
 
 func TestPollerFiresOnInterval(t *testing.T) {
 	p, clk, fc := newTestPoller(time.Hour)
-	p.fireDue() // immediate (1)
+	p.fireDue() // immediate ()
 	clk.advance(59 * time.Minute)
 	p.fireDue()
 	require.Equal(t, 1, fc.count(), "before the interval elapses nothing fires")
 
-	clk.advance(time.Minute) // 1h since the first fire
+	clk.advance(time.Minute) // h since the fire
 	p.fireDue()
 	require.Equal(t, 2, fc.count())
 
@@ -75,8 +75,8 @@ func TestPollerFiresOnInterval(t *testing.T) {
 
 func TestPollerNoBacklogBurstAfterPause(t *testing.T) {
 	p, clk, fc := newTestPoller(time.Hour)
-	p.fireDue() // 1
-	// A slept/restarted process misses many intervals: fire ONCE, not once per missed hour.
+	p.fireDue() //
+	// A slept/restarted process misses many intervals: fire , not per missed hour.
 	clk.advance(7 * time.Hour)
 	p.fireDue()
 	require.Equal(t, 2, fc.count())
@@ -97,7 +97,7 @@ func TestPollerDisabledAtZero(t *testing.T) {
 }
 
 func TestPollerRunStopsOnCancel(t *testing.T) {
-	// With a cancelled context Run performs the one immediate pass and returns on the first select — deterministic, no sleeps (the ticker, at the.
+	// With a cancelled context Run performs the immediate pass and returns on the select — deterministic, no sleeps (the ticker, at the.
 	p, _, fc := newTestPoller(time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

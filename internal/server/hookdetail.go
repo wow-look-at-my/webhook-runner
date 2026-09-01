@@ -14,8 +14,8 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// HookDetail is the admin drill-down view of one hook — the data source for
-// the dashboard's per-app page. An "app" is exactly one hook for now; the
+// HookDetail is the admin drill-down view of hook — the data source for
+// the dashboard's per-app page. An "app" is exactly hook for now; the
 // shape stays hook-scoped so a later grouping concept can aggregate several
 // of these without reshaping the fields.
 type HookDetail struct {
@@ -44,14 +44,14 @@ type HookInfo struct {
 	State            bool   `json:"state,omitempty"`
 	// Dind reports whether the hook opted into Docker-in-Docker (an anonymous /var/lib/docker volume for a nested daemon's storage; no.
 	Dind bool `json:"dind,omitempty"`
-	// Timeout is the absolute run ceiling, when the hook sets one (empty = no absolute ceiling; the run is bounded by idle_timeout, if set, or runs.
+	// Timeout is the absolute run ceiling, when the hook sets (empty = no absolute ceiling; the run is bounded by idle_timeout, if set, or runs.
 	Timeout string `json:"timeout,omitempty"`
-	// IdleTimeout is the no-output kill limit, when the hook sets one (empty = no idle limit; only the total timeout applies, if any).
+	// IdleTimeout is the no-output kill limit, when the hook sets (empty = no idle limit; only the total timeout applies, if any).
 	IdleTimeout string `json:"idle_timeout,omitempty"`
 	APIKey      bool   `json:"api_key"`
 	// SettingsKeys are the TOP-LEVEL keys of the hook's own settings object (hook.json `settings`, validated at load against the hook's.
 	SettingsKeys []string `json:"settings_keys,omitempty"`
-	// SkipConditions is how many skip_if conditions the hook declares (0 = every authenticated delivery runs).
+	// SkipConditions is how many skip_if conditions the hook declares ( = every authenticated delivery runs).
 	SkipConditions int `json:"skip_conditions,omitempty"`
 }
 
@@ -83,9 +83,9 @@ func hookInfo(h *hooks.Hook) HookInfo {
 	return info
 }
 
-// handleHookDetail returns one hook's drill-down JSON (admin port): the
+// handleHookDetail returns hook's drill-down JSON (admin port): the
 // value-free config summary, image state, its KV namespace stats, and run
-// stats over the merged window. A pure read — an unknown ID is a plain 404,
+// stats over the merged window. A pure read — an unknown ID is a plain ,
 // same semantics as /runs/{id}.
 func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -113,11 +113,11 @@ func (s *Server) handleHookDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// mergedStats aggregates one hook's runs over the live tracker window merged
+// mergedStats aggregates hook's runs over the live tracker window merged
 // with the persisted history, deduped by run ID like mergedRuns. Persisted
 // entries come from the store's summary index (status + start/finish only) —
 // exactly the fields the aggregation reads — so a full retention window is
-// one cursor walk, never a metadata scan.
+// cursor walk, never a metadata scan.
 func (s *Server) mergedStats(hookID string) runs.HookRunStats {
 	if s.runstore == nil {
 		return s.tracker.StatsByHook(hookID)
@@ -144,7 +144,7 @@ func (s *Server) mergedStats(hookID string) runs.HookRunStats {
 	return stats
 }
 
-// compactDuration renders a duration the way an operator would write it: time.Duration.String()'s trailing zero units dropped ("48h0m0s" → "48h"), but only when the remainder is still a valid duration tail — "30s" must not collapse.
+// compactDuration renders a duration the way an operator would write it: time.Duration.String()'s trailing units dropped ("hms" → "h"), but only when the remainder is still a valid duration tail — "s" must not collapse.
 func compactDuration(d time.Duration) string {
 	s := d.String()
 	for _, suf := range []string{"0s", "0m"} {

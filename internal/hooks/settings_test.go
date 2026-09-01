@@ -133,7 +133,7 @@ func TestParseAcceptsValidSettings(t *testing.T) {
 }
 
 // `env` is GONE. The fleet migrated to settings (its last entity on
-// 2026-08-01), so the field that could not be dropped in one step -- a runner
+// --), so the field that could not be dropped in step -- a runner
 // rejecting it could not have loaded the fleet still declaring it -- now
 // REJECTS: DisallowUnknownFields makes an unmigrated manifest a load error
 // naming the field, rather than a hook that comes up with no configuration.

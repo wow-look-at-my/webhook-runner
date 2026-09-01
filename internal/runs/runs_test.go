@@ -68,7 +68,7 @@ func TestPerHookEviction(t *testing.T) {
 
 // The per-hook trim evicts oldest TERMINAL runs only: an active
 // (non-terminal) run is the server's current truth and must survive any
-// flood of newer runs — evicting one made GET /runs/{id} 404 while the
+// flood of newer runs — evicting made GET /runs/{id} while the
 // container still ran (the runstore fallback holds terminal snapshots
 // only) and cut live runs out of /runs windows.
 func TestTrackerNeverEvictsActiveRuns(t *testing.T) {
@@ -184,9 +184,9 @@ func TestSetRunningOnlyFromPending(t *testing.T) {
 	assert.Equal(t, StatusSuccess, r.Status())
 }
 
-// SetRunning stamps StartedAt exactly once, at the pending→running
+// SetRunning stamps StartedAt exactly , at the pending→running
 // transition — the queue-wait/processing split point. A run that never
-// starts keeps a zero StartedAt.
+// starts keeps a StartedAt.
 func TestSetRunningStampsStartedAt(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
@@ -198,13 +198,13 @@ func TestSetRunningStampsStartedAt(t *testing.T) {
 	require.False(t, startedAt.IsZero(), "SetRunning must stamp StartedAt")
 	assert.False(t, startedAt.Before(r.Started()), "processing cannot begin before the run was queued")
 
-	r.SetRunning() // ineffective second call must not restamp
+	r.SetRunning() // ineffective call must not restamp
 	assert.True(t, r.StartedAt().Equal(startedAt))
 
 	r.Finish(StatusSuccess, 0, "")
 	assert.True(t, r.Snapshot(0).StartedAt.Equal(startedAt))
 
-	// Cancelled while pending: never started, StartedAt stays zero through the terminal snapshot (the dashboard shows no duration for it).
+	// Cancelled while pending: never started, StartedAt stays through the terminal snapshot (the dashboard shows no duration for it).
 	never := tr.New("h")
 	never.Finish(StatusCancelled, -1, "cancelled before start")
 	assert.True(t, never.Snapshot(0).StartedAt.IsZero())
@@ -246,8 +246,8 @@ func TestAppendOutputTrimsNewline(t *testing.T) {
 	assert.Equal(t, []string{"hello", "world"}, r.Snapshot(-1).Output)
 }
 
-// OutputTimes must stay 1:1 with Output through append, ring eviction, and
-// tail slicing — the dashboard zips the two by index, so a length mismatch
+// OutputTimes must stay : with Output through append, ring eviction, and
+// tail slicing — the dashboard zips the by index, so a length mismatch
 // would misalign every timestamp.
 func TestOutputTimesTrackOutput(t *testing.T) {
 	tr := NewTracker()
@@ -293,7 +293,7 @@ func TestRequestCancel(t *testing.T) {
 	}
 
 	r.RequestCancel()
-	r.RequestCancel() // idempotent — a second request must not re-close the channel
+	r.RequestCancel() // idempotent — a request must not re-close the channel
 
 	select {
 	case <-r.Cancelled():
@@ -308,8 +308,8 @@ func TestRequestCancel(t *testing.T) {
 	assert.Equal(t, StatusCancelled, r.Status())
 }
 
-// The OnFinish observer is the run store's write-once seam: it must fire
-// exactly once per run (Finish's once-guard), with the full terminal
+// The OnFinish observer is the run store's write- seam: it must fire
+// exactly per run (Finish's -guard), with the full terminal
 // snapshot including output.
 func TestOnFinishFiresOnceWithTerminalSnapshot(t *testing.T) {
 	tr := NewTracker()
@@ -321,7 +321,7 @@ func TestOnFinishFiresOnceWithTerminalSnapshot(t *testing.T) {
 	assert.Empty(t, got, "observer fired before the run finished")
 
 	r.Finish(StatusFailure, 2, "boom")
-	r.Finish(StatusSuccess, 0, "") // second Finish is a no-op — no second callback
+	r.Finish(StatusSuccess, 0, "") // Finish is a no-op — no callback
 	require.Len(t, got, 1)
 	assert.Equal(t, r.ID(), got[0].ID)
 	assert.Equal(t, "h", got[0].HookID)
@@ -365,7 +365,7 @@ func TestSetClearWaitingOn(t *testing.T) {
 }
 
 // waiting_on rides the documented JSON names while a pause is active and
-// vanishes entirely (omitempty) once it ends — the list and detail endpoints
+// vanishes entirely (omitempty) it ends — the list and detail endpoints
 // ship RunState verbatim, so this IS the dashboard contract. Both kinds are
 // exercised: a declared sleep and a blocked lock acquire naming its holder.
 func TestWaitingOnJSON(t *testing.T) {
@@ -400,7 +400,7 @@ func TestWaitingOnJSON(t *testing.T) {
 	assert.Contains(t, string(b), `"waiters":[{"run_id":"w1","hook_id":"h","key":"pr-7"}]`)
 }
 
-// A stale ClearWaitingOn — from a pause that a newer one overlapped — must
+// A stale ClearWaitingOn — from a pause that a newer overlapped — must
 // not clear the newer pause's state; only the current sequence token does.
 func TestClearWaitingOnIgnoresStaleSequence(t *testing.T) {
 	tr := NewTracker()
@@ -409,7 +409,7 @@ func TestClearWaitingOnIgnoresStaleSequence(t *testing.T) {
 	seq2 := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "second", Until: time.Now().Add(2 * time.Minute)})
 	require.NotEqual(t, seq1, seq2)
 
-	r.ClearWaitingOn(seq1) // stale: the second pause's state stays
+	r.ClearWaitingOn(seq1) // stale: the pause's state stays
 	snap := r.Snapshot(-1)
 	require.NotNil(t, snap.WaitingOn)
 	assert.Equal(t, "second", snap.WaitingOn.Reason)
@@ -437,8 +437,8 @@ func TestFinishClearsWaitingOn(t *testing.T) {
 	assert.Nil(t, r.Snapshot(-1).WaitingOn)
 }
 
-// A cancel can carry a reason (e.g. "lock stolen by run X"); only the first
-// one sticks, and a plain RequestCancel carries none.
+// A cancel can carry a reason (e.g. "lock stolen by run X"); only the
+// sticks, and a plain RequestCancel carries none.
 func TestRequestCancelWithReason(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
@@ -494,26 +494,26 @@ func TestWaitingOnGroupFieldsJSONAndCopy(t *testing.T) {
 	assert.NotContains(t, string(b2), "position")
 }
 
-// The OnChange seam: one notification per observable mutation, in order,
+// The OnChange seam: notification per observable mutation, in order,
 // with output stripped; no-op mutations stay silent; nil-safe.
 func TestTrackerOnChangeNotifications(t *testing.T) {
 	tr := NewTracker()
 	var got []RunState
 	tr.SetOnChange(func(st RunState) { got = append(got, st) })
 
-	r := tr.New("h") // 1: created (pending)
+	r := tr.New("h") // : created (pending)
 	r.AppendOutput("line 1")
-	r.SetRunning()                                                       // 2: running
+	r.SetRunning()                                                       // : running
 	r.SetRunning()                                                       // no-op: already running
-	seq := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "zzz"}) // 3
-	r.ClearWaitingOn(0)                                                  // no-op: zero token
-	r.ClearWaitingOn(seq)                                                // 4: cleared
+	seq := r.SetWaitingOn(WaitingOn{Kind: WaitingOnWait, Reason: "zzz"}) //
+	r.ClearWaitingOn(0)                                                  // no-op: token
+	r.ClearWaitingOn(seq)                                                // : cleared
 	r.ClearWaitingOn(seq)                                                // no-op: already cleared
 	r.SetTitle("")                                                       // no-op: empty
-	r.SetTitle("owner/repo#1")                                           // 5: titled
-	r.RequestCancel()                                                    // 6: cancel requested
-	r.RequestCancel()                                                    // no-op: second request
-	r.Finish(StatusCancelled, -1, "cancelled")                           // 7: terminal
+	r.SetTitle("owner/repo#1")                                           // : titled
+	r.RequestCancel()                                                    // : cancel requested
+	r.RequestCancel()                                                    // no-op: request
+	r.Finish(StatusCancelled, -1, "cancelled")                           // : terminal
 	r.Finish(StatusSuccess, 0, "")                                       // no-op: already finished
 	r.SetTitle("late")                                                   // no-op: finished
 

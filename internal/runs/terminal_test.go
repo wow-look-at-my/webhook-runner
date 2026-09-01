@@ -10,7 +10,7 @@ import (
 
 // Finish settles every terminal side effect BEFORE closing done, so
 // <-run.Done() is a sufficient barrier on its own. This is the invariant
-// three runner tests had to work around with a second Runner.Wait()
+// runner tests had to work around with a Runner.Wait()
 // barrier before the close moved to the end of Finish — if the close is
 // ever hoisted back above the seams, this test fails.
 func TestFinishClosesDoneLast(t *testing.T) {
@@ -53,8 +53,8 @@ func TestOnTerminalSeesTerminalState(t *testing.T) {
 	assert.False(t, got.Finished.IsZero(), "the snapshot must already be terminal")
 }
 
-// Exactly-once, inherited from Finish's own guard: a second Finish is a
-// no-op, so a run can never emit two terminal activity lines.
+// Exactly-, inherited from Finish's own guard: a Finish is a
+// no-op, so a run can never emit terminal activity lines.
 func TestOnTerminalFiresOnce(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")

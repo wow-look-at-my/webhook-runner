@@ -31,7 +31,7 @@ func eventKinds(evs []events.Event) []string {
 	return out
 }
 
-// A contended acquire is never anonymous: the 409 names exactly who holds
+// A contended acquire is never anonymous: the names exactly who holds
 // the lock — run, hook, and since when.
 func TestStateLockContendedNamesHolder(t *testing.T) {
 	s, store, tr, _ := newWaitServer(t)
@@ -99,7 +99,7 @@ func TestStateLockBlockingAcquireWaitsForRelease(t *testing.T) {
 }
 
 // A blocking acquire that never gets the lock gives up at its block timeout
-// with the same holder-identified 409 as an immediate contended acquire.
+// with the same holder-identified as an immediate contended acquire.
 func TestStateLockBlockingTimeoutReportsHolder(t *testing.T) {
 	s, store, tr, _ := newWaitServer(t)
 	holder := tr.New("h")
@@ -151,7 +151,7 @@ func TestStateLockBlockingValidation(t *testing.T) {
 	require.Equal(t, 400, rr.Code)
 }
 
-// THE second load-bearing watchdog test: a blocked acquire counts as
+// THE load-bearing watchdog test: a blocked acquire counts as
 // activity exactly like a declared wait — a silent container blocked on a
 // contended lock past its idle timeout is NOT reaped.
 func TestStateLockBlockingFeedsWatchdog(t *testing.T) {
@@ -173,7 +173,7 @@ func TestStateLockBlockingFeedsWatchdog(t *testing.T) {
 		SourcePath:     filepath.Join(hookDir, "hook.json"),
 		Command:        []string{"x"},
 		State:          true,
-		IdleTimeoutRaw: "500ms", // idle limit far below the 1.5s of silence
+		IdleTimeoutRaw: "500ms", // idle limit far below the .s of silence
 	}
 	reg.Set(h)
 
@@ -202,7 +202,7 @@ func TestStateLockBlockingFeedsWatchdog(t *testing.T) {
 
 	select {
 	case rr := <-respCh:
-		// The lock never freed; the run ended first, interrupting the hold.
+		// The lock never freed; the run ended , interrupting the hold.
 		require.Equal(t, 409, rr.Code)
 		assert.Contains(t, rr.Body.String(), "interrupted: run finished")
 	case <-time.After(5 * time.Second):
@@ -213,7 +213,7 @@ func TestStateLockBlockingFeedsWatchdog(t *testing.T) {
 // The full steal story: the thief takes the lock atomically, the displaced
 // holder is cancelled with a reason that names the steal, and when the
 // victim terminates the finish seam frees its OTHER locks while the stolen
-// one stays the thief's (transfer, never release).
+// stays the thief's (transfer, never release).
 func TestStateLockStealCancelsHolderAndTransfers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store, err := kv.New(kv.Config{Dir: filepath.Join(t.TempDir(), "kv")}, []byte("server-test-secret"), logger)
@@ -254,7 +254,7 @@ func TestStateLockStealCancelsHolderAndTransfers(t *testing.T) {
 	assert.Contains(t, victim.CancelReason(), `lock "pr-7" stolen by run `+thief.ID())
 	assert.Contains(t, eventKinds(rec.ListByHook("h", 20)), "lock.stolen")
 
-	// Victim terminates (the runner does this after the kill); its OTHER lock frees, the stolen one stays the thief's.
+	// Victim terminates (the runner does this after the kill); its OTHER lock frees, the stolen stays the thief's.
 	victim.Finish(runs.StatusCancelled, -1, victim.CancelReason())
 	_, err = store.AcquireLock("h", "other", "run-z", 0)
 	require.NoError(t, err, "the victim's other lock must release on finish")
@@ -263,7 +263,7 @@ func TestStateLockStealCancelsHolderAndTransfers(t *testing.T) {
 	assert.Equal(t, thief.ID(), holderInfo.RunID)
 }
 
-// Steal of a free lock is exactly an acquire: 200, no stolen_from, nobody
+// Steal of a free lock is exactly an acquire: , no stolen_from, nobody
 // cancelled.
 func TestStateLockStealFreeLockIsAcquire(t *testing.T) {
 	s, store, tr, rec := newWaitServer(t)
@@ -359,7 +359,7 @@ func TestStateLockWaitingOnAndWaitersJSON(t *testing.T) {
 //
 // The operator's mutex ruling, verbatim: "never have a TTL on a mutex, that
 // doesn't make sense. Or, if you want to have a mutex TTL, you need to force
-// kill the thing that's holding it when the time is up. ONCE THAT FORCE KILL
+// kill the thing that's holding it when the time is up. THAT FORCE KILL
 // COMPLETES AND THAT JOB IS CERTAIN TO BE DEAD, then the mutex would be freed
 // automatically due to the ending job, and the TTL has been enforced." These
 // tests pin exactly that sequence — and its refusals.
@@ -414,7 +414,7 @@ func TestStateLockTTLKillsHolderThenHandsOver(t *testing.T) {
 }
 
 // A holder that will not die does NOT lose its lock: the contender is
-// refused, because handing a mutex to a second live run is the failure the
+// refused, because handing a mutex to a live run is the failure the
 // kill exists to prevent.
 func TestStateLockTTLRefusesWhenTheKillDoesNotComplete(t *testing.T) {
 	s, store, tr, _ := ttlServer(t)
@@ -464,7 +464,7 @@ func TestStateLockTTLReapsAlreadyDeadHolder(t *testing.T) {
 	assert.Contains(t, eventKinds(rec.ListByHook("h", 20)), "lock.ttl_reaped")
 }
 
-// An UNEXPIRED hold is untouched by any of this: plain 409, holder alive and
+// An UNEXPIRED hold is untouched by any of this: plain , holder alive and
 // uncancelled. TTL enforcement must never fire early.
 func TestStateLockWithinTTLIsPlainContention(t *testing.T) {
 	s, store, tr, _ := ttlServer(t)

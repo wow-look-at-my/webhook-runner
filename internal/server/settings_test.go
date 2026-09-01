@@ -40,7 +40,7 @@ const editorSchema = `{
 // editManifest rewrites the hook.json settings and reloads, the way a hooks-repo push does.
 type editManifest func(t *testing.T, settings string)
 
-// settingsServer wires a server with a real override store and one hook
+// settingsServer wires a server with a real override store and hook
 // whose settings.schema.json is on disk, plus the reload closure the real
 // serve path installs — here it re-merges the overrides into the registry's
 // hook, which is exactly what buildLoadAndApply does for the fleet.
@@ -129,7 +129,7 @@ func TestSettingsPutPinsAFieldAndMakesItLive(t *testing.T) {
 
 // The editor re-renders from whatever a write returns, so a write MUST
 // answer the same shape as a read. When it did not carry the schema, the
-// whole form vanished on the operator's first change — it read the missing
+// whole form vanished on the operator's change — it read the missing
 // schema as "this hook takes no configuration". Caught in a browser, not
 // here, which is exactly why it is pinned here now.
 func TestSettingsWriteAnswersTheSameShapeAsARead(t *testing.T) {

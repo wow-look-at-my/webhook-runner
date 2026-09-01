@@ -11,7 +11,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// Per-entity settings: the hook's OWN configuration, kept in one `settings` object and separated from the keys this runner parses.
+// Per-entity settings: the hook's OWN configuration, kept in `settings` object and separated from the keys this runner parses.
 const SettingsSchemaFile = "settings.schema.json"
 
 // EmptySettings is what a hook that declares none is handed — a hook always gets a readable, parseable settings document.
@@ -31,14 +31,14 @@ func settingsSchemaPath(sourcePath string) string {
 	return filepath.Join(filepath.Dir(sourcePath), SettingsSchemaFile)
 }
 
-// ValidateSettings enforces the settings contract for one entity:
+// ValidateSettings enforces the settings contract for entity:
 //
-//   - schema present -> the settings document (or {} when absent) MUST validate
-//     against it. A schema with required properties therefore fails a hook that
-//     declares nothing, which is the point: "unconfigured" is a load error, not
-//     a hook that starts and no-ops.
-//   - settings declared with no schema -> error.
-//   - neither -> fine, the hook has no configuration.
+// - schema present -> the settings document (or {} when absent) MUST validate
+// against it. A schema with required properties therefore fails a hook that
+// declares nothing, which is the point: "unconfigured" is a load error, not
+// a hook that starts and no-ops.
+// - settings declared with no schema -> error.
+// - neither -> fine, the hook has no configuration.
 //
 // A schema that is missing, unreadable, or not a valid JSON Schema is an error
 // too: an unreadable contract must never degrade into "no contract".
@@ -86,7 +86,7 @@ func (h *Hook) ValidateSettings() error {
 }
 
 // readSettingsSchema reads the entity's schema file. (nil, nil) means the
-// entity ships none — distinct from an unreadable one, which is an error:
+// entity ships none — distinct from an unreadable , which is an error:
 // a contract that cannot be read must never degrade into "no contract".
 func readSettingsSchema(path string) ([]byte, error) {
 	raw, err := os.ReadFile(path)

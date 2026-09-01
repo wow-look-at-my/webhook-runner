@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Dispatcher turns due entries into runs. It sleeps until the soonest entry is due — NOT on a fixed tick — and wakes early the moment an enqueue lands, so a doorbell ring costs one channel send and a run starts immediately while an idle fleet costs nothing at all.
+// Dispatcher turns due entries into runs. It sleeps until the soonest entry is due — NOT on a fixed tick — and wakes early the moment an enqueue lands, so a doorbell ring costs channel send and a run starts immediately while an idle fleet costs nothing at all.
 type Dispatcher struct {
 	store *Store
 	fire  func(Entry)
@@ -27,7 +27,7 @@ const DefaultIdleWake = time.Minute
 // DispatcherOptions configure a Dispatcher. Store and Fire are required.
 type DispatcherOptions struct {
 	Store *Store
-	// Fire dispatches a run for one claimed entry. It must not block for long — the serve wiring starts an async run and returns.
+	// Fire dispatches a run for claimed entry. It must not block for long — the serve wiring starts an async run and returns.
 	Fire func(Entry)
 	// Now is an injectable clock for tests; defaults to time.Now.
 	Now func() time.Time

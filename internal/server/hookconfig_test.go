@@ -10,7 +10,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// A manifest holding one of every shape that matters: secrets, non-secret config, a nested block, and a key nobody whitelisted.
+// A manifest holding of every shape that matters: secrets, non-secret config, a nested block, and a key nobody whitelisted.
 const sampleManifest = `{
   "description": "d",
   "secret": "SUPERSECRET_HMAC",
@@ -103,7 +103,7 @@ func TestFilterHookConfigEmptyInput(t *testing.T) {
 // would silently hide a field forever, which is the failure mode a
 // whitelist is most prone to.
 func TestWhitelistedKeysAreRealManifestKeys(t *testing.T) {
-	// Spelled independently of hook.go so a rename has to be made twice,
+	// Spelled independently of hook.go so a rename has to be made ,
 	// deliberately, rather than drifting silently through a shared const.
 	known := set.Of(
 		"api_key", "api_key_header", "command",
@@ -120,7 +120,7 @@ func TestWhitelistedKeysAreRealManifestKeys(t *testing.T) {
 	}
 }
 
-// The three credential-bearing keys must NEVER be whitelisted. Stated as
+// The credential-bearing keys must NEVER be whitelisted. Stated as
 // its own test so removing a name from the exclusion list is a red build.
 func TestSecretKeysAreNotWhitelisted(t *testing.T) {
 	for _, k := range []string{"api_key", "secret", "settings"} {

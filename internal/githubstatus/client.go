@@ -27,7 +27,7 @@ const (
 	StateError   State = "error"
 )
 
-// TokenFunc yields the GitHub credential for one call.
+// TokenFunc yields the GitHub credential for call.
 type TokenFunc func(ctx context.Context) (string, error)
 
 // Client posts commit-status updates.
@@ -72,7 +72,7 @@ func newClient(log *slog.Logger) *Client {
 	}
 }
 
-// token resolves the credential for one call.
+// token resolves the credential for call.
 func (c *Client) token(ctx context.Context) (string, error) {
 	if c == nil || c.tokenFn == nil {
 		return "", errors.New("github_status: no GitHub credential configured (set WEBHOOK_RUNNER_GITHUB_TOKEN, or WEBHOOK_RUNNER_SECRET_SERVER_TOKEN to read PRIVATE_ORG_REPO_READ from secret-server)")

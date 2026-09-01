@@ -32,7 +32,7 @@ func NewTracker() *Tracker {
 	}
 }
 
-// SetOnFinish registers fn to be invoked exactly once per run — with a full terminal snapshot, synchronously on the finishing goroutine —.
+// SetOnFinish registers fn to be invoked exactly per run — with a full terminal snapshot, synchronously on the finishing goroutine —.
 func (t *Tracker) SetOnFinish(fn func(RunState)) {
 	t.mu.Lock()
 	t.onFinish = fn
@@ -64,7 +64,7 @@ func (t *Tracker) New(hookID string) *Run {
 	r.onChange = t.onChange
 	t.byID[r.state.ID] = r
 	t.byHook[hookID] = append(t.byHook[hookID], r)
-	// Trim past maxByHook — oldest TERMINAL runs only, NEVER an active one.
+	// Trim past maxByHook — oldest TERMINAL runs only, NEVER an active .
 	if extra := len(t.byHook[hookID]) - t.maxByHook; extra > 0 {
 		kept := t.byHook[hookID][:0]
 		for _, old := range t.byHook[hookID] {
@@ -102,7 +102,7 @@ func (t *Tracker) Get(id string) *Run {
 	return t.byID[id]
 }
 
-// ListByHook returns the retained runs for a hook, newest-first.
+// ListByHook returns the retained runs for a hook, newest-.
 func (t *Tracker) ListByHook(hookID string, max int) []*Run {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -118,7 +118,7 @@ func (t *Tracker) ListByHook(hookID string, max int) []*Run {
 	return out
 }
 
-// ListAll returns all retained runs across hooks, newest-first.
+// ListAll returns all retained runs across hooks, newest-.
 func (t *Tracker) ListAll(max int) []*Run {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -149,8 +149,8 @@ func (t *Tracker) ActiveIDs() []string {
 	return ids
 }
 
-// newID returns 16 random bytes encoded as lowercase base32 without
-// padding (26 ASCII characters), giving 128 bits of entropy.
+// newID returns random bytes encoded as lowercase base without
+// padding ( ASCII characters), giving bits of entropy.
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

@@ -40,7 +40,7 @@ func recordingShutdown(order *[]string, duringDrain func()) shutdownDeps {
 
 // The regression this file exists for: the admin port used to close BEFORE
 // the drain, so a rolling update took the dashboard away for as long as the
-// longest run (a CI job) while hooks kept executing — the one stretch an
+// longest run (a CI job) while hooks kept executing — the stretch an
 // operator most needs to see what is still running.
 func TestAdminPortServesUntilAfterTheDrain(t *testing.T) {
 	var order []string
@@ -86,7 +86,7 @@ func TestStreamsCloseBeforeTheAdminPort(t *testing.T) {
 
 // The grace window is armed AFTER the drain. Armed before, a drain longer than
 // the window hands every closer an already-expired context, turning a graceful
-// close into an abrupt one.
+// close into an abrupt .
 func TestGraceWindowStartsAfterTheDrain(t *testing.T) {
 	var order []string
 	var deadline time.Time

@@ -98,7 +98,7 @@ func TestLoadLayoutSrcTree(t *testing.T) {
 	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].SrcRoot)
 	assert.Equal(t, filepath.Join(root, "src"), loaded["alpha"].BuildContext())
 
-	// Exactly one error: the mixed-layout stray dir, named. It must read as a HARD ERROR, not a silent skip (the operator's failsafe).
+	// Exactly error: the mixed-layout stray dir, named. It must read as a HARD ERROR, not a silent skip (the operator's failsafe).
 	require.Len(t, errs, 1)
 	var ignored IgnoredLegacyDirError
 	require.True(t, errors.As(errs[0], &ignored), "want IgnoredLegacyDirError, got %v", errs[0])
@@ -114,7 +114,7 @@ func TestLoadLayoutSrcTree(t *testing.T) {
 // A stray top-level hook alongside src/hooks/ is a HARD ERROR, never a
 // silent skip — the failsafe an incomplete move to the src layout must
 // trip. Scoped to MIXED layouts ONLY: pure-src and pure-legacy both load
-// clean, so the runner's own legacy fixtures (examples/hooks, e2e/hooks)
+// clean, so the runner's own legacy fixtures (examples/hooks, ee/hooks)
 // are unaffected.
 func TestMixedLayoutRejectsTopLevelHooks(t *testing.T) {
 	// (a) MIXED: src/hooks/<id> AND a top-level <other>/hook.json ⇒ the typed error, naming the offending top-level dir, and it does NOT leak.
@@ -170,7 +170,7 @@ func TestLoadFixtureTree(t *testing.T) {
 	assert.Len(t, hash, 16)
 }
 
-// -- The zero-hooks guard ------------------------------------------------------
+// -- The -hooks guard ------------------------------------------------------
 
 func TestZeroHooksIsLoud(t *testing.T) {
 	// Empty dir: nothing to serve — must be a loud, typed error.
@@ -195,7 +195,7 @@ func TestZeroHooksIsLoud(t *testing.T) {
 // The legacy algorithm must stay byte-identical across this change:
 // existing deployments must not re-tag (and so re-build) every hook on
 // upgrade. Golden value computed from the historical algorithm (relative
-// path + \x00 + content + \x00 per file, lexical walk, sha256 hex[:16]).
+// path + \x + content + \x per file, lexical walk, sha hex[:]).
 func TestContentHashLegacyByteIdentical(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "golden")

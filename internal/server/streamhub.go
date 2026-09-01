@@ -3,48 +3,53 @@
 //
 // Contract, in order, per connection:
 //
-//	retry: 2000                      (fixed client reconnect delay — never grows)
-//	event: snapshot                  (current live+recent runs, same shape as
-//	data: [ ...RunState... ]          /runs — output stripped, waiters attached)
-//	event: run                       (one per lifecycle change: created,
-//	data: { ...RunState... }          pending→running, waiting set/cleared,
-//	                                  title set, cancel requested, terminal)
-//	event: changed                   (coarse section-invalidation signal:
-//	data: {"sections":["kv", ...]}    the named admin sections changed since
-//	                                  the client last heard — refetch each
-//	                                  ONCE; carries no payload by design)
-//	: hb                             (comment heartbeat every ~10s, PLUS an
-//	event: hb                         `hb` event in the same write — comments
-//	data: {"active":["<run-id>",…]}   keep proxies/idle detection honest, but
-//	                                  EventSource never surfaces them to JS,
-//	                                  so the client's freshness signal is the
-//	                                  event; both ride one flush. The payload
-//	                                  is the CURRENT non-terminal run-id set —
-//	                                  the live truth clients diff their local
-//	                                  state against every beat (drop what the
-//	                                  server no longer knows, fetch what they
-//	                                  never saw), so a missed delta can cost
-//	                                  at most ~one heartbeat of fiction.
-//	                                  Purely additive: pre-payload clients
-//	                                  read hb as bare liveness and ignore it)
+//	retry: (fixed client reconnect delay — never grows)
+//	event: snapshot (current live+recent runs, same shape as
+//	data: [ ...RunState... ] /runs — output stripped, waiters attached)
+//	event: run ( per lifecycle change: created,
+//	data: { ...RunState... } pending→running, waiting set/cleared,
+//
+// title set, cancel requested, terminal)
+//
+//	event: changed (coarse section-invalidation signal:
+//	data: {"sections":["kv", ...]} the named admin sections changed since
+//
+// the client last heard — refetch each
+// ; carries no payload by design)
+//
+//	: hb (comment heartbeat every ~s, PLUS an
+//	event: hb `hb` event in the same write — comments
+//	data: {"active":["<run-id>",…]} keep proxies/idle detection honest, but
+//
+// EventSource never surfaces them to JS,
+// so the client's freshness signal is the
+// event; both ride flush. The payload
+// is the CURRENT non-terminal run-id set —
+// the live truth clients diff their local
+// state against every beat (drop what the
+// server no longer knows, fetch what they
+// never saw), so a missed delta can cost
+// at most ~ heartbeat of fiction.
+// Purely additive: pre-payload clients
+// read hb as bare liveness and ignore it)
 //
 // Fan-out MUST NEVER block the runner: publishes happen synchronously on
 // runner/state-API goroutines (the tracker's OnChange seam), so each
 // subscriber gets a bounded buffered channel and a publish does only a
 // non-blocking send. A subscriber whose buffer is full is DROPPED on the
 // spot — its channel closed, its handler returning, its connection dying —
-// because the client's EventSource will reconnect (retry: 2000) and the
+// because the client's EventSource will reconnect (retry: ) and the
 // fresh connect snapshot resyncs it. Drop-and-resync IS the slow-client
 // semantics, not an error; it bounds memory and never applies backpressure
 // to run execution.
 //
 // Section signals ride the SAME connection but a DIFFERENT mechanism: a
-// per-subscriber dirty SET plus a 1-slot wake channel, not the delta
-// queue. A signal storm coalesces into one pending drain (the set is
+// per-subscriber dirty SET plus a -slot wake channel, not the delta
+// queue. A signal storm coalesces into pending drain (the set is
 // bounded by the handful of section names), so signals can never overflow
-// a subscriber, never drop one, and never block a publisher — only run
+// a subscriber, never drop , and never block a publisher — only run
 // deltas can drop a slow client. The payload is deliberately just the
-// section names ("changed → refetch once"): the client refetches the
+// section names ("changed → refetch "): the client refetches the
 // section endpoint it already knows, so a dropped client that reconnects
 // simply refetches every section on open (its snapshot rule) and no
 // signal is ever load-bearing state.
@@ -91,7 +96,7 @@ type streamHub struct {
 type streamSub struct {
 	ch chan runs.RunState
 
-	// Section-signal state: dirty is the set of section names signaled since the handler last drained; kick (1-buffered) wakes the handler.
+	// Section-signal state: dirty is the set of section names signaled since the handler last drained; kick (-buffered) wakes the handler.
 	mu    sync.Mutex
 	dirty set.Set[string]
 	kick  chan struct{}
@@ -182,7 +187,7 @@ func (h *streamHub) signal(sections ...string) {
 // sections whose payloads that event implies changed. Every event dirties
 // "events" (it IS the activity feed); the extras cover the sections whose
 // state mutates alongside specific kinds. Over-signaling is harmless (the
-// client refetches one small endpoint once); under-signaling is the bug
+// client refetches small endpoint ); under-signaling is the bug
 // class this map must avoid — prefer prefixes where every current and
 // plausible future kind in the family affects the section.
 func sectionsForEvent(kind string) []string {
@@ -246,7 +251,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe FIRST, snapshot second — see the package comment: changes landing while the snapshot is serialized are buffered and delivered.
+	// Subscribe , snapshot — see the package comment: changes landing while the snapshot is serialized are buffered and delivered.
 	sub := s.stream.subscribe()
 	defer s.stream.unsubscribe(sub)
 
@@ -275,7 +280,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-sub.kick:
-			// Section signals: drain the coalesced dirty set into ONE changed event. An empty drain (a wake that raced an earlier drain) writes nothing.
+			// Section signals: drain the coalesced dirty set into changed event. An empty drain (a wake that raced an earlier drain) writes nothing.
 			secs := sub.drainSections()
 			if len(secs) == 0 {
 				continue
@@ -287,7 +292,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-hb.C:
-			// Comment for proxies + event for the client, one write.
+			// Comment for proxies + event for the client, write.
 			if err := writeSSEHeartbeat(w, s.tracker.ActiveIDs()); err != nil {
 				return
 			}
@@ -298,7 +303,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeSSEEvent writes one SSE event with a JSON payload. Compact JSON has
+// writeSSEEvent writes SSE event with a JSON payload. Compact JSON has
 // no raw newlines, so a single data: line is always well-formed.
 func writeSSEEvent(w io.Writer, event string, v any) error {
 	b, err := json.Marshal(v)
@@ -309,7 +314,7 @@ func writeSSEEvent(w io.Writer, event string, v any) error {
 	return err
 }
 
-// writeSSEHeartbeat writes the combined proxy-comment + hb event in ONE write (both ride one flush).
+// writeSSEHeartbeat writes the combined proxy-comment + hb event in write (both ride flush).
 func writeSSEHeartbeat(w io.Writer, active []string) error {
 	b, err := json.Marshal(map[string][]string{"active": active})
 	if err != nil {

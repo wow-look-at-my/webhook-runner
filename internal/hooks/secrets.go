@@ -92,7 +92,7 @@ func (l *SecretsLoader) Load(hook *Hook) (map[string]string, error) {
 }
 
 // SecretsFirstLookup returns an ExpandEnvRefs lookup that resolves names from
-// the given secrets first and falls back to the host environment. A nil map
+// the given secrets and falls back to the host environment. A nil map
 // degrades to plain host-env lookup.
 func SecretsFirstLookup(secrets map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {

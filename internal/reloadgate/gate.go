@@ -9,17 +9,17 @@
 // needs-attention entry); the HMAC-verified `status` event is the switch
 // authority. That split is what makes "reload onto a commit with failing
 // CI" impossible: the last green commit keeps serving until GitHub itself
-// vouches for the next one.
+// vouches for the next .
 //
-// The tree moves along three paths: (1) the `status` event — the primary,
-// low-latency switch authority; (2) the hourly reconciliation poll
+// The tree moves along paths: () the `status` event — the primary,
+// low-latency switch authority; () the hourly reconciliation poll
 // (Reconcile, driven by a Poller) — the fallback that keeps a missed
 // status webhook from freezing deploys indefinitely: it fetches the
 // remote tip and, when it differs from what is serving, reads the gating
 // context's commit status from the GitHub API, switching ONLY on an
 // affirmative green through the exact same ordering-checked path the
 // event uses (anything else — red, pending, unreadable — holds, loudly);
-// (3) admin /reload (Force) — the operator's deliberate bypass.
+// () admin /reload (Force) — the operator's deliberate bypass.
 package reloadgate
 
 import (
@@ -38,11 +38,9 @@ import (
 )
 
 // fetchDepth bounds the ordering-rule history window: a green status only
-// switches the tree when its sha is within this many commits of the tip.
 const fetchDepth = 100
 
 // statusBranchesCap is GitHub's hard cap on a status payload's branches
-// array; a full list may have the tracked branch squeezed out.
 const statusBranchesCap = 10
 
 // GitRepo is the narrow slice of git the gate needs, implemented by
@@ -53,16 +51,14 @@ type GitRepo interface {
 	// FetchBranch fetches the tracked branch without touching the working tree.
 	FetchBranch(depth int) (tip string, err error)
 	// FetchBranchContext is FetchBranch bounded by ctx: it kills the git
-	// process on a stalled remote, so the gate mutex never wedges forever.
 	FetchBranchContext(ctx context.Context, depth int) (tip string, err error)
-	// RecentCommits lists up to max commits from the last fetch, newest first.
+	// RecentCommits lists up to max commits from the last fetch, newest .
 	RecentCommits(max int) ([]string, error)
 	// ResetTo hard-resets the working tree to an already-fetched sha.
 	ResetTo(sha string) error
-	// FetchSHA fetches one commit by sha — the startup last-good restore path.
+	// FetchSHA fetches commit by sha — the startup last-good restore path.
 	FetchSHA(sha string, depth int) error
 	// TreeHasDir reports whether the commit's tree contains path (git
-	// plumbing, never a checkout).
 	TreeHasDir(sha, path string) bool
 	// ResolveRef resolves a sha or branch/tag name to a full commit sha.
 	ResolveRef(ref string) (string, error)
@@ -78,13 +74,10 @@ type Config struct {
 	// StatePath is the persisted gate state file.
 	StatePath string
 	// Apply reloads hooks from the reset working tree. An error means the
-	// tree was refused, so the gate rolls the working tree back.
 	Apply func() error
 	// Status reads the gating context's status for a sha (the poll's
-	// authority). Nil fails the poll closed.
 	Status StatusFunc
 	// RepoSlug is "owner/repo", used only for the checks link on held
-	// messages. Empty just omits the link.
 	RepoSlug  string
 	Events    *events.Recorder
 	Attention *attention.Aggregator
@@ -127,7 +120,7 @@ type gateState struct {
 }
 
 // New builds a Gate, loading persisted state from cfg.StatePath. A missing
-// file is the zero state; a file that exists but does not parse is a hard
+// file is the state; a file that exists but does not parse is a hard
 // error — booting with the last-good record unreadable would silently
 // drop the gate's whole point (the overrides-store rule).
 func New(cfg Config) (*Gate, error) {
@@ -176,9 +169,9 @@ func New(cfg Config) (*Gate, error) {
 	return g, nil
 }
 
-// HandleEvent processes one HMAC-verified /_reload delivery. The returned
+// HandleEvent processes HMAC-verified /_reload delivery. The returned
 // status goes into the HTTP response body; a non-nil error means the
-// delivery is answered 500 (GitHub records a red, redeliverable delivery).
+// delivery is answered (GitHub records a red, redeliverable delivery).
 func (g *Gate) HandleEvent(event string, body []byte) (string, error) {
 	switch event {
 	case "push":
@@ -251,9 +244,6 @@ func (g *Gate) recordPendingLocked(sha string) {
 }
 
 // resolveHoldEntriesLocked clears the held needs-attention entry AND the
-// poll's cannot-determine entry: once nothing is pending (switched past
-// it, forced, or the tip came back to serving) there is nothing left the
-// poll could be blind about. Caller holds g.mu.
 func (g *Gate) resolveHoldEntriesLocked() {
 	g.lastPollBlind = ""
 	g.attention.Resolve(attention.SourceReload, "", attention.KeyReloadHeld)
@@ -288,16 +278,6 @@ func (g *Gate) handleStatus(body []byte) (string, error) {
 		return "ignored", nil
 	}
 	// Branch prefilter: a status naming branches that don't include the
-	// tracked one is for someone else's head — drop it before any git op.
-	// An empty list falls through to the ordering rule, which is the real
-	// authority anyway. GitHub caps the array at statusBranchesCap (10),
-	// so a full list may have squeezed the tracked branch out: a SUCCESS
-	// at the cap skips the prefilter and lets the ordering rule decide —
-	// its fresh fetch + recent-history membership still blocks a
-	// foreign-branch green, the bypass just costs one fetch. failure and
-	// error keep the plain prefilter: a squeezed-out red only affects the
-	// hold label, and bypassing there would let a foreign PR-head red
-	// mislabel the hold.
 	tracked := g.trackedBranch(p.Repository.DefaultBranch)
 	maybeTruncated := p.State == "success" && len(p.Branches) == statusBranchesCap
 	if len(p.Branches) > 0 && !maybeTruncated {
@@ -315,16 +295,12 @@ func (g *Gate) handleStatus(body []byte) (string, error) {
 	switch p.State {
 	case "pending":
 		// The hold is already visible from reload.held; a pending gating
-		// status adds nothing.
 		return "ignored", nil
 	case "failure", "error":
 		g.recordVerdict(p.SHA, p.State)
 		return g.holdRed(p.SHA, p.State)
 	case "success":
 		// Record BEFORE the ordering rule runs: a green the rule refuses
-		// today (out of order, or ahead of a rollback) is still a verified
-		// fact about that sha, and discarding it is what left the poll
-		// buying it back from the API. See verdicts.go.
 		g.recordVerdict(p.SHA, p.State)
 		return g.trySwitch(p.SHA)
 	default:
@@ -339,8 +315,6 @@ func (g *Gate) holdRed(sha, state string) (string, error) {
 	defer g.mu.Unlock()
 	if sha != g.pendingSHA && !(g.pendingSHA == "" && sha != g.servingSHA) {
 		// A red for the serving commit (nothing to move), or for some
-		// other commit while a different one is pending — neither changes
-		// what the gate is waiting on.
 		return "ignored", nil
 	}
 	g.pendingSHA, g.pendingState = sha, state
@@ -375,16 +349,6 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 		return "already-serving", nil
 	}
 	// ON A LEASH, like every other fetch this package runs under g.mu. This
-	// one is the dangerous one: trySwitch is what HandleEvent (the status
-	// webhook) and Reconcile (the hourly poll) call, so an unbounded fetch
-	// here wedges the gate with NOBODY having clicked anything -- and a
-	// `git fetch` onto a half-open socket does not fail, it hangs forever.
-	// Everything that touches the gate then hangs behind it: /version,
-	// /reload/status, both force buttons, the poll, and this path itself. The
-	// tree can no longer switch by ANY route, and the only symptom is
-	// requests that never answer. Bounded, a degraded origin fails closed in
-	// 20s and the next event or tick retries -- which is what the ordering
-	// rule below wants anyway.
 	if _, err := g.fetchBranchBounded(); err != nil {
 		g.events.Record("git.pull_failed", "hooks repo fetch failed: "+err.Error(), nil)
 		return "", fmt.Errorf("fetch hooks repo: %w", err)
@@ -395,9 +359,6 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 		return "", fmt.Errorf("list hooks repo history: %w", err)
 	}
 	// The ordering rule: the sha must be in the freshly-fetched recent
-	// history (covers ancient redeliveries, force-push-removed shas, and
-	// branch-prefilter leaks) and not older than what is serving (a green
-	// for B arriving after we already switched to C).
 	posS := indexOf(commits, sha)
 	if posS == -1 {
 		msg := fmt.Sprintf("green %s for %s not in recent %s history; serving %s unchanged",
@@ -444,9 +405,6 @@ func (g *Gate) trySwitch(sha string) (string, error) {
 }
 
 // localTipLocked names the newest commit the local clone already holds: the
-// pending hold when there is one (the push webhook fetched that commit when
-// it recorded it — during a GitHub outage it is the newest thing here), else
-// the tracked branch's local ref.
 func (g *Gate) localTipLocked() (string, error) {
 	if g.pendingSHA != "" {
 		return g.pendingSHA, nil
@@ -465,11 +423,6 @@ func (g *Gate) Force() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	// The fetch is how Force learns the REMOTE tip, but it must not be able
-	// to hang the admin port: a degraded GitHub makes `git fetch` block
-	// rather than fail, and this call holds the gate mutex, so an unbounded
-	// one takes /reload/status and /reload/switch down with it. On a leash,
-	// and on failure force to the newest commit already local — which during
-	// an outage is exactly the commit an operator is reaching for.
 	tip, err := g.fetchBranchBounded()
 	if err != nil {
 		local, localErr := g.localTipLocked()
@@ -493,20 +446,15 @@ func (g *Gate) Force() error {
 // TreeState is a value snapshot of the gate's hooks-tree state, read
 // under the gate mutex — the read-side surface behind /version's
 // hooks_tree report. It exposes only what the gate has already recorded;
-// taking one performs no git or GitHub work.
+// taking performs no git or GitHub work.
 type TreeState struct {
 	// ServingSHA is the commit the working tree serves. Empty means
-	// unknown: the boot HEAD read failed and nothing has settled since.
 	ServingSHA string
 	// Verified reports whether a green gating status (or an operator
-	// force) vouched for ServingSHA.
 	Verified bool
 	// PendingSHA is a newer fetched commit awaiting the gating context;
-	// empty means nothing is held.
 	PendingSHA string
 	// PendingState is the gating context's last known CI state for
-	// PendingSHA ("pending", "failure", or "error"); empty when nothing
-	// is pending.
 	PendingState string
 	// Context is the gating commit-status context (e.g. "all-builds").
 	Context string
@@ -528,7 +476,7 @@ func (g *Gate) TreeState() TreeState {
 	return ts
 }
 
-// trackedBranch resolves the branch the gate tracks: the configured one
+// trackedBranch resolves the branch the gate tracks: the configured
 // when set, else the delivery payload's repository.default_branch.
 func (g *Gate) trackedBranch(payloadDefault string) string {
 	if g.branch != "" {

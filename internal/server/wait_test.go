@@ -65,7 +65,7 @@ func TestStateWaitValidation(t *testing.T) {
 	}
 
 	// A token whose run is unknown, finished, or belongs to another hook
-	// has nothing to attribute the wait to: 409, never a block.
+	// has nothing to attribute the wait to: , never a block.
 	require.Equal(t, 409,
 		stateReq(t, s, "POST", "/wait", store.Token("h", "nosuchrun"), strings.NewReader(`{"seconds":1,"reason":"x"}`)).Code)
 	require.Equal(t, 409,
@@ -213,8 +213,8 @@ func TestStateWaitClientDisconnect(t *testing.T) {
 }
 
 // writeSilentSleepDocker fakes a container that produces NO output and
-// sleeps ~1.5s — long past the test hook's idle timeout. `docker kill` is
-// accepted but doesn't kill anything; the runner's 2s process-kill backstop
+// sleeps ~.s — long past the test hook's idle timeout. `docker kill` is
+// accepted but doesn't kill anything; the runner's s process-kill backstop
 // ends a timed-out run.
 func writeSilentSleepDocker(t *testing.T, dir string) string {
 	t.Helper()
@@ -253,7 +253,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 		SourcePath:     filepath.Join(hookDir, "hook.json"),
 		Command:        []string{"x"},
 		State:          true,
-		IdleTimeoutRaw: "500ms", // idle limit far below the 1.5s of silence
+		IdleTimeoutRaw: "500ms", // idle limit far below the .s of silence
 	}
 	reg.Set(h)
 
@@ -289,7 +289,7 @@ func TestStateWaitCountsAsWatchdogActivity(t *testing.T) {
 	select {
 	case rr := <-respCh:
 		require.Equal(t, 200, rr.Code)
-		// The run ended before the 10s wait elapsed, so the wait reports the interruption rather than a full wait.
+		// The run ended before the s wait elapsed, so the wait reports the interruption rather than a full wait.
 		assert.Contains(t, rr.Body.String(), `"interrupted": true`)
 	case <-time.After(5 * time.Second):
 		t.Fatal("wait call did not return after the run finished")

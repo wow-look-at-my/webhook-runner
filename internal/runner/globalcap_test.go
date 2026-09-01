@@ -20,8 +20,8 @@ import (
 )
 
 // The directive's core property at the runner level: with a global cap of
-// N, N+1 executions run at most N containers simultaneously — the extra
-// QUEUES (pending, no container) and runs once a slot frees; nothing is
+// N, N+ executions run at most N containers simultaneously — the extra
+// QUEUES (pending, no container) and runs a slot frees; nothing is
 // dropped or errored. Hooks share no concurrency group, so the global cap
 // is the only thing gating them.
 func TestRunnerGlobalCapQueuesExcess(t *testing.T) {
@@ -49,7 +49,7 @@ func TestRunnerGlobalCapQueuesExcess(t *testing.T) {
 		waitStatus(t, run, runs.StatusRunning, 2*time.Second)
 	}
 
-	// The N+1th queues: pending, container not started, while N run.
+	// The N+th queues: pending, container not started, while N run.
 	extraHook := diskHook(t, dir, &hooks.Hook{ID: "extra", Command: []string{"echo", "extra"}})
 	extra, err := r.Start(context.Background(), extraHook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -174,7 +174,7 @@ func TestRunnerStampsRunContainerLabel(t *testing.T) {
 	assert.Less(t, lbl, img, "--label must precede the image")
 }
 
-// writeSweepDocker mocks the two docker calls the orphan sweep makes:
+// writeSweepDocker mocks the docker calls the orphan sweep makes:
 // `docker ps -aq --filter label=…` prints the canned container ids, and
 // every `docker rm -f <id>` is recorded to a log file.
 func writeSweepDocker(t *testing.T, dir string, psIDs []string) (docker, rmLog string) {
@@ -194,7 +194,7 @@ func writeSweepDocker(t *testing.T, dir string, psIDs []string) (docker, rmLog s
 }
 
 // The startup sweep force-removes every marker-labeled container and
-// records one summarizing event; with none present it does nothing.
+// records summarizing event; with none present it does nothing.
 func TestSweepOrphanContainers(t *testing.T) {
 	dir := t.TempDir()
 	docker, rmLog := writeSweepDocker(t, dir, []string{"aaa111", "bbb222"})

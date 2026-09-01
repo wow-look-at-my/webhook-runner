@@ -103,7 +103,7 @@ func (f *spawnFixture) liveParent(t *testing.T) (*runs.Run, string) {
 }
 
 // targetHook registers a hook backed by a real directory (the content hash
-// needs one) so the mock-docker runner can actually run it.
+// needs ) so the mock-docker runner can actually run it.
 func (f *spawnFixture) targetHook(t *testing.T, h *hooks.Hook) *hooks.Hook {
 	t.Helper()
 	hookDir := filepath.Join(f.dir, h.ID)
@@ -153,7 +153,7 @@ func (f *spawnFixture) deniedEvents(max int) []events.Event {
 func TestSpawnAuth(t *testing.T) {
 	f := newSpawnFixture(t)
 	body := spawnBody("t", 1)
-	// Absent and garbage tokens: the same 401s as every state route.
+	// Absent and garbage tokens: the same s as every state route.
 	require.Equal(t, 401, stateReq(t, f.s, "POST", "/spawn", "", strings.NewReader(body)).Code)
 	require.Equal(t, 401, stateReq(t, f.s, "POST", "/spawn", "parent.bogus", strings.NewReader(body)).Code)
 	// A token signed with a different secret never verifies.
@@ -186,7 +186,7 @@ func TestSpawnValidation(t *testing.T) {
 		`not json`,
 		`{"count":1,"payload":{}}`, // hook missing
 		`{"hook":"  ","count":1,"payload":{}}`,
-		`{"hook":"t","payload":{}}`, // count missing (0)
+		`{"hook":"t","payload":{}}`, // count missing ()
 		`{"hook":"t","count":0,"payload":{}}`,
 		`{"hook":"t","count":-2,"payload":{}}`,
 		`{"hook":"t","count":101,"payload":{}}`,
@@ -217,7 +217,7 @@ func TestSpawnParentRunGuards(t *testing.T) {
 	f := newSpawnFixture(t)
 	body := spawnBody("t", 1)
 
-	// Unknown run, another hook's run, and a finished run all 409 — the
+	// Unknown run, another hook's run, and a finished run all — the
 	// /wait rule: a dead parent has nothing to attribute its spawns to.
 	require.Equal(t, 409,
 		stateReq(t, f.s, "POST", "/spawn", f.store.Token("parent", "nosuchrun"), strings.NewReader(body)).Code)
@@ -397,8 +397,8 @@ func TestSpawnBypassesSkipIf(t *testing.T) {
 		"a spawn must run the target even when skip_if would match — the scheduled-fire rule")
 }
 
-// The target's concurrency group gates spawned runs like any others: two
-// spawns into a limit-1 group run one at a time — the second queues as
+// The target's concurrency group gates spawned runs like any others:
+// spawns into a limit- group run at a time — the queues as
 // pending — and /spawn still answers immediately with both run IDs.
 func TestSpawnConcurrencyGroupGates(t *testing.T) {
 	dir := t.TempDir()
@@ -448,7 +448,7 @@ exit 0
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &res))
 	require.Len(t, res.RunIDs, 2)
 
-	// One run holds the slot (running), the other queues (pending with a
+	// run holds the slot (running), the other queues (pending with a
 	// group wait naming "g"). Start order races, so identify by state.
 	require.Eventually(t, func() bool {
 		var running, queued int

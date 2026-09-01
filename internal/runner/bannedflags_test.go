@@ -1,25 +1,25 @@
-// Docker flags a hook container must never get, and why each one is banned.
+// Docker flags a hook container must never get, and why each is banned.
 //
 // Both defeat the same wall from different sides: this fleet executes other
 // people's CI, so a run must not be able to reach the host. Docker's defaults
 // already hold every property here, so each ban costs nothing today -- which is
-// exactly the problem. A default is one plausible commit from gone, and each of
-// these is the first hit when searching for why a nested daemon or a sandbox
+// exactly the problem. A default is plausible commit from gone, and each of
+// these is the hit when searching for why a nested daemon or a sandbox
 // will not start. These make that commit a build failure.
 //
-//   - --pid: sharing the host PID namespace puts the host's process table in
-//     the container's /proc. dats binds that /proc read-only when the kernel
-//     refuses it a private procfs, and the bind is safe only because the procfs
-//     lists nothing outside the container.
-//   - systempaths=unconfined: clears docker's masked AND read-only /proc paths,
-//     so /proc/sysrq-trigger becomes writable to a container root that already
-//     exists. It reads as the missing half of the seccomp.userns opt-in; it is
-//     not (seccomp.go).
+// - --pid: sharing the host PID namespace puts the host's process table in
+// the container's /proc. dats binds that /proc read-only when the kernel
+// refuses it a private procfs, and the bind is safe only because the procfs
+// lists nothing outside the container.
+// - systempaths=unconfined: clears docker's masked AND read-only /proc paths,
+// so /proc/sysrq-trigger becomes writable to a container root that already
+// exists. It reads as the missing half of the seccomp.userns opt-in; it is
+// not (seccomp.go).
 //
 // --privileged is NOT here. dind needs it and nothing else on this host makes
 // /proc/sys and /sys/fs/cgroup writable, so banning it takes the fleet down --
 // which is what happened (dind.go, docs/internals/nested-containers.md). It is
-// confined to dindArgs, which one test pins, rather than banned outright.
+// confined to dindArgs, which test pins, rather than banned outright.
 package runner
 
 import (
@@ -46,7 +46,7 @@ var bannedFlags = []string{
 }
 
 // TestNoContainerGetsABannedFlag scans every string literal this module
-// compiles. One builder assembles every container start today
+// compiles. builder assembles every container start today
 // (containerargs.go), and a runtime assertion covers the paths that call it --
 // but a new caller hand-rolling its own args would be covered by neither.
 func TestNoContainerGetsABannedFlag(t *testing.T) {

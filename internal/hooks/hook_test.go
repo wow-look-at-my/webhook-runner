@@ -56,7 +56,7 @@ func TestParseMinimal(t *testing.T) {
 }
 
 func TestParseTimeoutAbsentMeansNoCeiling(t *testing.T) {
-	// timeout is optional: a hook that omits it passes validation and has NO absolute run ceiling — Timeout() == 0, which runner.execute reads as.
+	// timeout is optional: a hook that omits it passes validation and has NO absolute run ceiling — Timeout() == , which runner.execute reads as.
 	h, err := parseInDir(t, `{"$schema":"https://s"}`)
 	require.Nil(t, err)
 	assert.Equal(t, time.Duration(0), h.Timeout())
@@ -104,7 +104,7 @@ func TestParseDind(t *testing.T) {
 
 // Declaring both reads as "privileged, and narrowly allowed to sandbox", and
 // it delivers the opposite: --privileged runs seccomp unconfined, and the
-// profile beside it takes that back. gha-runner-dind shipped the pair once and
+// profile beside it takes that back. gha-runner-dind shipped the pair and
 // its own tests stopped finishing.
 func TestParseRejectsDindWithSeccompUserns(t *testing.T) {
 	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":true,"seccomp":{"userns":true}}`)

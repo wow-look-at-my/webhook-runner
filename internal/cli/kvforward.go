@@ -12,7 +12,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kvproxy"
 )
 
-// kvForwardListen is where the shim listens inside the hook container; hooks reach the KV API at HOOK_KV_URL=http://localhost:9002.
+// kvForwardListen is where the shim listens inside the hook container; hooks reach the KV API at HOOK_KV_URL=http://localhost:.
 const kvForwardListen = "127.0.0.1:9002"
 
 // kvForwardCmd is the in-container shim the runner sets as the entrypoint of a state hook.
@@ -38,7 +38,7 @@ func runKVForward(_ *cobra.Command, args []string) error {
 		return errors.New("kv-forward: HOOK_KV_SOCKET not set")
 	}
 
-	// Report the container's first instruction before doing anything else: this is the far side of the host's "docker run spawned" mark, and the.
+	// Report the container's instruction before doing anything else: this is the far side of the host's "docker run spawned" mark, and the.
 	reportContainerEntry(socket, os.Getenv("HOOK_KV_TOKEN"))
 
 	ln, err := kvproxy.Serve(firstNonEmpty(os.Getenv("HOOK_KV_LISTEN"), kvForwardListen), socket)
@@ -54,7 +54,7 @@ func runKVForward(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	// This shim is the container's PID 1 (webhook-runner sets it as the state hook's entrypoint), and the child is a genuine subprocess, not a.
+	// This shim is the container's PID (webhook-runner sets it as the state hook's entrypoint), and the child is a genuine subprocess, not a.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {

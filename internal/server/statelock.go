@@ -53,7 +53,7 @@ func parseLockRequest(w http.ResponseWriter, r *http.Request) (req lockRequest, 
 	return req, ttl, true
 }
 
-// handleKVAcquire is the cooperative lock take: atomic under the store's lock-table mutex, owned by the CALLING RUN (the identity in the bearer token — there are no client-managed owner tokens). 200 when this run took or already held the lock (idempotent re-acquire); 409 when another live run holds it (nothing is mutated — in particular the holder's backstop expiry is never restamped by a contender), with the HOLDER named in the body's held_by. Optional body {"ttl_seconds": N} sets the secondary backstop expiry; absent, the store default applies (run-finish release is the primary mechanism either way).
+// handleKVAcquire is the cooperative lock take: atomic under the store's lock-table mutex, owned by the CALLING RUN (the identity in the bearer token — there are no client-managed owner tokens). when this run took or already held the lock (idempotent re-acquire); when another live run holds it (nothing is mutated — in particular the holder's backstop expiry is never restamped by a contender), with the HOLDER named in the body's held_by. Optional body {"ttl_seconds": N} sets the secondary backstop expiry; absent, the store default applies (run-finish release is the primary mechanism either way).
 func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	req, ttl, ok := parseLockRequest(w, r)
 	if !ok {
@@ -82,7 +82,7 @@ func (s *Server) handleKVAcquire(w http.ResponseWriter, r *http.Request, ns, run
 	s.blockOnLock(w, r, ns, key, runID, ttl, req, info)
 }
 
-// lockKillTimeout bounds ONE TTL enforcement: how long an acquire waits for the over-budget holder it just killed to actually reach a.
+// lockKillTimeout bounds TTL enforcement: how long an acquire waits for the over-budget holder it just killed to actually reach a.
 var lockKillTimeout = 30 * time.Second
 
 // takeLock is THE acquire seam — the plain compare-and-set plus TTL
@@ -104,13 +104,13 @@ func (s *Server) takeLock(ctx context.Context, ns, key, runID string, ttl time.D
 // until that run is certainly dead, and only then takes the lock the finish
 // seam released. The sequence is the whole point — kill, confirm, then free
 // — and every branch that cannot complete it refuses the lock instead:
-//   - holder already gone (the release-path bug the backstop exists for):
-//     reap its shell and take the lock. Nothing to kill, nothing to wait for;
-//   - holder is a live run: cancel it once, then poll until terminal;
-//   - holder is a MANAGER INSTANCE: refuse. Manager instances are supervised
-//     and restart-on-exit, so "kill it" is not this endpoint's call to make;
-//   - no run tracker wired: refuse. Liveness is unknowable, and guessing
-//     "dead" is exactly the two-holders bug.
+// - holder already gone (the release-path bug the backstop exists for):
+// reap its shell and take the lock. Nothing to kill, nothing to wait for;
+// - holder is a live run: cancel it , then poll until terminal;
+// - holder is a MANAGER INSTANCE: refuse. Manager instances are supervised
+// and restart-on-exit, so "kill it" is not this endpoint's call to make;
+// - no run tracker wired: refuse. Liveness is unknowable, and guessing
+// "dead" is exactly the -holders bug.
 func (s *Server) enforceLockTTL(ctx context.Context, ns, key, runID string, ttl time.Duration, pinned bool, holder kv.LockInfo) (kv.LockInfo, error) {
 	if s.managerCaller(ns, holder.RunID) {
 		return holder, fmt.Errorf("%w: held by the live manager instance %s, which this endpoint may not kill", kv.ErrLockExpired, holder.RunID)
@@ -157,7 +157,7 @@ func (s *Server) enforceLockTTL(ctx context.Context, ns, key, runID string, ttl 
 }
 
 // acquireLock dispatches to the plain or the atomic take-and-pin acquire.
-// One seam so the immediate path and blockOnLock's retry loop can never
+// seam so the immediate path and blockOnLock's retry loop can never
 // disagree about the requested pin.
 func (s *Server) acquireLock(ns, key, runID string, ttl time.Duration, pinned bool) (kv.LockInfo, error) {
 	if pinned {
@@ -167,17 +167,17 @@ func (s *Server) acquireLock(ns, key, runID string, ttl time.Duration, pinned bo
 }
 
 // lockWaiter is blockOnLock's ONLY seam between a RUN and a MANAGER
-// INSTANCE blocking on a contended lock. There is one blocking algorithm —
+// INSTANCE blocking on a contended lock. There is blocking algorithm —
 // poll, touch, take, or give up — because there is no meaningful difference
-// between the two callers: both are just "something webhook-runner is
-// running that wants a lock another live thing holds". Before this, the two
+// between the callers: both are just "something webhook-runner is
+// running that wants a lock another live thing holds". Before this, the
 // were separate hand-written retry loops (blockOnLock and
 // managerBlockOnLock) that had already drifted in small ways no test caught
-// — the manager path had zero coverage.
+// — the manager path had coverage.
 type lockWaiter interface {
 	// label names the caller in events and messages: "run" or "instance".
 	label() string
-	// touch credits one poll's worth of activity toward the caller's idle watchdog and reports whether it is still the entity this wait should.
+	// touch credits poll's worth of activity toward the caller's idle watchdog and reports whether it is still the entity this wait should.
 	touch() bool
 	// setWaitingOn/clearWaitingOn mirror the hold onto a run row's dashboard badge. A manager instance has no row; both are no-ops there.
 	setWaitingOn(runs.WaitingOn) uint64
@@ -212,13 +212,13 @@ func (w managerLockWaiter) clearWaitingOn(uint64)              {}
 func (w managerLockWaiter) done() <-chan struct{}              { return nil }
 func (w managerLockWaiter) cancelled() <-chan struct{}         { return nil }
 
-// blockOnLock is the held half of a blocking acquire: the first attempt was
+// blockOnLock is the held half of a blocking acquire: the attempt was
 // contended (holder describes it); determine who is asking — a run or a
 // manager instance — and keep retrying on their behalf until acquired,
 // timed out, or they are gone.
 //
-// The run tracker is consulted first, but its ABSENCE no longer refuses a
-// manager instance's block: a prior version 503'd here whenever s.tracker
+// The run tracker is consulted , but its ABSENCE no longer refuses a
+// manager instance's block: a prior version 'd here whenever s.tracker
 // was nil, before ever checking whether the caller was a manager — wrong,
 // since a manager instance's liveness (TouchInstance) has nothing to do
 // with the run tracker at all.
@@ -332,10 +332,10 @@ type stolenParty struct {
 // flag) on purpose: stealing kills another run, so the intent must be
 // unmistakable in the request line, the mux table, and the logs. The
 // transfer is atomic in the lock table, so it cannot race the holder's
-// finish-seam release (a holder that finished first just makes this a plain
+// finish-seam release (a holder that finished just makes this a plain
 // acquire — no error); the cancel then rides the existing cancel path
 // (docker-kill-by-name), and the displaced run's OTHER locks release
-// normally when it terminates — the stolen one is already owned by the
+// normally when it terminates — the stolen is already owned by the
 // thief, so the finish seam skips it. Namespace scoping means a run can
 // only ever steal from — and thus cancel — runs of its OWN hook. Blocked
 // waiters are NOT inherited by the thief; they keep polling and now contend
@@ -394,7 +394,7 @@ func (s *Server) handleKVRelease(w http.ResponseWriter, r *http.Request, ns, run
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleKVPin marks a lock the calling run holds non-stealable — POST /kv/{key}/pin, no body. Owner-only, the release auth rule: 204 pinned (idempotent), 404 not held (absent/expired), 409 held by another run.
+// handleKVPin marks a lock the calling run holds non-stealable — POST /kv/{key}/pin, no body. Owner-only, the release auth rule: pinned (idempotent), not held (absent/expired), held by another run.
 func (s *Server) handleKVPin(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	if err := s.kv.PinLock(ns, r.PathValue("key"), runID); err != nil {
 		s.writeKVError(w, ns, err)
@@ -414,7 +414,7 @@ func (s *Server) handleKVUnpin(w http.ResponseWriter, r *http.Request, ns, runID
 }
 
 // parseTTL reads the optional TTL from the X-KV-TTL header or the ?ttl= query
-// parameter, in whole seconds. Absent means no expiry (0). Negative or
+// parameter, in whole seconds. Absent means no expiry (). Negative or
 // non-numeric is a client error.
 func parseTTL(r *http.Request) (time.Duration, error) {
 	raw := r.Header.Get("X-KV-TTL")

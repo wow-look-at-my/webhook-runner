@@ -12,7 +12,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// Once shutdown begins, new launches are refused loudly (ErrDraining, an
+// shutdown begins, new launches are refused loudly (ErrDraining, an
 // error run in history) while nothing blocks — the launch-during-restart
 // race is closed at the gate.
 func TestStartRefusedWhileDraining(t *testing.T) {

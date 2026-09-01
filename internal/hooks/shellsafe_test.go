@@ -58,7 +58,7 @@ func TestShellSubstitutionInScriptArgsIsALoadError(t *testing.T) {
 
 // Plain variable references are the POINT of $HOOK_PAYLOAD_FILE and friends --
 // there is nothing nested to hide in them, and banning them would break every
-// legitimate one-line command.
+// legitimate -line command.
 func TestPlainVariableReferencesStayLegal(t *testing.T) {
 	for _, cmd := range []string{
 		`["sh","-c","cat $HOOK_PAYLOAD_FILE"]`,

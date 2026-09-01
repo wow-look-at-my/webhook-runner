@@ -51,7 +51,7 @@ func TestImageCommandCachesPerTag(t *testing.T) {
 	dir := t.TempDir()
 	docker, counter := countingDocker(t, dir)
 
-	// A content-hash tag: its ENTRYPOINT/CMD cannot change, so exactly one inspect should ever run for it however many runs the hook has.
+	// A content-hash tag: its ENTRYPOINT/CMD cannot change, so exactly inspect should ever run for it however many runs the hook has.
 	tag := "whr-hook/h:" + t.Name()
 	first, err := imageCommand(docker, tag, nil)
 	require.NoError(t, err)

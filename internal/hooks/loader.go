@@ -8,7 +8,6 @@ import (
 )
 
 // LoadDir detects the tree's layout (see layout.go) and loads every hook
-// in it. serve, validate, and test all call this, so detection never drifts.
 func LoadDir(root string) (map[string]*Hook, []error) {
 	return LoadLayout(DetectLayout(root))
 }
@@ -69,7 +68,7 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	return hooks, errs
 }
 
-// HookLoadError attributes one hook's load/validation failure to its
+// HookLoadError attributes hook's load/validation failure to its
 // hook ID, so the attention aggregator can name the offending hook.
 type HookLoadError struct {
 	HookID string
@@ -92,9 +91,6 @@ func (e ZeroHooksError) Error() string {
 }
 
 // IgnoredLegacyDirError fires when the src layout is active
-// (src/hooks/ exists) but a root-level directory still has a hook.json —
-// a mixed layout. It is a hard error: the dir is not loaded, and
-// validate/serve both fail loud on it.
 type IgnoredLegacyDirError struct {
 	Dir string // the offending top-level hook dir (absolute or as-given path)
 }

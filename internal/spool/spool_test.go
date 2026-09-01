@@ -79,7 +79,7 @@ func TestFailedDispatchKeepsTheEntry(t *testing.T) {
 	assert.Zero(t, s.Len())
 }
 
-// One unparseable entry must not wedge every delivery behind it.
+// unparseable entry must not wedge every delivery behind it.
 func TestCorruptEntryIsQuarantinedNotBlocking(t *testing.T) {
 	s := openTemp(t)
 	require.NoError(t, os.WriteFile(filepath.Join(s.dir, "00000000000000000001-bad.json"), []byte("{not json"), 0o600))

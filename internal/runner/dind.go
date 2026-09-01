@@ -1,4 +1,4 @@
-// What a `dind: true` entity gets, in ONE place so the live-run,
+// What a `dind: true` entity gets, in place so the live-run,
 // `webhook-runner test` and manager-session paths cannot drift.
 //
 // A nested daemon must write /proc/sys and /sys/fs/cgroup, and on this host

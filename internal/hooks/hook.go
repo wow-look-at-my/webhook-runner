@@ -52,16 +52,8 @@ type Hook struct {
 	Networks    []string   `json:"networks,omitempty"`
 	Volumes     []string   `json:"volumes,omitempty"`
 	// Devices are --device passthroughs (host device node -> container node,
-	// docker's own "src[:dst][:permissions]" syntax). Unlike volumes this
-	// grants access to a HOST resource, not container-private storage, so it
-	// carries the same audited-opt-in weight as dind/seccomp.userns rather
-	// than being a plain declared mount.
 	Devices []string `json:"devices,omitempty"`
 	// Settings is the hook's OWN configuration: arbitrary JSON this runner
-	// never interprets, validated at load against the settings.schema.json
-	// shipped next to the manifest, and handed to the container as a file
-	// (HOOK_SETTINGS_FILE). It replaces the old `env` block, which mixed
-	// hook-private config into the runner's own parsed keys. See settings.go.
 	Settings json.RawMessage `json:"settings,omitempty"`
 	// manifestSettings preserves the document as hook.json declared it, before any operator override was merged into Settings.
 	manifestSettings json.RawMessage `json:"-"`
@@ -70,15 +62,15 @@ type Hook struct {
 	User        string          `json:"user,omitempty"`
 	Workdir     string          `json:"workdir,omitempty"`
 
-	// TimeoutRaw, when set, is the absolute processing ceiling: the run is killed once it has been processing this long, regardless of output.
+	// TimeoutRaw, when set, is the absolute processing ceiling: the run is killed it has been processing this long, regardless of output.
 	TimeoutRaw string `json:"timeout,omitempty"`
 
-	// IdleTimeoutRaw, when set, kills a run once its container has produced NO output (stdout or stderr) for this long — a progress-aware timeout.
+	// IdleTimeoutRaw, when set, kills a run its container has produced NO output (stdout or stderr) for this long — a progress-aware timeout.
 	IdleTimeoutRaw string `json:"idle_timeout,omitempty"`
 
 	GitHubStatus *GitHubStatusConfig `json:"github_status,omitempty"`
 
-	// ConcurrencyGroup, when set, names a concurrency group the hook's runs must be scheduled through: at most that group's limit run at once and.
+	// ConcurrencyGroup, when set, names a concurrency group the hook's runs must be scheduled through: at most that group's limit run at and.
 	ConcurrencyGroup string `json:"concurrency_group,omitempty"`
 
 	APIKey       string `json:"api_key,omitempty"`
@@ -87,13 +79,13 @@ type Hook struct {
 	PublicKey       string `json:"public_key,omitempty"`
 	SignatureHeader string `json:"signature_header,omitempty"`
 
-	// Legacy HMAC-SHA256 — prefer api_key or public_key.
+	// Legacy HMAC-SHA — prefer api_key or public_key.
 	Secret string `json:"secret,omitempty"`
 
 	// Synchronous, when true, makes the server hold the HTTP connection open until the container exits (subject to its timeout).
 	Synchronous bool `json:"synchronous,omitempty"`
 
-	// Enable, when explicitly false, loads the hook DISABLED by default: deliveries are rejected (503) and scheduled runs are skipped exactly.
+	// Enable, when explicitly false, loads the hook DISABLED by default: deliveries are rejected () and scheduled runs are skipped exactly.
 	Enable *bool `json:"enable,omitempty"`
 
 	// State, when true, opts the hook into the persistent KV store: the runner bind-mounts the KV API's Unix socket into the container and injects.
@@ -105,7 +97,7 @@ type Hook struct {
 	// Seccomp narrows the container's syscall filter policy.
 	Seccomp *SeccompConfig `json:"seccomp,omitempty"`
 
-	// Schedule, when set, makes the scheduler fire this hook on a fixed interval (a Go duration, e.g. "5m"), in addition to any HTTP trigger.
+	// Schedule, when set, makes the scheduler fire this hook on a fixed interval (a Go duration, e.g. "m"), in addition to any HTTP trigger.
 	Schedule string `json:"schedule,omitempty"`
 
 	// SkipIf declares conditions under which an (authenticated) delivery is SKIPPED instead of run: answered immediately, recorded as a.
@@ -118,7 +110,7 @@ type Hook struct {
 	titleTmpl *titleTemplate
 }
 
-// SeccompConfig is the `seccomp` block: one named relaxation per field, so every syscall privilege a container gets is greppable and reviewable.
+// SeccompConfig is the `seccomp` block: named relaxation per field, so every syscall privilege a container gets is greppable and reviewable.
 type SeccompConfig struct {
 	// Userns, when true, allows the container to create unprivileged user namespaces: the runner passes a profile that is docker's default plus.
 	Userns bool `json:"userns,omitempty"`
@@ -145,7 +137,7 @@ type GitHubStatusConfig struct {
 	TargetURL string `json:"target_url,omitempty"`
 }
 
-// Timeout returns the parsed timeout, or 0 when the hook sets none (no absolute ceiling — the run is bounded only by its idle_timeout, if set, or by the.
+// Timeout returns the parsed timeout, or when the hook sets none (no absolute ceiling — the run is bounded only by its idle_timeout, if set, or by the.
 func (h *Hook) Timeout() time.Duration {
 	if h.TimeoutRaw == "" {
 		return 0
@@ -157,7 +149,7 @@ func (h *Hook) Timeout() time.Duration {
 	return d
 }
 
-// IdleTimeout returns the parsed idle timeout, or 0 when the hook sets none (no idle limit — silence is bounded only by the total timeout, if one is set).
+// IdleTimeout returns the parsed idle timeout, or when the hook sets none (no idle limit — silence is bounded only by the total timeout, if is set).
 func (h *Hook) IdleTimeout() time.Duration {
 	if h.IdleTimeoutRaw == "" {
 		return 0
@@ -174,7 +166,7 @@ func (h *Hook) EnabledByDefault() bool {
 	return h.Enable == nil || *h.Enable
 }
 
-// ScheduleInterval returns the parsed schedule duration, or 0 when the hook is not scheduled.
+// ScheduleInterval returns the parsed schedule duration, or when the hook is not scheduled.
 func (h *Hook) ScheduleInterval() time.Duration {
 	if h.Schedule == "" {
 		return 0
@@ -316,7 +308,7 @@ func (h *Hook) hasDockerfile() bool {
 	return err == nil && !fi.IsDir()
 }
 
-// ContentHash digests the files that determine this hook's image, tagging the build so a changed hook rebuilds on its next run while an unchanged one reuses the already built image. LEGACY layout: every file under the hook's directory, hashed as relative path + content — byte-identical to the historical algorithm (existing deployments must not re-tag on upgrade). SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the tree has) — never sibling entity dirs — hashed as src-relative path + file mode + content. A shared-code edit re-tags every src-layout entity (lazy rebuild on its next run, intended even for non-consumers); an edit to hook A never re-tags hook B.
+// ContentHash digests the files that determine this hook's image, tagging the build so a changed hook rebuilds on its next run while an unchanged reuses the already built image. LEGACY layout: every file under the hook's directory, hashed as relative path + content — byte-identical to the historical algorithm (existing deployments must not re-tag on upgrade). SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the tree has) — never sibling entity dirs — hashed as src-relative path + file mode + content. A shared-code edit re-tags every src-layout entity (lazy rebuild on its next run, intended even for non-consumers); an edit to hook A never re-tags hook B.
 func (h *Hook) ContentHash() (string, error) {
 	dir := h.Dir()
 	if dir == "" {
@@ -443,8 +435,8 @@ func (h *Hook) validate() error {
 	if err := h.SkipIf.compile(); err != nil {
 		return err
 	}
-	// Same rule for the run_title template: parsed here, once, so a
-	// malformed one is a load error — never a silently titleless run.
+	// Same rule for the run_title template: parsed here, , so a
+	// malformed is a load error — never a silently titleless run.
 	if err := h.compileRunTitle(); err != nil {
 		return err
 	}

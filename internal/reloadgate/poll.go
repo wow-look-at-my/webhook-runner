@@ -11,7 +11,7 @@ import (
 // StatusFunc reads the gating commit-status context's current state for sha from the GitHub API: "success", "pending", "failure", or.
 type StatusFunc func(ctx context.Context, sha string) (state string, err error)
 
-// Reconcile is one reconciliation-poll pass — the fallback that keeps a
+// Reconcile is reconciliation-poll pass — the fallback that keeps a
 // missed status webhook from freezing deploys indefinitely. It fetches
 // the tracked branch's remote tip; a tip equal to the serving commit is a
 // quiet no-op (no API call). A newer tip has its gating status read via
@@ -24,8 +24,8 @@ type StatusFunc func(ctx context.Context, sha string) (state string, err error)
 // switch to a commit whose gating context is not affirmatively green.
 //
 // Repeat ticks over an unchanged verdict are quiet: the persistent
-// needs-attention entries are the surface, and the feed gets one event
-// per verdict change, not one per hour.
+// needs-attention entries are the surface, and the feed gets event
+// per verdict change, not per hour.
 //
 // The returned outcome names what the pass did — "fetch-failed",
 // "already-current", "held-blind", "held-red", "held-pending",
@@ -90,7 +90,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 		if g.alreadyHeld(tip, state) {
 			return "held-red"
 		}
-		// The tip's push webhook may have been missed too, leaving an older (or no) commit recorded pending: quietly point the hold at the tip first —.
+		// The tip's push webhook may have been missed too, leaving an older (or no) commit recorded pending: quietly point the hold at the tip —.
 		g.mu.Lock()
 		g.pendingSHA = tip
 		g.mu.Unlock()
@@ -111,7 +111,7 @@ func (g *Gate) Reconcile(ctx context.Context) string {
 }
 
 // readGatingState determines the tip's gating state for the poll. The API is
-// asked FIRST and its answer always wins: the poll exists to catch what the
+// asked and its answer always wins: the poll exists to catch what the
 // status webhook missed, so a recorded verdict must never mask a fresher read
 // (a CI re-run flipping green->red whose status event was lost is exactly that
 // case). Only when the API cannot answer at all — no reader configured, or the
@@ -149,7 +149,7 @@ func (g *Gate) alreadyHeld(sha, state string) bool {
 
 // holdBlind records that the poll found a newer tip whose gating status
 // could not be read — the tree stays put (fail closed), loudly: the
-// persistent needs-attention entry (KeyReloadPoll) plus one
+// persistent needs-attention entry (KeyReloadPoll) plus
 // reload.poll_blind event per distinct problem, not per hourly tick.
 func (g *Gate) holdBlind(tip, reason string) {
 	g.mu.Lock()

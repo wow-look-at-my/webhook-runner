@@ -31,8 +31,6 @@ func TestStateTitleValidation(t *testing.T) {
 	require.Equal(t, 401, stateReq(t, s, "POST", "/title", "h.bogus", strings.NewReader(`{"title":"x"}`)).Code)
 
 	// Bad bodies: not JSON, absent/empty/blank titles, overlong titles. A
-	// hook naming itself can be told no — unlike the template renderer,
-	// which clamps silently.
 	overlongTitle, err := json.Marshal(map[string]string{"title": strings.Repeat("t", hooks.MaxRunTitleLen+1)})
 	require.NoError(t, err)
 	for _, body := range []string{
@@ -46,7 +44,7 @@ func TestStateTitleValidation(t *testing.T) {
 		require.Equalf(t, 400, rr.Code, "body=%q -> %s", body, rr.Body.String())
 	}
 
-	// A token whose run is unknown, finished, or belongs to another hook has nothing to title: 409 — same rule as /wait, and a terminal run's.
+	// A token whose run is unknown, finished, or belongs to another hook has nothing to title: — same rule as /wait, and a terminal run's.
 	require.Equal(t, 409,
 		stateReq(t, s, "POST", "/title", store.Token("h", "nosuchrun"), strings.NewReader(`{"title":"x"}`)).Code)
 	require.Equal(t, 409,
@@ -66,7 +64,7 @@ func TestStateTitleWithoutTracker(t *testing.T) {
 	require.Equal(t, 503, rr.Code)
 }
 
-// The happy path: 204, and the title is immediately live — on the Run, on
+// The happy path: , and the title is immediately live — on the Run, on
 // GET /runs/{id}, and replacing any earlier (template) title.
 func TestStateTitleUpdatesLiveRun(t *testing.T) {
 	s, store, tr, _ := newWaitServer(t)
@@ -79,7 +77,7 @@ func TestStateTitleUpdatesLiveRun(t *testing.T) {
 	require.Equal(t, 204, rr.Code, rr.Body.String())
 	assert.Equal(t, "wow-look-at-my/go-toolchain#47", run.Title(), "trimmed and replacing the template title")
 
-	// Visible through the admin read path at once.
+	// Visible through the admin read path at .
 	req := httptest.NewRequest(http.MethodGet, "/runs/"+run.ID(), nil)
 	w := httptest.NewRecorder()
 	admin(s).ServeHTTP(w, req)
@@ -106,7 +104,7 @@ func withHookDir(t *testing.T, h *hooks.Hook) *hooks.Hook {
 const prPayload = `{"repository":{"full_name":"wow-look-at-my/go-toolchain"},"pull_request":{"number":47}}`
 
 // An async delivery resolves the hook's run_title template at accept time:
-// the 202's run is already titled in the tracker.
+// the 's run is already titled in the tracker.
 func TestTriggerResolvesRunTitle(t *testing.T) {
 	s, reg, tr, _, _, _ := newSkipTestServer(t)
 	reg.Set(withHookDir(t, &hooks.Hook{

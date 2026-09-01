@@ -1,5 +1,5 @@
 // Startup: how the gate settles the working tree when the process boots,
-// before the first hooks load. The other tree-moving paths live beside it --
+// before the hooks load. The other tree-moving paths live beside it --
 // the status/push events in gate.go, the reconciliation poll in poll.go, the
 // operator's controls in manual.go.
 package reloadgate
@@ -11,8 +11,8 @@ import (
 )
 
 // Startup settles the working tree — called BEFORE the watcher's initial
-// scan performs the first hooks load, and it never calls Apply itself. It
-// restores the persisted last-good commit, or (first boot / vanished
+// scan performs the hooks load, and it never calls Apply itself. It
+// restores the persisted last-good commit, or ( boot / vanished
 // commit) serves what is checked out, loudly flagged unverified. Git
 // failures degrade to serving the current tree rather than crashing:
 // the runner staying up on the old tree IS the design.
@@ -51,9 +51,9 @@ func (g *Gate) Startup() {
 	}
 }
 
-// startupFreshLocked handles the first boot with no recorded state: serve
+// startupFreshLocked handles the boot with no recorded state: serve
 // whatever is checked out (fresh clone = branch tip; upgraded deployment =
-// the tree it was already serving), flagged unverified until the first
+// the tree it was already serving), flagged unverified until the
 // green.
 func (g *Gate) startupFreshLocked() {
 	head, err := g.repo.Head()

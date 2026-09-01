@@ -126,7 +126,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	runStore.StartSweeper()
 	// Closed via defer, which runs after the shutdown path's rn.Wait() —
-	// so every in-flight run has recorded its terminal state first.
+	// so every in-flight run has recorded its terminal state .
 	defer func() {
 		if err := runStore.Close(); err != nil {
 			logger.Warn("run store close", "err", err)
@@ -134,7 +134,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}()
 	tracker.SetOnFinish(server.RunFinishCallback(kvStore, runStore.Record, rec, logger))
 
-	// The shutdown delivery spool: deliveries that arrive while this process is draining are parked here and run by the NEXT one.
+	// The shutdown delivery spool: deliveries that arrive while this process is draining are parked here and run by the NEXT .
 	spoolStore, err := spool.Open(filepath.Join(dataDir, "spool"), logger)
 	if err != nil {
 		return fmt.Errorf("delivery spool: %w", err)
@@ -158,7 +158,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		return fmt.Errorf("overrides store: %w", err)
 	}
 
-	// Concurrency groups (concurrency.json at the hooks root) gate how many runs of a hook — or of several hooks sharing a group — execute at once.
+	// Concurrency groups (concurrency.json at the hooks root) gate how many runs of a hook — or of several hooks sharing a group — execute at .
 	concurrencyMgr := concurrency.NewManager(nil)
 	for group, limit := range ovStore.ConcurrencyLimits() {
 		if err := concurrencyMgr.SetLimitOverride(group, limit); err != nil {
@@ -170,7 +170,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		}
 	}
 
-	// The GLOBAL run cap: a server-wide ceiling on simultaneously running hook containers (every container holds a Docker bridge-network IPv4.
+	// The GLOBAL run cap: a server-wide ceiling on simultaneously running hook containers (every container holds a Docker bridge-network IPv.
 	globalCap := concurrency.NewGlobal(o.maxConcurrentRuns)
 	if limit, ok := ovStore.GlobalRunLimit(); ok {
 		if err := globalCap.SetLimitOverride(limit); err != nil {
@@ -199,12 +199,12 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		},
 	})
 
-	// Reap hook containers orphaned by a previous server process (a SIGKILL mid-drain, a crash): each one holds a bridge-network IP forever with.
+	// Reap hook containers orphaned by a previous server process (a SIGKILL mid-drain, a crash): each holds a bridge-network IP forever with.
 	rn.SweepOrphanContainers()
 
-	// The manager supervisor: one long-lived instance per declared manager,
-	// exactly-one-fleet-wide behind the kernel-flock lease in the data dir.
-	// Managers are FIRST-CLASS (never runs): instance lock release rides
+	// The manager supervisor: long-lived instance per declared manager,
+	// exactly--fleet-wide behind the kernel-flock lease in the data dir.
+	// Managers are -CLASS (never runs): instance lock release rides
 	// OnInstanceEnd — the finish-seam analog — and their problems surface
 	// through the aggregator's manager source.
 	sup := managers.New(managers.Options{
@@ -296,11 +296,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	srv := server.New(srvOpts)
 
-	// Watcher runs for the lifetime of the server; its initial scan is what first populates the registry, concurrency manager, and scheduler.
+	// Watcher runs for the lifetime of the server; its initial scan is what populates the registry, concurrency manager, and scheduler.
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
 	watchErr := make(chan error, 1)
-	// Replay parked deliveries exactly once, on the FIRST load that populates the registry — event-driven off the watcher's initial scan rather.
+	// Replay parked deliveries exactly , on the load that populates the registry — event-driven off the watcher's initial scan rather.
 	var replayOnce sync.Once
 	loadThenReplay := func() error {
 		err := loadAndApply()
@@ -342,7 +342,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// The manager supervisor: acquires the single-instance lease (flat poll — during a rolling deploy the old process holds it until its.
 	go sup.Run(watchCtx)
 
-	// Reload-gate reconciliation poll — the fallback that keeps a missed status webhook from freezing deploys: one immediate pass at startup (catching a green missed while down), then one per interval. Each pass fetches the remote tip and, only when it differs from what is serving, reads the gating context's commit status — switching solely on an affirmative green through the gate's normal ordering-checked path, holding loudly on anything else. Gated mode only: the legacy (gate-disabled) flow keeps its exact reload-on-signed-POST semantics with no timer.
+	// Reload-gate reconciliation poll — the fallback that keeps a missed status webhook from freezing deploys: immediate pass at startup (catching a green missed while down), then per interval. Each pass fetches the remote tip and, only when it differs from what is serving, reads the gating context's commit status — switching solely on an affirmative green through the gate's normal ordering-checked path, holding loudly on anything else. Gated mode only: the legacy (gate-disabled) flow keeps its exact reload-on-signed-POST semantics with no timer.
 	if o.hooksRepo != "" && o.reloadPollInterval > 0 {
 		if gate == nil {
 			logger.Info("reload poll not started: CI gate is disabled (legacy any-signed-POST reload mode)")
@@ -465,7 +465,7 @@ func buildScheduleFire(registry *hooks.Registry, tracker *runs.Tracker, ov *over
 			return // schedule removed between the tick and now
 		}
 		if ov.HookDisabled(hookID, h.EnabledByDefault()) {
-			// The kill switch gates dispatch everywhere: HTTP deliveries 503 and scheduled runs are skipped — loudly, on the feed.
+			// The kill switch gates dispatch everywhere: HTTP deliveries and scheduled runs are skipped — loudly, on the feed.
 			logger.Info("scheduled run skipped; hook disabled by operator", "hook", hookID)
 			rec.Record("schedule.skipped",
 				fmt.Sprintf("%s: hook is disabled by operator; skipping scheduled run", hookID),
@@ -520,7 +520,7 @@ func scheduleHeaders(hookID string) http.Header {
 	}
 }
 
-// copyExecutable copies the running binary to dst (0755) via temp+rename, so
+// copyExecutable copies the running binary to dst () via temp+rename, so
 // it can be bind-mounted into hook containers as the KV proxy shim. The binary
 // is static (CGO disabled), so it runs in any hook base image.
 func copyExecutable(dst string) error {

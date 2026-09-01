@@ -15,7 +15,7 @@ func expandSelf(t *testing.T, doc string) string {
 }
 
 // ${settings:...} resolves against the document itself, so a value written
-// once can be referenced everywhere it is needed.
+// can be referenced everywhere it is needed.
 func TestSettingsSelfReferences(t *testing.T) {
 	cases := map[string]struct{ doc, want string }{
 		"simple key": {
@@ -58,7 +58,7 @@ func TestWholeStringReferenceKeepsType(t *testing.T) {
 		expandSelf(t, `{"max":5,"got":"${settings:max}"}`))
 	assert.JSONEq(t, `{"on":true,"got":true}`,
 		expandSelf(t, `{"on":true,"got":"${settings:on}"}`))
-	// Embedded in text there is only one sensible answer: text.
+	// Embedded in text there is only sensible answer: text.
 	assert.JSONEq(t, `{"max":5,"got":"up to 5"}`,
 		expandSelf(t, `{"max":5,"got":"up to ${settings:max}"}`))
 }
@@ -117,7 +117,7 @@ func TestUnresolvableEnvReferenceIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "secrets.sops.env", "the message must say where to set it")
 }
 
-// An empty-STRING value is a real value, not a missing one: a lookup that
+// An empty-STRING value is a real value, not a missing : a lookup that
 // says "present" wins over the failure path.
 func TestEmptyEnvValueIsNotMissing(t *testing.T) {
 	out, err := ExpandSettingsEnvRefs([]byte(`{"tok":"${env:EMPTY}"}`),

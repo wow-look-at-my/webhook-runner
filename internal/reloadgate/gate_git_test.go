@@ -127,7 +127,7 @@ func TestGateStartupRestoreAgainstRealRepo(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dir := filepath.Join(base, "clone")
-	// The clone sits at the tip (c3), but the last recorded green was c2.
+	// The clone sits at the tip (c), but the last recorded green was c.
 	repo, err := hooks.OpenRepo("file://"+bare, "master", dir, "", logger)
 	require.NoError(t, err)
 

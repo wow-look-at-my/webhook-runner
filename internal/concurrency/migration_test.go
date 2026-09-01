@@ -1,7 +1,7 @@
 package concurrency
 
 // Waiter migration across semaphore swaps (limit changes) — split from
-// manager_test.go for the 750-line cap.
+// manager_test.go for the -line cap.
 
 import (
 	"fmt"
@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// queueSignal returns an onQueue callback that signals ch once, on the
-// waiter's first (registration) notification.
+// queueSignal returns an onQueue callback that signals ch , on the
+// waiter's (registration) notification.
 func queueSignal(ch chan<- struct{}) func(QueueState) {
 	first := true
 	return func(QueueState) {
@@ -55,14 +55,14 @@ func assertNoAcquire(t *testing.T, ch <-chan func(), what string) {
 
 // The production regression these tests pin: a limit change swaps the
 // group's semaphore, but runs already QUEUED used to stay blocked on the
-// retired channel — so raising a limit (the dashboard's 2→10 gha-runner
+// retired channel — so raising a limit (the dashboard's → gha-runner
 // override) had no effect on the queued backlog, which kept draining at the
 // old limit. Blocked waiters must re-bind to the group's current semaphore
 // at every swap site: SetLimitOverride, Update, and ClearLimitOverride.
 func TestLimitRaiseAdmitsQueuedWaiters(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(t *testing.T) *Manager // group "g" at effective limit 2
+		setup func(t *testing.T) *Manager // group "g" at effective limit
 		raise func(t *testing.T, m *Manager)
 	}{
 		{
@@ -93,14 +93,14 @@ func TestLimitRaiseAdmitsQueuedWaiters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := tc.setup(t)
 
-			// Two holders saturate the effective limit-2 semaphore.
+			// holders saturate the effective limit- semaphore.
 			relA, ok, err := m.Acquire("g", "run-a", nil, nil)
 			require.NoError(t, err)
 			require.True(t, ok)
 			relB, ok, _ := m.Acquire("g", "run-b", nil, nil)
 			require.True(t, ok)
 
-			// Four runs queue behind them, all registered before the raise.
+			// runs queue behind them, all registered before the raise.
 			const waiters = 4
 			queued := make(chan struct{}, waiters)
 			acquired := make(chan func(), waiters)
@@ -147,8 +147,8 @@ func TestLimitRaiseAdmitsQueuedWaiters(t *testing.T) {
 func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(t *testing.T) *Manager    // group "g" at effective limit 4
-		lower func(t *testing.T, m *Manager) // -> effective limit 2
+		setup func(t *testing.T) *Manager    // group "g" at effective limit
+		lower func(t *testing.T, m *Manager) // -> effective limit
 	}{
 		{
 			name: "set-override",
@@ -178,7 +178,7 @@ func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := tc.setup(t)
 
-			// Four holders saturate limit 4.
+			// holders saturate limit .
 			holderRels := make([]func(), 0, 4)
 			for i := 0; i < 4; i++ {
 				rel, ok, err := m.Acquire("g", fmt.Sprintf("run-h%d", i), nil, nil)
@@ -187,7 +187,7 @@ func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 				holderRels = append(holderRels, rel)
 			}
 
-			// Three runs queue behind them.
+			// runs queue behind them.
 			queued := make(chan struct{}, 3)
 			acquired := make(chan func(), 3)
 			for i := 0; i < 3; i++ {
@@ -205,7 +205,7 @@ func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 
 			tc.lower(t, m)
 
-			// Exactly two migrate into the fresh limit-2 channel.
+			// Exactly migrate into the fresh limit- channel.
 			relW1 := awaitAcquire(t, acquired, "first migrated waiter")
 			relW2 := awaitAcquire(t, acquired, "second migrated waiter")
 			assertNoAcquire(t, acquired, "a third waiter fit a limit-2 semaphore")
@@ -218,7 +218,7 @@ func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 			relW1()
 			relW3 := awaitAcquire(t, acquired, "the last waiter after a new-semaphore release")
 
-			// Drain everything; the new semaphore gates at exactly 2.
+			// Drain everything; the new semaphore gates at exactly .
 			relW2()
 			relW3()
 			for _, rel := range holderRels[1:] {
@@ -245,7 +245,7 @@ func TestCancelAfterWaiterMigration(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	// Three waiters share one cancel channel.
+	// waiters share cancel channel.
 	cancel := make(chan struct{})
 	queued := make(chan struct{}, 3)
 	acquired := make(chan func(), 3)
@@ -266,8 +266,7 @@ func TestCancelAfterWaiterMigration(t *testing.T) {
 		awaitSignal(t, queued, "waiter registration")
 	}
 
-	// Raise to 2: exactly two waiters fit the fresh semaphore; the third
-	// migrates and re-blocks on the new (now full) channel.
+	// Raise to : exactly waiters fit the fresh semaphore; the
 	require.NoError(t, m.SetLimitOverride("g", 2))
 	rel1 := awaitAcquire(t, acquired, "first migrated waiter")
 	rel2 := awaitAcquire(t, acquired, "second migrated waiter")
@@ -321,7 +320,6 @@ func TestUpdateRemovingGroupFailsQueuedWaiters(t *testing.T) {
 	}
 
 	// The wait line is gone; the removed group's holder stays listed until
-	// it releases (name-keyed bookkeeping), and its release stays safe.
 	holders, waiting := m.QueueDetail("g")
 	assert.Empty(t, waiting)
 	require.Len(t, holders, 1)
@@ -341,7 +339,7 @@ func TestQueueBookkeepingCoherentAcrossLimitRaise(t *testing.T) {
 	relB, ok, _ := m.Acquire("g", "run-b", nil, nil)
 	require.True(t, ok)
 
-	// Register the waiters one at a time so the line order is fixed.
+	// Register the waiters at a time so the line order is fixed.
 	queued := make(chan struct{}, 2)
 	acquired := make(chan func(), 2)
 	for _, id := range []string{"run-w0", "run-w1"} {
@@ -371,9 +369,7 @@ func TestQueueBookkeepingCoherentAcrossLimitRaise(t *testing.T) {
 	require.Len(t, st, 1)
 	assert.Equal(t, 5, st[0].Limit)
 	assert.Equal(t, 0, st[0].Waiting, "no waiter counter may linger after migration")
-	// Active counts the CURRENT semaphore's tokens only — the two migrated
-	// waiters; the pre-raise holders drain into the retired channel.
-	// Pre-existing display semantics, unchanged.
+	// Active counts the CURRENT semaphore's tokens only — the migrated
 	assert.Equal(t, 2, st[0].Active)
 
 	rel1()

@@ -23,7 +23,7 @@ import (
 // commit status is what moves the tree — and admin /reload becomes the
 // operator's deliberate bypass (gate.Force). The gate's Startup restores
 // the persisted last-good commit BEFORE the watcher's initial scan performs
-// the first hooks load, and never applies by itself. The gate also carries
+// the hooks load, and never applies by itself. The gate also carries
 // the reconciliation poll's status reader (see buildGateStatusFunc) so
 // Reconcile can read a newer tip's gating status from the GitHub API. An
 // empty gate context (or no repo) keeps the legacy path: any reload
@@ -81,7 +81,7 @@ func buildGateStatusFunc(gh *githubstatus.Client, o *serveOptions, logger *slog.
 }
 
 // buildReloadFunc is the legacy (gate-less) reload: pull the hooks repo to
-// its tip when one is configured, then reload from disk.
+// its tip when is configured, then reload from disk.
 func buildReloadFunc(repo *hooks.Repo, loadAndApply func() error, rec *events.Recorder) func() error {
 	if repo != nil {
 		return func() error {

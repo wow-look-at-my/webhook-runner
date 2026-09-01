@@ -43,7 +43,7 @@ func TestEventsAndImagesEndpoints(t *testing.T) {
 	assert.Contains(t, evRec.Body.String(), "github.push")
 	assert.Contains(t, evRec.Body.String(), "push to repo-x")
 
-	// The exit-0 mock docker reports every tag as built and lists no images on disk.
+	// The exit- mock docker reports every tag as built and lists no images on disk.
 	imRec := httptest.NewRecorder()
 	admin(s).ServeHTTP(imRec, httptest.NewRequest(http.MethodGet, "/images", nil))
 	require.Equal(t, http.StatusOK, imRec.Code)
@@ -89,7 +89,7 @@ func TestTriggerRejectionsRecordEvents(t *testing.T) {
 	}
 	latest := func() events.Event { return rec.List(1)[0] }
 
-	// Unknown hook id: 404 + hook.unknown, on both trigger and cancel.
+	// Unknown hook id: + hook.unknown, on both trigger and cancel.
 	require.Equal(t, http.StatusNotFound, post("/hook/nope", ""))
 	assert.Equal(t, "hook.unknown", latest().Kind)
 	assert.Contains(t, latest().Msg, "nope")
@@ -97,7 +97,7 @@ func TestTriggerRejectionsRecordEvents(t *testing.T) {
 	assert.Equal(t, "hook.unknown", latest().Kind)
 	assert.Contains(t, latest().Msg, "cancel")
 
-	// Wrong key: 401 + hook.denied — and the presented key must never appear in the feed.
+	// Wrong key: + hook.denied — and the presented key must never appear in the feed.
 	require.Equal(t, http.StatusUnauthorized, post("/hook/locked", "wrong-key"))
 	assert.Equal(t, "hook.denied", latest().Kind)
 	assert.Contains(t, latest().Msg, "locked")
@@ -106,7 +106,7 @@ func TestTriggerRejectionsRecordEvents(t *testing.T) {
 	assert.Equal(t, "hook.denied", latest().Kind)
 	assert.Contains(t, latest().Msg, "cancel")
 
-	// Unresolvable api_key reference: the caller sees a generic 401 (no config detail for anonymous callers), the operator sees.
+	// Unresolvable api_key reference: the caller sees a generic (no config detail for anonymous callers), the operator sees.
 	require.Equal(t, http.StatusUnauthorized, post("/hook/broken", "anything"))
 	kinds := []string{}
 	misconfigured := ""

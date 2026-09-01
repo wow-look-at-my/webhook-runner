@@ -1,6 +1,6 @@
 // Package server wires the hook registry, runner, and HTTP routes
-// together. It exposes two http.Handlers: one for the public-facing
-// hook port and one for the admin port (dashboard, runs, reload).
+// together. It exposes http.Handlers: for the public-facing
+// hook port and for the admin port (dashboard, runs, reload).
 package server
 
 import (
@@ -68,7 +68,7 @@ type Server struct {
 	reloadControl ReloadControl
 	ciMu          sync.Mutex
 	ciCache       map[string]ciCacheEntry
-	// ciInflight dedupes the background CI refreshes reloadCIState kicks off, so a page polling every second cannot stack one GitHub call per.
+	// ciInflight dedupes the background CI refreshes reloadCIState kicks off, so a page polling every cannot stack GitHub call per.
 	ciInflight map[string]bool
 
 	// stream fans run lifecycle updates out to GET /runs/stream clients; fed by the tracker's OnChange seam (wired in New). Never nil.
@@ -104,7 +104,7 @@ type Options struct {
 	Attention *attention.Aggregator
 	Logger    *slog.Logger
 
-	// ReloadSecret is the HMAC-SHA256 secret used to authenticate POST /_reload on the hook port. When empty, the endpoint is not registered.
+	// ReloadSecret is the HMAC-SHA secret used to authenticate POST /_reload on the hook port. When empty, the endpoint is not registered.
 	ReloadSecret string
 
 	// OnReload is called when a reload is requested (admin POST /reload or authenticated POST /_reload on the hook port).
@@ -140,7 +140,7 @@ type Options struct {
 	// RunStore is the persisted completed-run history.
 	RunStore *runstore.Store
 
-	// Overrides is the operator kill-switch store: per-hook disable switches (deliveries 503, scheduled runs skipped) and concurrency limit.
+	// Overrides is the operator kill-switch store: per-hook disable switches (deliveries , scheduled runs skipped) and concurrency limit.
 	Overrides *overrides.Store
 
 	// Managers is the manager supervisor's server surface (deliveries into inboxes, /inbox/next, the admin roster/kill switch). nil.
@@ -149,10 +149,10 @@ type Options struct {
 	// Version identifies the running build; it is reported by /health and /version on both ports.
 	Version VersionInfo
 
-	// Spool parks deliveries that arrive during shutdown drain for the next process to run. nil means a draining server answers 503 and the.
+	// Spool parks deliveries that arrive during shutdown drain for the next process to run. nil means a draining server answers and the.
 	Spool *spool.Store
 
-	// RestartMaxDefer bounds how long GET /restart-ready (the docker-updater pre-check) may keep answering 503 because runs are in flight.
+	// RestartMaxDefer bounds how long GET /restart-ready (the docker-updater pre-check) may keep answering because runs are in flight.
 	RestartMaxDefer time.Duration
 }
 
@@ -253,10 +253,10 @@ func (s *Server) registerRoutes() {
 		s.hookMux.HandleFunc("POST /_reload", s.handleReloadWebhook)
 	}
 
-	// Admin port (internal, behind zero trust).
+	// Admin port (internal, behind trust).
 	s.adminMux.HandleFunc("GET /health", s.handleHealth)
 	s.adminMux.HandleFunc("GET /restart-ready", s.handleRestartReady)
-	// The same two questions at the paths docker-updater discovers by itself, with no label to configure.
+	// The same questions at the paths docker-updater discovers by itself, with no label to configure.
 	s.adminMux.HandleFunc("GET "+wellKnownHealth, s.handleHealth)
 	s.adminMux.HandleFunc("GET "+wellKnownPreUpdate, s.handleRestartReady)
 	s.adminMux.HandleFunc("GET /version", s.handleVersion)
@@ -268,9 +268,9 @@ func (s *Server) registerRoutes() {
 	s.adminMux.HandleFunc("GET /hooks/{id}/settings", s.handleSettingsGet)
 	s.adminMux.HandleFunc("PUT /hooks/{id}/settings", s.handleSettingsSet)
 	s.adminMux.HandleFunc("DELETE /hooks/{id}/settings", s.handleSettingsClear)
-	// One downloadable incident bundle: config summary, image/KV/stats, concurrency-group state, recent runs WITH output, activity events.
+	// downloadable incident bundle: config summary, image/KV/stats, concurrency-group state, recent runs WITH output, activity events.
 	s.adminMux.HandleFunc("GET /hooks/{id}/diagnostics", s.handleHookDiagnostics)
-	// Managers: the first-class roster (state, instance, restarts, inbox, output tail), the kill switch, and the instance bounce.
+	// Managers: the -class roster (state, instance, restarts, inbox, output tail), the kill switch, and the instance bounce.
 	s.adminMux.HandleFunc("GET /managers", s.handleListManagers)
 	s.adminMux.HandleFunc("GET /managers/{id}", s.handleManagerDetail)
 	s.adminMux.HandleFunc("POST /managers/{id}/disable", s.handleManagerDisable)
@@ -316,16 +316,16 @@ func (s *Server) registerRoutes() {
 	s.stateMux.HandleFunc("POST /kv/{key}/acquire", s.withNamespace(s.handleKVAcquire))
 	s.stateMux.HandleFunc("POST /kv/{key}/release", s.withNamespace(s.handleKVRelease))
 	s.stateMux.HandleFunc("POST /kv/{key}/steal", s.withNamespace(s.handleKVSteal))
-	// Pin/unpin: the holder toggles its lock's steal-protection — a pinned lock refuses steals (409 naming the pinned holder) until unpinned.
+	// Pin/unpin: the holder toggles its lock's steal-protection — a pinned lock refuses steals ( naming the pinned holder) until unpinned.
 	s.stateMux.HandleFunc("POST /kv/{key}/pin", s.withNamespace(s.handleKVPin))
 	s.stateMux.HandleFunc("POST /kv/{key}/unpin", s.withNamespace(s.handleKVUnpin))
-	// First-class declared sleep: blocks ~N seconds, shows on the dashboard, and counts as activity for the idle timeout (see wait.go).
+	// -class declared sleep: blocks ~N seconds, shows on the dashboard, and counts as activity for the idle timeout (see wait.go).
 	s.stateMux.HandleFunc("POST /wait", s.withNamespace(s.handleWait))
 	// The manager inbox pop: the long-poll a live manager instance loops on (deliveries + reconcile ticks; see managers.go).
 	s.stateMux.HandleFunc("POST /inbox/next", s.withNamespace(s.handleInboxNext))
 	// Friendly-title override: a run whose subject is only known mid-run (a fleet sweep reaching some repo) names itself (see title.go).
 	s.stateMux.HandleFunc("POST /title", s.withNamespace(s.handleRunTitle))
-	// Instrumentation: the injected shim reports the container's first instruction, the one lifecycle mark the host cannot see (see phase.go).
+	// Instrumentation: the injected shim reports the container's instruction, the lifecycle mark the host cannot see (see phase.go).
 	s.stateMux.HandleFunc("POST /phase/container-entry", s.withNamespace(s.handleContainerEntry))
 	// Spawn: a permitted MANAGER starts runs of ANOTHER hook through the runner itself — deny-by-default manager.json spawn_targets, normal.
 	s.stateMux.HandleFunc("POST /spawn", s.withNamespace(s.handleSpawn))

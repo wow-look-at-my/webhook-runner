@@ -11,7 +11,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 )
 
-// Pin end to end: the holder pins, a steal is refused 409 naming the
+// Pin end to end: the holder pins, a steal is refused naming the
 // pinned holder (nothing cancelled, feed records the refusal), unpin
 // restores steal semantics.
 func TestStateLockPinRefusesStealUntilUnpin(t *testing.T) {
@@ -50,8 +50,8 @@ func TestStateLockPinRefusesStealUntilUnpin(t *testing.T) {
 	assert.True(t, holder.Snapshot(0).CancelRequested)
 }
 
-// Owner-only + not-held mappings on the HTTP surface: 404 for nothing
-// held, 409 for another run's lock, 204 idempotent for the owner.
+// Owner-only + not-held mappings on the HTTP surface: for nothing
+// held, for another run's lock, idempotent for the owner.
 func TestStateLockPinOwnershipMapping(t *testing.T) {
 	s, store, tr, _ := newWaitServer(t)
 

@@ -192,16 +192,16 @@ func TestEvaluateSkipORAcrossConditionsANDWithin(t *testing.T) {
 		{"action": {"in": ["labeled","unlabeled"]}, "sender.type": "Bot"}
 	]`)
 
-	// First condition matches on its own (OR).
+	// condition matches on its own (OR).
 	_, matched := h.EvaluateSkip([]byte(`{}`), ghHeaders("workflow_run"))
 	assert.True(t, matched)
 
-	// Second condition: both keys must hold (AND).
+	// condition: both keys must hold (AND).
 	reason, matched := h.EvaluateSkip([]byte(`{"action":"labeled","sender":{"type":"Bot"}}`), ghHeaders("pull_request"))
 	require.True(t, matched)
 	assert.Equal(t, `skip_if[1]: action in ["labeled", "unlabeled"] and sender.type == "Bot"`, reason)
 
-	// One key failing fails the whole condition.
+	// key failing fails the whole condition.
 	_, matched = h.EvaluateSkip([]byte(`{"action":"labeled","sender":{"type":"User"}}`), ghHeaders("pull_request"))
 	assert.False(t, matched)
 	_, matched = h.EvaluateSkip([]byte(`{"action":"opened","sender":{"type":"Bot"}}`), ghHeaders("pull_request"))
@@ -314,7 +314,7 @@ func TestEvaluateSkipTotality(t *testing.T) {
 }
 
 func TestEvaluateSkipHugeStringLeaf(t *testing.T) {
-	huge := strings.Repeat("x", 1<<20) // 1 MiB leaf
+	huge := strings.Repeat("x", 1<<20) // MiB leaf
 	payload, err := json.Marshal(map[string]string{"blob": huge})
 	require.NoError(t, err)
 

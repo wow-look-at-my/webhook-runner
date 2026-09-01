@@ -1,19 +1,19 @@
-// GET /hooks/{id}/diagnostics (admin port): one downloadable bundle of
+// GET /hooks/{id}/diagnostics (admin port): downloadable bundle of
 // everything an operator would otherwise gather by hand across /hooks/{id},
 // /runs?hook=, /events?hook=, /attention and /concurrency — built so an
 // operator hitting an incident (a wedged webhook, a stuck downstream gate,
-// a run that will not finish) can pull one file and hand it over for
-// debugging instead of pasting screenshots of five different panels.
+// a run that will not finish) can pull file and hand it over for
+// debugging instead of pasting screenshots of different panels.
 //
 // Kept to the SAME value-free contract as the rest of the admin surface,
-// with one deliberate widening: run OUTPUT is included, because /runs/{id}
+// with deliberate widening: run OUTPUT is included, because /runs/{id}
 // already serves it in full to anyone with admin access, and a diagnostic
-// bundle without the run logs would be missing the one thing incident
+// bundle without the run logs would be missing the thing incident
 // debugging is usually about. Settings values, env values, and KV values
 // are never included here — HookInfo.SettingsKeys stays names-only, exactly
 // like the rest of the admin API, because this file is meant to be pasted
 // into a bug report or a chat, which is a much wider audience than the
-// Zero-Trust-gated dashboard itself.
+// -Trust-gated dashboard itself.
 package server
 
 import (
@@ -42,12 +42,12 @@ type DiagnosticsBundle struct {
 	// ConcurrencyGroup is the hook's declared group's live state (holders, waiting, limit) — present only when the hook sets.
 	ConcurrencyGroup *concurrencyGroupView `json:"concurrency_group,omitempty"`
 
-	// Runs are this hook's most recent runs, newest first, WITH output (tailed per RunsTail — see handleHookDiagnostics), merged live +.
+	// Runs are this hook's most recent runs, newest , WITH output (tailed per RunsTail — see handleHookDiagnostics), merged live +.
 	Runs []runs.RunState `json:"runs"`
 	// RunsTruncated is set when more runs exist than were included, so a short bundle never reads as "this hook has only ever run N times".
 	RunsTruncated bool `json:"runs_truncated,omitempty"`
 
-	// Events are this hook's activity-feed entries, newest first — every kind, unlike the dashboard's exclude=run (a diagnostic bundle wants.
+	// Events are this hook's activity-feed entries, newest — every kind, unlike the dashboard's exclude=run (a diagnostic bundle wants.
 	Events []events.Event `json:"events"`
 
 	// Attention holds every CURRENTLY ACTIVE needs-attention entry scoped to this hook, plus any server-wide entry (empty Hook) that could.
@@ -63,18 +63,18 @@ const (
 	maxDiagnosticsEvents     = 2000
 )
 
-// handleHookDiagnostics answers with a single JSON bundle covering one
+// handleHookDiagnostics answers with a single JSON bundle covering
 // hook's config, image/KV/stats summary, concurrency-group state, recent
 // runs (with output), activity events, and any active needs-attention
 // entries — everything an operator would otherwise gather by hand across
 // several dashboard panels. Content-Disposition makes a browser click save
 // it straight to a file instead of navigating to raw JSON.
 //
-// ?runs= (default 50, capped at 500) bounds how many recent runs to
-// include. ?tail= (default 500, -1 = full transcript) bounds how many
+// ?runs= (default , capped at ) bounds how many recent runs to
+// include. ?tail= (default , - = full transcript) bounds how many
 // output lines each included run carries — the same knob /runs/{id}?tail=
 // already exposes, so a caller who wants full logs for every run can ask
-// for them. ?events= (default 300, capped at 2000) bounds the activity feed.
+// for them. ?events= (default , capped at ) bounds the activity feed.
 func (s *Server) handleHookDiagnostics(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	h, ok := s.registry.Get(id)
@@ -160,7 +160,7 @@ func intParam(r *http.Request, name string, def, min, max int) int {
 	return n
 }
 
-// attentionFor is the needs-attention entries relevant to one hook: its own scoped entries plus every server-wide entry (empty Hook — zero-hooks, reload-held, the containerized-TMPDIR hazard), oldest first.
+// attentionFor is the needs-attention entries relevant to hook: its own scoped entries plus every server-wide entry (empty Hook — -hooks, reload-held, the containerized-TMPDIR hazard), oldest .
 func (s *Server) attentionFor(hookID string) []attention.Entry {
 	all := s.attention.Snapshot() // nil-aggregator safe: empty, never nil
 	out := make([]attention.Entry, 0, len(all))
@@ -173,10 +173,10 @@ func (s *Server) attentionFor(hookID string) []attention.Entry {
 }
 
 // diagnosticRuns is /runs?hook=<id>'s merge (live tracker + persisted
-// history, deduped by run ID, newest-first) with ONE difference: output is
-// kept (tailed to `tail` lines; -1 = full), because a diagnostic bundle
+// history, deduped by run ID, newest-) with difference: output is
+// kept (tailed to `tail` lines; - = full), because a diagnostic bundle
 // without the logs is missing the point. max bounds the returned count;
-// pass max+1 from the caller to detect truncation without a second query.
+// pass max+ from the caller to detect truncation without a query.
 func (s *Server) diagnosticRuns(hookID string, max, tail int) []runs.RunState {
 	live := s.tracker.ListByHook(hookID, 0)
 	out := make([]runs.RunState, 0, len(live))

@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// gitRun executes one git command for the fixtures below, failing the test
+// gitRun executes git command for the fixtures below, failing the test
 // on any error. Identity env vars make commits work in a bare CI container.
 func gitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -32,8 +32,8 @@ func gitRun(t *testing.T, dir string, args ...string) string {
 }
 
 // newTestOrigin creates a bare origin repository with n commits on master
-// and returns its file:// URL, the commit shas oldest-first, and a function
-// that adds one more commit (returning its sha). The origin allows
+// and returns its file:// URL, the commit shas oldest-, and a function
+// that adds more commit (returning its sha). The origin allows
 // reachable-sha fetches, mirroring GitHub (what FetchSHA relies on).
 func newTestOrigin(t *testing.T, n int) (url string, shas []string, addCommit func(msg string) string) {
 	t.Helper()

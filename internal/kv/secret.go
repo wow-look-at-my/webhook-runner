@@ -8,7 +8,7 @@ import (
 )
 
 // EnsureSecret returns the HMAC secret used to mint namespace tokens, reading
-// it from path or generating (and persisting) a fresh 32-byte secret if the
+// it from path or generating (and persisting) a fresh -byte secret if the
 // file does not exist. It persists like the git deploy key
 // (hooks.EnsureSSHKey) but is pure-Go random bytes — an HMAC key needs no
 // external tooling, so we never shell out to ssh-keygen here.

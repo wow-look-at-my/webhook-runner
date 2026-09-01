@@ -5,42 +5,51 @@
 // Why this is a runner primitive and not a hook's business. A stateful hook
 // keeps records meaning "this subject needs another look" (required-builds'
 // reconcile/settle/deferral records, pr-minder's owed re-checks). Something has
-// to notice them. Every option available without this package is a bad one:
+// to notice them. Every option available without this package is a bad :
 //
-//   - Do it at the tail of every delivery. Then every unrelated event pays a
-//     fleet scan — measured on required-builds: 78 pending commits turned a
-//     3-second evaluation into a 90-second run, with the org's event volume
-//     setting the rate.
-//   - Do it on a fixed schedule. Cheap, but work that is ALREADY KNOWN sits
-//     waiting out the interval — a failed publish blocking a merge gate for
-//     minutes with nothing to show for the wait.
-//   - Have the hook POST itself a trigger. Works, and required-builds shipped
-//     exactly that: an HMAC self-call, a dedup marker in its own KV, a
-//     suppression flag so a failing pass could not re-trigger itself in a loop,
-//     and a floor tick for deadlines it could not express. That is a queue,
-//     hand-rolled, per hook, non-durable — the marker and the pending work
-//     disappear on restart precisely when a deploy dropped the deliveries.
+// - Do it at the tail of every delivery. Then every unrelated event pays a
+// fleet scan — measured on required-builds: pending commits turned a
+// - evaluation into a - run, with the org's event volume
+// setting the rate.
+// - Do it on a fixed schedule. Cheap, but work that is ALREADY KNOWN sits
+// waiting out the interval — a failed publish blocking a merge gate for
+// minutes with nothing to show for the wait.
+// - Have the hook POST itself a trigger. Works, and required-builds shipped
+// exactly that: an HMAC self-call, a dedup marker in its own KV, a
+// suppression flag so a failing pass could not re-trigger itself in a loop,
+// and a floor tick for deadlines it could not express. That is a queue,
+// hand-rolled, per hook, non-durable — the marker and the pending work
+// disappear on restart precisely when a deploy dropped the deliveries.
 //
 // So the queue lives here. `POST /queue` on the state API takes {key, payload,
 // delay_seconds}; the runner stores the entry, and a dispatcher starts a run of
 // that hook when it comes due. The properties a hook would otherwise have to
 // build itself:
 //
-//	DEDUP        — an entry is identified by (namespace, key). Enqueueing an
-//	               existing key UPSERTS: the earliest due time wins (work that
-//	               needs attention sooner is never pushed later) and the newest
-//	               payload wins. A thousand enqueues are one run.
-//	SCHEDULING   — delay_seconds > 0 is a wake-at-T, the thing no primitive here
-//	               offered. A settle window or a grace period becomes an entry
-//	               due at its deadline instead of a tick that polls for it.
+//	DEDUP — an entry is identified by (namespace, key). Enqueueing an
+//
+// existing key UPSERTS: the earliest due time wins (work that
+// needs attention sooner is never pushed later) and the newest
+// payload wins. A enqueues are run.
+//
+//	SCHEDULING — delay_seconds > is a wake-at-T, the thing no primitive here
+//
+// offered. A settle window or a grace period becomes an entry
+// due at its deadline instead of a tick that polls for it.
+//
 //	NO SWALLOWING— the entry is deleted as its run STARTS. Work discovered while
-//	               that run is in flight re-enqueues and gets exactly one
-//	               follow-up run.
-//	NO SPAMMING  — MinInterval bounds how often one key may fire. A hook that
-//	               re-enqueues from inside its own queue run cannot hot-loop;
-//	               the re-arm is simply scheduled at last-fire + MinInterval.
-//	DURABILITY   — bbolt, like the run store. A queued wake survives the restart
-//	               that a hook-side marker would not.
+//
+// that run is in flight re-enqueues and gets exactly
+// follow-up run.
+//
+//	NO SPAMMING — MinInterval bounds how often key may fire. A hook that
+//
+// re-enqueues from inside its own queue run cannot hot-loop;
+// the re-arm is simply scheduled at last-fire + MinInterval.
+//
+//	DURABILITY — bbolt, like the run store. A queued wake survives the restart
+//
+// that a hook-side marker would not.
 //
 // The dispatcher is a PURE timing component in the internal/scheduler mould: it
 // owns "what is due and when", and the actual run dispatch is a caller-supplied
@@ -67,22 +76,22 @@ import (
 const (
 	// MaxKeyLen bounds a caller-supplied key. Keys are opaque to the runner but they name entries on the dashboard and in logs.
 	MaxKeyLen = 256
-	// MaxPayloadBytes bounds one entry's payload.
+	// MaxPayloadBytes bounds entry's payload.
 	MaxPayloadBytes = 16 * 1024
-	// MaxPerNamespace bounds how many distinct keys one hook may have outstanding.
+	// MaxPerNamespace bounds how many distinct keys hook may have outstanding.
 	MaxPerNamespace = 1000
-	// DefaultMinInterval is the floor between two fires of the SAME key.
+	// DefaultMinInterval is the floor between fires of the SAME key.
 	DefaultMinInterval = 5 * time.Second
 	// DefaultMaxDelay caps delay_seconds. A queue entry is pending work, not a calendar; anything wanting a longer horizon wants a schedule.
 	DefaultMaxDelay = 24 * time.Hour
 )
 
 var (
-	bucketEntries = []byte("entries") // key: namespace \x00 key -> Entry JSON
-	bucketFired   = []byte("fired")   // key: namespace \x00 key -> last fire unix nanos
+	bucketEntries = []byte("entries") // key: namespace \x key -> Entry JSON
+	bucketFired   = []byte("fired")   // key: namespace \x key -> last fire unix nanos
 )
 
-// Entry is one unit of outstanding work: a hook has said "run me for this key",
+// Entry is unit of outstanding work: a hook has said "run me for this key",
 // optionally not before RunAt.
 type Entry struct {
 	Namespace  string    `json:"namespace"`
@@ -113,7 +122,7 @@ type Store struct {
 	cfg Config
 	log *slog.Logger
 
-	// Notifies the dispatcher that the earliest due time may have moved closer. Buffered depth 1: a pending signal already means "re-read".
+	// Notifies the dispatcher that the earliest due time may have moved closer. Buffered depth : a pending signal already means "re-read".
 	wake chan struct{}
 
 	mu     sync.Mutex
@@ -187,10 +196,10 @@ var ErrTooManyKeys = errors.New("queue: too many outstanding keys for this names
 // Enqueue records outstanding work, returning the stored entry.
 //
 // UPSERT semantics, which are the whole point: re-enqueueing a key that is
-// already outstanding does not add a second entry. The stored RunAt becomes the
-// EARLIER of the two (work does not get postponed by a later announcement), the
-// payload is replaced by the newest one, and the enqueue counter increments so
-// the dashboard can show how much announcing one run absorbed.
+// already outstanding does not add a entry. The stored RunAt becomes the
+// EARLIER of the (work does not get postponed by a later announcement), the
+// payload is replaced by the newest , and the enqueue counter increments so
+// the dashboard can show how much announcing run absorbed.
 //
 // The MinInterval floor applies here rather than at fire time, so what is
 // stored is the truth: an entry whose key fired moments ago is stored at
@@ -290,7 +299,7 @@ func (s *Store) Delete(namespace, key string) error {
 	})
 }
 
-// List returns a namespace's outstanding entries, soonest first. An empty
+// List returns a namespace's outstanding entries, soonest . An empty
 // namespace lists everything (the admin view).
 func (s *Store) List(namespace string) []Entry {
 	var out []Entry
@@ -316,7 +325,7 @@ func (s *Store) List(namespace string) []Entry {
 	return out
 }
 
-// Get returns one entry.
+// Get returns entry.
 func (s *Store) Get(namespace, key string) (Entry, bool) {
 	var e Entry
 	found := false
@@ -334,7 +343,7 @@ func (s *Store) Get(namespace, key string) (Entry, bool) {
 // Claim removes and returns every entry due at now, stamping each key's fire
 // time. Removal happens as the run STARTS (this call is what precedes the
 // dispatch), so work discovered while that run is in flight re-enqueues cleanly
-// and earns exactly one follow-up run instead of being swallowed.
+// and earns exactly follow-up run instead of being swallowed.
 func (s *Store) Claim(now time.Time) []Entry {
 	var claimed []Entry
 	err := s.db.Update(func(tx *bolt.Tx) error {

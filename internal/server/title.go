@@ -14,16 +14,16 @@ import (
 const maxTitleBody = 4096
 
 // handleRunTitle implements POST /title on the state API: the running hook
-// names its own run — {"title": "wow-look-at-my/go-toolchain#47"} — and the
+// names its own run — {"title": "wow-look-at-my/go-toolchain#"} — and the
 // live RunState (dashboard rows, the timeline chip, /runs, and the terminal
 // snapshot the run store will persist) picks it up immediately.
 //
-// This is the mid-run override for subjects only known once the run reaches
+// This is the mid-run override for subjects only known the run reaches
 // them: a fleet sweep doesn't know which repo matters until it gets there,
 // so no hook.json template could have said. It REPLACES any template title;
 // the last write wins. Bounds mirror the template side (trimmed, max
 // hooks.MaxRunTitleLen) — but where the renderer clamps silently, a hook
-// speaking for itself can be told no: empty and overlong titles are 400s,
+// speaking for itself can be told no: empty and overlong titles are s,
 // mirroring /wait's reason validation.
 //
 // Only state: true hooks can title themselves: the endpoint rides the same

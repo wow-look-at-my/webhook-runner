@@ -29,7 +29,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// fakeManagers is a ManagerControl the server tests drive directly: one real inbox per id (the actual completion/settle semantics), instance binding under test control.
+// fakeManagers is a ManagerControl the server tests drive directly: real inbox per id (the actual completion/settle semantics), instance binding under test control.
 type fakeManagers struct {
 	mu        sync.Mutex
 	inboxes   map[string]*managers.Inbox
@@ -136,8 +136,8 @@ func (f *fakeManagers) changed() {
 	}
 }
 
-// managerServer builds a Server with one declared manager (secret-authed,
-// one skip_if condition) and the fake control.
+// managerServer builds a Server with declared manager (secret-authed,
+// skip_if condition) and the fake control.
 func managerServer(t *testing.T, doc string) (*Server, *fakeManagers, *hooks.Manager, *overrides.Store, *events.Recorder, *kv.Store) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -201,18 +201,18 @@ func signedManagerReq(t *testing.T, s *Server, body, event string) *httptest.Res
 func TestManagerTriggerFlow(t *testing.T) {
 	s, fm, _, _, rec, store := managerServer(t, managerDoc)
 
-	// Unauthenticated: 401, nothing enqueued, conditions never probed.
+	// Unauthenticated: , nothing enqueued, conditions never probed.
 	rr := httptest.NewRecorder()
 	s.HookHandler().ServeHTTP(rr, httptest.NewRequest("POST", "/hook/coord", strings.NewReader(`{}`)))
 	require.Equal(t, 401, rr.Code)
 
-	// skip_if match (non-workflow_job): 200 skipped, no inbox entry, loud.
+	// skip_if match (non-workflow_job): skipped, no inbox entry, loud.
 	rr = signedManagerReq(t, s, `{"zen":"ok"}`, "ping")
 	require.Equal(t, 200, rr.Code)
 	assert.Contains(t, rr.Body.String(), "skipped")
 	assert.Contains(t, eventKinds(rec.ListByHook("coord", 10)), "manager.skipped")
 
-	// A real delivery: 202 queued with an event id.
+	// A real delivery: queued with an event id.
 	rr = signedManagerReq(t, s, `{"action":"queued"}`, "workflow_job")
 	require.Equal(t, 202, rr.Code)
 	var acc struct {
@@ -233,7 +233,7 @@ func TestManagerTriggerFlow(t *testing.T) {
 	assert.JSONEq(t, `{"action":"queued"}`, string(ev.Payload))
 	assert.Equal(t, "workflow_job", ev.Headers.Get("X-Github-Event"))
 
-	// Elapsed wait → 204; stale instance → 409.
+	// Elapsed wait → ; stale instance → .
 	require.Equal(t, 204, stateReq(t, s, "POST", "/inbox/next", tok, strings.NewReader(`{"wait_seconds":1}`)).Code)
 	require.Equal(t, 409, stateReq(t, s, "POST", "/inbox/next", store.Token("coord", "stale"), nil).Code)
 }
@@ -265,7 +265,7 @@ func TestManagerEnableDefaultsAndKillSwitch(t *testing.T) {
 }
 
 // synchronous: the delivery holds until the manager finishes processing
-// THAT event (its next /inbox/next call), then answers 200 processed.
+// THAT event (its next /inbox/next call), then answers processed.
 func TestManagerSynchronousDelivery(t *testing.T) {
 	syncDoc := strings.Replace(managerDoc, `"reconcile_interval"`, `"synchronous": true, "reconcile_interval"`, 1)
 	s, fm, _, _, _, store := managerServer(t, syncDoc)
@@ -275,8 +275,8 @@ func TestManagerSynchronousDelivery(t *testing.T) {
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- signedManagerReq(t, s, `{"action":"queued"}`, "workflow_job") }()
 
-	// The manager pops the event, then comes back for the next one — that
-	// second call settles the first event as processed.
+	// The manager pops the event, then comes back for the next — that
+	// call settles the event as processed.
 	require.Eventually(t, func() bool {
 		return fm.inboxes["coord"].Depth() > 0 || len(done) > 0
 	}, 2*time.Second, 5*time.Millisecond)
@@ -289,9 +289,9 @@ func TestManagerSynchronousDelivery(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "processed")
 }
 
-// /spawn accepts a manager instance as PARENT (first-class identity, not a
+// /spawn accepts a manager instance as PARENT (-class identity, not a
 // run): the liveness check rides the supervisor, and a stale instance
-// token still 409s.
+// token still s.
 func TestSpawnManagerParent(t *testing.T) {
 	s, fm, _, _, _, store := managerServer(t, managerDoc)
 	// The server needs spawn wiring: a target hook + allowlist + runner are exercised in spawn_test.go; here the PARENT gate is the subject — an.
@@ -326,7 +326,7 @@ func TestManagerWaitAndTitle(t *testing.T) {
 	assert.Equal(t, "reconciled 3 repos", fm.titles["coord"])
 	fm.mu.Unlock()
 
-	// A stale instance gets the run-is-not-active 409 on both.
+	// A stale instance gets the run-is-not-active on both.
 	stale := store.Token("coord", "stale")
 	assert.Equal(t, 409, stateReq(t, s, "POST", "/wait", stale, strings.NewReader(`{"seconds":1,"reason":"x"}`)).Code)
 	assert.Equal(t, 409, stateReq(t, s, "POST", "/title", stale, strings.NewReader(`{"title":"x"}`)).Code)

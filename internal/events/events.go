@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Event is one entry in the activity feed.
+// Event is entry in the activity feed.
 type Event struct {
 	Time   time.Time         `json:"time"`
 	Kind   string            `json:"kind"`
@@ -64,7 +64,7 @@ func (r *Recorder) Record(kind, msg string, fields map[string]string) {
 	}
 }
 
-// Family is the first dot-separated segment of an event kind — the family every kind belongs to ("run" for.
+// Family is the dot-separated segment of an event kind — the family every kind belongs to ("run" for.
 func Family(kind string) string {
 	if i := strings.IndexByte(kind, '.'); i >= 0 {
 		return kind[:i]
@@ -72,7 +72,7 @@ func Family(kind string) string {
 	return kind
 }
 
-// Filter narrows a listing. The zero Filter matches everything.
+// Filter narrows a listing. The Filter matches everything.
 type Filter struct {
 	// Hook, when set, keeps only events whose "hook" field names it — the convention every hook-scoped recorder call already follows.
 	Hook string
@@ -96,7 +96,7 @@ func (f Filter) match(ev Event) bool {
 	return true
 }
 
-// ListFiltered returns up to max events matching f, newest first. max <= 0 returns every retained match. FILTERING HAPPENS BEFORE THE CAP, and that ordering is the whole point: max bounds the events RETURNED, never the events EXAMINED.
+// ListFiltered returns up to max events matching f, newest . max <= returns every retained match. FILTERING HAPPENS BEFORE THE CAP, and that ordering is the whole point: max bounds the events RETURNED, never the events EXAMINED.
 func (r *Recorder) ListFiltered(f Filter, max int) []Event {
 	if r == nil {
 		return nil
@@ -120,7 +120,7 @@ func (r *Recorder) ListFiltered(f Filter, max int) []Event {
 	return out
 }
 
-// capHint sizes the result slice: the cap when one is set, else everything
+// capHint sizes the result slice: the cap when is set, else everything
 // retained.
 func capHint(max, retained int) int {
 	if max > 0 {
@@ -129,14 +129,14 @@ func capHint(max, retained int) int {
 	return retained
 }
 
-// List returns up to max events, newest first. max <= 0 returns all
+// List returns up to max events, newest . max <= returns all
 // retained events.
 func (r *Recorder) List(max int) []Event {
 	return r.ListFiltered(Filter{}, max)
 }
 
 // ListByHook returns up to max events whose "hook" field names the given
-// hook, newest first. max <= 0 returns all retained matches.
+// hook, newest . max <= returns all retained matches.
 func (r *Recorder) ListByHook(hookID string, max int) []Event {
 	return r.ListFiltered(Filter{Hook: hookID}, max)
 }

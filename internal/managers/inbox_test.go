@@ -47,7 +47,7 @@ func TestInboxStaleInstanceRefused(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotSession)
 }
 
-// Ticks coalesce: at most one queued at a time; consuming it re-allows one.
+// Ticks coalesce: at most queued at a time; consuming it re-allows .
 func TestInboxTickCoalescing(t *testing.T) {
 	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
@@ -63,12 +63,12 @@ func TestInboxTickCoalescing(t *testing.T) {
 	assert.True(t, ib.PushTick(), "consumed tick re-allows one")
 }
 
-// The inbox is UNBOUNDED: a burst far past the old 256 cap keeps every
+// The inbox is UNBOUNDED: a burst far past the old cap keeps every
 // event, in order, and settles none of them early. The cap used to drop the
 // oldest per push, which is how a fan-out tick against a large fleet lost
 // real deliveries behind a wall of manager.inbox_dropped.
 func TestInboxKeepsEveryEventUnderABurst(t *testing.T) {
-	const burst = 1000 // ~4x the retired cap
+	const burst = 1000 // ~x the retired cap
 	ib := NewInbox()
 	ib.BindInstance("i", nil, nil, nil)
 
@@ -89,7 +89,7 @@ func TestInboxKeepsEveryEventUnderABurst(t *testing.T) {
 		}
 	}
 
-	// FIFO order survives the burst — the oldest is still first out.
+	// FIFO order survives the burst — the oldest is still out.
 	for i := range burst {
 		ev, ok, err := ib.Next(context.Background(), "i", time.Second)
 		require.NoError(t, err)
@@ -151,16 +151,6 @@ func TestInboxWatchdogArming(t *testing.T) {
 		close(done)
 	}()
 	// Synchronize on the goroutine actually being PARKED, not merely on the
-	// disarm. Next disarms STRICTLY before it increments parked, so waiting on
-	// disarmed==1 leaves a window in which parked is still 0. A push in that
-	// window sees "nobody parked, nothing checked out" and fires a spurious
-	// wedge-guard arm -- and since arm() is an idempotent state re-stamp (see
-	// idleWatchdog.Arm) rather than a counted event, that extra call is
-	// harmless in production but makes the exact-count assertion below flake
-	// ("got 4"). Observing parked==1 under the same mutex push reads closes the
-	// window: the wedge guard provably cannot fire, so the delivery produces
-	// exactly one checkout arm. parked==1 also proves the disarm already ran,
-	// because Next disarms before parked++.
 	require.Eventually(t, func() bool {
 		ib.mu.Lock()
 		defer ib.mu.Unlock()

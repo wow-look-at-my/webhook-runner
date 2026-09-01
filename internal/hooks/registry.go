@@ -6,9 +6,6 @@ import (
 )
 
 // Registry is a concurrency-safe mapping from hook ID to loaded hook. The
-// watcher updates it; the HTTP server reads it to dispatch requests.
-// Managers share the id namespace but live in their own map, so hook
-// consumers never see them by accident.
 type Registry struct {
 	mu       sync.RWMutex
 	hooks    map[string]*Hook
@@ -86,7 +83,7 @@ type Summary struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	Synchronous bool   `json:"synchronous,omitempty"`
-	// Fire interval (e.g. "5m") when scheduled, else empty.
+	// Fire interval (e.g. "m") when scheduled, else empty.
 	Schedule string `json:"schedule,omitempty"`
 }
 

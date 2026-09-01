@@ -1,28 +1,28 @@
 // Package attention aggregates the server's ACTIVE misconfigurations into
-// one current problem set for the admin dashboard — the persistent
+// current problem set for the admin dashboard — the persistent
 // "needs attention" surface behind GET /attention and the red banner.
 //
 // The activity feed already announces every misconfiguration as it happens,
 // but events scroll away; this package holds the CURRENT set, and every
 // entry has an explicit lifecycle:
 //
-//   - STATE-DERIVED sources re-derive from scratch on every hooks reload
-//     (ReplaceSource): dropped hooks ("load"), the zero-hooks guard
-//     ("zero-hooks"), and the serve-time static probe of ${NAME}
-//     api_key/env references + sops decrypt ("secrets"). Their clear rule
-//     is structural: an entry vanishes on the first reload where the
-//     underlying problem is gone.
-//   - The BOOT-SCOPED "server" source holds verdicts computed once at
-//     startup (today: the containerized-without-TMPDIR hazard). A running
-//     process's environment cannot change, so these cannot clear without a
-//     restart — documented per entry.
-//   - EVENT-DERIVED entries ("event") come from recognized activity-event
-//     kinds via registered rules (the seam for hook-emitted signals — see
-//     RegisterStandardEventRules). Each rule documents the clear rule for
-//     the entries it creates; every rule's clear condition is one that can
-//     actually fire.
+// - STATE-DERIVED sources re-derive from scratch on every hooks reload
+// (ReplaceSource): dropped hooks ("load"), the -hooks guard
+// ("-hooks"), and the serve-time static probe of ${NAME}
+// api_key/env references + sops decrypt ("secrets"). Their clear rule
+// is structural: an entry vanishes on the reload where the
+// underlying problem is gone.
+// - The BOOT-SCOPED "server" source holds verdicts computed at
+// startup (today: the containerized-without-TMPDIR hazard). A running
+// process's environment cannot change, so these cannot clear without a
+// restart — documented per entry.
+// - EVENT-DERIVED entries ("event") come from recognized activity-event
+// kinds via registered rules (the seam for hook-emitted signals — see
+// RegisterStandardEventRules). Each rule documents the clear rule for
+// the entries it creates; every rule's clear condition is that can
+// actually fire.
 //
-// Entry identity is (source, hook, key). Since is the first time the
+// Entry identity is (source, hook, key). Since is the time the
 // problem became active and is PRESERVED across re-derivations while the
 // same identity persists (the message may update in place); it resets only
 // when the entry clears and later recurs. Everything is in-memory — the
@@ -63,7 +63,7 @@ const (
 	SourceGitHubStatus = "github-status"
 )
 
-// Entry is one active problem. Identity is (Source, Hook, Key); Message
+// Entry is active problem. Identity is (Source, Hook, Key); Message
 // must be value-free — name the hook or reference, never a secret value.
 type Entry struct {
 	Source  string    `json:"source"`
@@ -85,7 +85,7 @@ type Resolution struct {
 	KeyPrefix string
 }
 
-// RuleFunc maps one activity event onto entries to report and resolutions to clear.
+// RuleFunc maps activity event onto entries to report and resolutions to clear.
 type RuleFunc func(hook, message string) (report []Entry, resolve []Resolution)
 
 // Aggregator is the concurrency-safe current problem set. A nil
@@ -98,7 +98,6 @@ type Aggregator struct {
 	rules   map[string][]RuleFunc
 
 	// onChange fires under the aggregator mutex after a real mutation —
-	// keep it fast and never call back into the Aggregator.
 	onChange func()
 }
 
@@ -121,7 +120,7 @@ func (a *Aggregator) SetOnChange(fn func()) {
 	a.mu.Unlock()
 }
 
-// ReplaceSource atomically replaces every entry of one source with the
+// ReplaceSource atomically replaces every entry of source with the
 // given set — the state-derived re-derivation path, called on each reload.
 // Entries whose identity persists KEEP their Since (the problem never
 // stopped being active); new identities are stamped now; identities absent
@@ -167,7 +166,7 @@ func (a *Aggregator) ReplaceSource(source string, entries []Entry) {
 	a.notifyLocked(changed)
 }
 
-// Report adds one entry (or refreshes its message in place when the
+// Report adds entry (or refreshes its message in place when the
 // identity is already active — Since is preserved).
 func (a *Aggregator) Report(e Entry) {
 	if a == nil {
@@ -195,7 +194,7 @@ func (a *Aggregator) Resolve(source, hook, key string) {
 	a.notifyLocked(true)
 }
 
-// RegisterEventRule registers a rule for one event kind, in registration order.
+// RegisterEventRule registers a rule for event kind, in registration order.
 func (a *Aggregator) RegisterEventRule(kind string, rule RuleFunc) {
 	if a == nil || rule == nil {
 		return
@@ -205,7 +204,7 @@ func (a *Aggregator) RegisterEventRule(kind string, rule RuleFunc) {
 	a.mu.Unlock()
 }
 
-// ObserveEvent feeds one recorded activity event through the registered
+// ObserveEvent feeds recorded activity event through the registered
 // rules — the event seam. hook is the event's "hook" field ("" for
 // server-wide events), message its display text. Events of unrecognized
 // kinds are ignored. Safe to call from the recorder's OnRecord callback
@@ -236,7 +235,7 @@ func (a *Aggregator) ObserveEvent(kind, hook, message string) {
 	a.notifyLocked(changed)
 }
 
-// Snapshot returns the active entries, oldest first (ties broken by
+// Snapshot returns the active entries, oldest (ties broken by
 // source, hook, key for deterministic output). Never nil.
 func (a *Aggregator) Snapshot() []Entry {
 	if a == nil {
@@ -273,7 +272,7 @@ func (a *Aggregator) Count() int {
 	return len(a.entries)
 }
 
-// reportLocked inserts or refreshes one entry; caller holds a.mu.
+// reportLocked inserts or refreshes entry; caller holds a.mu.
 func (a *Aggregator) reportLocked(e Entry) bool {
 	id := e.identity()
 	if old, ok := a.entries[id]; ok {

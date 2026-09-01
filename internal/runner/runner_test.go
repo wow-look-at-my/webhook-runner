@@ -20,7 +20,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// writeMockDocker drops a shell script at <dir>/docker that: - parses docker-run-style flags (skipping known flag-value pairs) - prints "image=<name>" once it identifies the image - prints each command token after the image on its own line - exits with code N when it sees "EXIT_N" in the command - sleeps N seconds when it sees "SLEEP_N" (kill-able) This lets the runner be.
+// writeMockDocker drops a shell script at <dir>/docker that: - parses docker-run-style flags (skipping known flag-value pairs) - prints "image=<name>" it identifies the image - prints each command token after the image on its own line - exits with code N when it sees "EXIT_N" in the command - sleeps N seconds when it sees "SLEEP_N" (kill-able) This lets the runner be.
 func writeMockDocker(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "docker")
@@ -65,7 +65,7 @@ func newSilentLogger() *slog.Logger {
 
 // diskHook returns a hook backed by a real directory — every hook hashes
 // its directory to resolve its image tag, so even mock-docker tests need
-// one on disk.
+// on disk.
 func diskHook(t *testing.T, base string, h *hooks.Hook) *hooks.Hook {
 	t.Helper()
 	hookDir := filepath.Join(base, h.ID)
@@ -129,7 +129,7 @@ func TestRunnerFailure(t *testing.T) {
 }
 
 // A run producing no output for longer than its idle_timeout is killed —
-// this silent sleeper dies at 100ms even though nothing bounds its total
+// this silent sleeper dies at ms even though nothing bounds its total
 // runtime (no `timeout` is set).
 func TestRunnerTimeout(t *testing.T) {
 	dir := t.TempDir()
@@ -191,7 +191,7 @@ func TestRunnerWritesPayloadFile(t *testing.T) {
 		Tracker: tracker,
 		Logger:  newSilentLogger(),
 		TmpDir:  tmp,
-		Docker:  "/bin/true", // accepts and ignores all args, exits 0
+		Docker:  "/bin/true", // accepts and ignores all args, exits
 	})
 	hook := diskHook(t, tmp, &hooks.Hook{ID: "h", Command: []string{"x"}})
 	_, err := r.Start(context.Background(), hook, []byte("hello payload"), http.Header{}, "")
@@ -566,9 +566,9 @@ func waitStatus(t *testing.T, run *runs.Run, want runs.Status, timeout time.Dura
 }
 
 // TestRunnerConcurrencyGroupQueuesAndDefersTimeout is the heart of the
-// feature: a second run sharing a limit-1 group queues behind the first
+// feature: a run sharing a limit- group queues behind the
 // (staying "pending", not "running") and its absolute `timeout` deadline
-// only starts once the slot is acquired — so it does not time out while
+// only starts the slot is acquired — so it does not time out while
 // waiting in the queue. This is also the integration proof of the ctx
 // arming rule: runContext is created only after the concurrency-group
 // slot is acquired, so a queued run's ceiling never ticks.
@@ -587,7 +587,7 @@ func TestRunnerConcurrencyGroupQueuesAndDefersTimeout(t *testing.T) {
 		Groups:  mgr,
 	})
 
-	// A holds the single slot for ~1s.
+	// A holds the single slot for ~s.
 	hookA := diskHook(t, dir, &hooks.Hook{ID: "a", Command: []string{"SLEEP_1"}, ConcurrencyGroup: "g"})
 	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)

@@ -7,7 +7,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// resolveSettingsFile rewrites the run's mounted settings document with its ${env:NAME} references resolved -- secrets first, then the runner host's environment, the same resolution api_key and the superseded env block use.
+// resolveSettingsFile rewrites the run's mounted settings document with its ${env:NAME} references resolved -- secrets , then the runner host's environment, the same resolution api_key and the superseded env block use.
 func resolveSettingsFile(hook *hooks.Hook, secrets map[string]string, path string) error {
 	expanded, err := hooks.ExpandSettingsEnvRefs(hook.SettingsJSON(), hooks.SecretsFirstLookup(secrets))
 	if err != nil {

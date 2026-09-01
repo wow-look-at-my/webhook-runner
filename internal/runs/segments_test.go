@@ -63,7 +63,7 @@ func TestCancelRequestedAtStampedOnce(t *testing.T) {
 	r.RequestCancel()
 	first := r.Snapshot(0).CancelRequestedAt
 	require.False(t, first.IsZero())
-	r.RequestCancel() // second request: timestamp keeps the FIRST instant
+	r.RequestCancel() // request: timestamp keeps the instant
 	assert.Equal(t, first, r.Snapshot(0).CancelRequestedAt)
 
 	b, err := json.Marshal(r.Snapshot(0))
@@ -83,16 +83,16 @@ func TestSegmentsFieldsOmittedWhenUnused(t *testing.T) {
 	assert.NotContains(t, string(b), "cancel_requested_at")
 }
 
-// One logical wait = ONE history entry: a re-stamp of the same kind+key (a
+// logical wait = history entry: a re-stamp of the same kind+key (a
 // queued group acquire whose position/holders changed, a blocked lock
 // changing hands) continues the open segment instead of fragmenting it.
-// Reproduced live before the fix: a single 7-deep queue wait shipped 14
+// Reproduced live before the fix: a single -deep queue wait shipped
 // contiguous micro-segments on every SSE delta.
 func TestSetWaitingOnRestampContinuesOpenSegment(t *testing.T) {
 	tr := NewTracker()
 	r := tr.New("h")
 
-	// Join the queue at position 7, then advance through the line: same logical wait, restamped once per queue movement.
+	// Join the queue at position , then advance through the line: same logical wait, restamped per queue movement.
 	var seq uint64
 	for pos := 7; pos >= 1; pos-- {
 		seq = r.SetWaitingOn(WaitingOn{Kind: WaitingOnGroup, Key: "model-gateway", Position: pos,
@@ -104,7 +104,7 @@ func TestSetWaitingOnRestampContinuesOpenSegment(t *testing.T) {
 	require.NotNil(t, st.WaitingOn)
 	assert.Equal(t, 1, st.WaitingOn.Position, "the live WaitingOn still tracks the newest restamp")
 
-	// A DIFFERENT wait (other key) closes the segment and opens a new one.
+	// A DIFFERENT wait (other key) closes the segment and opens a new .
 	seq = r.SetWaitingOn(WaitingOn{Kind: WaitingOnLock, Key: "pr:1"})
 	st = r.Snapshot(0)
 	require.Len(t, st.WaitHistory, 2)

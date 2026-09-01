@@ -141,7 +141,7 @@ func (s *Server) handleKVIncr(w http.ResponseWriter, r *http.Request, ns, _ stri
 // lockRetryInterval is the poll cadence of a blocking acquire.
 const lockRetryInterval = 250 * time.Millisecond
 
-// lockConflict is the 409 body for a contended acquire (immediate or after a blocking acquire gave up): the error plus WHO holds the lock, so.
+// lockConflict is the body for a contended acquire (immediate or after a blocking acquire gave up): the error plus WHO holds the lock, so.
 type lockConflict struct {
 	Error  string       `json:"error"`
 	HeldBy *kv.LockInfo `json:"held_by,omitempty"`
@@ -151,7 +151,7 @@ type lockConflict struct {
 // typed errors are the caller's fault; anything else is an internal store
 // failure — in practice a failed disk persist, after which the store has
 // already rolled the in-memory mutation back. Those must be loud end-to-end:
-// the hook gets a 5xx carrying the reason (its write did NOT happen), the
+// the hook gets a xx carrying the reason (its write did NOT happen), the
 // server log gets the error, and the activity feed gets a kv.write_failed
 // event so the dashboard can answer "are state writes failing?".
 func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
@@ -162,7 +162,7 @@ func (s *Server) writeKVError(w http.ResponseWriter, ns string, err error) {
 		writeError(w, http.StatusInsufficientStorage, err.Error())
 	case errors.Is(err, kv.ErrNotInteger):
 		writeError(w, http.StatusConflict, err.Error())
-	// Lock contention/ownership outcomes are normal control flow for the caller (409/404), never write failures — no log, no event.
+	// Lock contention/ownership outcomes are normal control flow for the caller (/), never write failures — no log, no event.
 	case errors.Is(err, kv.ErrLockHeld):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, kv.ErrLockPinned):

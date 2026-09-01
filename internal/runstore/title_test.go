@@ -71,7 +71,7 @@ func TestRecordUntitledOmitsTitleKey(t *testing.T) {
 }
 
 // A pre-title database row — a metadata blob written before the field
-// existed, with the legacy two-field index value beside it — reads back
+// existed, with the legacy -field index value beside it — reads back
 // title-less without error, on Get, the list walks, and the summaries.
 func TestPreTitleRowsReadBackTitleless(t *testing.T) {
 	s := newStore(t, Config{})
@@ -80,7 +80,7 @@ func TestPreTitleRowsReadBackTitleless(t *testing.T) {
 
 	// Rewrite the row in place to its pre-title generation: a hand-built
 	// blob without the "title" key (what old binaries marshaled) and the
-	// legacy two-field summary value.
+	// legacy -field summary value.
 	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
 		blob, err := json.Marshal(struct {
 			ID       string `json:"id"`

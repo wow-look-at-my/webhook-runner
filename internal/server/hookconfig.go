@@ -1,7 +1,7 @@
 // The admin drill-down's config view: the hook's OWN hook.json, filtered
 // through an explicit key whitelist.
 //
-// The previous shape hand-copied a dozen fields into a typed struct, which
+// The previous shape hand-copied fields into a typed struct, which
 // meant every new hook.json key was invisible to operators until somebody
 // remembered to mirror it here -- and mirrored keys drifted from their
 // source spelling (seccomp.userns arrived as a flattened "seccomp_userns").

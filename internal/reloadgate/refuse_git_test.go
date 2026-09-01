@@ -1,7 +1,7 @@
 // THE TREE-MOVED HALF OF THE FAIL-CLOSED RULE, over a real git clone.
 //
 // A tree can carry a manifest field the RUNNING binary does not know — the
-// hooks repo merged first, or the runner's own deploy has not landed yet.
+// hooks repo merged , or the runner's own deploy has not landed yet.
 // The load then fails and applies nothing (internal/cli.buildLoadAndApply),
 // and the question this file answers is what the gate does about a working
 // tree it has already moved.
@@ -30,7 +30,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// refuseRepo builds a real bare origin + clone with three commits and
+// refuseRepo builds a real bare origin + clone with commits and
 // returns the clone, the commits, and a commit() to add more.
 func refuseRepo(t *testing.T) (*hooks.Repo, string, func(string) string, string) {
 	t.Helper()
@@ -72,7 +72,7 @@ func TestRefusedTreeRollsBackToTheServingCommit(t *testing.T) {
 	rec := events.NewRecorder(100)
 	agg := attention.New()
 
-	// The binary accepts the tree it is already serving and REFUSES the next one — the shape of a manifest field this build does not know.
+	// The binary accepts the tree it is already serving and REFUSES the next — the shape of a manifest field this build does not know.
 	refuse := false
 	applied := []string{}
 	g, err := New(Config{
@@ -150,7 +150,7 @@ func TestARefusedSwitchIsNotPersisted(t *testing.T) {
 	require.NoError(t, err, "the accepting binary switches normally")
 	require.Equal(t, c3, g.TreeState().ServingSHA)
 
-	// Now the same repo under a binary that refuses the CURRENT tree's successor — a second commit arrives and is refused.
+	// Now the same repo under a binary that refuses the CURRENT tree's successor — a commit arrives and is refused.
 	c4 := commit("c4")
 	refuse := false
 	g2, err := New(Config{
@@ -176,7 +176,7 @@ func TestARefusedSwitchIsNotPersisted(t *testing.T) {
 	_, err = g2.HandleEvent("status", statusBody(t, c4, "success", "all-builds", "master"))
 	require.Error(t, err)
 
-	// Reopening from the SAME state file must find c3 serving, never c4.
+	// Reopening from the SAME state file must find c serving, never c.
 	g3, err := New(Config{
 		Repo:      repo,
 		Branch:    "master",

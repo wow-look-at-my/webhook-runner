@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// DefaultPollTick is the poller run-loop resolution (the internal/scheduler convention): intervals are hour-scale, so one-second.
+// DefaultPollTick is the poller run-loop resolution (the internal/scheduler convention): intervals are hour-scale, so -.
 const DefaultPollTick = time.Second
 
 // Poller drives Gate.Reconcile on a fixed interval — pure timing with an injected clock, mirroring internal/scheduler: it owns nothing but.
@@ -20,11 +20,11 @@ type Poller struct {
 	next time.Time
 }
 
-// PollerOptions configure a Poller. Fire is required when Interval > 0.
+// PollerOptions configure a Poller. Fire is required when Interval > .
 type PollerOptions struct {
-	// Interval between reconcile passes; <= 0 disables the poller.
+	// Interval between reconcile passes; <= disables the poller.
 	Interval time.Duration
-	// Fire runs one reconcile pass. It is called inline on the Run goroutine, so passes never overlap.
+	// Fire runs reconcile pass. It is called inline on the Run goroutine, so passes never overlap.
 	Fire func()
 	// Now is an injectable clock for tests; defaults to time.Now.
 	Now func() time.Time
@@ -52,14 +52,14 @@ func NewPoller(opts PollerOptions) *Poller {
 	return p
 }
 
-// Run drives the poller until ctx is cancelled: one immediate pass, then
-// one per interval. Disabled (interval <= 0) returns immediately — no
+// Run drives the poller until ctx is cancelled: immediate pass, then
+// per interval. Disabled (interval <= ) returns immediately — no
 // timer, no fire.
 func (p *Poller) Run(ctx context.Context) {
 	if p.interval <= 0 {
 		return
 	}
-	p.fireDue() // the immediate startup pass — don't wait out the first tick
+	p.fireDue() // the immediate startup pass — don't wait out the tick
 	t := time.NewTicker(p.tick)
 	defer t.Stop()
 	for {
@@ -72,7 +72,7 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
-// fireDue fires when the next-fire time has passed, advancing it by the interval from "now" — a long pause (slept/restarted process) fires once and resumes one interval out, never.
+// fireDue fires when the next-fire time has passed, advancing it by the interval from "now" — a long pause (slept/restarted process) fires and resumes interval out, never.
 func (p *Poller) fireDue() {
 	if p.interval <= 0 {
 		return

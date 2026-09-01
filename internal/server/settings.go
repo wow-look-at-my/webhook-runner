@@ -1,24 +1,24 @@
-// The settings editor's API (admin port, behind Zero Trust — same trust
+// The settings editor's API (admin port, behind Trust — same trust
 // model as the kill switches next door in overrides.go):
 //
-//	GET    /hooks/{id}/settings   schema + manifest + effective + overrides
-//	PUT    /hooks/{id}/settings   pin one field: {"pointer":"/a/b","value":…}
-//	DELETE /hooks/{id}/settings   revert: ?pointer=/a/b, or all when omitted
+//	GET /hooks/{id}/settings schema + manifest + effective + overrides
+//	PUT /hooks/{id}/settings pin field: {"pointer":"/a/b","value":…}
+//	DELETE /hooks/{id}/settings revert: ?pointer=/a/b, or all when omitted
 //
 // WHY THE SCHEMA IS SERVED RAW. The dashboard builds the whole form from
 // settings.schema.json — types, ranges, enums, per-value descriptions. That
 // is deliberate: the schema already exists, the loader already enforces it,
 // and every form control derived from it is a control that cannot drift from
 // what the runner will accept. The alternative — a server-side "form
-// description" endpoint — is a second schema to keep in sync, and the moment
+// description" endpoint — is a schema to keep in sync, and the moment
 // it disagrees the UI offers values the loader rejects.
 //
-// WHY A WRITE VALIDATES TWICE. The merged document is validated HERE, so a
-// bad value is a 400 with the schema's own message while the operator is
+// WHY A WRITE VALIDATES . The merged document is validated HERE, so a
+// bad value is a with the schema's own message while the operator is
 // looking at the field. It is validated AGAIN at load (hooks.ApplySettings-
 // Overrides), because the tree can move under a stored override. Neither
-// check makes the other redundant: this one is about the value being typed,
-// that one about the value still being legal later.
+// check makes the other redundant: this is about the value being typed,
+// that about the value still being legal later.
 package server
 
 import (
@@ -30,10 +30,10 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// maxSettingsValueBytes bounds one pinned value.
+// maxSettingsValueBytes bounds pinned value.
 const maxSettingsValueBytes = 64 << 10
 
-// SettingsField is one pinned field as the editor sees it.
+// SettingsField is pinned field as the editor sees it.
 type SettingsField struct {
 	Pointer string `json:"pointer"`
 	// Value is what the operator pinned.
@@ -57,8 +57,8 @@ type SettingsView struct {
 	Rejected string `json:"rejected,omitempty"`
 }
 
-// settingsEntity resolves an id across the one namespace hooks and managers
-// share, returning the underlying *Hook (a Manager embeds one).
+// settingsEntity resolves an id across the namespace hooks and managers
+// share, returning the underlying *Hook (a Manager embeds ).
 func (s *Server) settingsEntity(id string) (*hooks.Hook, bool) {
 	if h, ok := s.registry.Get(id); ok {
 		return h, true
@@ -85,13 +85,13 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// settingsView builds the ONE shape every settings endpoint answers with.
+// settingsView builds the shape every settings endpoint answers with.
 //
 // Shared deliberately: a write used to answer a trimmed view without the
 // schema, and since the editor re-renders from whatever a write returns, the
-// entire form vanished the moment an operator changed their first value — it
+// entire form vanished the moment an operator changed their value — it
 // read the missing schema as "this hook takes no configuration". A partial
-// view is not a smaller version of the full one, it is a different claim.
+// view is not a smaller version of the full , it is a different claim.
 func (s *Server) settingsView(h *hooks.Hook, id string) (SettingsView, error) {
 	schema, err := h.SettingsSchemaJSON()
 	if err != nil {
@@ -221,10 +221,10 @@ func (s *Server) handleSettingsClear(w http.ResponseWriter, r *http.Request) {
 	s.applySettingsChange(w, id, changed)
 }
 
-// applySettingsChange re-runs the ONE reload closure so the merged document
+// applySettingsChange re-runs the reload closure so the merged document
 // becomes what the registry serves, then answers with the fresh view.
 //
-// Persist first, apply second — the same ordering as the concurrency
+// Persist , apply — the same ordering as the concurrency
 // override next door: if the process dies between them the restart re-applies
 // from disk. The reverse would let a live change vanish on restart.
 //
@@ -246,7 +246,7 @@ func (s *Server) applySettingsChange(w http.ResponseWriter, id string, changed b
 	}
 	h, ok := s.settingsEntity(id)
 	if !ok {
-		// The reload dropped the entity. Say so rather than 404ing on a
+		// The reload dropped the entity. Say so rather than ing on a
 		// write that did land.
 		writeJSON(w, http.StatusOK, map[string]any{"hook": id, "changed": changed,
 			"note": "the override was stored, but the entity is no longer loaded"})

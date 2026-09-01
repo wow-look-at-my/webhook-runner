@@ -1,20 +1,23 @@
-// Layout: where a hooks tree keeps its pieces. Two shapes exist, detected —
-// never configured — by one rule, applied identically in serve, validate,
+// Layout: where a hooks tree keeps its pieces. shapes exist, detected —
+// never configured — by rule, applied identically in serve, validate,
 // and test:
 //
-//	LEGACY              <root>/<id>/hook.json, concurrency.json at
-//	                    <root>/concurrency.json, docker build context =
-//	                    the hook's own directory. Exactly today's shape.
-//	SRC (SDK layout)    <root>/src/hooks/ EXISTS → hooks at
-//	                    <root>/src/hooks/<id>/hook.json, shared
-//	                    dependency-free code at <root>/src/sdk/ (imported
-//	                    relatively — ../../sdk/... resolves identically
-//	                    in-repo and in-image), concurrency config at
-//	                    <root>/cfg/concurrency.json (at the repo root —
-//	                    repo-wide config, not source), and docker
-//	                    build context = <root>/src with the hook's own
-//	                    Dockerfile (-f). Hook IDs, routes, api_keys, and
-//	                    KV namespaces are unchanged — a pure relocation.
+//	LEGACY <root>/<id>/hook.json, concurrency.json at
+//
+// <root>/concurrency.json, docker build context =
+// the hook's own directory. Exactly today's shape.
+//
+//	SRC (SDK layout) <root>/src/hooks/ EXISTS → hooks at
+//
+// <root>/src/hooks/<id>/hook.json, shared
+// dependency-free code at <root>/src/sdk/ (imported
+// relatively — ../../sdk/... resolves identically
+// in-repo and in-image), concurrency config at
+// <root>/cfg/concurrency.json (at the repo root —
+// repo-wide config, not source), and docker
+// build context = <root>/src with the hook's own
+// Dockerfile (-f). Hook IDs, routes, api_keys, and
+// KV namespaces are unchanged — a pure relocation.
 //
 // The layouts are never mixed: under the src layout, a root-level hook
 // dir is a HARD ERROR (IgnoredLegacyDirError in the loader) — not loaded,
@@ -37,7 +40,7 @@ type Layout struct {
 	SDK bool
 }
 
-// DetectLayout applies the one detection rule: <root>/src/hooks being a
+// DetectLayout applies the detection rule: <root>/src/hooks being a
 // directory selects the src layout; anything else is legacy.
 func DetectLayout(root string) Layout {
 	fi, err := os.Stat(filepath.Join(root, "src", "hooks"))

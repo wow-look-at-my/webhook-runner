@@ -8,7 +8,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// KeyStale is the one entry key CheckStaleSchedules ever reports (one hook, at most one "its schedule went quiet" problem).
+// KeyStale is the entry key CheckStaleSchedules ever reports ( hook, at most "its schedule went quiet" problem).
 const KeyStale = "stale"
 
 // ScheduleStaleMultiplier and ScheduleStaleFloor set the staleness threshold together: interval*ScheduleStaleMultiplier, floored.
@@ -18,8 +18,8 @@ const ScheduleStaleFloor = 15 * time.Minute
 
 // CheckStaleSchedules derives the "schedule" source: a hook declaring a
 // `schedule` interval whose last SUCCESSFUL run (among the tracked
-// history `recent` returns, newest-first) is older than its staleness
-// threshold — or that has never once succeeded, once enough time has
+// history `recent` returns, newest-) is older than its staleness
+// threshold — or that has never succeeded, enough time has
 // passed for that to be meaningful rather than "hasn't had a chance yet".
 //
 // This exists because a scheduled tick is typically the reliability
@@ -27,14 +27,14 @@ const ScheduleStaleFloor = 15 * time.Minute
 // the motivating shape): when the backstop itself stops succeeding —
 // its credentials broke, an upstream dependency started refusing it,
 // the runner stopped invoking it — nothing else notices, because from
-// the outside a hook that has stopped succeeding looks identical to one
+// the outside a hook that has stopped succeeding looks identical to
 // that simply has nothing to do. Every other attention source here
-// covers a load-time or request-time defect; this is the one source
+// covers a load-time or request-time defect; this is the source
 // that watches a hook's own track record over time.
 //
-// `recent` returns the hook's tracked runs, newest-first (internal/runs.
+// `recent` returns the hook's tracked runs, newest- (internal/runs.
 // Tracker.ListByHook). A hook with NO tracked runs yet is skipped
-// entirely — schedules fire immediately when first seen, so an empty
+// entirely — schedules fire immediately when seen, so an empty
 // result is a brief startup window, not a standing problem.
 func CheckStaleSchedules(schedules map[string]time.Duration, recent func(hookID string) []*runs.Run, now time.Time) []Entry {
 	ids := make([]string, 0, len(schedules))

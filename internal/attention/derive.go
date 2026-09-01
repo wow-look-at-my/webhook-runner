@@ -17,53 +17,33 @@ import (
 const (
 	// KeyLoad: the per-hook "failed to load, dropped" slot.
 	KeyLoad = "load"
-	// KeyZeroHooks: the one zero-hooks-discovered entry.
+	// KeyZeroHooks: the -hooks-discovered entry.
 	KeyZeroHooks = "zero"
 	// KeySops: the hook's secrets.sops.env failed to decrypt.
 	KeySops = "sops"
 	// KeyAPIKey: the hook's api_key does not resolve. Shared by the probe
-	// and the request-time event rule.
 	KeyAPIKey = "api_key"
 	// KeyReportedPrefix + <message>: a hook-emitted misconfiguration signal.
 	KeyReportedPrefix = "reported:"
 	// KeyTmpDir: the boot-scoped containerized-without-TMPDIR verdict.
 	KeyTmpDir = "tmpdir"
 	// KeyReloadHeld: a newer hooks-repo commit is held by the reload CI
-	// gate — awaiting the gating status, or that status came back red.
-	// Reported/resolved by internal/reloadgate ("reload" source, no hook).
 	KeyReloadHeld = "held"
 	// KeyReloadUnverified: the serving hooks tree has no recorded green
-	// gating status (fresh install, or the last-good commit vanished).
-	// Reported/resolved by internal/reloadgate ("reload" source, no hook).
 	KeyReloadUnverified = "unverified"
 	// KeyReloadPoll: the reload gate's reconciliation poll found a newer
-	// hooks-repo tip but could NOT read its gating status (no GitHub token
-	// configured, API error, underivable owner/repo) — the tree stays put,
-	// blind. Reported by the poll pass; resolved when a later pass
-	// determines the status, when the pending hold clears (switch, force,
-	// or up-to-date), i.e. everywhere KeyReloadHeld resolves.
-	// ("reload" source, no hook.)
 	KeyReloadPoll = "poll"
 	// KeyGitHubStatus: the entity declares `github_status` but the runner
-	// has no GitHub credential, so shouldPost drops every status before it
-	// is built. ("github-status" source, per entity.)
 	KeyGitHubStatus = "github_status"
 )
 
 // Recognized activity-event kinds the standard rules subscribe to.
 const (
 	// KindHookMisconfigured is recorded by the hook-port auth path when a
-	// delivery is denied because the hook's api_key ${NAME} reference does
-	// not resolve (internal/server/auth.go — exists today).
 	KindHookMisconfigured = "hook.misconfigured"
 	// KindHookReported is the RESERVED kind for hook-emitted
-	// misconfiguration signals ("permission missing", "feature inert" —
-	// the silent-fail audit's loud lines). Nothing records it yet; when a
-	// mechanism does, it must use the standard event shape: the "hook"
-	// field names the hook, the message describes the problem.
 	KindHookReported = "hook.reported_misconfigured"
-	// KindHookReportResolved is KindHookReported's paired all-clear: one
-	// event clears EVERY reported entry for that hook.
+	// KindHookReportResolved is KindHookReported's paired all-clear:
 	KindHookReportResolved = "hook.reported_healthy"
 )
 
@@ -71,17 +51,17 @@ const (
 // classes — the seam future hook-emitted signals plug into (register
 // another kind + RuleFunc; no redesign needed). Clear rules, per class:
 //
-//   - KindHookMisconfigured → ("event", hook, "api_key"): cleared by the
-//     next reload whose static probe finds the hook's api_key resolvable —
-//     or the hook no longer loaded (ApplyServeProbe applies both; probes
-//     run on EVERY reload, so the rule genuinely fires).
-//   - KindHookReported → ("event", hook, "reported:<message>"): one entry
-//     per distinct message; a repeat of the same message keeps its Since.
-//     Cleared by a KindHookReportResolved event from the same hook (all
-//     reported entries at once), or by the hook leaving the loaded set on
-//     a reload (ApplyServeProbe). Deliberately NOT cleared by a later
-//     successful run: the audit's whole point is that a run can succeed
-//     while the feature it should have exercised stayed inert.
+// - KindHookMisconfigured → ("event", hook, "api_key"): cleared by the
+// next reload whose static probe finds the hook's api_key resolvable —
+// or the hook no longer loaded (ApplyServeProbe applies both; probes
+// run on EVERY reload, so the rule genuinely fires).
+// - KindHookReported → ("event", hook, "reported:<message>"): entry
+// per distinct message; a repeat of the same message keeps its Since.
+// Cleared by a KindHookReportResolved event from the same hook (all
+// reported entries at ), or by the hook leaving the loaded set on
+// a reload (ApplyServeProbe). Deliberately NOT cleared by a later
+// successful run: the audit's whole point is that a run can succeed
+// while the feature it should have exercised stayed inert.
 func RegisterStandardEventRules(a *Aggregator) {
 	a.RegisterEventRule(KindHookMisconfigured, func(hook, message string) ([]Entry, []Resolution) {
 		if hook == "" {
@@ -92,8 +72,6 @@ func RegisterStandardEventRules(a *Aggregator) {
 			Hook:   hook,
 			Key:    KeyAPIKey,
 			// The event message already names the broken ${NAME} reference
-			// (value-free by construction); strip the "<hook>: " prefix the
-			// feed convention adds — the entry has its own Hook field.
 			Message: "delivery denied at request time: " + strings.TrimPrefix(message, hook+": "),
 		}}, nil
 	})
@@ -116,18 +94,12 @@ func RegisterStandardEventRules(a *Aggregator) {
 	})
 }
 
-// FromLoadErrors converts one load/reload's error list (exactly what
-// buildLoadAndApply collects: the loader's per-hook errors, layout errors,
-// concurrency.json problems, undeclared-group rejections) into the "load"
-// and "zero-hooks" entry sets for ReplaceSource. Hook attribution comes
-// from the typed errors the loader/concurrency checker produce.
-// KeyTreeRefused is the single refused-tree entry's key: one entry however
-// many entities failed, since the fleet-level fact is one fact.
+// FromLoadErrors converts load/reload's error list (exactly what
 const KeyTreeRefused = "tree-refused"
 
-// TreeRefusedEntries is the fleet-level companion to FromLoadErrors: ONE
+// TreeRefusedEntries is the fleet-level companion to FromLoadErrors:
 // entry stating that nothing from this load was applied, and what is running
-// instead. `serving` is the entity count still being served (0 = the startup
+// instead. `serving` is the entity count still being served ( = the startup
 // load, where there is no previous fleet and serve exits instead).
 func TreeRefusedEntries(failed, serving int) []Entry {
 	if failed == 0 {
@@ -178,14 +150,10 @@ func FromLoadErrors(errs []error) (load, zero []Entry) {
 				Hook:   filepath.Base(legacyErr.Dir),
 				Key:    KeyLoad,
 				// The dir was skipped, not loaded — the hook is effectively
-				// offline until moved.
 				Message: legacyErr.Error(),
 			})
 		default:
 			// Tree-wide problems with no per-hook identity (hooks dir
-			// unreadable, concurrency.json unparseable). Keyed by their
-			// message: an identical recurring error keeps its Since; a
-			// changed message is a different problem.
 			load = append(load, Entry{
 				Source:  SourceLoad,
 				Key:     "err:" + err.Error(),
@@ -197,30 +165,6 @@ func FromLoadErrors(errs []error) (load, zero []Entry) {
 }
 
 // ApplyServeProbe re-derives the "secrets" source from the freshly loaded
-// hook set and settles the event-derived entries whose clear rules key off
-// it. STRICTLY a serve-path helper (called from the reload routine): it
-// reads the runner host's environment and execs sops, exactly what
-// `validate` in CI must never do — keep it out of every CLI/validate path.
-//
-// Per loaded hook it statically checks, with the same resolution the
-// request/run paths use (secrets.sops.env first, then host env):
-//
-//   - sops: a present secrets.sops.env must decrypt. On failure ONE entry
-//     is reported and the reference checks are skipped — auth and runs
-//     fail on the decrypt error before any reference is even expanded, so
-//     per-reference entries would be noise.
-//   - api_key: must expand to a non-empty value (an unresolvable ${NAME}
-//     or an empty expansion denies every delivery with a 401).
-//
-// A hook's own `settings` are NOT probed here: they are validated against
-// the hook's settings.schema.json at LOAD, so a bad one never becomes a
-// loaded hook — it surfaces as a load error instead of a running hook with
-// quietly-wrong config.
-//
-// Clear rules applied here for the "event" source: an entry for a hook no
-// longer in the loaded set clears (any key — the hook is gone), and the
-// request-time api_key entry (key "api_key") clears when this probe finds
-// the hook's api_key healthy again.
 func ApplyServeProbe(a *Aggregator, loaded map[string]*hooks.Hook, secrets *hooks.SecretsLoader) {
 	if a == nil {
 		return
@@ -232,7 +176,6 @@ func ApplyServeProbe(a *Aggregator, loaded map[string]*hooks.Hook, secrets *hook
 	for _, e := range entries {
 		if e.Key == KeyAPIKey || e.Key == KeySops {
 			// A failed decrypt leaves the api_key unresolvable too (auth
-			// fails closed on it), so it keeps the event entry alive.
 			apiKeyBroken.Add(e.Hook)
 		}
 	}
@@ -305,7 +248,7 @@ func ProbeHooks(loaded map[string]*hooks.Hook, secrets *hooks.SecretsLoader) []E
 // shouldPost returns false before a request is ever built, so nothing is
 // logged, no run is marked, and the entity's own runs go green while the
 // commit status they exist to publish never appears. The manifest asked for
-// a status; the deployment cannot post one; that is a misconfiguration and
+// a status; the deployment cannot post ; that is a misconfiguration and
 // belongs on the surface an operator reads.
 //
 // configured is `(*githubstatus.Client).Enabled()` — a credential SOURCE
@@ -353,7 +296,7 @@ func sortedIDs(m map[string]*hooks.Hook) []string {
 	return out
 }
 
-// oneLine collapses a (possibly multi-line sops stderr) error into one
+// oneLine collapses a (possibly multi-line sops stderr) error into
 // bounded display line. It never contains secret values — decrypt failures
 // happen before any plaintext exists.
 func oneLine(s string) string {
@@ -363,7 +306,7 @@ func oneLine(s string) string {
 		return s
 	}
 	cut := max
-	for cut > 0 && s[cut]&0xC0 == 0x80 { // don't split a UTF-8 sequence
+	for cut > 0 && s[cut]&0xC0 == 0x80 { // don't split a UTF- sequence
 		cut--
 	}
 	return s[:cut] + "..."

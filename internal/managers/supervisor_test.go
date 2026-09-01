@@ -199,7 +199,7 @@ func TestSupervisorReplaceAndRemove(t *testing.T) {
 	go s.Run(ctx)
 	require.Eventually(t, func() bool { return fr.startedCount() == 1 }, 2*time.Second, 10*time.Millisecond)
 
-	// Change the manager's content (a new file changes the content hash) and re-Update: the running instance is superseded and a new one starts.
+	// Change the manager's content (a new file changes the content hash) and re-Update: the running instance is superseded and a new starts.
 	require.NoError(t, os.WriteFile(filepath.Join(m.Dir(), "code.ts"), []byte("v2"), 0o644))
 	s.Update(map[string]*hooks.Manager{"m1": m})
 	require.Eventually(t, func() bool { return fr.startedCount() == 2 }, 2*time.Second, 10*time.Millisecond)
@@ -218,7 +218,7 @@ func TestSupervisorReplaceAndRemove(t *testing.T) {
 	s.Shutdown()
 }
 
-// Deliveries buffer while no instance is live and drain into the next one;
+// Deliveries buffer while no instance is live and drain into the next ;
 // InboxNext refuses stale instances.
 func TestSupervisorDeliveryBuffering(t *testing.T) {
 	shrinkCadences(t)
@@ -237,8 +237,8 @@ func TestSupervisorDeliveryBuffering(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotSession)
 }
 
-// The single-instance lease: with a real flock file, a second supervisor
-// blocks until the first releases (shutdown), then acquires and runs.
+// The single-instance lease: with a real flock file, a supervisor
+// blocks until the releases (shutdown), then acquires and runs.
 func TestSupervisorLeaseHandover(t *testing.T) {
 	shrinkCadences(t)
 	lease := filepath.Join(t.TempDir(), "managers.lock")
@@ -271,7 +271,7 @@ func TestSupervisorLeaseHandover(t *testing.T) {
 	supB.Shutdown()
 }
 
-// Attention: a failing (enabled) manager surfaces one entry naming its
+// Attention: a failing (enabled) manager surfaces entry naming its
 // consecutive failures; a running instance clears it.
 func TestSupervisorAttention(t *testing.T) {
 	shrinkCadences(t)

@@ -1,11 +1,11 @@
 // Admin KV inspection: GET /kv/{namespace} and GET /kv/{namespace}/{key}.
 //
 // Unlike the bare /kv stats and /hooks/{id} — which stay value-free — these
-// routes DO return stored keys and, one level down, stored values. That is a
+// routes DO return stored keys and, level down, stored values. That is a
 // deliberate reversal of the store's original "never values" stance, made at
 // the operator's explicit request: debugging a state-backed hook (pr-minder's
 // dedup markers, revive SHAs, describe hashes) means reading what it actually
-// stored, and the admin port is operator-only behind Zero Trust. Values still
+// stored, and the admin port is operator-only behind Trust. Values still
 // never appear on the public hook port.
 package server
 
@@ -19,13 +19,13 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/kv"
 )
 
-// kvNamespaceView is the GET /kv/{namespace} response: one namespace's keys with per-key metadata (name, size, expiry), values one more.
+// kvNamespaceView is the GET /kv/{namespace} response: namespace's keys with per-key metadata (name, size, expiry), values more.
 type kvNamespaceView struct {
 	Namespace string       `json:"namespace"`
 	Keys      []kv.KeyInfo `json:"keys"`
 }
 
-// handleKVNamespace lists one namespace's keys (admin port): name, value size, and — for keys with a TTL — the absolute expiry plus remaining seconds. Sorted by key; ?prefix= narrows it (same cheap semantics as the store's List). A namespace with no data returns an empty list, matching the state API's list behavior; namespace == hook ID.
+// handleKVNamespace lists namespace's keys (admin port): name, value size, and — for keys with a TTL — the absolute expiry plus remaining seconds. Sorted by key; ?prefix= narrows it (same cheap semantics as the store's List). A namespace with no data returns an empty list, matching the state API's list behavior; namespace == hook ID.
 func (s *Server) handleKVNamespace(w http.ResponseWriter, r *http.Request) {
 	if s.kv == nil {
 		writeError(w, http.StatusServiceUnavailable, "state store not configured")
@@ -49,11 +49,11 @@ type kvEntryView struct {
 	ValueUTF8   *string    `json:"value_utf8,omitempty"`
 }
 
-// handleKVEntry reads one entry, value included (admin port). Absent and
-// expired keys are equally 404 — GetEntry applies the same lazy-expiry rule
+// handleKVEntry reads entry, value included (admin port). Absent and
+// expired keys are equally — GetEntry applies the same lazy-expiry rule
 // as the state API's Get, so this can never show a ghost the hook itself
-// would not see. Keys are one path segment: URL-encode them (%2F for "/",
-// %23 for "#" — e.g. pr-minder-style "pr:{owner}/{repo}#{num}" markers).
+// would not see. Keys are path segment: URL-encode them (%F for "/",
+// % for "#" — e.g. pr-minder-style "pr:{owner}/{repo}#{num}" markers).
 func (s *Server) handleKVEntry(w http.ResponseWriter, r *http.Request) {
 	if s.kv == nil {
 		writeError(w, http.StatusServiceUnavailable, "state store not configured")

@@ -22,8 +22,8 @@ var ErrNoContextStatus = errors.New("github_status: no status for context")
 // Errors are authoritative "could not determine" answers — callers gating
 // on the result must fail closed: a disabled client (no token) errors
 // immediately (commit statuses on a private repo are unreadable without
-// one), and a context with no status returns an error wrapping
-// ErrNoContextStatus. The single page at per_page=100 covers any
+// ), and a context with no status returns an error wrapping
+// ErrNoContextStatus. The single page at per_page= covers any
 // realistic context count; a context squeezed past it reads as missing,
 // which also fails closed.
 func (c *Client) ContextState(ctx context.Context, repo, sha, statusContext string) (string, error) {

@@ -53,12 +53,12 @@ func (w *idleWatchdog) Disarm() {
 
 // check reports whether the watchdog should fire now and, when it shouldn't,
 // how long to wait before re-checking: the earliest instant it could
-// possibly fire (so output flowing steadily costs one wake-up per limit),
+// possibly fire (so output flowing steadily costs wake-up per limit),
 // or the full limit while still unarmed.
 func (w *idleWatchdog) check() (wait time.Duration, fire bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// limit <= 0 means no idle limit at all (a hook that omits `idle_timeout` runs uncapped) — never fire.
+	// limit <= means no idle limit at all (a hook that omits `idle_timeout` runs uncapped) — never fire.
 	if w.limit <= 0 {
 		return noIdleLimitRecheck, false
 	}

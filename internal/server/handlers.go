@@ -21,7 +21,7 @@ import (
 const MaxBodyBytes = 25 * 1024 * 1024
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	// The version rides along so a single probe answers both "is it up?" and "which build is this?" — status stays the first field for backward compatibility.
+	// The version rides along so a single probe answers both "is it up?" and "which build is this?" — status stays the field for backward compatibility.
 	writeJSON(w, http.StatusOK, struct {
 		Status  string `json:"status"`
 		Version string `json:"version"`
@@ -77,7 +77,7 @@ func (s *Server) hooksTreeState() hooksTreeState {
 	return out
 }
 
-// hookListEntry is one row of GET /hooks: the registry summary plus the EFFECTIVE kill-switch state — the operator's persisted override.
+// hookListEntry is row of GET /hooks: the registry summary plus the EFFECTIVE kill-switch state — the operator's persisted override.
 type hookListEntry struct {
 	hooks.Summary
 	Disabled bool `json:"disabled"`
@@ -138,10 +138,10 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Friendly run title — resolved exactly ONCE per delivery, here, BEFORE skip evaluation, so whichever pipeline the delivery takes (skip or.
+	// Friendly run title — resolved exactly per delivery, here, BEFORE skip evaluation, so whichever pipeline the delivery takes (skip or.
 	title := hook.RenderRunTitle(body, r.Header)
 
-	// Declarative skip conditions — evaluated strictly AFTER authentication (an unauthenticated caller must never probe the conditions; it gets the 401 above with nothing recorded) and BEFORE any work: no image build, no container, no concurrency slot.
+	// Declarative skip conditions — evaluated strictly AFTER authentication (an unauthenticated caller must never probe the conditions; it gets the above with nothing recorded) and BEFORE any work: no image build, no container, no concurrency slot.
 	if reason, skip := hook.EvaluateSkip(body, r.Header); skip {
 		run := s.runner.Skip(hook, reason, title)
 		writeJSON(w, http.StatusOK, map[string]string{
@@ -158,7 +158,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A draining server must not LOSE the delivery. GitHub does not re-send a failed one — the hooks repo's delivery-gap replay SDK exists exactly because deliveries are consumed-and-lost during downtime — so the 503 the drain gate used to answer was an error AND a dropped webhook. Park it instead and let the next process run it. Checked BEFORE Start so a parked delivery leaves no errored run record: it did not fail, it is waiting. By here it has passed auth and skip_if, so the spool never holds an unauthenticated body.
+	// A draining server must not LOSE the delivery. GitHub does not re-send a failed — the hooks repo's delivery-gap replay SDK exists exactly because deliveries are consumed-and-lost during downtime — so the the drain gate used to answer was an error AND a dropped webhook. Park it instead and let the next process run it. Checked BEFORE Start so a parked delivery leaves no errored run record: it did not fail, it is waiting. By here it has passed auth and skip_if, so the spool never holds an unauthenticated body.
 	if s.runner.Draining() {
 		if id, ok := s.spoolDelivery(hook.ID, title, r.Header, body); ok {
 			writeJSON(w, http.StatusAccepted, map[string]string{
@@ -171,7 +171,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// No spool, or the spool is full: fall through to Start, whose drain
-		// refusal gives the honest 503 + error run rather than pretending
+		// refusal gives the honest + error run rather than pretending
 		// the delivery is safe.
 	}
 
@@ -199,7 +199,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	// is a RESPONSE bound (wall-clock), not a run bound: the run's own
 	// `timeout` is activity-based, so a run that keeps producing output can
 	// legitimately outlive the syncTimeout value — when that happens the
-	// response degrades to the async 202 below and the run continues
+	// response degrades to the async below and the run continues
 	// untouched in the background.
 	select {
 	case <-run.Done():
@@ -227,8 +227,8 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 // handleCancelRun cancels an in-flight run from the public hook port:
 // POST /hook/{id}/cancel/{run}, authenticated exactly like triggering the
 // hook (for api_key hooks the body is irrelevant; for signature hooks the
-// signature covers whatever body the caller sent). The response is 202 —
-// cancellation is a request: the run reaches "cancelled" once the runner
+// signature covers whatever body the caller sent). The response is —
+// cancellation is a request: the run reaches "cancelled" the runner
 // has actually killed the container. Deliberately NOT gated by the
 // operator kill switch: cancelling a disabled hook's in-flight runs is
 // stopping work, which is what disabling is for.
@@ -256,7 +256,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run := s.tracker.Get(r.PathValue("run"))
-	// A run belonging to a different hook is reported as absent — one
+	// A run belonging to a different hook is reported as absent —
 	// hook's key must not act on (or probe for) another hook's runs.
 	if run == nil || run.HookID() != hook.ID {
 		writeError(w, http.StatusNotFound, "no such run")
@@ -266,7 +266,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminCancelRun cancels any run from the admin port (no auth — the
-// admin port is behind zero trust, same trust model as POST /reload).
+// admin port is behind trust, same trust model as POST /reload).
 func (s *Server) handleAdminCancelRun(w http.ResponseWriter, r *http.Request) {
 	run := s.tracker.Get(r.PathValue("id"))
 	if run == nil {
@@ -300,11 +300,11 @@ const defaultSyncHold = 5 * time.Minute
 // query parameters and merges them with the hook's Synchronous setting.
 //
 // Returns the desired sync mode and the maximum time we'll hold the HTTP
-// response open before degrading to a background-running 202. The default
+// response open before degrading to a background-running . The default
 // hold is the hook's Timeout() value, but reinterpreted as WALL CLOCK: a
 // held response can't wait on "activity", so while the run's timeout bounds
 // inactivity, the hold bounds the response itself — a chatty run may outlive
-// it, in which case the caller gets the 202 and polls /runs/{id}.
+// it, in which case the caller gets the and polls /runs/{id}.
 func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout time.Duration, err error) {
 	q := r.URL.Query()
 	sync = hook.Synchronous
@@ -334,14 +334,14 @@ func parseWaitParams(r *http.Request, hook *hooks.Hook) (sync bool, syncTimeout 
 	return sync, syncTimeout, nil
 }
 
-// handleReload triggers a reload on the admin port (no auth — the admin port is behind zero trust).
+// handleReload triggers a reload on the admin port (no auth — the admin port is behind trust).
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 	s.events.Record("reload.requested", "reload requested via admin port", map[string]string{"source": "admin"})
 	s.runReload(w)
 }
 
 // handleReloadWebhook accepts the hooks repo's GitHub webhook on the hook
-// port, authenticated with the HMAC-SHA256 secret in
+// port, authenticated with the HMAC-SHA secret in
 // WEBHOOK_RUNNER_HOOKS_REPO_SECRET. With a reload gate configured the flow
 // is event-aware: a push only records the pending tip, and a green gating
 // commit status is what switches the tree (internal/reloadgate). Without a
@@ -430,12 +430,12 @@ func describePush(body []byte) string {
 	return msg
 }
 
-// handleEvents returns the activity feed, newest first (admin port).
-// ?hook={id} narrows it to one hook's slice, same convention as /runs.
+// handleEvents returns the activity feed, newest (admin port).
+// ?hook={id} narrows it to hook's slice, same convention as /runs.
 // ?exclude=run[,image,…] drops whole kind FAMILIES (the segment before the
 // dot). The dashboard passes exclude=run on both feeds: run lifecycle
-// belongs to the runs table, which shows each run as one row with its
-// status, timings and output instead of three log lines.
+// belongs to the runs table, which shows each run as row with its
+// status, timings and output instead of log lines.
 //
 // Both narrowings are applied by the recorder BEFORE max — see
 // events.ListFiltered. A page-then-filter implementation would blank the
@@ -493,7 +493,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	if s.reloadSecret != "" {
 		cfg["reload_secret"] = s.reloadSecret
 	}
-	// The persisted-history window, compacted like stats.retention ("48h") — how far back /runs?before= paging can ever reach, so a client can.
+	// The persisted-history window, compacted like stats.retention ("h") — how far back /runs?before= paging can ever reach, so a client can.
 	if s.runstore != nil {
 		cfg["run_retention"] = compactDuration(s.runstore.Retention())
 	}

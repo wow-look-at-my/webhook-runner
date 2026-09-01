@@ -1,5 +1,5 @@
 // Per-entity SETTINGS overrides: the values the operator pins from the
-// dashboard's settings editor, keyed by entity id and RFC 6901 JSON Pointer.
+// dashboard's settings editor, keyed by entity id and RFC JSON Pointer.
 //
 // Split out of overrides.go because it is a distinct surface (a field pin,
 // not a switch) with its own rules, and because keeping it there pushed that
@@ -21,7 +21,7 @@ import (
 	"strings"
 )
 
-// SettingsOverrides returns a copy of one entity's settings overrides
+// SettingsOverrides returns a copy of entity's settings overrides
 // (JSON Pointer -> value), or nil when the operator has overridden nothing.
 func (s *Store) SettingsOverrides(id string) map[string]json.RawMessage {
 	if s == nil {
@@ -53,8 +53,8 @@ func (s *Store) AllSettingsOverrides() map[string]map[string]json.RawMessage {
 	return out
 }
 
-// SetSettingOverride pins one settings field of one entity and persists
-// immediately. pointer is an RFC 6901 JSON Pointer into the entity's
+// SetSettingOverride pins settings field of entity and persists
+// immediately. pointer is an RFC JSON Pointer into the entity's
 // settings document ("/ai/model"); value is the raw JSON to store there.
 // Idempotent (changed=false when the identical value was already stored);
 // a persist failure rolls the mutation back and returns the error.
@@ -103,7 +103,7 @@ func (s *Store) SetSettingOverride(id, pointer string, value json.RawMessage) (c
 	return true, nil
 }
 
-// ClearSettingOverride drops one pinned field, reverting it to whatever the
+// ClearSettingOverride drops pinned field, reverting it to whatever the
 // manifest says. Idempotent; a persist failure rolls the removal back.
 func (s *Store) ClearSettingOverride(id, pointer string) (changed bool, err error) {
 	if s == nil {
@@ -132,7 +132,7 @@ func (s *Store) ClearSettingOverride(id, pointer string) (changed bool, err erro
 	return true, nil
 }
 
-// ClearSettingOverrides drops every pinned field for one entity (the
+// ClearSettingOverrides drops every pinned field for entity (the
 // "revert all to the manifest" button). Idempotent; rolls back on failure.
 func (s *Store) ClearSettingOverrides(id string) (changed bool, err error) {
 	if s == nil {
@@ -153,7 +153,7 @@ func (s *Store) ClearSettingOverrides(id string) (changed bool, err error) {
 	return true, nil
 }
 
-// validPointer enforces RFC 6901's shape: empty (the whole document) is
+// validPointer enforces RFC 's shape: empty (the whole document) is
 // REFUSED here on purpose — an override is a field pin, and replacing the
 // entire settings document would defeat the sparseness that lets manifest
 // edits still land. Otherwise a pointer must start with "/".

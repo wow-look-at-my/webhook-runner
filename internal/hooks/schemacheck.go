@@ -4,18 +4,18 @@
 // Why it exists: the Go decode is not the contract. `DisallowUnknownFields`
 // plus hand-written checks catch a lot, but the schema knows things the struct
 // cannot express -- enums, patterns, minimums, required combinations, format --
-// and the two drifted silently by construction. A hooks repo could pass CI and
+// and the drifted silently by construction. A hooks repo could pass CI and
 // still be rejected at runtime, or worse, load with a value the published
 // contract calls invalid.
 //
-// Two properties are deliberate:
-//   - ONE implementation. json-validator is the CI gate; importing it (rather
-//     than re-implementing the same checks against the same jsonschema
-//     library) is what keeps "valid in CI" and "loads at runtime" the same
-//     sentence, including its JSONC handling and its format assertions.
-//   - The EMBEDDED schema, never the network (see package schema): a reload
-//     must not depend on a fetch, and the binary's own contract is what it can
-//     honestly enforce.
+// properties are deliberate:
+// - implementation. json-validator is the CI gate; importing it (rather
+// than re-implementing the same checks against the same jsonschema
+// library) is what keeps "valid in CI" and "loads at runtime" the same
+// sentence, including its JSONC handling and its format assertions.
+// - The EMBEDDED schema, never the network (see package schema): a reload
+// must not depend on a fetch, and the binary's own contract is what it can
+// honestly enforce.
 package hooks
 
 import (
@@ -27,7 +27,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/schema"
 )
 
-// Compiled once per process: the schemas are constants, and every hooks-repo
+// Compiled per process: the schemas are constants, and every hooks-repo
 // reload revalidates every manifest.
 var (
 	hookValidatorOnce    sync.Once

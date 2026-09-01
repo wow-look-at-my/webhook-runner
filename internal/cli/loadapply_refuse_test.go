@@ -61,7 +61,7 @@ func (h *refuseHarness) sources() map[string]int {
 	return bySource
 }
 
-// (1) + (3): a tree that half-parses is refused whole, the previous fleet
+// () + (): a tree that half-parses is refused whole, the previous fleet
 // keeps serving, and the refusal is on every operator surface.
 func TestRefusedReloadKeepsThePreviousFleetServing(t *testing.T) {
 	h := newRefuseHarness(t)
@@ -78,7 +78,7 @@ func TestRefusedReloadKeepsThePreviousFleetServing(t *testing.T) {
 	assert.Contains(t, err.Error(), "REFUSED")
 	assert.Contains(t, err.Error(), "from-the-future", "the error must name the offending entity")
 
-	// Still exactly the two that were serving, not a partial three-minus-one set.
+	// Still exactly the that were serving, not a partial -minus- set.
 	ids := []string{}
 	for _, hk := range h.reg.All() {
 		ids = append(ids, hk.ID)
@@ -95,9 +95,9 @@ func TestRefusedReloadKeepsThePreviousFleetServing(t *testing.T) {
 	assert.Equal(t, 1, bySource[attention.SourceLoad], "plus the per-entity entry naming the field")
 }
 
-// (2): the startup load has no previous fleet to fall back to, so it fails
+// (): the startup load has no previous fleet to fall back to, so it fails
 // LOUDLY instead of coming up serving whatever still parses. serve turns this
-// error into a non-zero exit, which is what makes a bad image a failed deploy.
+// error into a non- exit, which is what makes a bad image a failed deploy.
 func TestRefusedStartupLoadIsAnError(t *testing.T) {
 	h := newRefuseHarness(t)
 	writeTestHook(t, h.root, "good-one")
@@ -111,7 +111,7 @@ func TestRefusedStartupLoadIsAnError(t *testing.T) {
 	assert.Empty(t, h.reg.All(), "nothing may be registered from a refused startup load")
 }
 
-// (4): the refusal is not sticky. The next load that parses whole applies and
+// (): the refusal is not sticky. The next load that parses whole applies and
 // clears every entry the refusal raised -- so fixing the tree (or rolling the
 // binary back) is the whole recovery procedure.
 func TestACleanLoadAfterARefusalAppliesAndClears(t *testing.T) {
@@ -133,7 +133,7 @@ func TestACleanLoadAfterARefusalAppliesAndClears(t *testing.T) {
 	assert.Equal(t, 1, countEvents(h.rec, "hooks.refused"), "no new refusal was recorded")
 }
 
-// A fleet-wide mismatch fails EVERY entity at once, which is the case that
+// A fleet-wide mismatch fails EVERY entity at , which is the case that
 // actually happens: the message must stay readable and still say what to do.
 func TestARefusalNamingEveryEntityStaysReadable(t *testing.T) {
 	h := newRefuseHarness(t)

@@ -72,7 +72,7 @@ func TestStateIncr(t *testing.T) {
 	require.Equal(t, http.StatusOK, withDelta.Code)
 	require.JSONEq(t, `{"value":6}`, withDelta.Body.String())
 
-	// A non-integer value yields 409, not a silent reset.
+	// A non-integer value yields , not a silent reset.
 	require.NoError(t, store.Set("h", "word", []byte("x"), 0))
 	require.Equal(t, http.StatusConflict, stateReq(t, s, "POST", "/kv/word/incr", tok, nil).Code)
 }
@@ -84,7 +84,7 @@ func TestStateAuth(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "GET", "/kv/foo", "", nil).Code)
 	require.Equal(t, http.StatusUnauthorized, stateReq(t, s, "GET", "/kv/foo", "h.deadbeef", nil).Code)
 
-	// Namespaces are isolated: h's own token reads its data, a token for "other" gets 404 for the same key.
+	// Namespaces are isolated: h's own token reads its data, a token for "other" gets for the same key.
 	require.NoError(t, store.Set("h", "secret", []byte("v"), 0))
 	require.Equal(t, http.StatusOK, stateReq(t, s, "GET", "/kv/secret", tok, nil).Code)
 	require.Equal(t, http.StatusNotFound,
@@ -159,11 +159,11 @@ func TestStateLockAcquireRelease(t *testing.T) {
 	require.Contains(t, got.Body.String(), `"run-a"`)
 	require.Contains(t, got.Body.String(), `"expires_at"`)
 
-	// Same run re-acquires idempotently; another run gets 409.
+	// Same run re-acquires idempotently; another run gets .
 	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/lease/acquire", runA, strings.NewReader(`{"ttl_seconds": 60}`)).Code)
 	require.Equal(t, http.StatusConflict, stateReq(t, s, "POST", "/kv/lease/acquire", runB, nil).Code)
 
-	// Only the owner can release: another run 409, the owner 204, then 404.
+	// Only the owner can release: another run , the owner , then .
 	require.Equal(t, http.StatusConflict, stateReq(t, s, "POST", "/kv/lease/release", runB, nil).Code)
 	require.Equal(t, http.StatusNoContent, stateReq(t, s, "POST", "/kv/lease/release", runA, nil).Code)
 	require.Equal(t, http.StatusNotFound, stateReq(t, s, "POST", "/kv/lease/release", runA, nil).Code)
@@ -190,7 +190,7 @@ func TestStateLockAcquireValidation(t *testing.T) {
 
 func TestStateLockNamespaceIsolation(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{})
-	// The same key name in two namespaces is two independent locks.
+	// The same key name in namespaces is independent locks.
 	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/l/acquire", store.Token("h1", "run-a"), nil).Code)
 	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/kv/l/acquire", store.Token("h2", "run-b"), nil).Code)
 }

@@ -22,11 +22,11 @@ func Watch(ctx context.Context, root string, reg *Registry, log *slog.Logger) er
 	}, log)
 }
 
-// WatchFunc observes the hooks directory and invokes onChange once at
+// WatchFunc observes the hooks directory and invokes onChange at
 // startup and then, debounced, whenever a hook.json, the central
 // concurrency.json, or a hook directory is added, modified, or removed.
 // onChange owns the actual reload — this lets a caller fold the
-// concurrency-group config and registry update into one place rather than
+// concurrency-group config and registry update into place rather than
 // the watcher reloading hooks on its own.
 //
 // The watcher debounces rapid-fire events (common when an editor saves via
@@ -93,7 +93,7 @@ func isRelevantEvent(name string) bool {
 	return filepath.Ext(base) == ""
 }
 
-// addRecursive adds the directories whose config files drive reloads. For a legacy tree that is the root plus every immediate child (hook.json is one level down). For a src-layout tree it additionally covers src/, src/hooks/ and its children, and cfg/ at the root (concurrency.json's home; addChildren(root) usually covers it already — the explicit Add states intent, and a cfg/ created later arrives via the Create handler like any new dir under the watched root). src/sdk is deliberately NOT watched: shared-code edits matter at image-build time (they change content hashes, so the next run rebuilds) — they don't change the loaded config.
+// addRecursive adds the directories whose config files drive reloads. For a legacy tree that is the root plus every immediate child (hook.json is level down). For a src-layout tree it additionally covers src/, src/hooks/ and its children, and cfg/ at the root (concurrency.json's home; addChildren(root) usually covers it already — the explicit Add states intent, and a cfg/ created later arrives via the Create handler like any new dir under the watched root). src/sdk is deliberately NOT watched: shared-code edits matter at image-build time (they change content hashes, so the next run rebuilds) — they don't change the loaded config.
 func addRecursive(w *fsnotify.Watcher, root string) error {
 	if err := w.Add(root); err != nil {
 		return err

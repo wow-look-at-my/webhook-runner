@@ -9,7 +9,7 @@
 // up the hook, apply skip-if-already-running overlap protection, and call
 // runner.Start with context.Background() (like other async runs).
 //
-// A hook opts in via hook.json's "schedule" (a Go duration, e.g. "5m"). The
+// A hook opts in via hook.json's "schedule" (a Go duration, e.g. "m"). The
 // set of scheduled hooks is reconciled through Update on every hooks reload —
 // the same buildLoadAndApply closure that updates the registry and the
 // concurrency manager — so schedules never drift from the loaded hooks.
@@ -74,7 +74,7 @@ func New(opts Options) *Scheduler {
 }
 
 // Update reconciles the scheduled hooks against the given map of hook ID ->
-// interval. A new schedule (or one whose interval changed) is set to fire
+// interval. A new schedule (or whose interval changed) is set to fire
 // immediately; an unchanged schedule keeps its existing next-fire time so an
 // unrelated reload never re-fires it. Non-positive intervals and removed
 // hooks are dropped.
@@ -112,8 +112,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 // fireDue fires every hook whose next-fire time has passed and advances each
 // by its interval. The next fire is computed from "now", not the missed
-// deadline, so a long pause (a slept/restarted process) fires a hook once and
-// resumes one interval out rather than bursting a backlog of missed ticks.
+// deadline, so a long pause (a slept/restarted process) fires a hook and
+// resumes interval out rather than bursting a backlog of missed ticks.
 func (s *Scheduler) fireDue() {
 	now := s.now()
 	var due []string

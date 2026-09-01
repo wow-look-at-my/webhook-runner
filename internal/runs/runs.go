@@ -25,12 +25,12 @@ const (
 	StatusError     Status = "error"     // failed to start, never produced an exit code
 	StatusCancelled Status = "cancelled" // killed by an explicit cancel request
 
-	// StatusSkipped is a first-class "no work was done" terminal state: the delivery matched one of the hook's skip_if conditions, so NO.
+	// StatusSkipped is a -class "no work was done" terminal state: the delivery matched of the hook's skip_if conditions, so NO.
 	StatusSkipped Status = "skipped"
 )
 
 // KnownStatus reports whether s is a status a run can actually hold. The
-// /runs list filter validates against it so a typo'd status is a 400 rather
+// /runs list filter validates against it so a typo'd status is a rather
 // than a silently empty page.
 func KnownStatus(s Status) bool {
 	switch s {
@@ -64,10 +64,10 @@ type RunState struct {
 	ID     string `json:"id"`
 	HookID string `json:"hook_id"`
 
-	// Title is the run's friendly display title — "owner/repo#47" instead of the opaque run id — rendered from the hook's run_title template at.
+	// Title is the run's friendly display title — "owner/repo#" instead of the opaque run id — rendered from the hook's run_title template at.
 	Title string `json:"title,omitempty"`
 
-	// SpawnedBy identifies the run that started this one through the state API's POST /spawn — the parent's run and hook IDs — so the dashboard and.
+	// SpawnedBy identifies the run that started this through the state API's POST /spawn — the parent's run and hook IDs — so the dashboard and.
 	SpawnedBy *SpawnedBy `json:"spawned_by,omitempty"`
 
 	// Started is when the run was accepted and began tracking — the moment it was QUEUED, before any concurrency-group wait.
@@ -83,7 +83,7 @@ type RunState struct {
 	// Output is the most recent MaxOutputLines lines of merged stdout+stderr. The slice is newline-free.
 	Output []string `json:"output,omitempty"`
 
-	// OutputTimes carries one UTC timestamp per Output line: the moment the server recorded that line (≈ when the container emitted it).
+	// OutputTimes carries UTC timestamp per Output line: the moment the server recorded that line (≈ when the container emitted it).
 	OutputTimes []time.Time `json:"output_times,omitempty"`
 
 	// Error is set when the run failed before or outside the container (for example, "docker: command not found").
@@ -92,10 +92,10 @@ type RunState struct {
 	// CancelRequested is set the moment a cancel is requested; the run stays in its current status until the container actually dies and the.
 	CancelRequested bool `json:"cancel_requested,omitempty"`
 
-	// CancelRequestedAt is when the first cancel request arrived (zero = never requested).
+	// CancelRequestedAt is when the cancel request arrived ( = never requested).
 	CancelRequestedAt time.Time `json:"cancel_requested_at,omitzero"`
 
-	// WaitHistory is the run's accumulated wait segments — one entry per SetWaitingOn stamp, closed (End set) when the pause ends or the run.
+	// WaitHistory is the run's accumulated wait segments — entry per SetWaitingOn stamp, closed (End set) when the pause ends or the run.
 	WaitHistory          []WaitSegment `json:"wait_history,omitempty"`
 	WaitHistoryTruncated bool          `json:"wait_history_truncated,omitempty"`
 
@@ -119,7 +119,7 @@ const (
 	WaitingOnGroup = "group"
 )
 
-// WaitingOn is the one "what is this run paused on?" record the dashboard
+// WaitingOn is the "what is this run paused on?" record the dashboard
 // renders: kind "wait" is a declared sleep with its mandatory Reason; kind
 // "lock" is a blocked acquire naming the contended Key and who holds it;
 // kind "group" is a queued concurrency-group acquire naming the group (Key)
@@ -136,14 +136,14 @@ type WaitingOn struct {
 	HolderHookID string `json:"holder_hook_id,omitempty"`
 	// HolderRunIDs lists every run currently holding a slot of the contended resource (kind "group": the group's active runs), in acquire order.
 	HolderRunIDs []string `json:"holder_run_ids,omitempty"`
-	// Position is the run's 1-based place in the wait queue (1 = next in line, so "N ahead" renders as Position-1).
+	// Position is the run's -based place in the wait queue ( = next in line, so "N ahead" renders as Position-).
 	Position int `json:"position,omitempty"`
 }
 
 // MaxWaitSegments bounds a run's recorded wait history.
 const MaxWaitSegments = 32
 
-// WaitSegment is one historical pause: which kind (wait/lock/group), what it contended on (Key), and exactly when it started and ended.
+// WaitSegment is historical pause: which kind (wait/lock/group), what it contended on (Key), and exactly when it started and ended.
 type WaitSegment struct {
 	Kind  string    `json:"kind"`
 	Key   string    `json:"key,omitempty"`
@@ -151,7 +151,7 @@ type WaitSegment struct {
 	End   time.Time `json:"end,omitzero"`
 }
 
-// Waiter identifies one run blocked on a cooperative lock the annotated run
+// Waiter identifies run blocked on a cooperative lock the annotated run
 // holds — the holder-side view of WaitingOn.
 type Waiter struct {
 	RunID  string `json:"run_id"`
@@ -180,7 +180,7 @@ type Run struct {
 	// onTerminal is bookkeeping the RUNNER does about this run that must land before the run is observably finished — see SetOnTerminal. nil.
 	onTerminal func(RunState)
 
-	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from a pause that a newer one overlapped — cannot clear the newer pause's.
+	// waitSeq numbers SetWaitingOn calls so a stale ClearWaitingOn — from a pause that a newer overlapped — cannot clear the newer pause's.
 	waitSeq uint64
 
 	// cancelReason optionally explains a cancel request (e.g. "lock stolen by run X"); the runner uses it in place of the generic "cancelled".
@@ -203,7 +203,7 @@ func (r *Run) Status() Status {
 	return r.state.Status
 }
 
-// ExitCode returns the container exit code (or -1 for non-exit failures).
+// ExitCode returns the container exit code (or - for non-exit failures).
 func (r *Run) ExitCode() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -220,7 +220,7 @@ func (r *Run) Error() string {
 // Done returns a channel closed when the run has reached a terminal status.
 func (r *Run) Done() <-chan struct{} { return r.done }
 
-// notifyChange invokes the tracker's OnChange observer, when one is set, with an output-stripped snapshot (Snapshot(0) — the same shape.
+// notifyChange invokes the tracker's OnChange observer, when is set, with an output-stripped snapshot (Snapshot() — the same shape.
 func (r *Run) notifyChange() {
 	if r.onChange != nil {
 		r.onChange(r.Snapshot(0))
@@ -233,7 +233,7 @@ func (r *Run) RequestCancel() { r.RequestCancelWithReason("") }
 // RequestCancelWithReason is RequestCancel carrying an explanation — e.g. a
 // lock steal naming its displacer — which the runner records as the
 // cancelled run's error in place of the generic "cancelled", so the reason
-// survives into run history. Only the first cancel's reason sticks.
+// survives into run history. Only the cancel's reason sticks.
 func (r *Run) RequestCancelWithReason(reason string) {
 	r.mu.Lock()
 	already := r.state.CancelRequested
@@ -259,7 +259,7 @@ func (r *Run) CancelReason() string {
 	return r.cancelReason
 }
 
-// Cancelled returns a channel closed once a cancel has been requested.
+// Cancelled returns a channel closed a cancel has been requested.
 func (r *Run) Cancelled() <-chan struct{} { return r.cancel }
 
 // Snapshot returns a JSON-friendly copy of the run with its output
@@ -291,7 +291,7 @@ func (r *Run) Snapshot(tail int) RunState {
 		cp.WaitingOn = &w
 	}
 	if cp.SpawnedBy != nil {
-		// Immutable once set, but copy for the same no-aliasing rule.
+		// Immutable set, but copy for the same no-aliasing rule.
 		sb := *cp.SpawnedBy
 		cp.SpawnedBy = &sb
 	}
@@ -305,7 +305,7 @@ func (r *Run) AppendOutput(line string) {
 	now := time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// The first line IS the first-output mark: stamped here, under the same lock and from the same instant, so the two streams racing to produce it.
+	// The line IS the -output mark: stamped here, under the same lock and from the same instant, so the streams racing to produce it.
 	if len(r.state.Output) == 0 {
 		r.markAtLocked(PhaseFirstOutput, now)
 	}
@@ -318,7 +318,7 @@ func (r *Run) AppendOutput(line string) {
 	}
 }
 
-// Finish records the terminal state, settles every terminal side effect, and only THEN closes the done channel. Calling Finish more than once on the same run is a no-op for the second call — which is also what guarantees the OnTerminal and OnFinish observers fire exactly once. THE ORDERING IS THE CONTRACT. Everything an observer could reach for must already be in place when the channel closes, so that <-run.Done() is a sufficient barrier on its own: onTerminal the runner's own bookkeeping (the run.finished activity line) onFinish the run-store write, lock release notifyChange the /runs/stream terminal delta close(done) ← observers unblock here, with all of the above settled Closing first would make Done() mean only "the status field flipped", and every caller would need a second, separate barrier to see the rest.
+// Finish records the terminal state, settles every terminal side effect, and only THEN closes the done channel. Calling Finish more than on the same run is a no-op for the call — which is also what guarantees the OnTerminal and OnFinish observers fire exactly . THE ORDERING IS THE CONTRACT. Everything an observer could reach for must already be in place when the channel closes, so that <-run.Done() is a sufficient barrier on its own: onTerminal the runner's own bookkeeping (the run.finished activity line) onFinish the run-store write, lock release notifyChange the /runs/stream terminal delta close(done) ← observers unblock here, with all of the above settled Closing would make Done() mean only "the status field flipped", and every caller would need a , separate barrier to see the rest.
 func (r *Run) Finish(status Status, exitCode int, errMsg string) {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -371,7 +371,7 @@ func (r *Run) Title() string {
 	return r.state.Title
 }
 
-// SetRunning marks the run as actively executing and stamps StartedAt — the zero point of the processing clock, splitting queue wait (Started→here) from processing time (here→Finished).
+// SetRunning marks the run as actively executing and stamps StartedAt — the point of the processing clock, splitting queue wait (Started→here) from processing time (here→Finished).
 func (r *Run) SetRunning() {
 	r.mu.Lock()
 	changed := false
@@ -386,7 +386,7 @@ func (r *Run) SetRunning() {
 	}
 }
 
-// StartedAt returns when the container actually launched (pending→running), or the zero time while the run is still pending — and forever.
+// StartedAt returns when the container actually launched (pending→running), or the time while the run is still pending — and forever.
 func (r *Run) StartedAt() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -407,7 +407,7 @@ func (r *Run) SetOnTerminal(fn func(RunState)) {
 	r.mu.Unlock()
 }
 
-// TouchActivity resets the run's idle watchdog, if one is registered.
+// TouchActivity resets the run's idle watchdog, if is registered.
 func (r *Run) TouchActivity() {
 	r.mu.Lock()
 	fn := r.touch
@@ -419,10 +419,10 @@ func (r *Run) TouchActivity() {
 
 // SetWaitingOn marks the run as paused on w (a declared sleep or a
 // contended lock) so the dashboard can render it live. It returns a
-// sequence token for ClearWaitingOn: pauses normally run one at a time per
+// sequence token for ClearWaitingOn: pauses normally run at a time per
 // run, but if a newer pause overlaps — or a blocked acquire re-stamps its
 // holder — the newest state wins and stale tokens become no-ops. A finished
-// run is never marked (returns 0, which ClearWaitingOn ignores).
+// run is never marked (returns , which ClearWaitingOn ignores).
 func (r *Run) SetWaitingOn(w WaitingOn) uint64 {
 	r.mu.Lock()
 	if !r.state.Finished.IsZero() {
@@ -461,7 +461,7 @@ func (r *Run) closeOpenWaitSegmentLocked(at time.Time) {
 	}
 }
 
-// ClearWaitingOn clears the pause recorded by the SetWaitingOn that returned seq. A stale token (a newer SetWaitingOn happened since) or 0 leaves the current state untouched.
+// ClearWaitingOn clears the pause recorded by the SetWaitingOn that returned seq. A stale token (a newer SetWaitingOn happened since) or leaves the current state untouched.
 func (r *Run) ClearWaitingOn(seq uint64) {
 	r.mu.Lock()
 	if seq == 0 || seq != r.waitSeq || r.state.WaitingOn == nil {

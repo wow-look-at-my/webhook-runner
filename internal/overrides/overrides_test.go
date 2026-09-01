@@ -25,7 +25,7 @@ func TestOpenCreatesParentDir(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// Restart survival: everything written by one Store is read back by a
+// Restart survival: everything written by Store is read back by a
 // fresh Open at the same path.
 func TestRoundTripSurvivesReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "overrides.json")
@@ -200,7 +200,7 @@ func TestPersistFailureRollsBack(t *testing.T) {
 }
 
 // A corrupt overrides file fails Open: booting with the operator's kill
-// switches silently dropped is the one thing this store must never do.
+// switches silently dropped is the thing this store must never do.
 func TestOpenCorruptFileFailsLoudly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "overrides.json")
 	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o644))

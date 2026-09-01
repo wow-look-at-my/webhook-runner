@@ -2,7 +2,7 @@ package runs
 
 import "time"
 
-// HookRunStats aggregates one hook's runs over a caller-defined window: the
+// HookRunStats aggregates hook's runs over a caller-defined window: the
 // tracker's bounded in-memory window, or that window merged with the
 // persisted run-store history. MaxTracked and Retention label the window.
 type HookRunStats struct {
@@ -10,15 +10,15 @@ type HookRunStats struct {
 	Tracked int `json:"tracked"`
 	// MaxTracked is the live tracker's per-hook retention bound.
 	MaxTracked int `json:"max_tracked"`
-	// Retention is the run store's configured retention (e.g. "48h"), when set. Empty means memory-only.
+	// Retention is the run store's configured retention (e.g. "h"), when set. Empty means memory-only.
 	Retention string `json:"retention,omitempty"`
 	// ByStatus counts every run in the window, including active ones.
 	ByStatus map[Status]int `json:"by_status,omitempty"`
 	// Completed counts runs that reached a terminal status by doing work; excludes active and skipped runs.
 	Completed int `json:"completed"`
-	// Skipped counts terminal skip_if matches. Kept separate so SuccessRate and duration figures are not diluted by zero-length non-runs.
+	// Skipped counts terminal skip_if matches. Kept separate so SuccessRate and duration figures are not diluted by -length non-runs.
 	Skipped int `json:"skipped,omitempty"`
-	// SuccessRate is successes/Completed. It is 0 when Completed is 0 -- check Completed before displaying it.
+	// SuccessRate is successes/Completed. It is when Completed is -- check Completed before displaying it.
 	SuccessRate float64 `json:"success_rate"`
 	// AvgDurationMS/MaxDurationMS cover completed runs' processing span (StartedAt->Finished). See ComputeStats for the fallback rules.
 	AvgDurationMS int64 `json:"avg_duration_ms"`
@@ -26,7 +26,7 @@ type HookRunStats struct {
 	// AvgWaitMS/MaxWaitMS cover completed runs' queue wait (Started->StartedAt).
 	AvgWaitMS int64 `json:"avg_wait_ms"`
 	MaxWaitMS int64 `json:"max_wait_ms"`
-	// WaitSampled is how many completed runs back the wait figures. 0 means no wait data -- display "no data", not a zero wait.
+	// WaitSampled is how many completed runs back the wait figures. means no wait data -- display "no data", not a wait.
 	WaitSampled int `json:"wait_sampled"`
 	// LastRun is the newest run by start time, whatever its status -- an in-flight run counts as the latest.
 	LastRun *LastRun `json:"last_run,omitempty"`
@@ -38,12 +38,12 @@ type HookRunStats struct {
 // OverheadStats reports container-startup cost for a window of runs. Each
 // span carries its own sample count -- see docs/internals/run-phases.md.
 type OverheadStats struct {
-	// BootAvgMS/BootMaxMS/BootSampled: exact container startup (spawn to first instruction), only for runs with the in-container mark.
+	// BootAvgMS/BootMaxMS/BootSampled: exact container startup (spawn to instruction), only for runs with the in-container mark.
 	BootAvgMS   int64 `json:"boot_avg_ms"`
 	BootMaxMS   int64 `json:"boot_max_ms"`
 	BootSampled int   `json:"boot_sampled"`
 
-	// BoundAvgMS/BoundMaxMS/BoundSampled: upper bound (spawn to first output) for runs with no in-container mark. Never quote as exact.
+	// BoundAvgMS/BoundMaxMS/BoundSampled: upper bound (spawn to output) for runs with no in-container mark. Never quote as exact.
 	BoundAvgMS   int64 `json:"bound_avg_ms"`
 	BoundMaxMS   int64 `json:"bound_max_ms"`
 	BoundSampled int   `json:"bound_sampled"`
@@ -58,7 +58,7 @@ type OverheadStats struct {
 	InspectSampled int   `json:"inspect_sampled"`
 }
 
-// LastRun identifies one run for HookRunStats without dragging along output.
+// LastRun identifies run for HookRunStats without dragging along output.
 type LastRun struct {
 	ID       string    `json:"id"`
 	Status   Status    `json:"status"`
@@ -66,7 +66,7 @@ type LastRun struct {
 	Finished time.Time `json:"finished,omitempty"`
 }
 
-// ComputeStats aggregates snapshotted states of one hook. The caller fills
+// ComputeStats aggregates snapshotted states of hook. The caller fills
 // the window metadata (MaxTracked, Retention) afterward.
 func ComputeStats(states []RunState) HookRunStats {
 	var stats HookRunStats
@@ -98,7 +98,7 @@ func ComputeStats(states []RunState) HookRunStats {
 			stats.Skipped++
 			continue
 		}
-		// Terminal implies Finished is set (Finish records both under one lock).
+		// Terminal implies Finished is set (Finish records both under lock).
 		stats.Completed++
 		if snap.Status == StatusSuccess {
 			successes++
@@ -205,9 +205,9 @@ func computeOverhead(states []RunState) *OverheadStats {
 	return &o
 }
 
-// StatsByHook aggregates the tracker's retained runs of one hook. An unknown
+// StatsByHook aggregates the tracker's retained runs of hook. An unknown
 // hook and a hook with no runs both yield zeroed stats -- callers wanting a
-// 404 must consult the registry.
+// must consult the registry.
 func (t *Tracker) StatsByHook(hookID string) HookRunStats {
 	src := t.ListByHook(hookID, 0)
 	states := make([]RunState, 0, len(src))

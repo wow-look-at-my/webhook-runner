@@ -19,7 +19,7 @@ func init() {
 		Short: "Validate every hook.json in the given directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// One detection rule everywhere: serve, validate, and test all resolve the layout the same way (see internal/hooks/layout.go).
+			// detection rule everywhere: serve, validate, and test all resolve the layout the same way (see internal/hooks/layout.go).
 			layout := hooks.DetectLayout(args[0])
 			fmt.Fprintf(cmd.OutOrStdout(), "layout: %s\n", layout)
 			loaded, errs := hooks.LoadLayout(layout)

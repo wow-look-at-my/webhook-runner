@@ -36,7 +36,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 		return gitRun(t, work, "rev-parse", "HEAD")
 	}
 
-	// c1 carries the src layout; c2 removes it (the broken-tree shape).
+	// c carries the src layout; c removes it (the broken-tree shape).
 	hookDir := filepath.Join(work, "src", "hooks", "hello")
 	require.NoError(t, os.MkdirAll(hookDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(hookDir, "hook.json"), []byte(`{}`), 0o644))
@@ -66,7 +66,7 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 	assert.True(t, repo.TreeHasDir(c1, SrcMarkerDir))
 	assert.False(t, repo.TreeHasDir(c1, "no/such/dir"))
 
-	// Abbreviated shas resolve against LOCAL history only; deepen first (exactly what ManualSwitch's leading FetchBranch does).
+	// Abbreviated shas resolve against LOCAL history only; deepen (exactly what ManualSwitch's leading FetchBranch does).
 	_, err = repo.FetchBranch(100)
 	require.NoError(t, err)
 	sha, err = repo.ResolveRef(c1[:10])
@@ -96,9 +96,9 @@ func TestManualSwitchAgainstRealRepo(t *testing.T) {
 		Logger:    logger,
 	})
 	require.NoError(t, err)
-	g.Startup() // fresh clone: serving c2 (the tip), unverified
+	g.Startup() // fresh clone: serving c (the tip), unverified
 
-	// Rolling back to the OLDER c1 with CI unreadable: refused without the override (unknown counts as not green)...
+	// Rolling back to the OLDER c with CI unreadable: refused without the override (unknown counts as not green)...
 	out, err := g.ManualSwitch(context.Background(), c1, false)
 	require.NoError(t, err)
 	assert.False(t, out.Switched)

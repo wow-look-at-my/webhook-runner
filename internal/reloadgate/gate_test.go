@@ -29,7 +29,7 @@ import (
 type fakeRepo struct {
 	head    string
 	tip     string
-	commits []string // newest first, as of the next fetch
+	commits []string // newest , as of the next fetch
 	known   set.Set[string]
 	srcAt   set.Set[string]
 	resolve map[string]string
@@ -104,7 +104,7 @@ func (f *fakeRepo) ResolveRef(ref string) (string, error) {
 	return "", fmt.Errorf("unknown ref %q", ref)
 }
 
-// gitOps is the total git-call count, for the "zero git ops" assertions.
+// gitOps is the total git-call count, for the " git ops" assertions.
 func (f *fakeRepo) gitOps() int {
 	return f.headCalls + f.fetchBranchCalls + f.recentCalls + f.resetCalls + f.fetchSHACalls
 }
@@ -357,7 +357,7 @@ func TestGreenNotInHistoryIgnoredStale(t *testing.T) {
 }
 
 func TestGreenAtBranchesCapBypassesPrefilter(t *testing.T) {
-	// GitHub caps the status payload's branches array at 10; with the sha on more branches than that the tracked one can be squeezed out.
+	// GitHub caps the status payload's branches array at ; with the sha on more branches than that the tracked can be squeezed out.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 
@@ -464,7 +464,7 @@ func TestIgnoredDeliveriesTouchNothing(t *testing.T) {
 			case "wrong context":
 				body = statusBody(t, "B", "success", "some-other-check", "master")
 			case "foreign branches below cap":
-				// Below statusBranchesCap the list is provably complete, so the prefilter drops a green whose branches miss the tracked one without a single.
+				// Below statusBranchesCap the list is provably complete, so the prefilter drops a green whose branches miss the tracked without a single.
 				body = statusBody(t, "B", "success", "all-builds", "claude/x", "claude/y", "claude/z")
 			case "pending state":
 				body = statusBody(t, "B", "pending", "all-builds", "master")
@@ -518,7 +518,7 @@ func TestForceBypassesGate(t *testing.T) {
 
 // The outage shape: GitHub is the reason the tree is held, so the fetch
 // Force opens with is exactly what cannot be relied on. It must still land
-// on the held commit — the push webhook already fetched that one — rather
+// on the held commit — the push webhook already fetched that — rather
 // than erroring out or (unbounded) hanging the admin port behind the gate
 // mutex.
 func TestForceFallsBackToTheHeldCommitWhenGitHubIsDown(t *testing.T) {
@@ -559,7 +559,7 @@ func TestForceStillFailsWhenThereIsNothingLocalToForceTo(t *testing.T) {
 // a source-level assertion on purpose: the failure it prevents is not a
 // wrong value but a call that never returns, which no behavioural test can
 // observe without hanging the suite itself. A production runner froze this
-// way -- one unbounded fetch under g.mu took /version, /reload/status, both
+// way -- unbounded fetch under g.mu took /version, /reload/status, both
 // force paths, the status webhook and the poll with it, and the tree could
 // not move by any route until the process was restarted.
 func TestEveryGateFetchIsBounded(t *testing.T) {

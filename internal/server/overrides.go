@@ -1,16 +1,18 @@
-// The operator kill switch (admin port, behind Zero Trust — same trust
+// The operator kill switch (admin port, behind Trust — same trust
 // model as /reload and run cancellation):
 //
-//	POST   /hooks/{id}/disable        flip a hook off: deliveries 503,
-//	                                  scheduled runs skipped
-//	POST   /hooks/{id}/enable         flip it back on
-//	PUT    /concurrency/{group}/limit override a group's limit live
+//	POST /hooks/{id}/disable flip a hook off: deliveries ,
+//
+// scheduled runs skipped
+//
+//	POST /hooks/{id}/enable flip it back on
+//	PUT /concurrency/{group}/limit override a group's limit live
 //	DELETE /concurrency/{group}/limit revert to the declared limit
 //
 // These write OPERATIONAL state (internal/overrides, persisted under the
 // data dir), not hooks-repo config: a hooks-repo reload re-applies every
 // override rather than wiping it, and a restart loads it back from disk.
-// Every flip lands on the activity feed; a persist failure is loud (500 +
+// Every flip lands on the activity feed; a persist failure is loud ( +
 // an override.write_failed event, memory rolled back — the same rule as
 // kv writes), never a quiet degrade.
 //
@@ -27,8 +29,8 @@ import (
 	"net/http"
 )
 
-// effectiveDisabled is the one place a hook's effective kill-switch state
-// is computed: the operator's persisted explicit override when one exists,
+// effectiveDisabled is the place a hook's effective kill-switch state
+// is computed: the operator's persisted explicit override when exists,
 // else the hook.json `enable` default. A hook that is not loaded (e.g. it
 // failed load/validation — there is no parsed default to read) counts as
 // default-enabled, so only an explicit override disables it.
@@ -82,7 +84,7 @@ func (s *Server) setHookDisabled(w http.ResponseWriter, r *http.Request, disable
 
 // handleConcurrencyOverrideSet overrides a declared group's limit at
 // runtime: PUT /concurrency/{group}/limit with body {"limit": N}. N must
-// be >= 1 — a 0 limit is rejected because it would leave queued runs
+// be >= — a limit is rejected because it would leave queued runs
 // blocked forever (the right way to stop a group's hooks entirely is to
 // disable the hooks). The group must be currently declared, so a typo'd
 // name can't create a phantom override.
@@ -117,8 +119,8 @@ func (s *Server) handleConcurrencyOverrideSet(w http.ResponseWriter, r *http.Req
 		s.overrideWriteError(w, "concurrency group "+group, err)
 		return
 	}
-	// Persisted first, then applied live: if the process dies between the
-	// two, the restart re-applies from disk — never the other way around.
+	// Persisted , then applied live: if the process dies between the
+	// , the restart re-applies from disk — never the other way around.
 	if err := s.concurrency.SetLimitOverride(group, limit); err != nil {
 		// Unreachable in practice (limit and group were just validated), but never swallow it.
 		writeError(w, http.StatusInternalServerError, "apply override: "+err.Error())
@@ -138,7 +140,7 @@ func (s *Server) handleConcurrencyOverrideSet(w http.ResponseWriter, r *http.Req
 // handleConcurrencyOverrideClear reverts a group to its declared limit:
 // DELETE /concurrency/{group}/limit. Idempotent for declared groups; it
 // also accepts a group that is no longer declared but still has a stored
-// (orphaned) override, so an operator can clean those up. 404 only when
+// (orphaned) override, so an operator can clean those up. only when
 // the name matches neither.
 func (s *Server) handleConcurrencyOverrideClear(w http.ResponseWriter, r *http.Request) {
 	group := r.PathValue("group")
@@ -171,9 +173,9 @@ func (s *Server) handleConcurrencyOverrideClear(w http.ResponseWriter, r *http.R
 }
 
 // handleGlobalCapOverrideSet overrides the GLOBAL run cap at runtime:
-// PUT /concurrency-global/limit with body {"limit": N}. N must be >= 1 —
-// a 0 cap would block every run on the server (disable hooks to stop work
-// entirely). Persisted first, applied live second, exactly like the group
+// PUT /concurrency-global/limit with body {"limit": N}. N must be >= —
+// a cap would block every run on the server (disable hooks to stop work
+// entirely). Persisted , applied live , exactly like the group
 // override endpoint; already-queued runs feel the new cap immediately.
 func (s *Server) handleGlobalCapOverrideSet(w http.ResponseWriter, r *http.Request) {
 	if s.globalCap == nil {
@@ -205,8 +207,8 @@ func (s *Server) handleGlobalCapOverrideSet(w http.ResponseWriter, r *http.Reque
 		s.overrideWriteError(w, "global run cap", err)
 		return
 	}
-	// Persisted first, then applied live: if the process dies between the
-	// two, the restart re-applies from disk — never the other way around.
+	// Persisted , then applied live: if the process dies between the
+	// , the restart re-applies from disk — never the other way around.
 	if err := s.globalCap.SetLimitOverride(limit); err != nil {
 		writeError(w, http.StatusInternalServerError, "apply override: "+err.Error())
 		return
@@ -223,7 +225,7 @@ func (s *Server) handleGlobalCapOverrideSet(w http.ResponseWriter, r *http.Reque
 
 // handleGlobalCapOverrideClear reverts the global run cap to its
 // configured default (WEBHOOK_RUNNER_MAX_CONCURRENT_RUNS, else the
-// built-in 64): DELETE /concurrency-global/limit. Idempotent.
+// built-in ): DELETE /concurrency-global/limit. Idempotent.
 func (s *Server) handleGlobalCapOverrideClear(w http.ResponseWriter, r *http.Request) {
 	if s.globalCap == nil {
 		writeError(w, http.StatusInternalServerError, "global run cap not configured")
@@ -252,7 +254,7 @@ func (s *Server) handleGlobalCapOverrideClear(w http.ResponseWriter, r *http.Req
 
 // overrideWriteError reports a failed override persist the same way kv
 // write failures are reported: the store already rolled the mutation back,
-// the caller gets a 500 with the reason, and the activity feed records it.
+// the caller gets a with the reason, and the activity feed records it.
 func (s *Server) overrideWriteError(w http.ResponseWriter, what string, err error) {
 	s.log.Error("persist operator override failed", "target", what, "err", err)
 	s.events.Record("override.write_failed",

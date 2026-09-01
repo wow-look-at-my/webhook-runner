@@ -156,7 +156,7 @@ func TestReloadWebhookGateBadSignature(t *testing.T) {
 
 // Admin POST /reload is deliberately untouched by the gate: it runs
 // OnReload (wired to gate.Force in gate mode) and records reload.requested
-// — the shape the e2e test asserts.
+// — the shape the ee test asserts.
 func TestReloadAdminPortWithGateForceWiring(t *testing.T) {
 	gate := &fakeGate{status: "held"}
 	forced := 0

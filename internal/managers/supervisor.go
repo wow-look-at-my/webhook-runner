@@ -39,7 +39,7 @@ type SessionOutcome struct {
 	Err           string
 }
 
-// SessionRunner is what the supervisor needs from the runner: run one
+// SessionRunner is what the supervisor needs from the runner: run
 // blocking instance (the container's whole lifetime) and clean up
 // containers by name. Implemented by *runner.Runner.
 type SessionRunner interface {
@@ -62,7 +62,7 @@ type Options struct {
 	OnInstanceEnd func(instanceID string)
 }
 
-// AttentionEntry is one "manager should be running but is not" problem for
+// AttentionEntry is "manager should be running but is not" problem for
 // the needs-attention surface.
 type AttentionEntry struct {
 	ID       string
@@ -70,7 +70,7 @@ type AttentionEntry struct {
 	Message  string
 }
 
-// Status is one manager's row on GET /managers.
+// Status is manager's row on GET /managers.
 type Status struct {
 	ID          string `json:"id"`
 	Description string `json:"description,omitempty"`
@@ -95,7 +95,7 @@ type Status struct {
 	EnabledByDefault  bool   `json:"enabled_by_default"`
 }
 
-// Supervisor owns the manager fleet in THIS process: one loop per declared
+// Supervisor owns the manager fleet in THIS process: loop per declared
 // manager, gated behind the single-instance lease. Update (the reload
 // path) replaces the desired set; the loops converge on it.
 type Supervisor struct {
@@ -228,7 +228,7 @@ func (s *Supervisor) Update(managers map[string]*hooks.Manager) {
 
 // Run acquires the single-instance lease (flat-polling until ctx ends),
 // starts the loops, and blocks until ctx is done — then stops every
-// instance gracefully and returns once all loops exited. The lease is held
+// instance gracefully and returns all loops exited. The lease is held
 // for the whole span: the old process's instances are down BEFORE its
 // flock releases, so the successor can never overlap them.
 func (s *Supervisor) Run(ctx context.Context) {

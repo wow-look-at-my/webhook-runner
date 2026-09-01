@@ -1,4 +1,4 @@
-// Supervision loops: one manager's whole supervised life (start an instance, watch it end, restart flat) plus the small helpers the loop.
+// Supervision loops: manager's whole supervised life (start an instance, watch it end, restart flat) plus the small helpers the loop.
 
 package managers
 
@@ -21,7 +21,7 @@ func (s *Supervisor) startLoopLocked(mg *managed) {
 	go s.managerLoop(mg)
 }
 
-// managerLoop is one manager's whole supervised life: start an instance,
+// managerLoop is manager's whole supervised life: start an instance,
 // watch it end, restart flat — forever, until the manager is removed,
 // disabled (parks), or the supervisor shuts down.
 func (s *Supervisor) managerLoop(mg *managed) {
@@ -72,10 +72,10 @@ func (s *Supervisor) managerLoop(mg *managed) {
 		s.changed()
 
 		name := ContainerName(mg.id)
-		// Reap any orphan/stale container first: a crashed predecessor process leaves its (dockerd-owned) instance running; the deterministic.
+		// Reap any orphan/stale container : a crashed predecessor process leaves its (dockerd-owned) instance running; the deterministic.
 		s.runner.RemoveManagerContainer(name)
 
-		// Seed the instance's first event BEFORE it starts, so the very first /inbox/next returns it: the tick is the handover/crash recovery pass.
+		// Seed the instance's event BEFORE it starts, so the very /inbox/next returns it: the tick is the handover/crash recovery pass.
 		if m.ReconcileInterval() > 0 {
 			mg.inbox.PushTick()
 		} else {
@@ -168,7 +168,7 @@ func (s *Supervisor) runContext() context.Context {
 	return context.Background()
 }
 
-// sleepFlat waits d, checking for shutdown on a flat 250ms cadence.
+// sleepFlat waits d, checking for shutdown on a flat ms cadence.
 // false = shutting down.
 func (s *Supervisor) sleepFlat(d time.Duration) bool {
 	deadline := time.Now().Add(d)
@@ -197,7 +197,7 @@ func (s *Supervisor) requestStopLocked(mg *managed, reason string) {
 	}
 	select {
 	case mg.sessionStop <- StopRequest{Reason: reason}:
-	default: // a stop is already pending; the first reason wins
+	default: // a stop is already pending; the reason wins
 	}
 }
 
