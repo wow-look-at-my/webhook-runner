@@ -14,14 +14,8 @@ import (
 )
 
 // Declarative skip conditions ("skip_if"): a hook can declare conditions
-// under which a delivery is answered right away, as a "skipped" run, with
-// no container. The matcher is total and bounded, not a language, so it is
-// safe to run outside a container: string comparisons plus RE2 regex, and
-// it fails toward doing the work on any unresolved path.
-// see docs/internals/runs-concurrency-and-overrides.md
 
 // HeaderKeyPrefix marks a skip_if key as a request header, not a payload
-// path: "header:x-github-event" (name case-insensitive).
 const HeaderKeyPrefix = "header:"
 
 // SkipConditions is the hook.json "skip_if" list. Entries are ORed.
@@ -30,24 +24,21 @@ type SkipConditions []SkipCondition
 // SkipCondition maps payload paths / header keys to matchers, ANDed.
 type SkipCondition map[string]*SkipMatcher
 
-// SkipMatcher is one condition key's test. In hook.json it is either a bare
-// string (shorthand for {"eq": ...}) or an object naming one or more
+// SkipMatcher is condition key's test. In hook.json it is either a bare
+// string (shorthand for {"eq": ...}) or an object naming or more
 // operators; when several operators are set they must ALL accept (AND).
 type SkipMatcher struct {
 	// Eq matches a leaf whose stringified value equals this exactly.
 	Eq *string
 	// Ne matches a leaf that differs. A missing path does NOT match: absence
-	// is not inequality.
 	Ne *string
 	// In matches a leaf whose stringified value equals any listed value.
 	In []string
 	// Exists tests resolution itself, not the value: true matches any
-	// resolved path (object, array, or leaf); false matches none.
 	Exists *bool
 	// Prefix matches a leaf whose stringified value starts with this.
 	Prefix *string
-	// Regex matches a leaf containing this RE2 pattern (anchor with ^ and $
-	// for a full match), compiled at load time.
+	// Regex matches a leaf containing this RE pattern (anchor with ^ and $
 	Regex *string
 
 	// re is the pattern compiled by compile() at load/validation time.
@@ -139,7 +130,7 @@ func (m *SkipMatcher) MarshalJSON() ([]byte, error) {
 	return json.Marshal(obj)
 }
 
-// compile validates the conditions and compiles every regex, once, at load
+// compile validates the conditions and compiles every regex, , at load
 // time. Malformed skip_if — an empty condition, an empty matcher, a bad
 // regex, an empty in-set — fails the hook's load/validation (the hook is
 // dropped), the same fail-closed rule as an undeclared concurrency group.
@@ -282,8 +273,6 @@ func (m *SkipMatcher) matches(leaf string, isLeaf, exists bool) bool {
 }
 
 // parsePayloadTree decodes the payload for path lookups. UseNumber keeps
-// numeric leaves as their exact JSON literal text. A non-JSON payload
-// yields nil, so every path is unresolved and the work happens.
 func parsePayloadTree(payload []byte) any {
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.UseNumber()
@@ -361,7 +350,7 @@ func (c SkipCondition) render() string {
 	return strings.Join(parts, " and ")
 }
 
-// render emits one clause per set operator, in a fixed order.
+// render emits clause per set operator, in a fixed order.
 func (m *SkipMatcher) render(key string) []string {
 	var parts []string
 	if m == nil {

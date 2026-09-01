@@ -1,6 +1,6 @@
-// Legacy HMAC-SHA256 webhook signature verification.
+// Legacy HMAC-SHA webhook signature verification.
 //
-// This implements the GitHub-style "sha256=<hex>" signature scheme.
+// This implements the GitHub-style "sha=<hex>" signature scheme.
 // Prefer api_key for new hooks — it is simpler to configure and debug.
 package server
 

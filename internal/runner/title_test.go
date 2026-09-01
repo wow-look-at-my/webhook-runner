@@ -120,7 +120,7 @@ func TestRunnerMidRunTitleReachesFinishedEvent(t *testing.T) {
 	rec := events.NewRecorder(10)
 	r := New(Options{Tracker: tracker, Logger: newSilentLogger(), TmpDir: dir, Docker: docker, Events: rec})
 
-	// SLEEP_1 keeps the container "running" long enough to title it mid-run.
+	// SLEEP_ keeps the container "running" long enough to title it mid-run.
 	hook := diskHook(t, dir, &hooks.Hook{ID: "h", Command: []string{"SLEEP_1"}})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -131,7 +131,6 @@ func TestRunnerMidRunTitleReachesFinishedEvent(t *testing.T) {
 		t.Fatal("run did not finish")
 	}
 	// Finish settles the run.finished write before closing done, so no
-	// Runner.Wait() barrier is needed here.
 	var finishedMsg string
 	for _, ev := range rec.List(0) {
 		if ev.Kind == "run.finished" {

@@ -1,5 +1,5 @@
 // Manager INSTANCES: the long-lived supervised container behind a manager
-// entity. An instance is a first-class identity, not a run: it never
+// entity. An instance is a -class identity, not a run: it never
 // registers with the tracker, never persists to the run store, and never
 // appears in the runs list or the timeline.
 // The run-shaped mechanisms it needs are wired against the instance
@@ -16,7 +16,7 @@
 // docker-kill-by-name, the concurrency manager).
 //
 // Full hook feature parity, manager-shaped:
-// dind injects the same two flags; concurrency_group holds ONE slot for
+// dind injects the same flags; concurrency_group holds slot for
 // the instance's whole life (acquired before launch, queued while full,
 // released at end); run_title/synchronous/github_status are handled by the
 // supervisor/server around the inbox (titles, delivery holds, per-delivery
@@ -60,7 +60,7 @@ func (r *Runner) RemoveManagerContainer(name string) {
 	}
 }
 
-// RunManagerSession runs ONE instance of a manager: builds the image,
+// RunManagerSession runs instance of a manager: builds the image,
 // launches the container, binds the inbox, and blocks until the container
 // exits (crash, watchdog kill, graceful stop, shutdown). Implements
 // managers.SessionRunner. sink receives every output line (the
@@ -77,7 +77,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		return managers.SessionOutcome{Status: status, RequestedStop: requested, Err: msg}
 	}
 
-	// One merged abort signal: a supervisor stop request OR the run context ending.
+	// merged abort signal: a supervisor stop request OR the run context ending.
 	abort := make(chan struct{})
 	sessionDone := make(chan struct{})
 	defer close(sessionDone)
@@ -151,7 +151,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		return requestedOutcome(runs.StatusCancelled)
 	}
 
-	// concurrency_group, manager-shaped: the INSTANCE holds one slot for its whole life — acquired here (queued while the group is full.
+	// concurrency_group, manager-shaped: the INSTANCE holds slot for its whole life — acquired here (queued while the group is full.
 	release := func() {}
 	if hook.ConcurrencyGroup != "" {
 		var acquired bool
@@ -379,7 +379,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 	return outcome
 }
 
-// streamManagerPipe scans one output pipe into the server log and the
+// streamManagerPipe scans output pipe into the server log and the
 // supervisor's panel sink — the manager analog of streamPipe, minus the
 // run ring (instances are not runs; their tail lives with the supervisor).
 func (r *Runner) streamManagerPipe(wg *sync.WaitGroup, rc io.Reader, managerID, instanceID, stream string, sink func(string)) {

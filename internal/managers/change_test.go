@@ -2,8 +2,8 @@
 // Managers panel and #manager=<id> drill-down are PUSH-fed, and the things
 // that move them most — instance output lines, inbox depth, the
 // last-delivery stamp, supervision state transitions — record no activity
-// event at all. Every one of them must fire this seam, or the panel goes
-// stale until the operator hits F5 (the bug this covers).
+// event at all. Every of them must fire this seam, or the panel goes
+// stale until the operator hits F (the bug this covers).
 package managers
 
 import (

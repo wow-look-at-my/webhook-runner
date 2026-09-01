@@ -198,7 +198,7 @@ func TestManualSwitchWorksWhenFetchFails(t *testing.T) {
 	out, err := f.gate.ManualSwitch(context.Background(), "A", true)
 	require.NoError(t, err)
 	assert.True(t, out.Switched)
-	// An OVERRIDE does not probe CI at all — the answer changes nothing once the operator has decided, and the probe is a GitHub call that hangs when.
+	// An OVERRIDE does not probe CI at all — the answer changes nothing the operator has decided, and the probe is a GitHub call that hangs when.
 	assert.Equal(t, ciStateNotProbed, out.CIState)
 	assert.Equal(t, []string{"A"}, repo.resets)
 }

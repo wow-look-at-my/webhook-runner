@@ -19,19 +19,19 @@ func filteredIDs(list []runs.RunState) []string {
 	return out
 }
 
-// FILTER FIRST, THEN LIMIT: max must count only the runs the predicate
+// FILTER , THEN LIMIT: max must count only the runs the predicate
 // keeps. Listing max rows and filtering afterwards is the bug — a hook whose
 // newest runs are all skips answers "nothing" at every max.
 func TestListFilteredCountsOnlyKeptRuns(t *testing.T) {
 	s := newStore(t, Config{})
 	base := time.Now().UTC().Add(-time.Hour)
 
-	// 20 skips on top of 5 successes, interleaved so the newest 20 rows in both indexes are skips.
+	// skips on top of successes, interleaved so the newest rows in both indexes are skips.
 	var wantSuccess []string
 	for i := range 5 {
 		id := fmt.Sprintf("succ%022d", i)
 		require.NoError(t, s.Record(state(id, "h", runs.StatusSuccess, base.Add(time.Duration(i)*time.Minute))))
-		wantSuccess = append([]string{id}, wantSuccess...) // newest-first
+		wantSuccess = append([]string{id}, wantSuccess...) // newest-
 	}
 	for i := range 20 {
 		id := fmt.Sprintf("skip%022d", i)
@@ -40,7 +40,7 @@ func TestListFilteredCountsOnlyKeptRuns(t *testing.T) {
 
 	notSkipped := func(st runs.Status) bool { return st != runs.StatusSkipped }
 
-	// Unfiltered, the newest 5 are all skips — the pre-fix answer.
+	// Unfiltered, the newest are all skips — the pre-fix answer.
 	for _, st := range s.ListByHook("h", 5) {
 		require.Equal(t, runs.StatusSkipped, st.Status)
 	}

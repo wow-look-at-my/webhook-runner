@@ -1,10 +1,10 @@
 // /runs' active-truth guarantees: the merged list ALWAYS carries every
 // active (non-terminal) run no matter how small the caller's max is — the
-// cap bounds terminal/history rows only — and ?live=1 answers exactly the
+// cap bounds terminal/history rows only — and ?live= answers exactly the
 // current active set. Together with the stream's hb active-id payload
 // (stream_test.go) these are what make the dashboard timeline positively
 // recovering: any client can re-derive "what is happening right now" from
-// one bounded read, and absence from these reads is an authoritative
+// bounded read, and absence from these reads is an authoritative
 // "not running" verdict.
 package server
 
@@ -37,7 +37,7 @@ func getRuns(t *testing.T, s *Server, target string) []runs.RunState {
 // Any requested max must be harmless for live runs: with more active runs
 // than max, EVERY active run still comes back and only terminal rows are
 // capped. The flood here is SKIPPED records — the production shape: bursts
-// of zero-duration terminal instants whose sheer volume used to push
+// of -duration terminal instants whose sheer volume used to push
 // live-but-waiting runs out of every newest-max window (clients read
 // absence as termination).
 func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
@@ -50,7 +50,7 @@ func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
 		tr.New("flood").Finish(runs.StatusSkipped, 0, "")
 	}
 
-	// max=3 is smaller than either partition alone (5 pending + 6 skipped): ALL 5 pending runs are still present; exactly 3 skipped rows survive.
+	// max= is smaller than either partition alone ( pending + skipped): ALL pending runs are still present; exactly skipped rows survive.
 	got := getRuns(t, s, "/runs?max=3")
 	var gotActive, gotTerminal int
 	for _, st := range got {
@@ -65,7 +65,7 @@ func TestListRunsActiveSurvivesSkippedFlood(t *testing.T) {
 	assert.Equal(t, 5, gotActive, "every active run must be returned no matter how small max is")
 	assert.Equal(t, 3, gotTerminal, "the max cap applies to terminal rows only")
 
-	// Newest-first ordering still holds over the combined result.
+	// Newest- ordering still holds over the combined result.
 	for i := 1; i < len(got); i++ {
 		assert.False(t, got[i-1].Started.Before(got[i].Started), "rows not newest-first at %d", i)
 	}
@@ -104,7 +104,7 @@ func TestListRunsCursorPagesKeepTotalCap(t *testing.T) {
 	}
 }
 
-// ?live=1 is the one-shot truth fetch: exactly the current non-terminal
+// ?live= is the -shot truth fetch: exactly the current non-terminal
 // set, [] (never null) when idle, ?hook= narrowing, cap-free by design.
 func TestListRunsLiveParam(t *testing.T) {
 	s, _, tr, _ := newTestServer(t)
@@ -135,7 +135,7 @@ func TestListRunsLiveParam(t *testing.T) {
 	got = ids(getRuns(t, s, "/runs?live=1&hook=h&max=1"))
 	assert.Equal(t, set.Of(a.ID(), b.ID()), got)
 
-	// live=0 (and garbage) keep the ordinary merged view.
+	// live= (and garbage) keep the ordinary merged view.
 	all := getRuns(t, s, "/runs?live=0")
 	assert.Len(t, all, 4, "live=0 must keep the plain merged view, terminal rows included")
 }

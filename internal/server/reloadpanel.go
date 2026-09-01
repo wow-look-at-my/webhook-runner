@@ -2,13 +2,13 @@
 // what the reload gate is holding, the recent origin history with CI +
 // src-layout verdicts, an on-demand re-evaluation, and the operator's
 // manual commit switch (server-enforced informed override — a pick that
-// fails the gate's checks answers 409 with every reason and switches only
+// fails the gate's checks answers with every reason and switches only
 // when the request explicitly carries override:true; the gate records the
-// override loudly). Admin-port only, no auth by design (Zero Trust fronts
+// override loudly). Admin-port only, no auth by design ( Trust fronts
 // the port, the same trust model as POST /reload).
 //
 // The GET endpoints are READ-ONLY and cheap by construction: /reload/status
-// never touches the network beyond one (cached) CI lookup, and only
+// never touches the network beyond (cached) CI lookup, and only
 // /reload/commits — an explicit operator navigation — fetches the remote.
 // The automatic reload paths (status events, the reconciliation poll) are
 // completely untouched by this file.
@@ -52,19 +52,19 @@ const (
 	reloadCommitsMax = 20
 	// reloadCommitsFetchDepth matches the gate's ordering window.
 	reloadCommitsFetchDepth = 100
-	// reloadCIBudget bounds the whole CI-enrichment pass of one commits listing; commits past the budget report "unknown" instead of waiting.
+	// reloadCIBudget bounds the whole CI-enrichment pass of commits listing; commits past the budget report "unknown" instead of waiting.
 	reloadCIBudget = 15 * time.Second
 	// CI verdict cache TTLs: terminal states are stable (a re-run can still flip them, so not forever), live states go stale fast.
 	reloadCITerminalTTL = 5 * time.Minute
 	reloadCILiveTTL     = 20 * time.Second
 )
 
-// reloadCommitJSON is one commit as the panel renders it.
+// reloadCommitJSON is commit as the panel renders it.
 type reloadCommitJSON struct {
 	SHA     string `json:"sha"`
 	Short   string `json:"short"`
 	Subject string `json:"subject"`
-	Date    string `json:"date,omitempty"` // RFC3339 committer date
+	Date    string `json:"date,omitempty"` // RFC committer date
 	CIState string `json:"ci_state"`
 	HasSrc  bool   `json:"has_src"`
 	IsLive  bool   `json:"is_live,omitempty"`
@@ -79,10 +79,10 @@ type ciCacheEntry struct {
 // CIState vocabulary — "unknown" whenever it cannot be read, never a guess.
 //
 // An EXPIRED entry serves its stale value and refreshes behind; only a sha
-// with nothing cached blocks, once. Never put the probe back on the request
+// with nothing cached blocks, . Never put the probe back on the request
 // path: it is a GitHub call, /reload/status is polled on every dashboard
 // tick, and "unknown" — what a degraded GitHub returns — is not terminal,
-// so it expires on the live TTL and every expiry buys another 5s probe.
+// so it expires on the live TTL and every expiry buys another s probe.
 // That makes the panel slowest exactly when GitHub is the thing that broke.
 func (s *Server) reloadCIState(sha string) string {
 	if s.reloadControl == nil || sha == "" {
@@ -114,7 +114,7 @@ func (s *Server) reloadCIState(sha string) string {
 }
 
 // refreshCIState is refreshCIStateSync plus the in-flight bookkeeping that
-// keeps concurrent polls of one sha to a single probe.
+// keeps concurrent polls of sha to a single probe.
 func (s *Server) refreshCIState(sha string) {
 	defer func() {
 		s.ciMu.Lock()
@@ -137,7 +137,7 @@ func (s *Server) refreshCIStateSync(sha string) {
 	}
 	now := time.Now()
 	s.ciCache[sha] = ciCacheEntry{state: state, at: now}
-	// The panel's working set is tiny (live + pending + one listing); a cap
+	// The panel's working set is tiny (live + pending + listing); a cap
 	// keeps a long-lived process from accreting every sha it ever saw.
 	if len(s.ciCache) > 4*reloadCommitsMax {
 		clear(s.ciCache)
@@ -145,7 +145,7 @@ func (s *Server) refreshCIStateSync(sha string) {
 	}
 }
 
-// describeReloadCommit assembles one commit view: subject/date from local
+// describeReloadCommit assembles commit view: subject/date from local
 // git objects, the src-layout tree probe, and the (cached, best-effort) CI
 // state.
 func (s *Server) describeReloadCommit(ctx context.Context, sha, liveSHA string) reloadCommitJSON {
@@ -186,8 +186,8 @@ func shortSHA(sha string) string {
 
 // handleReloadStatus is GET /reload/status (admin port): the reload
 // panel's cheap snapshot — mode, branch, the live commit (with CI + src
-// verdicts), and the gate's pending/held tip when one exists. No git
-// fetch: local object reads plus one cached CI lookup.
+// verdicts), and the gate's pending/held tip when exists. No git
+// fetch: local object reads plus cached CI lookup.
 func (s *Server) handleReloadStatus(w http.ResponseWriter, r *http.Request) {
 	type pendingJSON struct {
 		reloadCommitJSON
@@ -246,7 +246,7 @@ func (s *Server) handleReloadStatus(w http.ResponseWriter, r *http.Request) {
 // handleReloadCommits is GET /reload/commits (admin port): fetch the
 // tracked branch fresh, then list its recent history with per-commit
 // subject/date, src-layout verdict, best-effort CI state, and the is_live
-// marker. CI lookups share one bounded budget; commits past it read
+// marker. CI lookups share bounded budget; commits past it read
 // "unknown" rather than stalling the listing.
 func (s *Server) handleReloadCommits(w http.ResponseWriter, r *http.Request) {
 	if s.reloadRepo == nil {
@@ -287,7 +287,7 @@ func (s *Server) handleReloadCommits(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReloadCheck is POST /reload/check (admin port): reload on demand.
-// Gated mode runs ONE pass of the existing reconciliation logic
+// Gated mode runs pass of the existing reconciliation logic
 // (Gate.Reconcile — fetch the tip, switch only on an affirmative green,
 // hold loudly on anything else) and reports its outcome; legacy mode runs
 // the legacy pull+reload. Neither forks the underlying path.
@@ -306,7 +306,7 @@ func (s *Server) handleReloadCheck(w http.ResponseWriter, r *http.Request) {
 // manual commit pick, body {"ref": "<sha-or-branch>", "override": bool}.
 // The server is authoritative about the informed-override contract: a
 // commit failing any gate check (CI not affirmatively green — "unknown"
-// counts as not green — or a tree without src/hooks) is answered 409 with
+// counts as not green — or a tree without src/hooks) is answered with
 // every reason and requires_override:true, and the tree only moves when
 // the request explicitly carries override:true (recorded loudly by the
 // gate). Routed through the gate's Force-style apply path, so rollback to

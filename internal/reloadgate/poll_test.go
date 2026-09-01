@@ -56,7 +56,7 @@ func TestReconcileUpToDateMakesNoStatusCall(t *testing.T) {
 }
 
 func TestReconcileGreenSwitches(t *testing.T) {
-	// The startup catch-up shape: a green landed while the runner was down (or its status webhook was missed) — the first poll pass switches.
+	// The startup catch-up shape: a green landed while the runner was down (or its status webhook was missed) — the poll pass switches.
 	repo := &fakeRepo{tip: "B", commits: []string{"B", "A"}}
 	f := servingFixture(t, repo, "A")
 	st := &countingStatus{state: "success"}
@@ -208,7 +208,7 @@ func TestReconcileRepeatTicksQuiet(t *testing.T) {
 	f.gate.Reconcile(context.Background())
 	assert.Equal(t, 1, countKind(f.rec, "reload.held_red"))
 
-	// The verdict changing (red -> pending, e.g. a new CI run) records exactly once more.
+	// The verdict changing (red -> pending, e.g. a new CI run) records exactly more.
 	st.state = "pending"
 	f.gate.Reconcile(context.Background())
 	f.gate.Reconcile(context.Background())
@@ -234,7 +234,7 @@ func TestReconcileRedRepointsPendingToTip(t *testing.T) {
 }
 
 func TestReconcileStartupCatchupAfterDowntime(t *testing.T) {
-	// The runner was down while master advanced and greened: the poller's immediate first pass (Poller fires once on start) converges without.
+	// The runner was down while master advanced and greened: the poller's immediate pass (Poller fires on start) converges without.
 	statePath := t.TempDir() + "/reload-gate.json"
 	seedState(t, statePath, gateState{ServingSHA: "A", Verified: true})
 	repo := &fakeRepo{head: "A", tip: "C", commits: []string{"C", "B", "A"}}

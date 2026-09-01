@@ -1,7 +1,7 @@
 // Package runstore persists completed runs to a single bbolt file so run
 // history survives server restarts. The in-memory tracker (internal/runs)
 // remains the source of truth for active runs and the freshest window; this
-// store is its durable, read-side complement: a run is written exactly once,
+// store is its durable, read-side complement: a run is written exactly ,
 // when it reaches a terminal status, and the admin endpoints read it back
 // merged behind the live tracker. Nothing is ever rehydrated into the
 // tracker. A run still in flight when the server stops never completed, so
@@ -10,7 +10,7 @@
 // Retention is time-based (Config.Retention, the primary knob): expired runs
 // are hidden from reads lazily and reclaimed by the background sweeper. The
 // per-hook count cap (Config.MaxPerHook) is a coarse disk safety net behind
-// it, enforced oldest-first during the sweep.
+// it, enforced oldest- during the sweep.
 package runstore
 
 import (
@@ -31,14 +31,14 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// Defaults applied by Open for zero-valued Config fields.
+// Defaults applied by Open for -valued Config fields.
 const (
 	DefaultRetention     = 48 * time.Hour
 	DefaultMaxPerHook    = 200_000
 	DefaultSweepInterval = 5 * time.Minute
 )
 
-// Config bounds the store. Zero values fall back to the defaults above.
+// Config bounds the store. values fall back to the defaults above.
 type Config struct {
 	Path          string        // bbolt database file (required)
 	Retention     time.Duration // completed runs older than this are dropped
@@ -46,7 +46,7 @@ type Config struct {
 	SweepInterval time.Duration // how often the GC sweeper runs
 }
 
-// Bucket layout. bytime and each per-hook bucket share the same "<start-unix-nanos>-<run-id>" key (zero-padded, so lexicographic order is chronological; the nanos are the run's QUEUED/accepted time, RunState.Started) — that shared time ordering is what makes range GC and.
+// Bucket layout. bytime and each per-hook bucket share the same "<start-unix-nanos>-<run-id>" key (-padded, so lexicographic order is chronological; the nanos are the run's QUEUED/accepted time, RunState.Started) — that shared time ordering is what makes range GC and.
 var (
 	bucketMeta   = []byte("meta")   // run ID -> RunState JSON (output stripped)
 	bucketOutput = []byte("output") // run ID -> outputRecord JSON
@@ -93,7 +93,7 @@ func Open(cfg Config, log *slog.Logger) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o700); err != nil {
 		return nil, fmt.Errorf("runstore: create dir: %w", err)
 	}
-	// The flock timeout makes a second process holding the file fail fast instead of blocking startup forever.
+	// The flock timeout makes a process holding the file fail fast instead of blocking startup forever.
 	db, err := bolt.Open(cfg.Path, 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("runstore: open %s: %w", cfg.Path, err)
@@ -116,7 +116,7 @@ func Open(cfg Config, log *slog.Logger) (*Store, error) {
 // Retention returns the configured retention window.
 func (s *Store) Retention() time.Duration { return s.cfg.Retention }
 
-// Record persists one terminal run — metadata, indexes, and output — in a
+// Record persists terminal run — metadata, indexes, and output — in a
 // single write transaction. Non-terminal states are rejected: active runs
 // live only in the tracker.
 func (s *Store) Record(st runs.RunState) error {
@@ -156,7 +156,7 @@ func (s *Store) Record(st runs.RunState) error {
 	})
 }
 
-// Get returns one persisted run with its captured output, or ok=false when
+// Get returns persisted run with its captured output, or ok=false when
 // it is absent or past retention (expired entries are hidden here and
 // reclaimed by the sweeper, mirroring the kv store's lazy-expiry split).
 func (s *Store) Get(id string) (runs.RunState, bool) {
@@ -187,8 +187,8 @@ func (s *Store) Get(id string) (runs.RunState, bool) {
 	return st, found
 }
 
-// ListAll returns persisted runs across all hooks, newest-first, without
-// output, capped at max (<=0 means no cap).
+// ListAll returns persisted runs across all hooks, newest-, without
+// output, capped at max (<= means no cap).
 func (s *Store) ListAll(max int) []runs.RunState {
 	return s.ListAllBefore(time.Time{}, max)
 }
@@ -208,20 +208,20 @@ func (s *Store) ListAllBeforeFiltered(before time.Time, max int, keep func(runs.
 	return out
 }
 
-// ListByHook returns one hook's persisted runs, newest-first, without
-// output, capped at max (<=0 means no cap).
+// ListByHook returns hook's persisted runs, newest-, without
+// output, capped at max (<= means no cap).
 func (s *Store) ListByHook(hookID string, max int) []runs.RunState {
 	return s.ListByHookBefore(hookID, time.Time{}, max)
 }
 
-// ListByHookBefore is ListByHook paged into the past, with ListAllBefore's exact contract: runs Started strictly before the instant, newest-first, capped at.
+// ListByHookBefore is ListByHook paged into the past, with ListAllBefore's exact contract: runs Started strictly before the instant, newest-, capped at.
 func (s *Store) ListByHookBefore(hookID string, before time.Time, max int) []runs.RunState {
 	return s.ListByHookBeforeFiltered(hookID, before, max, nil)
 }
 
 // ListByHookBeforeFiltered is ListByHookBefore with ListAllBeforeFiltered's
-// filter-first contract. This is the cheap path: the per-hook index's VALUE
-// carries the status, so a rejected row costs one small parse instead of a
+// filter- contract. This is the cheap path: the per-hook index's VALUE
+// carries the status, so a rejected row costs small parse instead of a
 // metadata decode.
 func (s *Store) ListByHookBeforeFiltered(hookID string, before time.Time, max int, keep func(runs.Status) bool) []runs.RunState {
 	var out []runs.RunState
@@ -237,9 +237,9 @@ func (s *Store) ListByHookBeforeFiltered(hookID string, before time.Time, max in
 }
 
 // collectBefore is the shared list walk: from the position seekBefore
-// selects, it steps the chronological bucket newest-first, decoding each
-// run's metadata record, until max runs are collected (<=0 = no cap) or the
-// first retention-expired key ends the walk. A non-nil keep rejects runs by
+// selects, it steps the chronological bucket newest-, decoding each
+// run's metadata record, until max runs are collected (<= = no cap) or the
+// retention-expired key ends the walk. A non-nil keep rejects runs by
 // status BEFORE they count against max (see ListAllBeforeFiltered).
 func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max int, keep func(runs.Status) bool) []runs.RunState {
 	var out []runs.RunState
@@ -254,7 +254,7 @@ func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max
 		if !ok {
 			continue
 		}
-		// Keys are chronological, so the first expired one ends the walk.
+		// Keys are chronological, so the expired ends the walk.
 		if s.expired(started, now) {
 			break
 		}
@@ -281,7 +281,7 @@ func (s *Store) collectBefore(tx *bolt.Tx, b *bolt.Bucket, before time.Time, max
 	return out
 }
 
-// seekBefore positions the cursor at the newest key STRICTLY older than the given instant and returns it with its value (nil key = nothing older); a zero before starts at the newest key overall.
+// seekBefore positions the cursor at the newest key STRICTLY older than the given instant and returns it with its value (nil key = nothing older); a before starts at the newest key overall.
 func seekBefore(c *bolt.Cursor, before time.Time) ([]byte, []byte) {
 	if before.IsZero() {
 		return c.Last()
@@ -293,10 +293,10 @@ func seekBefore(c *bolt.Cursor, before time.Time) ([]byte, []byte) {
 }
 
 // SummariesByHook returns skeleton states (ID, HookID, Status, Started,
-// StartedAt, Finished — nothing else) for every retained run of one hook,
-// newest-first. It reads only the per-hook index (key + summary value),
+// StartedAt, Finished — nothing else) for every retained run of hook,
+// newest-. It reads only the per-hook index (key + summary value),
 // never metadata blobs, so aggregating stats over a full retention window
-// stays a single cheap cursor walk even at the count cap. StartedAt is zero
+// stays a single cheap cursor walk even at the count cap. StartedAt is
 // for runs that never started AND for legacy rows persisted before it was
 // indexed — stats treat both as "processing start unknown" (see
 // runs.ComputeStats).
@@ -361,8 +361,8 @@ func (s *Store) StartSweeper() {
 }
 
 // sweep deletes runs older than Retention and, per hook, the oldest runs
-// beyond MaxPerHook, removing each victim from all four buckets in one
-// transaction. Victims are collected first and deleted after, so no bucket
+// beyond MaxPerHook, removing each victim from all buckets in
+// transaction. Victims are collected and deleted after, so no bucket
 // is mutated mid-iteration.
 func (s *Store) sweep(now time.Time) (int, error) {
 	type victim struct {
@@ -444,7 +444,7 @@ func (s *Store) sweep(now time.Time) (int, error) {
 }
 
 // Close stops the sweeper and closes the database. Safe to call more than
-// once; only the first call does the work.
+// ; only the call does the work.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.stop)
@@ -476,7 +476,7 @@ func splitKey(k []byte) (started time.Time, id string, ok bool) {
 	return time.Unix(0, nanos).UTC(), string(k[i+1:]), true
 }
 
-// summaryValue encodes the per-hook index value ("<status> <finished-nanos> <startedat-nanos>"). The third field is the processing start (RunState.StartedAt), 0 when the run never started. Status tokens never contain spaces, so plain cuts decode it.
+// summaryValue encodes the per-hook index value ("<status> <finished-nanos> <startedat-nanos>"). The field is the processing start (RunState.StartedAt), when the run never started. Status tokens never contain spaces, so plain cuts decode it.
 func summaryValue(status runs.Status, finished, startedAt time.Time) []byte {
 	startedNanos := int64(0)
 	if !startedAt.IsZero() {
@@ -495,7 +495,7 @@ func splitSummary(v []byte) (status runs.Status, finished, startedAt time.Time, 
 	if err != nil {
 		return "", time.Time{}, time.Time{}, false
 	}
-	// Legacy two-field values ("<status> <finished-nanos>", persisted before the queue-wait/processing split) have no StartedAt: it stays zero, so their duration falls back to.
+	// Legacy -field values ("<status> <finished-nanos>", persisted before the queue-wait/processing split) have no StartedAt: it stays , so their duration falls back to.
 	if hasStart {
 		startNanos, err := strconv.ParseInt(startRaw, 10, 64)
 		if err != nil {

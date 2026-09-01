@@ -11,22 +11,13 @@ import (
 )
 
 // Manager is the parsed manager.json: a persistent, single-instance
-// entity the runner supervises as ONE long-lived container, unlike a
-// hook's per-delivery containers. It wraps a *Hook (the full hook field
-// set) with manager-shaped semantics on several fields — see
-// docs/manager-entity-design.md for the per-field mapping.
-//
-// State is forced true; schedule has no manager form (superseded by
-// reconcile_interval). Manager IDs share one namespace with hook IDs.
 type Manager struct {
 	*Hook
 
 	// The manager.json reconcile_interval: a Go duration for synthetic
-	// tick events. Empty means event-only (deliveries and a start event).
 	ReconcileIntervalRaw string
 
 	// The manager.json spawn_targets: hook ids this manager may start via
-	// POST /spawn. Deny-by-default; entries must name declared hooks.
 	SpawnTargets []string
 }
 
@@ -71,7 +62,7 @@ func CheckSpawnTargets(loaded map[string]*Hook, managers map[string]*Manager) []
 // means enabled, exactly like hooks; the persisted dashboard override
 // outranks the default in both directions.
 
-// ReconcileInterval returns the parsed cadence, or 0 for event-only.
+// ReconcileInterval returns the parsed cadence, or for event-only.
 // Load-time validation means the parse here can't fail in practice.
 func (m *Manager) ReconcileInterval() time.Duration {
 	if m.ReconcileIntervalRaw == "" {
@@ -91,7 +82,7 @@ const ManagerFileName = "manager.json"
 // minus `state` (implied true) and `schedule` (superseded by
 // reconcile_interval), plus reconcile_interval. A separate decode struct
 // (rather than reusing Hook's) so DisallowUnknownFields rejects exactly
-// those two, loudly, instead of half-accepting a pasted hook.json.
+// those , loudly, instead of half-accepting a pasted hook.json.
 type managerJSON struct {
 	Schema      string `json:"$schema"`
 	Description string `json:"description"`
@@ -206,7 +197,7 @@ func ParseManager(id, sourcePath string, data []byte) (*Manager, error) {
 	return m, nil
 }
 
-// ManagerLoadError attributes one manager's load/validation failure to
+// ManagerLoadError attributes manager's load/validation failure to
 // its id — the HookLoadError analog for the attention surface.
 type ManagerLoadError struct {
 	ManagerID string
@@ -222,8 +213,8 @@ var errNoManagerJSON = errors.New("no manager.json")
 
 // LoadManagers walks the layout's managers directory (src/managers under
 // the SDK layout; legacy trees have no managers) and loads every immediate
-// child folder that contains a manager.json. Folders without one are
-// silently skipped, like the hooks loader. ZERO managers is NOT an error —
+// child folder that contains a manager.json. Folders without are
+// silently skipped, like the hooks loader. managers is NOT an error —
 // managers are an optional entity (unlike ZeroHooksError: a hooks tree
 // exists to serve hooks; a managers dir is often simply absent).
 //

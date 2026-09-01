@@ -40,11 +40,11 @@ func state(id, hook string, status runs.Status, started time.Time) runs.RunState
 // A skipped run is terminal, so it persists like any other — full metadata,
 // the reason line as output, and a "skipped" token in the per-hook summary
 // index (the "<status> <finished> <startedat>" value handles the new status
-// string as an opaque token; StartedAt stays zero: nothing ever launched).
+// string as an opaque token; StartedAt stays : nothing ever launched).
 func TestRecordSkippedRunRoundtrip(t *testing.T) {
 	s := newStore(t, Config{})
 	st := state("skipskipskipskipskipskipsk", "h", runs.StatusSkipped, time.Now().UTC().Add(-time.Minute))
-	st.Finished = st.Started.Add(time.Millisecond) // near-zero, no container
+	st.Finished = st.Started.Add(time.Millisecond) // near-, no container
 	st.Output = []string{`skipped: skip_if[0]: header x-github-event == "workflow_run"`}
 	st.OutputTimes = []time.Time{st.Started}
 	require.NoError(t, s.Record(st))
@@ -162,9 +162,9 @@ func idsOf(states []runs.RunState) []string {
 }
 
 // The Before variants page into the past: runs whose Started is STRICTLY
-// before the cursor, newest-first, sharing ListAll/ListByHook's walk. The
-// seek must be right at every position: between two keys, exactly on a key
-// (excluded), past both ends, and inside one hook's bucket.
+// before the cursor, newest-, sharing ListAll/ListByHook's walk. The
+// seek must be right at every position: between keys, exactly on a key
+// (excluded), past both ends, and inside hook's bucket.
 func TestListBeforeSeekPositions(t *testing.T) {
 	s := newStore(t, Config{})
 	base := time.Now().UTC().Add(-time.Hour)
@@ -176,7 +176,7 @@ func TestListBeforeSeekPositions(t *testing.T) {
 		require.NoError(t, s.Record(state(fmt.Sprintf("run%d", i), hook, runs.StatusSuccess, base.Add(time.Duration(i)*time.Minute))))
 	}
 
-	// Between two keys: everything strictly older, newest-first.
+	// Between keys: everything strictly older, newest-.
 	assert.Equal(t, []string{"run2", "run1", "run0"},
 		idsOf(s.ListAllBefore(base.Add(2*time.Minute+30*time.Second), 0)))
 
@@ -184,7 +184,7 @@ func TestListBeforeSeekPositions(t *testing.T) {
 	assert.Equal(t, []string{"run1", "run0"},
 		idsOf(s.ListAllBefore(base.Add(2*time.Minute), 0)))
 
-	// Newer than everything: the full newest-first list, same as ListAll.
+	// Newer than everything: the full newest- list, same as ListAll.
 	assert.Equal(t, idsOf(s.ListAll(0)),
 		idsOf(s.ListAllBefore(base.Add(time.Hour), 0)))
 
@@ -196,14 +196,14 @@ func TestListBeforeSeekPositions(t *testing.T) {
 	assert.Equal(t, []string{"run2", "run1"},
 		idsOf(s.ListAllBefore(base.Add(2*time.Minute+30*time.Second), 2)))
 
-	// Per-hook variant: the same strictness inside one hook's bucket.
+	// Per-hook variant: the same strictness inside hook's bucket.
 	assert.Equal(t, []string{"run2", "run0"},
 		idsOf(s.ListByHookBefore("a", base.Add(3*time.Minute), 0)))
 	assert.Equal(t, []string{"run1"},
 		idsOf(s.ListByHookBefore("b", base.Add(3*time.Minute), 0)))
 	assert.Empty(t, s.ListByHookBefore("nope", base.Add(time.Hour), 0))
 
-	// A zero before means no bound — the ListAll/ListByHook delegation.
+	// A before means no bound — the ListAll/ListByHook delegation.
 	assert.Equal(t, idsOf(s.ListAll(0)), idsOf(s.ListAllBefore(time.Time{}, 0)))
 }
 
@@ -232,7 +232,7 @@ func TestListBeforePaginationTiles(t *testing.T) {
 }
 
 // The retention break applies to Before walks exactly like ListAll: the
-// first expired key still ends the walk, and a cursor pointing past every
+// expired key still ends the walk, and a cursor pointing past every
 // retained run yields nothing rather than surfacing expired history.
 func TestListBeforeRetentionBreak(t *testing.T) {
 	s := newStore(t, Config{Retention: time.Hour})
@@ -244,11 +244,11 @@ func TestListBeforeRetentionBreak(t *testing.T) {
 		require.NoError(t, s.Record(st))
 	}
 
-	// A cursor between the retained runs pages to the older retained one and stops at the expired key.
+	// A cursor between the retained runs pages to the older retained and stops at the expired key.
 	assert.Equal(t, []string{older.ID}, idsOf(s.ListAllBefore(now.Add(-20*time.Minute), 0)))
 	assert.Equal(t, []string{older.ID}, idsOf(s.ListByHookBefore("h", now.Add(-20*time.Minute), 0)))
 
-	// A cursor older than every retained run: the first key the walk sees is already expired, so the page is empty.
+	// A cursor older than every retained run: the key the walk sees is already expired, so the page is empty.
 	assert.Empty(t, s.ListAllBefore(now.Add(-90*time.Minute), 0))
 	assert.Empty(t, s.ListByHookBefore("h", now.Add(-90*time.Minute), 0))
 }
@@ -282,7 +282,7 @@ func TestRetentionBoundaryOnReads(t *testing.T) {
 }
 
 // The boundary instant itself is expired — Started exactly Retention ago is
-// out, one nanosecond fresher is in (the kv store's TTL convention).
+// out, nanosecond fresher is in (the kv store's TTL convention).
 func TestExpiredBoundaryInstant(t *testing.T) {
 	s := newStore(t, Config{Retention: time.Hour})
 	now := time.Now().UTC()
@@ -306,7 +306,7 @@ func TestSweepReclaimsExpired(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, removed)
 
-	// The fresh run is intact, the expired ones are gone from every bucket (a second sweep finding nothing proves the indexes went too).
+	// The fresh run is intact, the expired ones are gone from every bucket (a sweep finding nothing proves the indexes went too).
 	_, ok := s.Get(fresh.ID)
 	assert.True(t, ok)
 	_, ok = s.Get(old1.ID)
@@ -349,16 +349,16 @@ func TestSweepEnforcesPerHookCap(t *testing.T) {
 }
 
 // StartedAt round-trips through both the metadata blob and the summary
-// index — for a run that started, and for one that never did (zero value).
+// index — for a run that started, and for that never did ( value).
 func TestRecordRoundTripsStartedAt(t *testing.T) {
 	s := newStore(t, Config{})
 	base := time.Now().UTC().Add(-10 * time.Minute)
 
 	started := state("aaaaaaaaaaaaaaaaaaaaaaaaas", "h", runs.StatusSuccess, base)
-	started.StartedAt = base.Add(90 * time.Second) // queued 90s, then launched
+	started.StartedAt = base.Add(90 * time.Second) // queued s, then launched
 	require.NoError(t, s.Record(started))
 
-	// Cancelled while queued: terminal with a zero StartedAt.
+	// Cancelled while queued: terminal with a StartedAt.
 	never := state("bbbbbbbbbbbbbbbbbbbbbbbbbn", "h", runs.StatusCancelled, base.Add(time.Minute))
 	require.NoError(t, s.Record(never))
 
@@ -382,8 +382,8 @@ func TestRecordRoundTripsStartedAt(t *testing.T) {
 	}
 }
 
-// splitSummary accepts both index-value generations: the current three-field
-// form (third field 0 = never started) and the legacy two-field form written
+// splitSummary accepts both index-value generations: the current -field
+// form ( field = never started) and the legacy -field form written
 // before the queue-wait/processing split.
 func TestSplitSummaryLegacyAndNew(t *testing.T) {
 	now := time.Now().UTC().Truncate(0)
@@ -396,14 +396,14 @@ func TestSplitSummaryLegacyAndNew(t *testing.T) {
 	assert.True(t, fin.Equal(now))
 	assert.True(t, startedAt.Equal(launch))
 
-	// New form, never started: the third field is written as 0.
+	// New form, never started: the field is written as .
 	st, fin, startedAt, ok = splitSummary(summaryValue(runs.StatusCancelled, now, time.Time{}))
 	require.True(t, ok)
 	assert.Equal(t, runs.StatusCancelled, st)
 	assert.True(t, fin.Equal(now))
 	assert.True(t, startedAt.IsZero())
 
-	// Legacy two-field form (pre-upgrade rows): still parses; StartedAt is zero, so its duration falls back to Finished−Started downstream.
+	// Legacy -field form (pre-upgrade rows): still parses; StartedAt is , so its duration falls back to Finished−Started downstream.
 	st, fin, startedAt, ok = splitSummary(fmt.Appendf(nil, "timeout %d", now.UnixNano()))
 	require.True(t, ok)
 	assert.Equal(t, runs.StatusTimeout, st)
@@ -417,14 +417,14 @@ func TestSplitSummaryLegacyAndNew(t *testing.T) {
 	}
 }
 
-// A pre-upgrade database row (legacy two-field index value) still surfaces
-// through SummariesByHook — with StartedAt zero — rather than being dropped.
+// A pre-upgrade database row (legacy -field index value) still surfaces
+// through SummariesByHook — with StartedAt — rather than being dropped.
 func TestSummariesTolerateLegacyIndexValues(t *testing.T) {
 	s := newStore(t, Config{})
 	st := state("cccccccccccccccccccccccccl", "h", runs.StatusSuccess, time.Now().UTC().Add(-time.Minute))
 	require.NoError(t, s.Record(st))
 
-	// Rewrite the index value in place to the legacy two-field form.
+	// Rewrite the index value in place to the legacy -field form.
 	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
 		hb := tx.Bucket(bucketByHook).Bucket([]byte("h"))
 		k, _ := hb.Cursor().First()

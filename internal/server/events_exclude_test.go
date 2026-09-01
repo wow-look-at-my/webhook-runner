@@ -64,7 +64,7 @@ func TestEventsExcludeFiltersBeforeTheCap(t *testing.T) {
 	} {
 		got := getEvents(t, s, q)
 		require.Lenf(t, got, 2, "query %s returned %d events", q, len(got))
-		assert.Equal(t, "image.built", got[0].Kind) // newest first
+		assert.Equal(t, "image.built", got[0].Kind) // newest
 		assert.Equal(t, "hook.denied", got[1].Kind)
 	}
 

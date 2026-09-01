@@ -22,7 +22,7 @@ func newFinishFixture(t *testing.T) (*kv.Store, *runs.Tracker) {
 }
 
 // The finish seam is the PRIMARY lock-release mechanism: Tracker.Finish fires
-// the OnFinish observer exactly once on every terminal path, and the callback
+// the OnFinish observer exactly on every terminal path, and the callback
 // must free everything the run still holds — regardless of how it ended and
 // regardless of whether the history write works.
 func TestRunFinishReleasesLocks(t *testing.T) {
@@ -57,7 +57,7 @@ func TestRunFinishReleasesLocks(t *testing.T) {
 	}
 	require.Len(t, recorded, len(terminals)) // the history write still happened, after the release
 
-	// The sweep is visible: one lock.released_on_finish event per leftover.
+	// The sweep is visible: lock.released_on_finish event per leftover.
 	var swept int
 	for _, e := range rec.List(100) {
 		if e.Kind == "lock.released_on_finish" {
@@ -67,7 +67,7 @@ func TestRunFinishReleasesLocks(t *testing.T) {
 	require.Equal(t, len(terminals), swept)
 }
 
-// Lock release must come FIRST: a runstore write error cannot leave a dead
+// Lock release must come : a runstore write error cannot leave a dead
 // run's locks held.
 func TestRunFinishReleasesLocksEvenWhenHistoryWriteFails(t *testing.T) {
 	store, tracker := newFinishFixture(t)

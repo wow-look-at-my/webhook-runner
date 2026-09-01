@@ -41,7 +41,7 @@ func TestCheckStaleSchedules_StaleSuccessReportsOnce(t *testing.T) {
 	r.SetRunning()
 	r.Finish(runs.StatusSuccess, 0, "")
 
-	// The threshold is max(interval*3, 15m); an hourly schedule's threshold is 3h, so simulate "now" 4h later, well past it.
+	// The threshold is max(interval*, m); an hourly schedule's threshold is h, so simulate "now" h later, well past it.
 	future := time.Now().Add(4 * time.Hour)
 	entries := CheckStaleSchedules(
 		map[string]time.Duration{"pr-minder": time.Hour},
@@ -63,7 +63,7 @@ func TestCheckStaleSchedules_NeverSucceededButTooYoungToCallStale(t *testing.T) 
 	entries := CheckStaleSchedules(
 		map[string]time.Duration{"pr-minder": time.Hour},
 		func(id string) []*runs.Run { return tracker.ListByHook(id, 50) },
-		time.Now(), // the one failure just happened -- no history to judge yet
+		time.Now(), // the failure just happened -- no history to judge yet
 	)
 	assert.Empty(t, entries)
 }
@@ -97,7 +97,7 @@ func TestCheckStaleSchedules_IgnoresUnscheduledAndNonPositiveIntervals(t *testin
 }
 
 func TestCheckStaleSchedules_ClearsViaReplaceSource(t *testing.T) {
-	// End-to-end through the Aggregator: a stale entry reported one minute and cleared the next (a success landed) must actually disappear --.
+	// End-to-end through the Aggregator: a stale entry reported minute and cleared the next (a success landed) must actually disappear --.
 	agg := New()
 	tracker := runs.NewTracker()
 	r := tracker.New("pr-minder")
@@ -116,7 +116,7 @@ func TestCheckStaleSchedules_ClearsViaReplaceSource(t *testing.T) {
 	r2.SetRunning()
 	r2.Finish(runs.StatusSuccess, 0, "")
 	// The success just landed relative to REAL time, not the fixed `future`
-	// reference above -- check staleness as of now, not as of 4h from the
+	// reference above -- check staleness as of now, not as of h from the
 	// original test start.
 	agg.ReplaceSource(SourceSchedule, CheckStaleSchedules(
 		map[string]time.Duration{"pr-minder": time.Hour},

@@ -21,7 +21,7 @@ import (
 // profileAllowsUngated reports whether the profile ends with a rule that
 // allows the syscall for ANY container, i.e. not gated on a capability the
 // hook container does not hold. Later rules win, so the LAST matching rule
-// is the one that decides.
+// is the that decides.
 func profileAllowsUngated(t *testing.T, profile []byte, syscall string) bool {
 	t.Helper()
 	var doc struct {
@@ -63,7 +63,7 @@ func TestUsernsProfileAllowsTheNamespaceCalls(t *testing.T) {
 	}
 }
 
-// The regression test proper. Every one of these is gated on CAP_SYS_ADMIN in
+// The regression test proper. Every of these is gated on CAP_SYS_ADMIN in
 // docker's default profile (pivot_root is not named there at all, so it hits
 // the default deny), and a hook container holds no such capability -- so
 // without an ungated allow the sandbox is built and then cannot be furnished.
@@ -84,7 +84,7 @@ func TestUsernsProfileAllowsTheSandboxToBeBuilt(t *testing.T) {
 // list (namespaces only, the exact bug) and checks that the sandbox calls come
 // back denied. Without this, the test above would keep passing if someone
 // removed the mount syscalls from usernsSyscalls AND the assertion's own
-// helper broke: here the two disagree on purpose.
+// helper broke: here the disagree on purpose.
 func TestTheOldNamespaceOnlyListWouldNotBuildASandbox(t *testing.T) {
 	saved := usernsSyscalls
 	t.Cleanup(func() { usernsSyscalls = saved })
@@ -136,9 +136,9 @@ func TestSeccompArgsAreEmptyWithoutTheOptIn(t *testing.T) {
 
 // The opt-in passes the profile and NOTHING else. apparmor=unconfined looks
 // like the missing half -- docker-default does deny the mount bwrap needs --
-// and it is worse than the denial: it puts the container under Ubuntu 24.04's
+// and it is worse than the denial: it puts the container under Ubuntu .'s
 // unprivileged-userns restriction, where bwrap fails earlier still, at
-// "setting up uid map". Measured on GitHub's runners, one commit apart.
+// "setting up uid map". Measured on GitHub's runners, commit apart.
 func TestSeccompArgsPassTheProfileAndNothingElse(t *testing.T) {
 	args, cleanup, err := seccompArgs(wantsUserns{}, t.TempDir(), "test")
 	require.Nil(t, err)

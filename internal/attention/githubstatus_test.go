@@ -49,7 +49,7 @@ func TestGitHubStatusEntriesNamesEntitiesWithNoCredential(t *testing.T) {
 }
 
 // A configured credential is the whole point of the entry existing: with
-// one, statuses post, so there is nothing to report even for entities that
+// , statuses post, so there is nothing to report even for entities that
 // declare github_status.
 func TestGitHubStatusEntriesSilentWhenConfigured(t *testing.T) {
 	loaded := map[string]*hooks.Hook{"wants-status": ghHook("wants-status", "ci/webhook", true)}

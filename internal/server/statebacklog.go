@@ -12,7 +12,7 @@ import (
 const (
 	// maxBacklogBody bounds a push.
 	maxBacklogBody = 256 * 1024
-	// maxBacklogTake bounds one drain.
+	// maxBacklogTake bounds drain.
 	maxBacklogTake = 1000
 )
 
@@ -29,7 +29,7 @@ type backlogTakeResponse struct {
 	Depth int      `json:"depth"`
 }
 
-// handleBacklogPush appends work to one of the calling hook's named queues.
+// handleBacklogPush appends work to of the calling hook's named queues.
 // Already-queued items are reported as duplicates and keep their original
 // position, so a caller can re-push its whole candidate set every tick — the
 // stateless way to say "this is the work that exists" — without the queue
@@ -62,7 +62,7 @@ func (s *Server) handleBacklogPush(w http.ResponseWriter, r *http.Request, ns, _
 }
 
 // handleBacklogTake removes and returns up to `count` items from the head. The
-// items are GONE from the queue when this returns — at-most-once, no lease to
+// items are GONE from the queue when this returns — at-most-, no lease to
 // expire and no in-flight state to leak. Callers of a backlog like this
 // re-derive their work each tick, so the next push restores anything a dying
 // run drops (see internal/queue's package comment).
@@ -95,7 +95,7 @@ func (s *Server) handleBacklogTake(w http.ResponseWriter, r *http.Request, ns, _
 	writeJSON(w, http.StatusOK, backlogTakeResponse{Items: items, Depth: depth})
 }
 
-// handleBacklogStat is the cheap "is my backlog draining?" read: one queue's
+// handleBacklogStat is the cheap "is my backlog draining?" read: queue's
 // depth, never its contents.
 func (s *Server) handleBacklogStat(w http.ResponseWriter, r *http.Request, ns, _ string) {
 	if s.backlogs == nil {

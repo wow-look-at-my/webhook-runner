@@ -1,12 +1,12 @@
-// The docker-updater PRE-CHECK: one GET that answers "is it safe to replace
-// this container right now?" — 200 yes, 503 no. Reachable two ways: the
+// The docker-updater PRE-CHECK: GET that answers "is it safe to replace
+// this container right now?" — yes, no. Reachable ways: the
 // standard pre-update path above, which needs only
-// `docker-updater.well-known.port=9001` on the container so discovery knows
+// `docker-updater.well-known.port=` on the container so discovery knows
 // which port to probe, or the older explicit label
-// `docker-updater.pre-check.url=:9001/restart-ready` (a ":"-prefixed URL
-// resolves against the container's own bridge IP). Prefer the first: the label
+// `docker-updater.pre-check.url=:/restart-ready` (a ":"-prefixed URL
+// resolves against the container's own bridge IP). Prefer the : the label
 // overrides discovery entirely and marks the container "nonstandard". Either
-// way a non-2xx makes docker-updater skip that cycle and retry on the next one.
+// way a non-xx makes docker-updater skip that cycle and retry on the next .
 //
 // A restart is not merely lossy, it is DESTRUCTIVE to work in flight. Runs
 // alive at shutdown are never recorded, their containers are orphaned on the
@@ -33,14 +33,14 @@ const (
 	wellKnownPreUpdate = "/.well-known/docker-updater/pre-update"
 )
 
-// DefaultRestartMaxDefer bounds how long a busy fleet may hold off an update. docker-updater retries forever on a non-2xx and has no.
+// DefaultRestartMaxDefer bounds how long a busy fleet may hold off an update. docker-updater retries forever on a non-xx and has no.
 const DefaultRestartMaxDefer = 6 * time.Hour
 
 // restartGate tracks how long the check has been continuously blocked.
 type restartGate struct {
 	mu        sync.Mutex
-	blockedAt time.Time // zero = not currently blocked
-	forced    bool      // the force already fired for this stretch (log once)
+	blockedAt time.Time // = not currently blocked
+	forced    bool      // the force already fired for this stretch (log )
 }
 
 // observe records a blocked/ready answer and reports whether the max-defer
@@ -61,7 +61,7 @@ func (g *restartGate) observe(blocked bool, maxDefer time.Duration, now time.Tim
 	return now.Sub(g.blockedAt) >= maxDefer, g.blockedAt
 }
 
-// firstForce reports whether this is the first forced answer of the current blocked stretch, so the loud line is emitted once rather than.
+// firstForce reports whether this is the forced answer of the current blocked stretch, so the loud line is emitted rather than.
 func (g *restartGate) firstForce() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()

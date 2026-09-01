@@ -2,8 +2,8 @@
 // concurrency group — and, per group, the ADVISORY queue detail: which runs
 // hold its slots and which are waiting, in order. This is the operator's
 // "what is holding the locks" drill-down: a saturated group (Active == the
-// limit, Waiting > 0) is a wedge you can only unstick if the holders are
-// one click away, so each entry carries enough run metadata to render a
+// limit, Waiting > ) is a wedge you can only unstick if the holders are
+// click away, so each entry carries enough run metadata to render a
 // run link without another round trip.
 package server
 
@@ -14,14 +14,14 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/concurrency"
 )
 
-// groupRunView is one run in a group's holder or waiting list. RunID is
+// groupRunView is run in a group's holder or waiting list. RunID is
 // always present; the rest is best-effort enrichment from the live tracker
 // (a run evicted from the tracker window keeps its ID and Since so the
 // operator still sees THAT something holds the slot).
 type groupRunView struct {
 	RunID  string `json:"run_id"`
 	HookID string `json:"hook_id,omitempty"`
-	// Title is the run's friendly display title, when it has one.
+	// Title is the run's friendly display title, when it has .
 	Title  string `json:"title,omitempty"`
 	Status string `json:"status,omitempty"`
 	// Since is when the run took its slot (holders) or joined the queue (waiting) — the manager's advisory stamp, not a run lifecycle field.
@@ -31,7 +31,7 @@ type groupRunView struct {
 	StartedAt time.Time `json:"started_at,omitzero"`
 }
 
-// concurrencyGroupView is one per-group entry: the embedded GroupStatus keeps the original shape (name/limit/declared/overridden/active/waiting) — Holders and WaitingRuns are.
+// concurrencyGroupView is per-group entry: the embedded GroupStatus keeps the original shape (name/limit/declared/overridden/active/waiting) — Holders and WaitingRuns are.
 type concurrencyGroupView struct {
 	concurrency.GroupStatus
 	Holders     []groupRunView `json:"holders,omitempty"`

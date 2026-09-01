@@ -28,7 +28,7 @@ func devicesHook(t *testing.T, dir, id string, devices []string) *hooks.Hook {
 	}
 }
 
-// A hook declaring devices gets one --device flag per entry, before the image.
+// A hook declaring devices gets --device flag per entry, before the image.
 func TestRunnerDevicesAddsDeviceFlags(t *testing.T) {
 	dir := t.TempDir()
 	r := New(Options{

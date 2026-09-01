@@ -75,7 +75,7 @@ func TestContextStateNoToken(t *testing.T) {
 }
 
 func TestContextStateCredentialSourceFailure(t *testing.T) {
-	// A configured-but-failing source (secret-server down, credential not attached) must fail closed with the underlying reason, NOT with "nothing configured" — the two need different.
+	// A configured-but-failing source (secret-server down, credential not attached) must fail closed with the underlying reason, NOT with "nothing configured" — the need different.
 	c := NewFromSource(func(context.Context) (string, error) {
 		return "", errors.New("secret-server: HTTP 401 (machine token missing, revoked or malformed)")
 	}, newSilentLogger())

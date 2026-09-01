@@ -42,11 +42,11 @@ type serveOptions struct {
 	gateContext    string
 	gateContextSet bool
 
-	// reloadPollInterval is the reload gate's reconciliation-poll cadence (default 1h; 0 = poll disabled, gate stays purely event-driven).
+	// reloadPollInterval is the reload gate's reconciliation-poll cadence (default h; = poll disabled, gate stays purely event-driven).
 	reloadPollInterval time.Duration
 	reloadPollSet      bool
 
-	// restartMaxDefer bounds how long GET /restart-ready may refuse an update because runs are in flight (0 = the server's default).
+	// restartMaxDefer bounds how long GET /restart-ready may refuse an update because runs are in flight ( = the server's default).
 	restartMaxDefer time.Duration
 }
 
@@ -70,8 +70,8 @@ func applyServeEnv(o *serveOptions) error {
 		o.stateSecret = os.Getenv("WEBHOOK_RUNNER_STATE_SECRET")
 	}
 	if o.runRetention <= 0 {
-		// Go duration (e.g. "72h"); unset or unparseable falls back to the
-		// run store's built-in 48h default.
+		// Go duration (e.g. "h"); unset or unparseable falls back to the
+		// run store's built-in h default.
 		if d, err := time.ParseDuration(os.Getenv("WEBHOOK_RUNNER_RUN_RETENTION")); err == nil && d > 0 {
 			o.runRetention = d
 		}
@@ -127,7 +127,7 @@ func applyServeEnv(o *serveOptions) error {
 		o.gateContextSet = true
 	}
 	if !o.reloadPollSet {
-		// Go duration; unset (or empty) means the 1h default and an explicit 0 disables the reconciliation poll.
+		// Go duration; unset (or empty) means the h default and an explicit disables the reconciliation poll.
 		o.reloadPollInterval = time.Hour
 		if v := os.Getenv("WEBHOOK_RUNNER_RELOAD_POLL_INTERVAL"); v != "" {
 			d, err := time.ParseDuration(v)
@@ -153,7 +153,7 @@ func applyServeEnv(o *serveOptions) error {
 			return fmt.Errorf("WEBHOOK_RUNNER_RESTART_MAX_DEFER %q: %w (Go duration; negative disables the force)", v, err)
 		}
 		if d == 0 {
-			// Zero means "use the default" to the server, which would make "0" here read as disable — refuse the ambiguity outright.
+			// means "use the default" to the server, which would make "" here read as disable — refuse the ambiguity outright.
 			return fmt.Errorf("WEBHOOK_RUNNER_RESTART_MAX_DEFER %q: use a negative duration to never force, or omit it for the default", v)
 		}
 		o.restartMaxDefer = d

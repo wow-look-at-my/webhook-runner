@@ -2,7 +2,7 @@ package runs
 
 import "time"
 
-// Phase is one instrumentation mark on a run's lifecycle: the wall-clock instant the run reached a named point.
+// Phase is instrumentation mark on a run's lifecycle: the wall-clock instant the run reached a named point.
 type Phase string
 
 const (
@@ -18,10 +18,10 @@ const (
 	// PhaseSpawned is when exec.Command.Start returned for `docker run` — the host has handed off.
 	PhaseSpawned Phase = "spawned"
 
-	// PhaseContainerEntry is the first instruction executed INSIDE the container, stamped when the injected shim reports in over the state.
+	// PhaseContainerEntry is the instruction executed INSIDE the container, stamped when the injected shim reports in over the state.
 	PhaseContainerEntry Phase = "container_entry"
 
-	// PhaseFirstOutput is when the run's first stdout/stderr line reached the server.
+	// PhaseFirstOutput is when the run's stdout/stderr line reached the server.
 	PhaseFirstOutput Phase = "first_output"
 
 	// PhaseExited is when cmd.Wait returned — the container is gone and `--rm` teardown is done.
@@ -29,7 +29,7 @@ const (
 )
 
 // KnownPhase reports whether p is a mark the runner actually stamps. The
-// state-API route validates against it so a typo is a 400 rather than an
+// state-API route validates against it so a typo is a rather than an
 // unbounded map key.
 func KnownPhase(p Phase) bool {
 	switch p {
@@ -77,16 +77,16 @@ func (r *Run) markAtLocked(p Phase, at time.Time) {
 	r.state.Phases[p] = at
 }
 
-// Phase returns the stamped instant for p, zero when unmarked.
+// Phase returns the stamped instant for p, when unmarked.
 func (r *Run) Phase(p Phase) time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state.Phases[p]
 }
 
-// Span returns the duration between two marks and whether both were
-// stamped. A missing mark yields (0, false) — never a duration measured
-// against the zero time.
+// Span returns the duration between marks and whether both were
+// stamped. A missing mark yields (, false) — never a duration measured
+// against the time.
 func (s RunState) Span(from, to Phase) (time.Duration, bool) {
 	a, aok := s.Phases[from]
 	b, bok := s.Phases[to]
@@ -96,7 +96,7 @@ func (s RunState) Span(from, to Phase) (time.Duration, bool) {
 	return b.Sub(a), true
 }
 
-// BootDuration is the container's own startup cost: `docker run` spawned → first instruction inside the container. exact is true only when the in-container mark is present (state hooks).
+// BootDuration is the container's own startup cost: `docker run` spawned → instruction inside the container. exact is true only when the in-container mark is present (state hooks).
 func (s RunState) BootDuration() (d time.Duration, exact bool, ok bool) {
 	if d, ok := s.Span(PhaseSpawned, PhaseContainerEntry); ok {
 		return d, true, true
@@ -107,7 +107,7 @@ func (s RunState) BootDuration() (d time.Duration, exact bool, ok bool) {
 	return 0, false, false
 }
 
-// RuntimeStartDuration is the hook runtime's cold start: first instruction inside the container → first byte of output.
+// RuntimeStartDuration is the hook runtime's cold start: instruction inside the container → byte of output.
 func (s RunState) RuntimeStartDuration() (time.Duration, bool) {
 	return s.Span(PhaseContainerEntry, PhaseFirstOutput)
 }

@@ -28,7 +28,7 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.description="Executes incoming webhooks inside disposable Docker containers"
 
-COPY --chmod=755 build/webhook-runner_linux_amd64 /usr/local/bin/webhook-runner
+COPY --chmod=755 build/webhook-runner /usr/local/bin/webhook-runner
 
 # The KV state store is served on an internal Unix socket (under TMPDIR), not a
 # port: state hooks reach it at a plain http://localhost:9002 via a proxy shim

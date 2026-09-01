@@ -38,7 +38,7 @@ func TestDashboardIndexNoCacheAndHashedRefs(t *testing.T) {
 
 // The timeline is the primary runs view: the custom element ships in the
 // markup, the old runs table is demoted (hidden until the toggle reveals
-// it), and the served bundle is the generated ts0 output — the DO-NOT-EDIT
+// it), and the served bundle is the generated ts output — the DO-NOT-EDIT
 // marker is what CI's freshness diff protects.
 func TestDashboardTimelinePrimaryRunsView(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
@@ -56,7 +56,7 @@ func TestDashboardTimelinePrimaryRunsView(t *testing.T) {
 		"timeline.js must be the generated bundle, not a hand-written file")
 }
 
-// The per-hook drill-down view must be invisible on the plain overview. Two halves, both load-bearing: the shipped markup carries the hidden attribute (so the drill-down is hidden before dashboard.js runs), and the CSS carries a [hidden]{display:none !important} guard — the hidden attribute's UA rule loses to any author display: on the same element (main { display: grid } is what regressed it), so without the guard the drill-down renders, empty, stacked below the overview.
+// The per-hook drill-down view must be invisible on the plain overview. halves, both load-bearing: the shipped markup carries the hidden attribute (so the drill-down is hidden before dashboard.js runs), and the CSS carries a [hidden]{display:none !important} guard — the hidden attribute's UA rule loses to any author display: on the same element (main { display: grid } is what regressed it), so without the guard the drill-down renders, empty, stacked below the overview.
 func TestDashboardDrilldownHiddenOnOverview(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
 	rec := getDashboard(t, s, "/")
@@ -110,7 +110,7 @@ func TestDashboardHashedAssetsImmutable(t *testing.T) {
 	}
 }
 
-// Conditional revalidation: If-None-Match against the ETag answers 304.
+// Conditional revalidation: If-None-Match against the ETag answers .
 func TestDashboardAssetConditionalGet(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
 	for _, a := range []dashboard.Asset{dashboard.CSS, dashboard.TimelineJS} {
@@ -122,7 +122,7 @@ func TestDashboardAssetConditionalGet(t *testing.T) {
 	}
 }
 
-// A hashed path with a stale/wrong hash must 404 — never serve current
+// A hashed path with a stale/wrong hash must — never serve current
 // content under an old URL, or an edge cache would keep it alive forever.
 func TestDashboardStaleHash404(t *testing.T) {
 	s, _, _, _ := newTestServer(t)

@@ -30,7 +30,7 @@ func TestSchemaGateRejectsWhatTheGoModelCannotExpress(t *testing.T) {
 			doc:  `{` + schemaURL + `, "command":["x"], "github_status":{"enabled":true,"context":"ci","target_url":"not a url"}}`,
 			want: "target_url",
 		},
-		// minLength: 1 -- an empty template renders no title at all.
+		// minLength: -- an empty template renders no title at all.
 		"run_title is empty": {
 			doc:  `{` + schemaURL + `, "command":["x"], "run_title":""}`,
 			want: "run_title",
@@ -52,7 +52,7 @@ func TestSchemaGateRejectsWhatTheGoModelCannotExpress(t *testing.T) {
 }
 
 // The gate runs LAST on purpose: where the Go model checks something, its
-// message is the more actionable one and must survive.
+// message is the more actionable and must survive.
 func TestGoValidationMessagesWinOverTheSchema(t *testing.T) {
 	err := parseHookDoc(t, `{`+schemaURL+`, "command":["x"], "schedule":"5 minutes"}`)
 	require.Error(t, err)
@@ -93,7 +93,7 @@ func TestManagerSchemaGate(t *testing.T) {
 	assert.Contains(t, errs[0].Error(), "run_title")
 }
 
-// The embedded schemas must be compilable -- a broken one would otherwise turn
+// The embedded schemas must be compilable -- a broken would otherwise turn
 // every load into a schema-compile error (loud, but the wrong loud).
 func TestEmbeddedSchemasCompile(t *testing.T) {
 	v, err := hookSchemaValidator()

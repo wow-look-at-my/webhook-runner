@@ -13,9 +13,9 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// The docker-updater pre-check. 2xx means "replace the container now"; a
+// The docker-updater pre-check. xx means "replace the container now"; a
 // restart with runs in flight loses them AND gets their containers reaped by
-// the next boot's orphan sweep, so a wrong 200 kills live CI jobs.
+// the next boot's orphan sweep, so a wrong kills live CI jobs.
 
 func restartReady(t *testing.T, s *Server) (int, restartReadyResponse) {
 	t.Helper()
@@ -63,7 +63,7 @@ func TestRestartReadyClearsWhenRunsFinish(t *testing.T) {
 	assert.True(t, got.Ready)
 }
 
-// LIVENESS: docker-updater retries forever on a non-2xx and has no max-defer
+// LIVENESS: docker-updater retries forever on a non-xx and has no max-defer
 // of its own, so a never-idle fleet would pin the binary at its current
 // version — a silent freeze that looks exactly like a working gate.
 func TestRestartReadyForcesAfterMaxDefer(t *testing.T) {
@@ -149,9 +149,9 @@ func mustCode(t *testing.T, s *Server) int {
 	return code
 }
 
-// The standard paths are aliases, so they must answer identically to the two
-// they alias — including the 503 that holds an update back. A pre-update that
-// answered 200 with runs in flight would reap live CI jobs, which is the whole
+// The standard paths are aliases, so they must answer identically to the
+// they alias — including the that holds an update back. A pre-update that
+// answered with runs in flight would reap live CI jobs, which is the whole
 // reason the gate exists.
 func TestWellKnownPathsMirrorTheAdminPair(t *testing.T) {
 	s, _, tr, _ := newTestServer(t)

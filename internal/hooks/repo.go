@@ -52,7 +52,7 @@ func CloneRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, er
 
 // OpenRepo opens the clone at dir without moving an existing working tree
 // (no fetch, no reset) — the reload gate decides when the tree moves. A
-// missing dir is cloned fresh, unverified until the gate's first green.
+// missing dir is cloned fresh, unverified until the gate's green.
 func OpenRepo(url, branch, dir, sshKeyPath string, log *slog.Logger) (*Repo, error) {
 	r := &Repo{
 		url:        url,
@@ -138,7 +138,7 @@ func (r *Repo) FetchBranch(depth int) (string, error) {
 
 // FetchBranchContext is FetchBranch with a KILL SWITCH. A `git fetch` against
 // a degraded GitHub does not fail — it HANGS, and it hangs holding r.mu, so
-// every later ResetTo/ResolveRef queues behind it. That is how one unreachable
+// every later ResetTo/ResolveRef queues behind it. That is how unreachable
 // remote wedges the reload gate's own escape hatch. A caller that must stay
 // answerable (the operator's manual switch) passes a deadline; the context
 // kills the git process rather than waiting on it.
@@ -165,7 +165,7 @@ func (r *Repo) FetchBranchContext(ctx context.Context, depth int) (string, error
 }
 
 // RecentCommits lists up to max commits reachable from the last fetch
-// (FETCH_HEAD), newest first. Call FetchBranch first — a fresh clone has
+// (FETCH_HEAD), newest . Call FetchBranch — a fresh clone has
 // no FETCH_HEAD yet.
 func (r *Repo) RecentCommits(max int) ([]string, error) {
 	r.mu.Lock()
@@ -191,7 +191,7 @@ func (r *Repo) ResetTo(sha string) error {
 	return nil
 }
 
-// FetchSHA fetches one commit by sha from origin at the given depth —
+// FetchSHA fetches commit by sha from origin at the given depth —
 // the startup last-good restore path (GitHub serves reachable-sha
 // fetches).
 func (r *Repo) FetchSHA(sha string, depth int) error {
@@ -205,7 +205,7 @@ func (r *Repo) FetchSHA(sha string, depth int) error {
 }
 
 // CommitInfo returns the subject line and committer date of a commit that
-// is already present locally (fetch it first — see FetchBranch/FetchSHA/
+// is already present locally (fetch it — see FetchBranch/FetchSHA/
 // ResolveRef). Read-only plumbing: it never touches the working tree.
 func (r *Repo) CommitInfo(sha string) (subject string, date time.Time, err error) {
 	r.mu.Lock()
@@ -228,8 +228,6 @@ func (r *Repo) CommitInfo(sha string) (subject string, date time.Time, err error
 }
 
 // TreeHasDir reports whether the commit's tree contains path, via pure
-// object inspection (never a checkout). False also covers an unknown
-// commit; resolve it first with ResolveRef if that distinction matters.
 func (r *Repo) TreeHasDir(sha, path string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -241,12 +239,11 @@ func (r *Repo) TreeHasDir(sha, path string) bool {
 const resolveRefDepth = 100
 
 // validManualRef guards ResolveRef's ref before it becomes a git argument:
-// plausible ref characters only, never flag-shaped.
 var validManualRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@-]{0,250}$`)
 
 // ResolveRef resolves ref — a full or abbreviated commit sha, or a
 // branch/tag name — to a full commit sha. Branch/tag names are fetched
-// from origin by name first so they resolve to origin's CURRENT commit
+// from origin by name so they resolve to origin's CURRENT commit
 // (the stale local checkout ref must never win); full shas verify locally
 // and fall back to a reachable-sha fetch; abbreviated shas resolve against
 // local history only (origin cannot serve them by name). The working tree
@@ -319,8 +316,8 @@ func (r *Repo) gitCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// EnsureSSHKey checks for an Ed25519 keypair at keyPath. If none exists,
-// it generates one. Returns the path to the private key.
+// EnsureSSHKey checks for an Ed keypair at keyPath. If none exists,
+// it generates . Returns the path to the private key.
 func EnsureSSHKey(keyPath string, log *slog.Logger) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
 		return "", fmt.Errorf("create ssh key directory: %w", err)

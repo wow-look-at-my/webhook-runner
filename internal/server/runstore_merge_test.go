@@ -68,7 +68,7 @@ func TestListRunsMergesPersistedHistory(t *testing.T) {
 	// Only in the store: finished before a "restart".
 	old := persistOld(t, st, "oldoldoldoldoldoldoldoldol", "h", runs.StatusSuccess, time.Hour, "bye")
 
-	// Finished live run: in the tracker AND (via OnFinish) in the store — the merged view must show it exactly once.
+	// Finished live run: in the tracker AND (via OnFinish) in the store — the merged view must show it exactly .
 	fin := tr.New("h")
 	fin.AppendOutput("data")
 	fin.Finish(runs.StatusFailure, 1, "")
@@ -92,7 +92,7 @@ func TestListRunsMergesPersistedHistory(t *testing.T) {
 		assert.Empty(t, r.Output, "list view must not ship output")
 	}
 
-	// max caps the TERMINAL rows of the merged result, newest-first; the active run always rides above the cap (see mergedRuns — a live window must.
+	// max caps the TERMINAL rows of the merged result, newest-; the active run always rides above the cap (see mergedRuns — a live window must.
 	rec = httptest.NewRecorder()
 	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs?max=1", nil))
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
@@ -119,7 +119,7 @@ func TestListRunsHookFilterSpansBothSources(t *testing.T) {
 
 // A ?before= cursor pages the MERGED view: live runs at-or-after it drop
 // out, persisted history seeks from strictly before it, a run present in
-// both sources still appears exactly once (live wins), and the cursor
+// both sources still appears exactly (live wins), and the cursor
 // composes with ?hook= and ?max=.
 func TestListRunsBeforePagesMergedSources(t *testing.T) {
 	s, _, tr, st := newTestServerWithStore(t)
@@ -151,7 +151,7 @@ func TestListRunsBeforePagesMergedSources(t *testing.T) {
 		return "before=" + url.QueryEscape(at.Format(time.RFC3339Nano))
 	}
 
-	// Cursor at the active run's queued instant: it drops out (strictly before); the finished run — in BOTH sources — appears exactly once, ahead.
+	// Cursor at the active run's queued instant: it drops out (strictly before); the finished run — in BOTH sources — appears exactly , ahead.
 	atAct := cursor(act.Snapshot(0).Started)
 	assert.Equal(t, []string{fin.ID(), mid.ID, other.ID, old.ID}, get(atAct))
 
@@ -185,7 +185,7 @@ func TestGetRunFallsBackToStore(t *testing.T) {
 	assert.Equal(t, []string{"b", "c"}, got.Output)
 	assert.Len(t, got.OutputTimes, 2)
 
-	// Absent from both sources is still a 404.
+	// Absent from both sources is still a .
 	rec = httptest.NewRecorder()
 	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs/nope", nil))
 	require.Equal(t, http.StatusNotFound, rec.Code)

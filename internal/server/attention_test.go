@@ -47,7 +47,7 @@ func getAttention(t *testing.T, h http.Handler) attentionResp {
 	return out
 }
 
-// Without an aggregator the endpoint still answers — zero problems, an
+// Without an aggregator the endpoint still answers — problems, an
 // empty (never null) entries array.
 func TestAttentionEndpointNilAggregator(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
@@ -58,7 +58,7 @@ func TestAttentionEndpointNilAggregator(t *testing.T) {
 }
 
 // The populated shape: count + entries with source/hook/key/message/since,
-// oldest first.
+// oldest .
 func TestAttentionEndpointServesEntries(t *testing.T) {
 	agg := attention.New()
 	s := New(Options{
@@ -123,7 +123,7 @@ func TestAttentionFiltersEffectivelyDisabledHooks(t *testing.T) {
 		{Hook: "broken", Key: attention.KeyLoad, Message: "failed to load"},
 	})
 
-	// Baseline: all three show.
+	// Baseline: all show.
 	assert.Equal(t, 3, getAttention(t, admin(s)).Count)
 
 	// Disable h: its entry is filtered and the count matches; the server-wide entry and the (unloaded, therefore default-enabled) broken.
@@ -158,7 +158,7 @@ func TestAttentionFiltersEffectivelyDisabledHooks(t *testing.T) {
 }
 
 // The push path, end to end over real HTTP: an aggregator mutation —
-// including one derived from a recorded activity event through the
+// including derived from a recorded activity event through the
 // server's recorder wiring — dirties the "attention" section on
 // /runs/stream.
 func TestStreamSectionSignalsOnAttention(t *testing.T) {

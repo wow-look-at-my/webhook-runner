@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -132,7 +131,12 @@ func TestSkipMatcherMarshalRoundTrip(t *testing.T) {
 // compiled, conditions validated).
 func skipHook(t *testing.T, skipIf string) *Hook {
 	t.Helper()
-	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":`+skipIf+`}`)
+	doc, err := json.Marshal(map[string]any{
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+		"skip_if": json.RawMessage(skipIf),
+	})
+	require.NoError(t, err)
+	h, err := parseInDir(t, string(doc))
 	require.NoError(t, err)
 	return h
 }
@@ -158,7 +162,9 @@ func TestEvaluateSkipHeaderEquality(t *testing.T) {
 
 func TestEvaluateSkipHeaderNameCaseInsensitive(t *testing.T) {
 	for _, key := range []string{"header:x-github-event", "header:X-GitHub-Event", "header:X-GITHUB-EVENT"} {
-		h := skipHook(t, fmt.Sprintf(`[{%q: "push"}]`, key))
+		skipIf, err := json.Marshal([]map[string]string{{key: "push"}})
+		require.NoError(t, err)
+		h := skipHook(t, string(skipIf))
 		_, matched := h.EvaluateSkip(nil, ghHeaders("push"))
 		assert.True(t, matched, "condition key %q must match", key)
 	}
@@ -186,16 +192,16 @@ func TestEvaluateSkipORAcrossConditionsANDWithin(t *testing.T) {
 		{"action": {"in": ["labeled","unlabeled"]}, "sender.type": "Bot"}
 	]`)
 
-	// First condition matches on its own (OR).
+	// condition matches on its own (OR).
 	_, matched := h.EvaluateSkip([]byte(`{}`), ghHeaders("workflow_run"))
 	assert.True(t, matched)
 
-	// Second condition: both keys must hold (AND).
+	// condition: both keys must hold (AND).
 	reason, matched := h.EvaluateSkip([]byte(`{"action":"labeled","sender":{"type":"Bot"}}`), ghHeaders("pull_request"))
 	require.True(t, matched)
 	assert.Equal(t, `skip_if[1]: action in ["labeled", "unlabeled"] and sender.type == "Bot"`, reason)
 
-	// One key failing fails the whole condition.
+	// key failing fails the whole condition.
 	_, matched = h.EvaluateSkip([]byte(`{"action":"labeled","sender":{"type":"User"}}`), ghHeaders("pull_request"))
 	assert.False(t, matched)
 	_, matched = h.EvaluateSkip([]byte(`{"action":"opened","sender":{"type":"Bot"}}`), ghHeaders("pull_request"))
@@ -308,7 +314,7 @@ func TestEvaluateSkipTotality(t *testing.T) {
 }
 
 func TestEvaluateSkipHugeStringLeaf(t *testing.T) {
-	huge := strings.Repeat("x", 1<<20) // 1 MiB leaf
+	huge := strings.Repeat("x", 1<<20) // MiB leaf
 	payload, err := json.Marshal(map[string]string{"blob": huge})
 	require.NoError(t, err)
 

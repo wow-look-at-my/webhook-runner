@@ -1,16 +1,16 @@
-// The GLOBAL run cap: one server-wide ceiling on how many hook executions
+// The GLOBAL run cap: server-wide ceiling on how many hook executions
 // may run their containers SIMULTANEOUSLY, across every hook — bounding
 // total Docker-container concurrency (each container holds a bridge-network
-// IPv4 address; an unbounded delivery flood exhausts the pool: `docker: …
-// no available IPv4 addresses on this network's address pools`). At the
+// IPv address; an unbounded delivery flood exhausts the pool: `docker: …
+// no available IPv addresses on this network's address pools`). At the
 // cap, excess executions QUEUE (status pending, watchdog unarmed) and run
 // as slots free — never dropped, never errored.
 //
 // The cap is a Manager pseudo-group under the hood: Global owns a PRIVATE
-// Manager declaring exactly one group, so it reuses the proven semaphore
+// Manager declaring exactly group, so it reuses the proven semaphore
 // machinery verbatim — the retired-channel waiter re-bind (a live limit
 // change applies to already-queued runs immediately; a raise admits them
-// at once), release closures bound to the exact channel they acquired
+// at ), release closures bound to the exact channel they acquired
 // from, and the advisory holder/waiter bookkeeping the dashboard renders.
 // Because the pseudo-group lives in its own Manager instance, its name can
 // never collide with a group declared in concurrency.json.
@@ -22,7 +22,7 @@ package concurrency
 
 import "fmt"
 
-// DefaultGlobalLimit is the global run cap when nothing configures one.
+// DefaultGlobalLimit is the global run cap when nothing configures .
 const DefaultGlobalLimit = 64
 
 // globalGroup names the pseudo-group inside Global's private Manager.
@@ -37,7 +37,7 @@ type Global struct {
 	mgr *Manager
 }
 
-// NewGlobal builds a Global capped at def (values < 1 fall back to
+// NewGlobal builds a Global capped at def (values < fall back to
 // DefaultGlobalLimit — the cap must never be able to deadlock every run).
 func NewGlobal(def int) *Global {
 	if def < 1 {
@@ -57,11 +57,11 @@ func (g *Global) Default() int {
 	return g.def
 }
 
-// Acquire reserves one global run slot, blocking until one is free or
+// Acquire reserves global run slot, blocking until is free or
 // cancel fires (acquired=false — the caller treats the run as
 // cancelled-before-start, exactly like a group acquire). The returned
-// release must be called exactly once when the run finishes. onQueue
-// follows Manager.Acquire's contract: first call = the run actually has to
+// release must be called exactly when the run finishes. onQueue
+// follows Manager.Acquire's contract: call = the run actually has to
 // wait, later calls = the queue view changed.
 func (g *Global) Acquire(runID string, cancel <-chan struct{}, onQueue func(QueueState)) (release func(), acquired bool) {
 	if g == nil {
@@ -75,7 +75,7 @@ func (g *Global) Acquire(runID string, cancel <-chan struct{}, onQueue func(Queu
 	return release, acquired
 }
 
-// SetLimitOverride swaps the effective cap live (>= 1 enforced by the underlying Manager; already-queued runs re-bind immediately — a raise admits them at once, holders.
+// SetLimitOverride swaps the effective cap live (>= enforced by the underlying Manager; already-queued runs re-bind immediately — a raise admits them at , holders.
 func (g *Global) SetLimitOverride(limit int) error {
 	if g == nil {
 		return fmt.Errorf("global run cap not configured")
@@ -101,12 +101,12 @@ type GlobalStatus struct {
 	Waiting    int  `json:"waiting"`
 }
 
-// Status reports the cap's live utilization. Zero value on nil.
+// Status reports the cap's live utilization. value on nil.
 func (g *Global) Status() GlobalStatus {
 	if g == nil {
 		return GlobalStatus{}
 	}
-	st := g.mgr.Status()[0] // exactly one group by construction
+	st := g.mgr.Status()[0] // exactly group by construction
 	return GlobalStatus{
 		Limit:      st.Limit,
 		Default:    st.Declared,

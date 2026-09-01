@@ -96,7 +96,7 @@ func TestTriggerSkipMatched(t *testing.T) {
 	w := httptest.NewRecorder()
 	hook(s).ServeHTTP(w, req)
 
-	// Answered immediately, 2xx, naming the skip.
+	// Answered immediately, xx, naming the skip.
 	require.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
@@ -124,7 +124,7 @@ func TestTriggerSkipMatched(t *testing.T) {
 }
 
 // Authentication strictly precedes skip evaluation: an unauthenticated
-// delivery that WOULD match gets the plain 401 — no skip record, no
+// delivery that WOULD match gets the plain — no skip record, no
 // run.skipped event, nothing for a probing caller to observe.
 func TestTriggerSkipRequiresAuthFirst(t *testing.T) {
 	s, reg, tr, st, rec, dockerLog := newSkipTestServer(t)
@@ -164,8 +164,8 @@ func TestTriggerSkipNoMatchRunsNormally(t *testing.T) {
 }
 
 // A skipped delivery on a synchronous hook answers immediately with the
-// 200/skipped shape — never the sync snapshot path (whose non-success rule
-// would have turned "no work was done" into a 500).
+// /skipped shape — never the sync snapshot path (whose non-success rule
+// would have turned "no work was done" into a ).
 func TestTriggerSkipSynchronousHookAnswersImmediately(t *testing.T) {
 	s, reg, _, _, _, _ := newSkipTestServer(t)
 	reg.Set(skipHook(true))

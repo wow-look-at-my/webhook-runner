@@ -16,7 +16,7 @@ import (
 )
 
 // A delivery arriving during a deploy must be answered without an error AND
-// must not be lost. It used to get a 503 on the premise that "the sender
+// must not be lost. It used to get a on the premise that "the sender
 // redelivers" — GitHub does not, which is why the hooks repo needs a
 // delivery-gap replay SDK at all.
 
@@ -66,8 +66,8 @@ func TestSpooledDeliveryPreservesBodyAndHeaders(t *testing.T) {
 		"the replayed run must be indistinguishable from the live delivery")
 }
 
-// A full spool must not silently swallow the delivery: the honest 503 is
-// better than a 202 that lies.
+// A full spool must not silently swallow the delivery: the honest is
+// better than a that lies.
 func TestFullSpoolFallsBackToTheHonest503(t *testing.T) {
 	s, _ := drainingServerWithSpool(t)
 	sp, err := spool.Open(filepath.Join(t.TempDir(), "full"), nil)
@@ -82,7 +82,7 @@ func TestFullSpoolFallsBackToTheHonest503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
-// With no spool configured the old behavior stands exactly: 503.
+// With no spool configured the old behavior stands exactly: .
 func TestNoSpoolKeepsThe503Path(t *testing.T) {
 	s, reg, _, rn := newTestServer(t)
 	reg.Set(&hooks.Hook{ID: "h", Description: "d", Command: []string{"x"}})

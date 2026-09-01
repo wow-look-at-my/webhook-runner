@@ -13,7 +13,7 @@ import (
 func TestGlobalDefaults(t *testing.T) {
 	assert.Equal(t, 64, DefaultGlobalLimit, "the shipped default is 64")
 
-	g := NewGlobal(0) // < 1 falls back to the built-in default
+	g := NewGlobal(0) // < falls back to the built-in default
 	st := g.Status()
 	assert.Equal(t, DefaultGlobalLimit, st.Limit)
 	assert.Equal(t, DefaultGlobalLimit, st.Default)
@@ -38,15 +38,15 @@ func TestGlobalNilSafe(t *testing.T) {
 	assert.Nil(t, w)
 }
 
-// The directive's core property: with cap N, N+1 concurrent acquires run at
-// most N at once; the extra QUEUES (reported via onQueue) and runs once a
+// The directive's core property: with cap N, N+ concurrent acquires run at
+// most N at ; the extra QUEUES (reported via onQueue) and runs a
 // slot frees. Nothing is dropped or errored.
 func TestGlobalCapHoldsAtLimit(t *testing.T) {
 	const capN = 3
 	g := NewGlobal(capN)
 
 	var active, peak, ran atomic.Int64
-	gate := make(chan struct{}) // holds the first N inside their critical section
+	gate := make(chan struct{}) // holds the N inside their critical section
 	queuedCh := make(chan struct{}, 1)
 
 	var wg sync.WaitGroup
@@ -74,7 +74,7 @@ func TestGlobalCapHoldsAtLimit(t *testing.T) {
 	// Wait until all N hold slots.
 	require.Eventually(t, func() bool { return active.Load() == capN }, 2*time.Second, 5*time.Millisecond)
 
-	// The N+1th must QUEUE, not run and not error.
+	// The N+th must QUEUE, not run and not error.
 	wg.Add(1)
 	go acquireOne("extra", func(QueueState) {
 		select {

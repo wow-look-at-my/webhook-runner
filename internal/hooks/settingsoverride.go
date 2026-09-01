@@ -1,23 +1,23 @@
-// Operator settings overrides: the dashboard's settings editor writes one
-// field at a time (internal/overrides holds them, keyed by RFC 6901 JSON
+// Operator settings overrides: the dashboard's settings editor writes
+// field at a time (internal/overrides holds them, keyed by RFC JSON
 // Pointer), and this is where they meet the manifest.
 //
 // The rules that make an override safe to apply to a running fleet:
 //
-//   - SPARSE. An override pins one field. Everything else keeps coming from
-//     hook.json, so a manifest edit to an untouched field still lands.
-//   - The pointer must ALREADY RESOLVE in the manifest document. An override
-//     can only change a field the entity declares — never invent one. A
-//     schema may permit properties the manifest omits, but a value with no
-//     manifest counterpart has no revert target and no reviewed default, and
-//     that is exactly the config that rots.
-//   - The merged document is re-validated against settings.schema.json.
-//     An override that violates the schema is refused; the entity keeps its
-//     manifest settings and says so loudly.
-//   - No reference syntax. `${settings:...}` resolves at load and `${env:...}`
-//     at container start; letting an override introduce either would mean a
-//     value the operator typed is not the value they get. Overrides are
-//     literals.
+// - SPARSE. An override pins field. Everything else keeps coming from
+// hook.json, so a manifest edit to an untouched field still lands.
+// - The pointer must ALREADY RESOLVE in the manifest document. An override
+// can only change a field the entity declares — never invent . A
+// schema may permit properties the manifest omits, but a value with no
+// manifest counterpart has no revert target and no reviewed default, and
+// that is exactly the config that rots.
+// - The merged document is re-validated against settings.schema.json.
+// An override that violates the schema is refused; the entity keeps its
+// manifest settings and says so loudly.
+// - No reference syntax. `${settings:...}` resolves at load and `${env:...}`
+// at container start; letting an override introduce either would mean a
+// value the operator typed is not the value they get. Overrides are
+// literals.
 package hooks
 
 import (
@@ -47,7 +47,7 @@ func (h *Hook) ApplySettingsOverrides(ptrs map[string]json.RawMessage) error {
 	if err := json.Unmarshal(h.SettingsJSON(), &doc); err != nil {
 		return fmt.Errorf("settings is not valid JSON: %w", err)
 	}
-	// Sorted so a multi-field failure always names the same field first:
+	// Sorted so a multi-field failure always names the same field :
 	// map order would make the same broken override report differently run
 	// to run, which is miserable to debug from a log line.
 	for _, ptr := range sortedPointers(ptrs) {
@@ -73,7 +73,7 @@ func (h *Hook) ApplySettingsOverrides(ptrs map[string]json.RawMessage) error {
 		h.Settings = prev
 		return err
 	}
-	// Remember what the manifest said, once: a second apply on the same Hook (the API's probe, a re-merge) must not record already-merged values.
+	// Remember what the manifest said, : a apply on the same Hook (the API's probe, a re-merge) must not record already-merged values.
 	if h.manifestSettings == nil {
 		h.manifestSettings = prev
 	}
@@ -90,7 +90,7 @@ func (h *Hook) ManifestSettingsJSON() []byte {
 
 // validateSettingsAgainstSchema re-runs ONLY the schema half of the settings
 // contract. ValidateSettings also expands ${settings:...} references, which
-// must not run twice: by the time overrides are applied the manifest's
+// must not run : by the time overrides are applied the manifest's
 // references are already resolved to values, and re-expanding a document
 // that legitimately contains a literal "${" would corrupt it.
 func (h *Hook) validateSettingsAgainstSchema() error {
@@ -136,7 +136,7 @@ func sortedPointers(ptrs map[string]json.RawMessage) []string {
 	return out
 }
 
-// ManifestPointerValue reads the value at an RFC 6901 pointer in the entity's MANIFEST settings — what reverting this pin would restore. ok=false when the pointer does not resolve, which is how the API reports "this override has no manifest counterpart any more" instead of inventing a null.
+// ManifestPointerValue reads the value at an RFC pointer in the entity's MANIFEST settings — what reverting this pin would restore. ok=false when the pointer does not resolve, which is how the API reports "this override has no manifest counterpart any more" instead of inventing a null.
 func (h *Hook) ManifestPointerValue(pointer string) (json.RawMessage, bool) {
 	var doc any
 	if err := json.Unmarshal(h.ManifestSettingsJSON(), &doc); err != nil {
@@ -153,9 +153,9 @@ func (h *Hook) ManifestPointerValue(pointer string) (json.RawMessage, bool) {
 	return raw, true
 }
 
-// parsePointer splits an RFC 6901 pointer into its decoded tokens. The
-// escape order is load-bearing and specified: ~1 -> "/" BEFORE ~0 -> "~",
-// otherwise "~01" decodes to "~" + "1" instead of "~1".
+// parsePointer splits an RFC pointer into its decoded tokens. The
+// escape order is load-bearing and specified: ~ -> "/" BEFORE ~ -> "~",
+// otherwise "~" decodes to "~" + "" instead of "~".
 func parsePointer(pointer string) ([]string, error) {
 	if pointer == "" {
 		return nil, errors.New("pointer must name a field")

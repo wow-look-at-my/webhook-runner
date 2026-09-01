@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Cooperative per-key locks, owned by RUN INSTANCES. The operator's locking model: tracking which hook run holds a lock — and releasing everything it holds when that run terminates for any reason — is the PRIMARY liveness mechanism; a TTL is only a secondary backstop. So a lock here is bound to the run identity carried by the caller's state token (see Token/VerifyToken), acquire/release are atomic under one mutex (the compare-and-set/compare-and-delete a client cannot build from GET+PUT), and the runner frees a run's remaining locks at the tracker's OnFinish seam — which fires exactly once on EVERY terminal path (success, error, timeout kill, cancel), wired in cli/serve.go.
+// Cooperative per-key locks, owned by RUN INSTANCES. The operator's locking model: tracking which hook run holds a lock — and releasing everything it holds when that run terminates for any reason — is the PRIMARY liveness mechanism; a TTL is only a secondary backstop. So a lock here is bound to the run identity carried by the caller's state token (see Token/VerifyToken), acquire/release are atomic under mutex (the compare-and-set/compare-and-delete a client cannot build from GET+PUT), and the runner frees a run's remaining locks at the tracker's OnFinish seam — which fires exactly on EVERY terminal path (success, error, timeout kill, cancel), wired in cli/serve.go.
 var (
 	// ErrLockHeld: the lock is held by a different live run (acquire), or the caller tried to release a lock a different live run holds (release).
 	ErrLockHeld = errors.New("kv: lock held by another run")
@@ -45,7 +45,7 @@ func (e lockEntry) info(ns string) LockInfo {
 	return LockInfo{RunID: e.runID, HookID: ns, AcquiredAt: e.acquiredAt, ExpiresAt: e.expiresAt, Pinned: e.pinned}
 }
 
-// AcquireLock atomically takes the cooperative lock at key in ns for runID. A free (absent or expired) lock is taken with expiry now+ttl (DefaultLockTTL when ttl <= 0). A lock the SAME run already holds is re-acquired idempotently — its backstop expiry refreshed, its original acquiredAt kept (only the live owner can do this, so it can never prolong a dead run's lock). A lock held by another live run returns ErrLockHeld — mutating nothing — together with the HOLDER's LockInfo, so contention is never anonymous.
+// AcquireLock atomically takes the cooperative lock at key in ns for runID. A free (absent or expired) lock is taken with expiry now+ttl (DefaultLockTTL when ttl <= ). A lock the SAME run already holds is re-acquired idempotently — its backstop expiry refreshed, its original acquiredAt kept (only the live owner can do this, so it can never prolong a dead run's lock). A lock held by another live run returns ErrLockHeld — mutating nothing — together with the HOLDER's LockInfo, so contention is never anonymous.
 func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo, error) {
 	if !validNamespace(ns) {
 		return LockInfo{}, ErrBadNamespace
@@ -63,7 +63,7 @@ func (s *Store) AcquireLock(ns, key, runID string, ttl time.Duration) (LockInfo,
 }
 
 // AcquireLockPinned is AcquireLock with the pin applied ATOMICALLY in the
-// same compare-and-set — take-and-pin in one step, so no stealer can slip
+// same compare-and-set — take-and-pin in step, so no stealer can slip
 // between an acquire and a separate PinLock call. Same contention semantics
 // as AcquireLock.
 func (s *Store) AcquireLockPinned(ns, key, runID string, ttl time.Duration) (LockInfo, error) {
@@ -138,7 +138,7 @@ func lockTTL(ttl time.Duration) time.Duration {
 	return ttl
 }
 
-// takeLockLocked is the one compare-and-set acquire, take-and-pin, and
+// takeLockLocked is the compare-and-set acquire, take-and-pin, and
 // steal all share. Caller holds lockMu. When steal is false and another
 // live run holds the lock, it returns that holder's info with ErrLockHeld
 // (mutating nothing); when steal is true the entry is transferred to runID
@@ -179,7 +179,7 @@ func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal, 
 
 	e := lockEntry{runID: runID, acquiredAt: now, expiresAt: now.Add(ttl), pinned: pin}
 	if keyExisted && prev.runID == runID {
-		// Idempotent re-acquire by the owner — which is by definition alive, since it is the one calling: keep the original take time, and keep an.
+		// Idempotent re-acquire by the owner — which is by definition alive, since it is the calling: keep the original take time, and keep an.
 		e.acquiredAt = prev.acquiredAt
 		e.pinned = pin || prev.pinned
 	}
@@ -187,7 +187,7 @@ func (s *Store) takeLockLocked(ns, key, runID string, ttl time.Duration, steal, 
 	return e.info(ns), displaced, nil
 }
 
-// ReleaseLock atomically frees the lock at key in ns iff runID holds it — the server-side owner check, derived from the caller's token, that makes it impossible for one run to free another's lock.
+// ReleaseLock atomically frees the lock at key in ns iff runID holds it — the server-side owner check, derived from the caller's token, that makes it impossible for run to free another's lock.
 func (s *Store) ReleaseLock(ns, key, runID string) error {
 	if !validNamespace(ns) {
 		return ErrBadNamespace
@@ -210,7 +210,7 @@ func (s *Store) ReleaseLock(ns, key, runID string) error {
 	return nil
 }
 
-// ReapExpiredLock drops the entry at key iff it is EXPIRED and still held by holderRunID — the second half of TTL enforcement, for the one case where no kill is possible or needed: the holder is already CONFIRMED gone (the server found no live run behind it) yet its finish-seam release never landed, which is the release-path.
+// ReapExpiredLock drops the entry at key iff it is EXPIRED and still held by holderRunID — the half of TTL enforcement, for the case where no kill is possible or needed: the holder is already CONFIRMED gone (the server found no live run behind it) yet its finish-seam release never landed, which is the release-path.
 func (s *Store) ReapExpiredLock(ns, key, holderRunID string) bool {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()

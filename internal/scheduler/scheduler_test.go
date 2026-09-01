@@ -55,7 +55,7 @@ func newTestScheduler() (*Scheduler, *fakeClock, *recorder) {
 func TestFiresImmediatelyOnFirstRegistration(t *testing.T) {
 	s, _, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": 5 * time.Minute})
-	// A freshly added schedule is due at "now", so the very first tick fires it.
+	// A freshly added schedule is due at "now", so the very tick fires it.
 	s.fireDue()
 	got := rec.count("sweep")
 	require.Equal(t, 1, got)
@@ -65,13 +65,13 @@ func TestFiresImmediatelyOnFirstRegistration(t *testing.T) {
 func TestDoesNotFireBeforeInterval(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": 5 * time.Minute})
-	s.fireDue() // immediate fire (1)
+	s.fireDue() // immediate fire ()
 	clk.advance(4 * time.Minute)
-	s.fireDue() // too early for the second fire
+	s.fireDue() // too early for the fire
 	got := rec.count("sweep")
 	require.Equal(t, 1, got)
 
-	clk.advance(1 * time.Minute) // now 5m since the first fire
+	clk.advance(1 * time.Minute) // now m since the fire
 	s.fireDue()
 	require.Equal(t, 2, rec.count("sweep"))
 
@@ -80,7 +80,7 @@ func TestDoesNotFireBeforeInterval(t *testing.T) {
 func TestFiresEveryInterval(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": time.Minute})
-	s.fireDue() // 1 (immediate)
+	s.fireDue() // (immediate)
 	for i := 0; i < 3; i++ {
 		clk.advance(time.Minute)
 		s.fireDue()
@@ -93,7 +93,7 @@ func TestFiresEveryInterval(t *testing.T) {
 func TestUnchangedReloadPreservesNextFire(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": 5 * time.Minute})
-	s.fireDue() // immediate fire (1)
+	s.fireDue() // immediate fire ()
 	clk.advance(2 * time.Minute)
 	// A reload with the SAME interval must not reset the timer or re-fire.
 	s.Update(map[string]time.Duration{"sweep": 5 * time.Minute})
@@ -101,7 +101,7 @@ func TestUnchangedReloadPreservesNextFire(t *testing.T) {
 	got := rec.count("sweep")
 	require.Equal(t, 1, got)
 
-	clk.advance(3 * time.Minute) // 5m total since first fire
+	clk.advance(3 * time.Minute) // m total since fire
 	s.fireDue()
 	require.Equal(t, 2, rec.count("sweep"))
 
@@ -110,7 +110,7 @@ func TestUnchangedReloadPreservesNextFire(t *testing.T) {
 func TestChangedIntervalRefiresImmediately(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": time.Hour})
-	s.fireDue() // immediate (1)
+	s.fireDue() // immediate ()
 	clk.advance(time.Minute)
 	// Changing the interval re-arms the schedule to fire immediately.
 	s.Update(map[string]time.Duration{"sweep": 10 * time.Minute})
@@ -122,7 +122,7 @@ func TestChangedIntervalRefiresImmediately(t *testing.T) {
 func TestRemovedScheduleStopsFiring(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": time.Minute})
-	s.fireDue()                          // 1
+	s.fireDue()                          //
 	s.Update(map[string]time.Duration{}) // removed
 	clk.advance(time.Hour)
 	s.fireDue()
@@ -149,7 +149,7 @@ func TestNonPositiveIntervalIgnored(t *testing.T) {
 func TestNoBacklogBurstAfterLongPause(t *testing.T) {
 	s, clk, rec := newTestScheduler()
 	s.Update(map[string]time.Duration{"sweep": time.Minute})
-	s.fireDue() // 1
+	s.fireDue() //
 	// Simulate a long pause (slept/restarted process): many intervals elapse before the next tick.
 	clk.advance(time.Hour)
 	s.fireDue()

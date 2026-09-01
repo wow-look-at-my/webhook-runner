@@ -24,7 +24,7 @@ import (
 //
 // Deploy handover: the OLD process stops its sessions before its flock
 // releases (process exit releases it at the latest), while the NEW process
-// flat-polls here — so two live sessions of one manager cannot overlap.
+// flat-polls here — so live sessions of manager cannot overlap.
 func (s *Supervisor) acquireLease(ctx context.Context) (release func(), ok bool) {
 	if s.leasePath == "" {
 		return func() {}, true

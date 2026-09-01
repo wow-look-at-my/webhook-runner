@@ -41,9 +41,9 @@ func validateJSONC(t *testing.T, sch *jsonschema.Schema, doc []byte) error {
 	return sch.Validate(inst)
 }
 
-// Every shipped fixture — examples and e2e hooks — must validate against
+// Every shipped fixture — examples and ee hooks — must validate against
 // the published schema (CLAUDE.md: keep the Go model, the JSON schema, and
-// the example/e2e fixtures in sync).
+// the example/ee fixtures in sync).
 func TestRepoHookFixturesMatchSchema(t *testing.T) {
 	sch := compileHookSchema(t)
 	var files []string
@@ -63,7 +63,7 @@ func TestRepoHookFixturesMatchSchema(t *testing.T) {
 func TestSchemaAcceptsGoodSkipIf(t *testing.T) {
 	sch := compileHookSchema(t)
 	good := []string{
-		// The motivating one-liner: header shorthand equality.
+		// The motivating -liner: header shorthand equality.
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[{"header:x-github-event":"workflow_run"}]}`,
 		// Every operator, plus AND within a condition and OR across entries.
 		`{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":[

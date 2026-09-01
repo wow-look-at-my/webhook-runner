@@ -98,7 +98,7 @@ func TestStartupFreshThenGreenVerifies(t *testing.T) {
 	assert.Contains(t, eventKinds(f.rec), "reload.unverified")
 	assert.Contains(t, attentionKeys(f.agg), attention.KeyReloadUnverified)
 
-	// The first green for the serving tree verifies it in place: no reset, no apply.
+	// The green for the serving tree verifies it in place: no reset, no apply.
 	status, err := f.gate.HandleEvent("status", statusBody(t, "A", "success", "all-builds", "master"))
 	require.NoError(t, err)
 	assert.Equal(t, "already-serving", status)

@@ -39,7 +39,7 @@ func (s *Supervisor) Deliver(id string, headers http.Header, payload []byte) *De
 }
 
 // InboxNext long-polls a manager's inbox on behalf of its CURRENT instance
-// (see Inbox.Next). ok=false with nil error is the elapsed-wait 204.
+// (see Inbox.Next). ok=false with nil error is the elapsed-wait .
 func (s *Supervisor) InboxNext(ctx context.Context, id, instanceID string, wait time.Duration) (Event, bool, error) {
 	s.mu.Lock()
 	mg := s.states[id]
@@ -122,7 +122,7 @@ func (s *Supervisor) Statuses() []Status {
 	return out
 }
 
-// StatusFor returns one manager's row, or ok=false.
+// StatusFor returns manager's row, or ok=false.
 func (s *Supervisor) StatusFor(id string) (Status, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,7 +175,7 @@ func (s *Supervisor) statusLocked(id string, mg *managed) Status {
 	return st
 }
 
-// outputSink returns the line appender for one instance's output ring:
+// outputSink returns the line appender for instance's output ring:
 // bounded, timestamped, replacing the ring at instance start (the panel
 // shows the CURRENT/most recent instance's tail; history is the events
 // feed's job).
@@ -228,7 +228,7 @@ func (s *Supervisor) reportAttention() {
 }
 
 // tickPump pushes coalesced reconcile ticks on the manager's flat cadence
-// for the life of one instance.
+// for the life of instance.
 func tickPump(interval time.Duration, ib *Inbox, stop <-chan struct{}) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

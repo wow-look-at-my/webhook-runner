@@ -1,8 +1,8 @@
 package server
 
-// Section-changed signals on /runs/stream: the "changed → refetch once"
+// Section-changed signals on /runs/stream: the "changed → refetch "
 // multiplex that lets the dashboard stop polling the non-run admin sections
-// (/hooks /images /concurrency /kv /events). These tests drive the three
+// (/hooks /images /concurrency /kv /events). These tests drive the
 // real seams — the activity recorder, the kv store, the run tracker — over
 // the real HTTP stream, plus the hub-level coalescing and never-drop
 // guarantees that distinguish signals from run deltas.
@@ -30,7 +30,7 @@ import (
 
 // waitChangedCovering reads stream events (skipping run deltas and
 // heartbeats) until the union of received `changed` sections covers want.
-// Union-based on purpose: signals coalesce server-side, so one changed
+// Union-based on purpose: signals coalesce server-side, so changed
 // event may carry several sections and several events may split them.
 func waitChangedCovering(t *testing.T, ch <-chan sseEvent, want ...string) {
 	t.Helper()
@@ -131,7 +131,7 @@ func TestStreamSectionSignalsOnKillSwitch(t *testing.T) {
 // The manager seam over the real stream: instance output, inbox depth and
 // supervision state transitions record NO activity event, so this signal
 // is the only thing that keeps the Managers panel and the #manager=<id>
-// drill-down live — without it the operator's only refresh was F5.
+// drill-down live — without it the operator's only refresh was F.
 func TestStreamSectionSignalsOnManagerSurface(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	f := newFakeManagers("coord")
@@ -160,7 +160,7 @@ func TestStreamSectionSignalsOnManagerSurface(t *testing.T) {
 }
 
 // Signals can never overflow, drop, or block: a storm with NO reader
-// coalesces into one pending wake over a bounded dirty set. Only run
+// coalesces into pending wake over a bounded dirty set. Only run
 // deltas may drop a slow client (TestRunsStreamSlowClientDropped).
 func TestSectionSignalsCoalesceAndNeverDrop(t *testing.T) {
 	hub := newStreamHub()
@@ -173,7 +173,7 @@ func TestSectionSignalsCoalesceAndNeverDrop(t *testing.T) {
 	}
 	assert.Equal(t, 1, hub.clients(), "signals must never drop a client")
 
-	// Exactly one wake is pending; its drain carries the coalesced union, sorted.
+	// Exactly wake is pending; its drain carries the coalesced union, sorted.
 	<-sub.kick
 	assert.Equal(t, []string{"events", "images", "kv"}, sub.drainSections())
 	assert.Empty(t, sub.drainSections(), "second drain must be empty")

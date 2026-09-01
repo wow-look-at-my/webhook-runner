@@ -13,13 +13,12 @@ import (
 )
 
 // DefaultTestTimeout caps a single test command, independent of the hook's
-// (production-sized) run timeout.
 const DefaultTestTimeout = 10 * time.Minute
 
 // TestOptions configure RunHookTests.
 type TestOptions struct {
 	Docker  string        // docker binary; "" = "docker"
-	Timeout time.Duration // per-command cap; <= 0 = DefaultTestTimeout
+	Timeout time.Duration // per-command cap; <= = DefaultTestTimeout
 	Out     io.Writer     // combined progress + container output; nil = io.Discard
 
 	// The enforced-GitHub-gateway injection is UNCONDITIONAL (see
@@ -31,11 +30,11 @@ type TestOptions struct {
 
 // RunHookTests executes the hook's declared test commands (hook.json
 // "tests"), each in a fresh container of the hook's built image (built
-// first if needed), so tests exercise exactly the bytes a live run
+// if needed), so tests exercise exactly the bytes a live run
 // would. Nothing else from a live run applies: no payload, no hook env,
 // no secrets — tests must be self-contained.
 //
-// All commands run even if an earlier one fails; the returned error
+// All commands run even if an earlier fails; the returned error
 // aggregates every failure (nil when all passed or none are declared).
 func RunHookTests(hook *hooks.Hook, opts TestOptions) error {
 	if len(hook.Tests) == 0 {
@@ -85,7 +84,6 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	name := "webhook-runner-test-" + hex.EncodeToString(suffix)
 
 	// The same builder live runs and managers use, so tests get the same
-	// isolation. No secrets, payload, volumes, or networks: those fields stay unset.
 	spec := containerSpec{
 		name:    name,
 		image:   image,
@@ -95,7 +93,6 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 		argv:    argv,
 	}
 	// Same seccomp.userns relaxation as a live run, so a hook whose tests
-	// sandbox (bwrap) get the same profile. Empty tmpDir means the OS default.
 	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
 	if err != nil {
 		return err

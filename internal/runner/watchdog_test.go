@@ -50,7 +50,7 @@ func TestIdleWatchdogNeverFiresBeforeArm(t *testing.T) {
 	assert.Equal(t, 100*time.Millisecond, wait, "unarmed watchdog re-checks a full limit out")
 }
 
-// After arming, the watchdog fires once the limit elapses with no output —
+// After arming, the watchdog fires the limit elapses with no output —
 // and not a moment before.
 func TestIdleWatchdogFiresOnSilence(t *testing.T) {
 	clock := newFakeClock()
@@ -71,7 +71,7 @@ func TestIdleWatchdogFiresOnSilence(t *testing.T) {
 	assert.Equal(t, time.Duration(0), wait)
 }
 
-// REGRESSION: a zero limit (a hook that omits `timeout` — "no absolute ceiling") must never fire, armed or not, however much time passes.
+// REGRESSION: a limit (a hook that omits `timeout` — "no absolute ceiling") must never fire, armed or not, however much time passes.
 func TestIdleWatchdogZeroLimitNeverFires(t *testing.T) {
 	clock := newFakeClock()
 	w := newIdleWatchdog(0, clock.Now)
@@ -92,7 +92,7 @@ func TestIdleWatchdogResetsOnOutput(t *testing.T) {
 	w := newIdleWatchdog(time.Minute, clock.Now)
 	w.Arm()
 
-	// 45s of silence, then output, ten times over — 7.5 minutes of runtime,
+	// s of silence, then output, times over — . minutes of runtime,
 	// far beyond the limit, with no window of silence ever reaching it.
 	for i := 0; i < 10; i++ {
 		clock.Advance(45 * time.Second)
@@ -183,8 +183,8 @@ func TestRunnerTimeoutKillsSilentRun(t *testing.T) {
 
 // Output resets the clock: a run whose gaps between lines stay under
 // timeout completes normally even though its TOTAL runtime exceeds the
-// timeout value — the incident this semantics fixes (a healthy 47-part
-// map-reduce that logged every <=45s was killed at a 15m wall-clock
+// timeout value — the incident this semantics fixes (a healthy -part
+// map-reduce that logged every <=s was killed at a m wall-clock
 // ceiling mid-progress).
 func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 	dir := t.TempDir()
@@ -198,7 +198,7 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 		Docker:  docker,
 	})
 
-	// A line every ~1s for ~4s of runtime, against a 3s idle_timeout: every silent gap stays well under the limit while the total runtime exceeds it — under a naive wall-clock semantics this.
+	// A line every ~s for ~s of runtime, against a s idle_timeout: every silent gap stays well under the limit while the total runtime exceeds it — under a naive wall-clock semantics this.
 	hook := diskHook(t, dir, &hooks.Hook{
 		ID:             "h",
 		Command:        []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
@@ -212,7 +212,7 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 	assert.Equal(t, runs.StatusSuccess, snap.Status,
 		"steady output must keep the run alive past its timeout value: %s", snap.Error)
 	assert.Contains(t, snap.Output, "done")
-	// The run provably outlived its timeout: >=4s of processing vs 3s.
+	// The run provably outlived its timeout: >=s of processing vs s.
 	assert.Greater(t, snap.Finished.Sub(snap.StartedAt), 3*time.Second,
 		"the run must have outlived its timeout value while producing output")
 }
@@ -228,7 +228,7 @@ func TestTouchReaderTouchesOnBytes(t *testing.T) {
 	assert.Equal(t, 4, n)
 	assert.Equal(t, 1, touches)
 
-	// Drain the rest; EOF (n==0) must not touch.
+	// Drain the rest; EOF (n==) must not touch.
 	for err == nil {
 		_, err = tr.Read(buf)
 	}

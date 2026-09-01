@@ -51,7 +51,7 @@ func TestReplaceSourceLifecycle(t *testing.T) {
 	assert.Empty(t, a.Snapshot())
 }
 
-// Since is the FIRST time the problem became active: stable across
+// Since is the time the problem became active: stable across
 // re-derivations (even when the message morphs), reset only when the
 // problem clears and later recurs.
 func TestSinceStableAcrossRederivationsResetsOnRecur(t *testing.T) {
@@ -64,7 +64,7 @@ func TestSinceStableAcrossRederivationsResetsOnRecur(t *testing.T) {
 	require.Len(t, a.Snapshot(), 1)
 	assert.Equal(t, first, a.Snapshot()[0].Since, "an unchanged problem keeps its Since")
 
-	// The message morphs; Since still marks when the hook first broke.
+	// The message morphs; Since still marks when the hook broke.
 	tick(5 * time.Minute)
 	a.ReplaceSource(SourceLoad, []Entry{{Hook: "h", Key: KeyLoad, Message: "reason two"}})
 	require.Len(t, a.Snapshot(), 1)
@@ -146,12 +146,12 @@ func TestObserveEventStandardRules(t *testing.T) {
 	assert.Contains(t, e.Message, "${NOPE}")
 	assert.NotContains(t, e.Message, "h: api_key", "the hook prefix is stripped — the Hook field carries it")
 
-	// A repeat keeps one entry (same identity).
+	// A repeat keeps entry (same identity).
 	a.ObserveEvent(KindHookMisconfigured, "h",
 		"h: api_key reference ${NOPE} did not resolve (secrets.sops.env / host env); all callers are denied")
 	assert.Equal(t, 1, a.Count())
 
-	// One entry per distinct message, cleared by the hook's healthy signal.
+	// entry per distinct message, cleared by the hook's healthy signal.
 	a.ObserveEvent(KindHookReported, "g", "missing permission: contents write")
 	a.ObserveEvent(KindHookReported, "g", "feature inert: auto_merge label not found")
 	a.ObserveEvent(KindHookReported, "g", "missing permission: contents write") // repeat: same identity
@@ -182,7 +182,7 @@ func TestNilAggregatorIsSafe(t *testing.T) {
 	assert.Empty(t, a.Snapshot())
 }
 
-// Snapshot orders oldest-first (the longest-standing problem leads the
+// Snapshot orders oldest- (the longest-standing problem leads the
 // panel), deterministically tie-broken.
 func TestSnapshotSortedOldestFirst(t *testing.T) {
 	a, tick, _ := fixedClock()

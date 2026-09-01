@@ -15,7 +15,7 @@ func TestRecorderOrderAndBound(t *testing.T) {
 	}
 	got := r.List(0)
 	assert.Len(t, got, 3)
-	assert.Equal(t, "msg-5", got[0].Msg) // newest first
+	assert.Equal(t, "msg-5", got[0].Msg) // newest
 	assert.Equal(t, "msg-4", got[1].Msg)
 	assert.Equal(t, "msg-3", got[2].Msg)
 
@@ -49,7 +49,7 @@ func TestListByHook(t *testing.T) {
 
 	got := r.ListByHook("a", 0)
 	assert.Len(t, got, 2)
-	assert.Equal(t, "a run 2", got[0].Msg) // newest first
+	assert.Equal(t, "a run 2", got[0].Msg) // newest
 	assert.Equal(t, "a run 1", got[1].Msg)
 
 	limited := r.ListByHook("a", 1)
@@ -100,7 +100,7 @@ func TestExcludeFamiliesDropsWholeFamily(t *testing.T) {
 
 // The bug this ordering prevents, in the shape it actually appears: a flood
 // of excluded events sits in front of the entries the operator needs. Cap
-// first and the page is all run events, the filter empties it, and the feed
+// and the page is all run events, the filter empties it, and the feed
 // reports "nothing here" while the matches sit just behind them in the ring.
 func TestExcludeFiltersBeforeTheCap(t *testing.T) {
 	r := NewRecorder(200)
@@ -127,7 +127,7 @@ func TestExcludeStillHonorsTheCap(t *testing.T) {
 	}
 	got := r.ListFiltered(Filter{Hook: "a", ExcludeFamilies: []string{"run"}}, 3)
 	assert.Len(t, got, 3)
-	assert.Equal(t, "denial-9", got[0].Msg) // newest first
+	assert.Equal(t, "denial-9", got[0].Msg) // newest
 }
 
 func TestFilterCombinesHookAndExclusion(t *testing.T) {

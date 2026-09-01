@@ -73,7 +73,7 @@ func TestSecretsLoaderDecryptsAndCaches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"KEY_ONE": "v1", "KEY_TWO": "a=b"}, got)
 
-	// Unchanged file: served from cache, no second sops invocation.
+	// Unchanged file: served from cache, no sops invocation.
 	_, err = l.Load(h)
 	require.NoError(t, err)
 	assert.Equal(t, 1, sopsCalls(t, dir))

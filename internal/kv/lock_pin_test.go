@@ -38,7 +38,7 @@ func TestPinnedLockRefusesSteal(t *testing.T) {
 }
 
 // A plain contended ACQUIRE behaves identically pinned or not (it never
-// displaced anyone) — and its 409 info now reports the pin.
+// displaced anyone) — and its info now reports the pin.
 func TestPinnedLockContendedAcquireNamesPin(t *testing.T) {
 	s := newStore(t)
 
@@ -51,7 +51,7 @@ func TestPinnedLockContendedAcquireNamesPin(t *testing.T) {
 	require.True(t, info.Pinned)
 }
 
-// AcquireLockPinned is take-and-pin in one compare-and-set: the very first
+// AcquireLockPinned is take-and-pin in compare-and-set: the very
 // observable state is already pinned.
 func TestAcquireLockPinnedIsAtomic(t *testing.T) {
 	s := newStore(t)
@@ -68,7 +68,7 @@ func TestAcquireLockPinnedIsAtomic(t *testing.T) {
 func TestPinOwnership(t *testing.T) {
 	s := newStore(t)
 
-	// Nothing held: 404-shaped.
+	// Nothing held: -shaped.
 	require.Equal(t, ErrLockNotHeld, s.PinLock("ns", "l", "run-a"))
 	require.Equal(t, ErrLockNotHeld, s.UnpinLock("ns", "l", "run-a"))
 

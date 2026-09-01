@@ -21,7 +21,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// sseEvent is one parsed server-sent event.
+// sseEvent is parsed server-sent event.
 type sseEvent struct {
 	name string
 	data string
@@ -107,7 +107,7 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 	defer func() { streamHeartbeat = old }()
 
 	s, _, tr, _ := newTestServer(t)
-	// One pre-existing run so the connect snapshot has content.
+	// pre-existing run so the connect snapshot has content.
 	prior := tr.New("seed-hook")
 	prior.Finish(runs.StatusSuccess, 0, "")
 
@@ -118,12 +118,12 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 	defer cancel()
 	defer resp.Body.Close()
 
-	// 1. Fixed retry directive first.
+	// . Fixed retry directive .
 	ev := nextEvent(t, events, "retry directive")
 	require.Equal(t, "retry", ev.name)
 	assert.Equal(t, "2000", ev.data)
 
-	// 2. Connect snapshot: same shape as /runs, includes the prior run.
+	// . Connect snapshot: same shape as /runs, includes the prior run.
 	ev = nextEvent(t, events, "snapshot")
 	require.Equal(t, "snapshot", ev.name)
 	var snap []runs.RunState
@@ -133,7 +133,7 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 	assert.Equal(t, runs.StatusSuccess, snap[0].Status)
 	assert.Empty(t, snap[0].Output, "list-shaped snapshots must not carry output")
 
-	// 3. Deltas, in lifecycle order, driven through the tracker.
+	// . Deltas, in lifecycle order, driven through the tracker.
 	run := tr.New("live-hook")
 	st := nextRunEvent(t, events, "creation delta")
 	assert.Equal(t, run.ID(), st.ID)
@@ -168,14 +168,14 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 	assert.Equal(t, "cancelled", st.Error)
 	assert.False(t, st.Finished.IsZero())
 
-	// 4. Heartbeats keep arriving on an idle stream.
+	// . Heartbeats keep arriving on an idle stream.
 	deadline := time.After(3 * time.Second)
 	for {
 		select {
 		case ev, ok := <-events:
 			require.True(t, ok, "stream ended before a heartbeat")
 			if ev.name == "hb" {
-				return // saw one — done
+				return // saw — done
 			}
 		case <-deadline:
 			t.Fatal("no heartbeat within 3s at a 150ms cadence")
@@ -184,7 +184,7 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 }
 
 // The hb heartbeat carries the live truth: {"active":[...]} with every
-// non-terminal run id, sorted — and the empty-but-real [] once nothing is
+// non-terminal run id, sorted — and the empty-but-real [] nothing is
 // active. This is the client's reconcile beat (drop local runs absent from
 // the set, fetch unknown ones), purely additive to hb's liveness role.
 func TestRunsStreamHeartbeatCarriesActiveSet(t *testing.T) {
@@ -223,7 +223,7 @@ func TestRunsStreamHeartbeatCarriesActiveSet(t *testing.T) {
 
 	assert.Equal(t, []string{act.ID()}, nextActiveSet("hb with the active run"))
 
-	// The set tracks lifecycle: once the run finishes, beats converge on [].
+	// The set tracks lifecycle: the run finishes, beats converge on [].
 	act.Finish(runs.StatusFailure, 1, "boom")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -278,7 +278,7 @@ func TestRunsStreamSlowClientDropped(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// One more publish than the buffer holds: the last one must drop
+		// more publish than the buffer holds: the last must drop
 		// the subscriber instead of blocking.
 		for i := 0; i < streamClientBuffer+1; i++ {
 			hub.publish(runs.RunState{ID: "r", HookID: "h"})

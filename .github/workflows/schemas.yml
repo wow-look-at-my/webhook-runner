@@ -24,7 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Stages exactly schema/*.schema.json, flat, and verifies each one.
-      - uses: wow-look-at-my/actions@typescript#latest
+      - name: Stage and verify Pages schemas
+        uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
             const src = 'schema';

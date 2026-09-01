@@ -9,7 +9,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// RunFinishCallback builds the run tracker's OnFinish observer — the exactly-once-per-run finish seam (it fires on EVERY terminal path: success, error, timeout kill, cancel; wired in cli/serve.go). It lives here, next to the state API's lock handlers, because it is the other half of the lock contract: acquire/release bind locks to the calling run, and THIS is what guarantees a run's locks never outlive it. It does two things, in a deliberate order: 1.
+// RunFinishCallback builds the run tracker's OnFinish observer — the exactly--per-run finish seam (it fires on EVERY terminal path: success, error, timeout kill, cancel; wired in cli/serve.go). It lives here, next to the state API's lock handlers, because it is the other half of the lock contract: acquire/release bind locks to the calling run, and THIS is what guarantees a run's locks never outlive it. It does things, in a deliberate order: .
 func RunFinishCallback(kvStore *kv.Store, record func(runs.RunState) error, rec *events.Recorder, logger *slog.Logger) func(runs.RunState) {
 	return func(st runs.RunState) {
 		if n := kvStore.ReleaseRunLocks(st.ID); n > 0 {

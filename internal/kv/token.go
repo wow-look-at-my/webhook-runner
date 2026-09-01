@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Token mints a bearer token that authorizes access to exactly one namespace ON BEHALF OF exactly one run.
+// Token mints a bearer token that authorizes access to exactly namespace ON BEHALF OF exactly run.
 func (s *Store) Token(namespace, runID string) string {
 	return namespace + "." + runID + "." + base64.RawURLEncoding.EncodeToString(tokenMAC(s.secret, namespace, runID))
 }
@@ -23,7 +23,7 @@ func tokenMAC(secret []byte, namespace, runID string) []byte {
 
 // VerifyToken returns the namespace a token authorizes and the run identity
 // it was minted for, or ok=false for any malformed, tampered, or
-// wrong-secret token (including the pre-run-identity two-part format — the
+// wrong-secret token (including the pre-run-identity -part format — the
 // runner mints per run, so no compatibility shim is kept). The comparison is
 // constant-time.
 func (s *Store) VerifyToken(token string) (namespace, runID string, ok bool) {

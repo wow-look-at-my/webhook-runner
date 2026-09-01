@@ -41,7 +41,7 @@ func TestLockSameRunReacquireIsIdempotent(t *testing.T) {
 	require.Equal(t, first.AcquiredAt, again.AcquiredAt)
 	require.False(t, again.ExpiresAt.Before(first.ExpiresAt))
 
-	// Still one lock: a third run stays locked out.
+	// Still lock: a run stays locked out.
 	_, err = s.AcquireLock("ns", "l", "run-b", 0)
 	require.Equal(t, ErrLockHeld, err)
 }
@@ -74,7 +74,7 @@ func TestLockReleaseOwnership(t *testing.T) {
 	require.Equal(t, ErrLockNotHeld, s.ReleaseLock("ns", "other", "run-a"))
 	require.Equal(t, ErrLockNotHeld, s.ReleaseLock("nothing", "l", "run-a"))
 
-	// The owner can, exactly once.
+	// The owner can, exactly .
 	require.NoError(t, s.ReleaseLock("ns", "l", "run-a"))
 	require.Equal(t, ErrLockNotHeld, s.ReleaseLock("ns", "l", "run-a"))
 }
@@ -102,7 +102,7 @@ func TestLockTTLBackstopExpiryDoesNotFreeTheLock(t *testing.T) {
 }
 
 // The live owner re-acquiring past its own expiry refreshes the backstop
-// (one continuous hold), and a contender is refused again afterwards.
+// ( continuous hold), and a contender is refused again afterwards.
 func TestExpiredOwnerReacquireRefreshesTheBackstop(t *testing.T) {
 	s := newStore(t)
 	first, err := s.AcquireLock("ns", "l", "run-a", 10*time.Millisecond)
@@ -118,7 +118,7 @@ func TestExpiredOwnerReacquireRefreshesTheBackstop(t *testing.T) {
 	require.ErrorIs(t, err, ErrLockHeld, "no longer expired — plain contention")
 }
 
-// ReapExpiredLock is the enforcement's second half, for a holder the caller
+// ReapExpiredLock is the enforcement's half, for a holder the caller
 // has CONFIRMED dead. It refuses anything else.
 func TestReapExpiredLockIsNarrow(t *testing.T) {
 	s := newStore(t)
@@ -209,7 +209,7 @@ func TestLockCaps(t *testing.T) {
 	require.Equal(t, ErrBadNamespace, err)
 }
 
-// The sweeper reaps an expired lock ONLY once its holder is certainly gone,
+// The sweeper reaps an expired lock ONLY its holder is certainly gone,
 // and reaps nothing at all without a liveness oracle — expiry is not
 // evidence of death, and freeing a live holder's mutex is the bug this whole
 // path exists to prevent.
@@ -242,7 +242,7 @@ func TestLockSweeperReapsOnlyDeadHolders(t *testing.T) {
 }
 
 func TestLockAcquireRace(t *testing.T) {
-	// The whole point of the server-side primitive: of N simultaneous acquirers, exactly one holds.
+	// The whole point of the server-side primitive: of N simultaneous acquirers, exactly holds.
 	s := newStore(t)
 	const goroutines = 64
 	var wg sync.WaitGroup
@@ -265,7 +265,7 @@ func TestLockAcquireRace(t *testing.T) {
 	}
 	require.Len(t, held, 1, "exactly one acquirer may win")
 
-	// And the winner's release frees it for exactly one next winner.
+	// And the winner's release frees it for exactly next winner.
 	require.NoError(t, s.ReleaseLock("ns", "l", held[0]))
 	_, err := s.AcquireLock("ns", "l", "run-final", 0)
 	require.NoError(t, err)

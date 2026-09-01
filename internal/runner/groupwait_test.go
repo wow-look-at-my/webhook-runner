@@ -16,7 +16,7 @@ import (
 
 // TestRunnerQueuedRunExposesGroupWait: while queued behind a saturated
 // concurrency group, a run's waiting_on mirrors its place in the line —
-// kind "group", the group name, the current holders, and its 1-based
+// kind "group", the group name, the current holders, and its -based
 // position — and the wait clears the moment it acquires the slot (and is
 // absent from the terminal snapshot).
 func TestRunnerQueuedRunExposesGroupWait(t *testing.T) {
@@ -43,7 +43,7 @@ func TestRunnerQueuedRunExposesGroupWait(t *testing.T) {
 	runB, err := r.Start(context.Background(), hookB, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 
-	// B is pending and its waiting_on names the group, the holder (A), and position 1 (next in line).
+	// B is pending and its waiting_on names the group, the holder (A), and position (next in line).
 	deadline := time.After(2 * time.Second)
 	for {
 		snap := runB.Snapshot(0)

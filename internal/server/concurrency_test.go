@@ -21,7 +21,7 @@ import (
 )
 
 func TestConcurrencyEndpointNilSafe(t *testing.T) {
-	// The default test server has no manager; the endpoint must still 200.
+	// The default test server has no manager; the endpoint must still .
 	s, _, _, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
 	admin(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/concurrency", nil))
@@ -61,7 +61,7 @@ func TestConcurrencyEndpointCarriesHoldersAndWaiting(t *testing.T) {
 		Concurrency: mgr,
 	})
 
-	// A real tracked run holds the slot; a second real run queues behind it.
+	// A real tracked run holds the slot; a real run queues behind it.
 	holder := tr.New("pr-resolve")
 	holder.SetTitle("wow-look-at-my/scratch#117")
 	holder.SetRunning()
@@ -202,7 +202,7 @@ func TestConcurrencyEndpointCarriesGlobalCap(t *testing.T) {
 }
 
 // Without a configured cap (older wiring, bare test servers) the view
-// simply omits it — never a synthesized zero-limit entry.
+// simply omits it — never a synthesized -limit entry.
 func TestConcurrencyEndpointOmitsGlobalWhenUnconfigured(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
@@ -228,7 +228,7 @@ func newGlobalCapServer(t *testing.T) (*Server, *concurrency.Global, *overrides.
 }
 
 // PUT persists + applies the cap override; DELETE reverts to the default.
-// The endpoints mirror the group pair: validation (< 1 rejected, malformed
+// The endpoints mirror the group pair: validation (< rejected, malformed
 // body rejected), persist-then-apply, loud events.
 func TestGlobalCapOverrideEndpoints(t *testing.T) {
 	s, g, ov := newGlobalCapServer(t)

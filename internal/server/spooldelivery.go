@@ -9,10 +9,10 @@ import (
 // spoolDelivery parks a delivery that arrived while the runner was draining,
 // so a deploy window costs a webhook its LATENCY instead of its existence.
 // Reports the spool id and whether it was parked; false means the caller must
-// answer the honest 503 (no spool configured, or the spool is at its bound).
+// answer the honest (no spool configured, or the spool is at its bound).
 //
 // Failure here is loud on the activity feed: a dropped delivery is invisible
-// on GitHub's side (it records the response, and a 503 looks like any other
+// on GitHub's side (it records the response, and a looks like any other
 // failed attempt nobody will retry), so the runner's own feed is the only
 // place the loss can surface.
 func (s *Server) spoolDelivery(hookID, title string, headers http.Header, body []byte) (string, bool) {

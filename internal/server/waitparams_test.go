@@ -12,8 +12,8 @@ import (
 )
 
 // A hook that declares no timeout (an uncapped run) must not translate into
-// a zero-length synchronous hold — time.After(0) would degrade every
-// ?wait=true request to a 202 instantly. The HTTP hold falls back to
+// a -length synchronous hold — time.After() would degrade every
+// ?wait=true request to a instantly. The HTTP hold falls back to
 // defaultSyncHold; the run itself stays uncapped, and ?timeout= still wins.
 func TestParseWaitParamsUncappedHookFallsBackToDefaultHold(t *testing.T) {
 	sync, hold, err := parseWaitParams(

@@ -105,7 +105,7 @@ func TestStateBacklogValidation(t *testing.T) {
 		rr := stateReq(t, s, "POST", "/backlog/q/take", tok, strings.NewReader(body))
 		assert.Equalf(t, http.StatusBadRequest, rr.Code, "take body=%q", body)
 	}
-	// An empty take body is the documented default of one item.
+	// An empty take body is the documented default of item.
 	require.Equal(t, http.StatusOK, stateReq(t, s, "POST", "/backlog/q/push", tok, strings.NewReader(`{"items":["a","b"]}`)).Code)
 	rr := stateReq(t, s, "POST", "/backlog/q/take", tok, nil)
 	require.Equal(t, http.StatusOK, rr.Code)

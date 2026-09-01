@@ -60,7 +60,7 @@ func TestForwardSurvivesLateSocket(t *testing.T) {
 	require.NoError(t, err)
 	defer ln.Close()
 
-	// Upstream appears 700ms AFTER the client connects (mid-handover).
+	// Upstream appears ms AFTER the client connects (mid-handover).
 	go func() {
 		time.Sleep(700 * time.Millisecond)
 		up, err := net.Listen("unix", sock)

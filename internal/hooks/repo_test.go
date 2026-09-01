@@ -75,7 +75,7 @@ func TestEnsureSSHKey_ReusesExisting(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "id_ed25519")
 
-	// Generate a key first.
+	// Generate a key .
 	_, err := EnsureSSHKey(keyPath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.Nil(t, err)
 

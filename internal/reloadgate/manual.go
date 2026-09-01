@@ -23,7 +23,7 @@ import (
 // SrcMarkerDir is the tree path whose presence marks a commit as holding the src hooks layout (internal/hooks.DetectLayout's rule).
 const SrcMarkerDir = "src/hooks"
 
-// ciStateNotProbed is the CI state of an OVERRIDDEN switch: we deliberately did not ask GitHub, because the answer changes nothing once the.
+// ciStateNotProbed is the CI state of an OVERRIDDEN switch: we deliberately did not ask GitHub, because the answer changes nothing the.
 const ciStateNotProbed = "not-probed (override)"
 
 // gateFetchTimeout bounds EVERY fetch this package runs.
@@ -40,13 +40,13 @@ func (g *Gate) fetchBranchBounded() (string, error) {
 // manualCILookupTimeout bounds each best-effort CI status read: the panel (and a manual switch under a wedged gate) must answer promptly.
 const manualCILookupTimeout = 5 * time.Second
 
-// ErrUnknownRef marks a manual switch whose ref could not be resolved to a commit — a caller input problem (HTTP 400), not a gate failure.
+// ErrUnknownRef marks a manual switch whose ref could not be resolved to a commit — a caller input problem (HTTP ), not a gate failure.
 var ErrUnknownRef = errors.New("cannot resolve ref")
 
 // GateStatus is a point-in-time snapshot of the gate's bookkeeping for the
 // admin reload panel.
 type GateStatus struct {
-	// ServingSHA is the commit the working tree serves ("" before the first Startup on a broken clone).
+	// ServingSHA is the commit the working tree serves ("" before the Startup on a broken clone).
 	ServingSHA string
 	// Verified reports whether a green gating status (or operator force) vouched for ServingSHA.
 	Verified bool
@@ -117,19 +117,19 @@ func (o SwitchOutcome) Overridden() bool {
 // branch/tag name), through the Force-style apply path — see the package
 // comment above. Semantics:
 //
-//   - The ref is resolved (fetching from origin as needed); an
-//     unresolvable ref errors with ErrUnknownRef and mutates nothing.
-//   - Without override the commit's gating CI state and src-layout tree
-//     marker are evaluated. Green AND src present: switch, recorded as an
-//     ordinary reload.switched (the operator picked a vouched commit).
-//     Anything else — a red/pending/absent/UNREADABLE CI state, or a tree
-//     missing src/hooks — is refused (Switched=false, every failed check
-//     in Reasons; nothing moves).
-//   - With override=true the CI probe is SKIPPED (see ciStateNotProbed)
-//     and the switch happens regardless, loudly: a reload.forced event
-//     names the un-probed state and any other reason.
+// - The ref is resolved (fetching from origin as needed); an
+// unresolvable ref errors with ErrUnknownRef and mutates nothing.
+// - Without override the commit's gating CI state and src-layout tree
+// marker are evaluated. Green AND src present: switch, recorded as an
+// ordinary reload.switched (the operator picked a vouched commit).
+// Anything else — a red/pending/absent/UNREADABLE CI state, or a tree
+// missing src/hooks — is refused (Switched=false, every failed check
+// in Reasons; nothing moves).
+// - With override=true the CI probe is SKIPPED (see ciStateNotProbed)
+// and the switch happens regardless, loudly: a reload.forced event
+// names the un-probed state and any other reason.
 //
-// Rollback to a commit OLDER than the serving one is deliberately allowed
+// Rollback to a commit OLDER than the serving is deliberately allowed
 // (no trySwitch staleness ordering — that rule exists to order automatic
 // status deliveries, not the operator). Pending bookkeeping stays
 // consistent: switching to the pending commit (or to the fetched tip)
@@ -140,7 +140,7 @@ func (g *Gate) ManualSwitch(ctx context.Context, ref string, override bool) (Swi
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// LOCAL FIRST.
+	// LOCAL .
 	sha, resolveErr := g.repo.ResolveRef(ref)
 
 	// THEN freshen, on a leash.

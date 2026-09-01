@@ -12,7 +12,7 @@ require (
 	go.etcd.io/bbolt v1.5.0
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260820210621-2e1261867045 // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0-20260826161058-40a3d1ef3d41 // go-toolchain:auto-branch
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -24,3 +24,8 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// bolt_unix.go's mmap references syscall.MADV_RANDOM, which the gosmopolitan
+// build target does not define. This local copy patches that one line to use
+// golang.org/x/sys/unix's own MADV_RANDOM constant instead.
+replace go.etcd.io/bbolt => ./internal/thirdparty/bbolt

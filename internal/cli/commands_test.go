@@ -104,7 +104,7 @@ func TestApplyServeEnvReloadPollInterval(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 30*time.Minute, o.reloadPollInterval)
 
-	// An explicit 0 disables the reconciliation poll.
+	// An explicit disables the reconciliation poll.
 	o, err = parse("0")
 	require.NoError(t, err)
 	assert.Zero(t, o.reloadPollInterval)
@@ -130,7 +130,7 @@ func TestApplyServeEnvMaxConcurrentRuns(t *testing.T) {
 		return o, applyServeEnv(o)
 	}
 
-	// Unset (empty) means the built-in default 64.
+	// Unset (empty) means the built-in default .
 	o, err := parse("")
 	require.NoError(t, err)
 	assert.Equal(t, concurrency.DefaultGlobalLimit, o.maxConcurrentRuns)
@@ -154,7 +154,7 @@ func TestApplyServeEnvMaxConcurrentRuns(t *testing.T) {
 func TestValidateCommand(t *testing.T) {
 	cmd := findCommand(t, "validate")
 
-	// Happy path: one group, one hook in it, one unbounded hook.
+	// Happy path: group, hook in it, unbounded hook.
 	root := t.TempDir()
 	writeConcurrencyJSON(t, root, `{"groups":{"g":{"limit":2}}}`)
 	writeTestHook(t, root, "plain")

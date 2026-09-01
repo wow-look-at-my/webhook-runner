@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// An operator override is config typed into a dashboard, so every one of these cases is about the same question: can a value the operator set.
+// An operator override is config typed into a dashboard, so every of these cases is about the same question: can a value the operator set.
 
 const overrideSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -91,7 +91,7 @@ func TestOverrideOutOfRangeIsRefused(t *testing.T) {
 	assert.JSONEq(t, overrideSettings, string(h.SettingsJSON()))
 }
 
-// An override pins a DECLARED field. Inventing one would create config with
+// An override pins a DECLARED field. Inventing would create config with
 // no manifest counterpart, so no revert target and no reviewed default.
 func TestOverrideCannotInventAFieldTheManifestOmits(t *testing.T) {
 	h := overrideHook(t)
@@ -138,13 +138,13 @@ func TestOverrideEmptyMapIsANoOp(t *testing.T) {
 	assert.JSONEq(t, overrideSettings, string(h.SettingsJSON()))
 }
 
-// A multi-field override reports the SAME field first every time. Map
-// iteration order is randomized in Go, so without the sort one broken
+// A multi-field override reports the SAME field every time. Map
+// iteration order is randomized in Go, so without the sort broken
 // override produces a different log line run to run — miserable to debug,
 // and it makes the message useless as a thing to grep for.
 func TestOverrideErrorNamesTheFirstFieldInPointerOrder(t *testing.T) {
 	h := overrideHook(t)
-	// Both pointers miss the manifest, so which one is REPORTED is decided
+	// Both pointers miss the manifest, so which is REPORTED is decided
 	// by the apply loop's ordering rather than by the schema library.
 	bad := map[string]json.RawMessage{
 		"/ai/zulu":  json.RawMessage(`"z"`),
@@ -158,8 +158,8 @@ func TestOverrideErrorNamesTheFirstFieldInPointerOrder(t *testing.T) {
 	}
 }
 
-// Applying several fields at once is all-or-nothing: the good ones must not
-// land when a later one is refused.
+// Applying several fields at is all-or-nothing: the good ones must not
+// land when a later is refused.
 func TestOverrideBatchIsAtomic(t *testing.T) {
 	h := overrideHook(t)
 	err := h.ApplySettingsOverrides(map[string]json.RawMessage{
@@ -187,8 +187,8 @@ func TestManifestPointerValueReadsAndReportsMisses(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// RFC 6901's escapes, in the order the spec requires: ~1 -> "/" before
-// ~0 -> "~", so "~01" is "~1" and not "~" + "1".
+// RFC 's escapes, in the order the spec requires: ~ -> "/" before
+// ~ -> "~", so "~" is "~" and not "~" + "".
 func TestPointerEscapesFollowRFC6901(t *testing.T) {
 	tokens, err := parsePointer("/a~1b/c~0d/e~01f")
 	require.NoError(t, err)

@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestRunTitleResolution(t *testing.T) {
 		{"non-leaf renders empty", "{{repository.full_name}} {{labels}}", "o/r"},
 		// JSON null is "no value" for a title — never the word "null" (deliberate divergence from skip_if's leaf text).
 		{"null renders empty", "{{repository.full_name}} {{pull_request.body}}", "o/r"},
-		// Wordy literals survive an empty neighbor; only pure scaffolding drops, and whitespace runs left by drops fold to one space.
+		// Wordy literals survive an empty neighbor; only pure scaffolding drops, and whitespace runs left by drops fold to space.
 		{"wordy literal kept", "PR {{issue.number}}#{{pull_request.number}} opened", "PR 47 opened"},
 		{"whitespace folds", "run {{action}} {{issue.number}} done", "run opened done"},
 		// A template with no placeholders is a static title, always set.
@@ -64,20 +65,20 @@ func TestRunTitleResolution(t *testing.T) {
 	}
 }
 
-// Every placeholder empty + at least one placeholder = NO title: the
+// Every placeholder empty + at least placeholder = NO title: the
 // literal scaffolding alone would be noise, and the run-id fallback wins.
 func TestRunTitleAllPlaceholdersEmptyMeansNoTitle(t *testing.T) {
 	h := titledHook(t, "PR {{repository.full_name}}#{{pull_request.number}}")
 	assert.Empty(t, h.RenderRunTitle([]byte(`{"action":"opened"}`), http.Header{}))
 	// A non-JSON payload resolves no payload path at all — same outcome.
 	assert.Empty(t, h.RenderRunTitle([]byte("not json"), http.Header{}))
-	// But one resolving placeholder is enough to render.
+	// But resolving placeholder is enough to render.
 	assert.Equal(t, "PR 9",
 		h.RenderRunTitle([]byte(`{"pull_request":{"number":9}}`), http.Header{}))
 }
 
 // No template, no title — and a hook constructed in code with a template
-// that never went through validate still renders (lazy parse), while one
+// that never went through validate still renders (lazy parse), while
 // whose template cannot parse yields no title instead of erroring.
 func TestRunTitleUncompiledFallbacks(t *testing.T) {
 	h := &Hook{ID: "t"}
@@ -95,12 +96,16 @@ func TestRunTitleUncompiledFallbacks(t *testing.T) {
 func TestRunTitleClamped(t *testing.T) {
 	h := titledHook(t, "{{msg}}")
 	long := strings.Repeat("x", MaxRunTitleLen+50)
-	got := h.RenderRunTitle([]byte(`{"msg":"`+long+`"}`), http.Header{})
+	longPayload, err := json.Marshal(map[string]string{"msg": long})
+	require.NoError(t, err)
+	got := h.RenderRunTitle(longPayload, http.Header{})
 	assert.Len(t, got, MaxRunTitleLen)
 
 	// Multi-byte content still cuts on a rune boundary and stays valid.
-	wide := strings.Repeat("é", MaxRunTitleLen) // 2 bytes each
-	got = h.RenderRunTitle([]byte(`{"msg":"`+wide+`"}`), http.Header{})
+	wide := strings.Repeat("é", MaxRunTitleLen) // bytes each
+	widePayload, err := json.Marshal(map[string]string{"msg": wide})
+	require.NoError(t, err)
+	got = h.RenderRunTitle(widePayload, http.Header{})
 	assert.LessOrEqual(t, len(got), MaxRunTitleLen)
 	assert.True(t, strings.HasPrefix(wide, got), "clamp must cut whole runes: %q", got)
 }
@@ -110,7 +115,7 @@ func TestRunTitleClamped(t *testing.T) {
 func TestRunTitleValidation(t *testing.T) {
 	bad := []string{
 		"{{repository.full_name", // unterminated
-		"prefix {{a}} then {{b",  // unterminated after a good one
+		"prefix {{a}} then {{b",  // unterminated after a good
 		"{{}}",                   // empty placeholder
 		"{{   }}",                // blank placeholder
 		"{{a{{b}}",               // nested braces
@@ -136,7 +141,7 @@ func TestRunTitleValidation(t *testing.T) {
 }
 
 // Parse rejects a malformed run_title end-to-end, and accepts + compiles a
-// good one (titleTmpl set, so rendering never re-parses).
+// good (titleTmpl set, so rendering never re-parses).
 func TestParseRunTitle(t *testing.T) {
 	_, err := parseInDir(t, `{
 		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
@@ -155,7 +160,7 @@ func TestParseRunTitle(t *testing.T) {
 }
 
 // Schedule ticks: the template resolves against the synthetic schedule
-// payload when it can, and everything else — no template, or one keyed on
+// payload when it can, and everything else — no template, or keyed on
 // webhook fields a tick lacks — falls back to "schedule".
 func TestScheduleRunTitle(t *testing.T) {
 	tick := []byte(`{"trigger":"schedule","hook":"sweeper","time":"2026-07-13T00:00:00Z"}`)

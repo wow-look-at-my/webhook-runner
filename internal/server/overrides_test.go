@@ -24,7 +24,7 @@ import (
 
 // newOverrideTestServer builds a server with the kill-switch plumbing: an
 // overrides store (persisted under a temp dir), an events recorder, and a
-// concurrency manager with one "g" group (declared limit 3).
+// concurrency manager with "g" group (declared limit ).
 func newOverrideTestServer(t *testing.T) (*Server, *hooks.Registry, *overrides.Store, *events.Recorder) {
 	t.Helper()
 	dir := t.TempDir()
@@ -71,7 +71,7 @@ func TestDisabledHookDeliveryRejected503(t *testing.T) {
 	_, err := ov.SetHookDisabled("runaway", true)
 	require.NoError(t, err)
 
-	// Hook port: delivery rejected with the loud, distinct 503.
+	// Hook port: delivery rejected with the loud, distinct .
 	req := httptest.NewRequest(http.MethodPost, "/hook/runaway", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 	hook(s).ServeHTTP(w, req)
@@ -114,19 +114,19 @@ func TestDisableEnableEndpointsFlipAndAreIdempotent(t *testing.T) {
 		return w
 	}
 
-	// Disable: flips, persists, one event.
+	// Disable: flips, persists, event.
 	w := post("/hooks/h/disable")
 	require.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), `"disabled": true`)
 	assert.True(t, ov.HookDisabled("h", true))
 	assert.Equal(t, 1, countKind(rec, "hook.disabled"))
 
-	// Idempotent repeat: still 200, but NOT another flip event.
+	// Idempotent repeat: still , but NOT another flip event.
 	w = post("/hooks/h/disable")
 	require.Equal(t, 200, w.Code)
 	assert.Equal(t, 1, countKind(rec, "hook.disabled"), "an idempotent repeat is not a flip")
 
-	// Enable: flips back, one event; repeat is idempotent.
+	// Enable: flips back, event; repeat is idempotent.
 	w = post("/hooks/h/enable")
 	require.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), `"disabled": false`)
@@ -165,7 +165,7 @@ func TestEnableFalseDefaultAndOverridePrecedence(t *testing.T) {
 		return list[0].Disabled
 	}
 
-	// Born disabled: listed disabled and deliveries 503 — with NO override.
+	// Born disabled: listed disabled and deliveries — with NO override.
 	assert.True(t, listDisabled(), "enable:false must load the hook disabled")
 	_, hasOverride := ov.HookOverride("h")
 	assert.False(t, hasOverride, "the default needs no stored override")
@@ -220,7 +220,7 @@ func TestHookDetailExposesDisabled(t *testing.T) {
 	assert.True(t, get().Disabled)
 }
 
-// A persist failure must be loud: 500 with the reason, an
+// A persist failure must be loud: with the reason, an
 // override.write_failed event, and the in-memory state rolled back.
 func TestDisablePersistFailureIsLoud(t *testing.T) {
 	dir := t.TempDir()
@@ -264,7 +264,7 @@ func putLimit(s *Server, group, body string) *httptest.ResponseRecorder {
 func TestConcurrencyOverridePutValidation(t *testing.T) {
 	s, _, _, _ := newOverrideTestServer(t)
 
-	// A 0 limit would deadlock queued runs: rejected, disable hooks instead. (The encoder HTML-escapes ">", so assert on the deadlock phrase.)
+	// A limit would deadlock queued runs: rejected, disable hooks instead. (The encoder HTML-escapes ">", so assert on the deadlock phrase.)
 	w := putLimit(s, "g", `{"limit": 0}`)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "would deadlock queued runs")
@@ -300,14 +300,14 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 		return doc.Groups
 	}
 
-	// Baseline: declared 3, not overridden.
+	// Baseline: declared , not overridden.
 	st := getStatus()
 	require.Len(t, st, 1)
 	assert.Equal(t, 3, st[0].Limit)
 	assert.Equal(t, 3, st[0].Declared)
 	assert.False(t, st[0].Overridden)
 
-	// Override to 1: persisted, applied live, one event with declared + effective in the message.
+	// Override to : persisted, applied live, event with declared + effective in the message.
 	w := putLimit(s, "g", `{"limit": 1}`)
 	require.Equal(t, 200, w.Code)
 	st = getStatus()
@@ -325,12 +325,12 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 		}
 	}
 
-	// Same value again: idempotent, no second event.
+	// Same value again: idempotent, no event.
 	w = putLimit(s, "g", `{"limit": 1}`)
 	require.Equal(t, 200, w.Code)
 	assert.Equal(t, 1, countKind(rec, "concurrency.overridden"))
 
-	// Clear: reverts to declared, persisted, one event.
+	// Clear: reverts to declared, persisted, event.
 	req := httptest.NewRequest(http.MethodDelete, "/concurrency/g/limit", nil)
 	w = httptest.NewRecorder()
 	admin(s).ServeHTTP(w, req)
@@ -342,7 +342,7 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, 1, countKind(rec, "concurrency.override_cleared"))
 
-	// Clearing again is idempotent (200, no event); a name that is neither declared nor overridden is a 404.
+	// Clearing again is idempotent (, no event); a name that is neither declared nor overridden is a .
 	w = httptest.NewRecorder()
 	admin(s).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/concurrency/g/limit", nil))
 	require.Equal(t, 200, w.Code)
@@ -353,7 +353,7 @@ func TestConcurrencyOverrideSetAndClear(t *testing.T) {
 }
 
 // DELETE must also clear an ORPHANED override (group no longer declared) so
-// the operator can clean one up — that path must not 404.
+// the operator can clean up — that path must not .
 func TestConcurrencyOverrideClearOrphan(t *testing.T) {
 	s, _, ov, rec := newOverrideTestServer(t)
 	_, err := ov.SetConcurrencyLimit("gone", 2) // stored, but "gone" is not declared
@@ -372,7 +372,7 @@ func TestConcurrencyOverrideClearOrphan(t *testing.T) {
 	}
 }
 
-// Without an overrides store the write endpoints fail loudly (500), never
+// Without an overrides store the write endpoints fail loudly (), never
 // silently no-op; reads treat every hook as enabled.
 func TestOverrideEndpointsWithoutStore(t *testing.T) {
 	s, reg, _, _ := newTestServer(t)

@@ -8,20 +8,18 @@ import (
 	"time"
 )
 
-// Manager gates per-group concurrency with one semaphore channel per group.
+// Manager gates per-group concurrency with a semaphore channel per group.
 // Safe for concurrent use. An operator override wins over the declared
 // limit and survives an Update reload.
-// see docs/internals/runs-concurrency-and-overrides.md
 type Manager struct {
 	mu        sync.Mutex
 	groups    map[string]*groupSem
-	overrides map[string]int // group -> operator limit override (>= 1)
+	overrides map[string]int // group -> operator limit override (>= )
 	// queues is advisory holder/waiter data, keyed by group name so it
-	// survives semaphore swaps; pruned when both lists are empty.
 	queues map[string]*groupQueue
 }
 
-// groupQueue is one group's advisory holder/waiter bookkeeping.
+// groupQueue is group's advisory holder/waiter bookkeeping.
 type groupQueue struct {
 	holders []holderRec  // runs currently holding slots, acquire order
 	waiting []*waiterRec // runs blocked on a slot, registration order
@@ -39,13 +37,12 @@ type waiterRec struct {
 }
 
 // QueueState is a waiter's live position, delivered to the Acquire onQueue
-// callback. Position is 1-based (1 = next). Advisory display data only.
 type QueueState struct {
 	Holders  []string
 	Position int
 }
 
-// GroupRun is one run in a group's advisory queue detail: a holder (Since =
+// GroupRun is run in a group's advisory queue detail: a holder (Since =
 // when it took the slot) or a waiter (Since = when it started waiting).
 type GroupRun struct {
 	ID    string
@@ -84,7 +81,7 @@ func (m *Manager) queueFor(group string) *groupQueue {
 	return q
 }
 
-// pruneQueue drops a group's advisory record once it is empty. Caller
+// pruneQueue drops a group's advisory record it is empty. Caller
 // holds m.mu.
 func (m *Manager) pruneQueue(group string) {
 	if q := m.queues[group]; q != nil && len(q.holders) == 0 && len(q.waiting) == 0 {
@@ -170,13 +167,9 @@ type groupSem struct {
 	declared   int  // limit from concurrency.json
 	limit      int  // effective limit (declared, or the operator override)
 	overridden bool // limit came from an operator override
-	// ch is the semaphore: capacity == limit, one token per active slot.
-	// Immutable for this groupSem's life; a limit change swaps in a new
-	// groupSem rather than mutating this one.
-	// see docs/internals/runs-concurrency-and-overrides.md
+	// ch is the semaphore: capacity == limit, token per active slot.
 	ch chan struct{}
-	// retired closes exactly once, when this groupSem is replaced, as the
-	// signal blocked waiters select on to re-bind.
+	// retired closes exactly , when this groupSem is replaced, as the
 	retired chan struct{}
 	waiting atomic.Int64 // runs currently blocked waiting for a slot
 }
@@ -196,18 +189,6 @@ func NewManager(cfg *Config) *Manager {
 }
 
 // Update reconfigures the declared groups, applying any operator limit
-// overrides on top (an override wins over the declared limit — a reload
-// re-applies it rather than silently reverting the operator's change).
-// Groups whose effective limit is unchanged keep their existing semaphore
-// so in-flight slot accounting survives the reload; new or limit-changed
-// groups get a fresh semaphore, and removed groups are dropped (their
-// overrides stay stored, inert, and re-apply if the group is re-declared).
-// Runs already holding a slot release into the exact channel they acquired
-// from (the release closure captures it), so a reload never loses or
-// double-counts a token. Runs already QUEUED re-bind to the group's new
-// semaphore (see groupSem.retired), so a changed limit takes effect for them
-// immediately; a queued run whose group is removed fails its Acquire with an
-// error instead of blocking forever.
 func (m *Manager) Update(cfg *Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,8 +225,8 @@ func (m *Manager) Update(cfg *Config) {
 
 // SetLimitOverride records an operator override for group's limit and, when
 // the group is currently declared, swaps its semaphore live. limit must be
-// >= 1 (disable the hooks instead of setting 0). An override for an
-// undeclared group stays inert and applies once a later Update declares it.
+// >= (disable the hooks instead of setting ). An override for an
+// undeclared group stays inert and applies a later Update declares it.
 // see docs/internals/runs-concurrency-and-overrides.md
 func (m *Manager) SetLimitOverride(group string, limit int) error {
 	if limit < 1 {
@@ -307,31 +288,31 @@ func (m *Manager) Declared(group string) (limit int, ok bool) {
 	return gs.declared, true
 }
 
-// Acquire reserves a slot in the named group, blocking until one is free
-// or cancel fires. It returns a release func (call it exactly once when the
+// Acquire reserves a slot in the named group, blocking until is free
+// or cancel fires. It returns a release func (call it exactly when the
 // run finishes) and acquired=true on success.
 //
-//   - An empty group means "unbounded": it returns immediately with a
-//     no-op release.
-//   - cancel firing before a slot frees returns acquired=false, err=nil
-//     (the caller should treat the run as cancelled-before-start).
-//   - A group not declared in the current config returns an error; the
-//     runner fails such a run closed rather than running it unbounded.
-//   - runID identifies the caller in the group's advisory queue bookkeeping
-//     (QueueDetail, QueueState.Holders). Empty is allowed: the caller gates
-//     normally but stays invisible in the queue views.
-//   - onQueue, if non-nil, is called the moment the run has to actually
-//     queue (no slot was immediately available) — callers use that first
-//     call to record a one-time "queued" event — and again every time the
-//     queued run's view changes (a holder came or went, the line moved),
-//     each time with a fresh QueueState. Calls are serialized under the
-//     Manager's mutex: they must be fast and must not call back into the
-//     Manager. A run that gets its slot immediately never sees onQueue.
-//   - A limit change while queued (reload or operator override) re-binds
-//     the waiter to the group's new semaphore, so a raised limit admits
-//     queued runs immediately; if the group itself is removed from the
-//     config while queued, Acquire fails with an error (the runner surfaces
-//     that as a failed run — loud beats silently stranded).
+// - An empty group means "unbounded": it returns immediately with a
+// no-op release.
+// - cancel firing before a slot frees returns acquired=false, err=nil
+// (the caller should treat the run as cancelled-before-start).
+// - A group not declared in the current config returns an error; the
+// runner fails such a run closed rather than running it unbounded.
+// - runID identifies the caller in the group's advisory queue bookkeeping
+// (QueueDetail, QueueState.Holders). Empty is allowed: the caller gates
+// normally but stays invisible in the queue views.
+// - onQueue, if non-nil, is called the moment the run has to actually
+// queue (no slot was immediately available) — callers use that
+// call to record a -time "queued" event — and again every time the
+// queued run's view changes (a holder came or went, the line moved),
+// each time with a fresh QueueState. Calls are serialized under the
+// Manager's mutex: they must be fast and must not call back into the
+// Manager. A run that gets its slot immediately never sees onQueue.
+// - A limit change while queued (reload or operator override) re-binds
+// the waiter to the group's new semaphore, so a raised limit admits
+// queued runs immediately; if the group itself is removed from the
+// config while queued, Acquire fails with an error (the runner surfaces
+// that as a failed run — loud beats silently stranded).
 func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue func(QueueState)) (release func(), acquired bool, err error) {
 	if group == "" {
 		return func() {}, true, nil
@@ -370,7 +351,7 @@ func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue f
 	// change (reload or operator override) closes the retired channel of
 	// the semaphore it replaces, and each blocked waiter re-binds to the
 	// group's CURRENT semaphore — so a raised limit admits already-queued
-	// runs immediately, and a lowered one has them contend at the new limit.
+	// runs immediately, and a lowered has them contend at the new limit.
 	// The per-sem waiting counter is managed per iteration so it always
 	// tracks the semaphore this waiter is actually blocked on.
 	for {
@@ -436,7 +417,7 @@ func (m *Manager) releaser(group, runID string, ch chan struct{}) func() {
 	}
 }
 
-// GroupStatus is a snapshot of one group's live utilization. Limit is the
+// GroupStatus is a snapshot of group's live utilization. Limit is the
 // effective limit; Declared is the concurrency.json value; Overridden marks
 // them differing because of an operator override.
 type GroupStatus struct {

@@ -27,7 +27,7 @@ func adminGet(t *testing.T, s *Server, target string) *httptest.ResponseRecorder
 	return rr
 }
 
-// The wire shapes of the two inspection endpoints, decoded field-by-field so the tests pin the JSON contract (names, omitempty behavior), not just the Go.
+// The wire shapes of the inspection endpoints, decoded field-by-field so the tests pin the JSON contract (names, omitempty behavior), not just the Go.
 type kvKeyJSON struct {
 	Key        string     `json:"key"`
 	Size       int        `json:"size"`
@@ -99,7 +99,7 @@ func TestAdminKVEntryUTF8(t *testing.T) {
 	require.Equal(t, len(val), got.Size)
 	require.NotNil(t, got.ExpiresAt)
 	require.NotNil(t, got.TTLSeconds)
-	// A valid-UTF-8 value arrives in both encodings, byte-identical.
+	// A valid-UTF- value arrives in both encodings, byte-identical.
 	require.Equal(t, base64.StdEncoding.EncodeToString([]byte(val)), got.ValueBase64)
 	require.NotNil(t, got.ValueUTF8)
 	require.Equal(t, val, *got.ValueUTF8)
@@ -107,7 +107,7 @@ func TestAdminKVEntryUTF8(t *testing.T) {
 
 func TestAdminKVEntryBinary(t *testing.T) {
 	s, store := newStateServer(t, kv.Config{})
-	val := []byte{0xff, 0x00, 0x80, 'x'} // not valid UTF-8
+	val := []byte{0xff, 0x00, 0x80, 'x'} // not valid UTF-
 	require.NoError(t, store.Set("h", "blob", val, 0))
 
 	rr := adminGet(t, s, "/kv/h/blob")
@@ -140,7 +140,7 @@ func TestAdminKVEntryMissingOrExpired(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rr.Code)
 	require.Contains(t, rr.Body.String(), "absent or expired")
 
-	// An expired key 404s exactly like a missing one — the same lazy-expiry rule as the state API, so inspection never returns ghosts.
+	// An expired key s exactly like a missing — the same lazy-expiry rule as the state API, so inspection never returns ghosts.
 	require.NoError(t, store.Set("h", "fast", []byte("v"), 10*time.Millisecond))
 	time.Sleep(30 * time.Millisecond)
 	rr = adminGet(t, s, "/kv/h/fast")
@@ -170,7 +170,7 @@ func TestAdminKVStatsShapeUnchanged(t *testing.T) {
 }
 
 // A state-API write whose disk persist fails must be loud end-to-end: the
-// store rolls back and returns the error, the hook gets a 5xx carrying the
+// store rolls back and returns the error, the hook gets a xx carrying the
 // reason, the server logs it, and a kv.write_failed event lands on the
 // activity feed.
 func TestStateWriteFailureIsLoud(t *testing.T) {

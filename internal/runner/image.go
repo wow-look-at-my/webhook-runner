@@ -85,9 +85,9 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 // locally, building it from the hook directory when it doesn't, and returns the
 // tag to run plus whether a build happened. The content-hash tag is what makes
 // runs immutable: a changed hook gets a fresh build on its next run, an
-// unchanged one reuses the existing image, and in-flight runs keep the image
+// unchanged reuses the existing image, and in-flight runs keep the image
 // they started with. Build output is streamed to out, and the build is capped
-// so a wedged one fails with this entity's name rather than outliving the
+// so a wedged fails with this entity's name rather than outliving the
 // caller that would have reported it.
 func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeout time.Duration) (tag string, built bool, err error) {
 	tag, err = ImageTag(hook)
@@ -125,7 +125,7 @@ func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeou
 	return tag, true, nil
 }
 
-// ImageInfo describes one locally present build of a hook's image.
+// ImageInfo describes locally present build of a hook's image.
 type ImageInfo struct {
 	Tag     string `json:"tag"`
 	ID      string `json:"id"`
@@ -236,7 +236,7 @@ var imageCommandCache sync.Map // string -> []string
 // never cached — a failed inspect is a transient daemon condition, not a
 // property of the tag.
 func imageCommand(dockerBin, image string, hookCommand []string) ([]string, error) {
-	// \x00 cannot appear in an argv element or a docker tag, so it cannot make two different keys collide.
+	// \x cannot appear in an argv element or a docker tag, so it cannot make different keys collide.
 	key := image + "\x00" + strings.Join(hookCommand, "\x00")
 	if cached, ok := imageCommandCache.Load(key); ok {
 		// Copy: callers append the shim's own argv onto the result, which would otherwise write into the cached slice's spare capacity and corrupt.

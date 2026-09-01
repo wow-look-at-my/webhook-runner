@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// shutdownGrace bounds the final close of the three listeners, measured from AFTER the drain.
+// shutdownGrace bounds the final close of the listeners, measured from AFTER the drain.
 const shutdownGrace = 10 * time.Second
 
 // shutdownDeps is the graceful teardown's world, expressed as behavior rather
@@ -23,7 +23,7 @@ type shutdownDeps struct {
 	logger        *slog.Logger
 }
 
-// gracefulShutdown winds the server down in the one order that loses nothing.
+// gracefulShutdown winds the server down in the order that loses nothing.
 func gracefulShutdown(d shutdownDeps) {
 	// Refuse NEW runs immediately: a run launched by this dying process races the state-socket handover (its shim would dial a socket the next.
 	d.refuseNewRuns()

@@ -13,7 +13,7 @@ import (
 )
 
 // replaySpooledDeliveries runs the deliveries the previous process parked
-// while it was draining. Called ONCE, after the first load populates the
+// while it was draining. Called , after the load populates the
 // registry — a replay needs its hook to exist.
 //
 // Each entry becomes an ordinary run: same body, same headers, so the hook

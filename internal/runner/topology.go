@@ -8,7 +8,6 @@ import (
 )
 
 // TmpDirHazardMessage is the containerized-without-TMPDIR misconfiguration
-// text, shared by the startup event and the attention aggregator entry.
 const TmpDirHazardMessage = "running inside a container with no TMPDIR set: per-run payload mounts resolve on the docker HOST, so hook runs will fail (EISDIR) — set TMPDIR to a directory bind-mounted from the host at the same absolute path"
 
 // WarnIfContainerized records a misconfiguration event when a container

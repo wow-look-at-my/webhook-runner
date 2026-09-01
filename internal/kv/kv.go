@@ -27,16 +27,16 @@ import (
 	"time"
 )
 
-// Config bounds the store. Zero values fall back to the defaults applied in
+// Config bounds the store. values fall back to the defaults applied in
 // New.
 type Config struct {
-	Dir           string        // directory holding one <namespace>.json per namespace
-	MaxValueBytes int           // per-value ceiling (default 64 KiB)
-	MaxNamespaces int           // distinct namespaces allowed (default 256)
-	SweepInterval time.Duration // how often the TTL sweeper runs (default 1m)
+	Dir           string        // directory holding <namespace>.json per namespace
+	MaxValueBytes int           // per-value ceiling (default KiB)
+	MaxNamespaces int           // distinct namespaces allowed (default )
+	SweepInterval time.Duration // how often the TTL sweeper runs (default m)
 }
 
-// NamespaceStat is a read-only summary of one namespace, surfaced on the
+// NamespaceStat is a read-only summary of namespace, surfaced on the
 // admin dashboard. It never includes values.
 type NamespaceStat struct {
 	Namespace string `json:"namespace"`
@@ -44,7 +44,7 @@ type NamespaceStat struct {
 	Bytes     int    `json:"bytes"`
 }
 
-// KeyInfo is one key's metadata — name, value size, and expiry — for the admin inspection endpoints.
+// KeyInfo is key's metadata — name, value size, and expiry — for the admin inspection endpoints.
 type KeyInfo struct {
 	Key        string     `json:"key"`
 	Size       int        `json:"size"`
@@ -74,7 +74,7 @@ func validNamespace(ns string) bool {
 }
 
 type entry struct {
-	Value   []byte     `json:"v"`           // marshalled as base64 — binary safe
+	Value   []byte     `json:"v"`           // marshalled as base — binary safe
 	Expires *time.Time `json:"e,omitempty"` // nil = no TTL
 }
 
@@ -108,7 +108,7 @@ type Store struct {
 	lockMu sync.Mutex
 	locks  map[string]map[string]lockEntry
 
-	// runLive answers "is this run still going?" for the lock sweeper, which may only reap an expired lock once its holder is CERTAINLY dead (a TTL.
+	// runLive answers "is this run still going?" for the lock sweeper, which may only reap an expired lock its holder is CERTAINLY dead (a TTL.
 	runLive func(runID string) bool
 
 	// onMutate, when set, is invoked after every successful ENTRY mutation (Set, a Delete that deleted, Incr, a sweep that reclaimed something).
@@ -226,7 +226,7 @@ func (s *Store) Get(ns, key string) ([]byte, bool) {
 	return append([]byte(nil), e.Value...), true
 }
 
-// Set stores value under key in ns. ttl<=0 means no expiry. The namespace
+// Set stores value under key in ns. ttl<= means no expiry. The namespace
 // file is rewritten before Set returns; a persist failure is reported and the
 // in-memory mutation is rolled back so memory never diverges from disk.
 func (s *Store) Set(ns, key string, value []byte, ttl time.Duration) error {
@@ -332,9 +332,9 @@ func (s *Store) Keys(ns, prefix string) []KeyInfo {
 	return infos
 }
 
-// GetEntry returns one key's metadata plus a copy of its value, or ok=false
+// GetEntry returns key's metadata plus a copy of its value, or ok=false
 // when it is absent or expired — the exact lazy-expiry rule Get uses, so the
-// admin inspection endpoint can never serve a ghost the state API would 404.
+// admin inspection endpoint can never serve a ghost the state API would .
 func (s *Store) GetEntry(ns, key string) (Entry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -351,11 +351,11 @@ func (s *Store) GetEntry(ns, key string) (Entry, bool) {
 }
 
 // Incr atomically adds delta to the integer stored at key in ns and returns
-// the new value. A missing or expired key starts from 0. An existing value
-// that is not a base-10 int64 returns ErrNotInteger (it is never silently
-// reset). ttl>0 sets a fresh expiry; ttl<=0 preserves any existing (non-
+// the new value. A missing or expired key starts from . An existing value
+// that is not a base- int returns ErrNotInteger (it is never silently
+// reset). ttl> sets a fresh expiry; ttl<= preserves any existing (non-
 // expired) expiry, so a counter can be incremented repeatedly without its TTL
-// being reset. The whole read-modify-write happens under one lock, which is
+// being reset. The whole read-modify-write happens under lock, which is
 // the entire reason for a server-side increment over a racy client GET+PUT.
 func (s *Store) Incr(ns, key string, delta int64, ttl time.Duration) (int64, error) {
 	if !validNamespace(ns) {
@@ -387,7 +387,7 @@ func (s *Store) Incr(ns, key string, delta int64, ttl time.Duration) (int64, err
 		}
 		base = n
 	} else {
-		// Missing or expired: start from zero, and any stale expiry is gone.
+		// Missing or expired: start from , and any stale expiry is gone.
 		keepExpiry = nil
 	}
 
@@ -471,13 +471,13 @@ func (s *Store) sweep() {
 			}
 		}
 	}
-	// One signal per sweep that reclaimed anything: expired entries change the admin /kv views (lazy expiry hides them from reads earlier, but.
+	// signal per sweep that reclaimed anything: expired entries change the admin /kv views (lazy expiry hides them from reads earlier, but.
 	if reclaimed {
 		s.notifyMutate()
 	}
 }
 
-// Close stops the sweeper and waits for it to exit. Safe to call once.
+// Close stops the sweeper and waits for it to exit. Safe to call .
 func (s *Store) Close() {
 	s.closeOnce.Do(func() { close(s.stop) })
 	s.wg.Wait()
@@ -497,7 +497,7 @@ func (s *Store) rollback(ns, key string, prev entry, keyExisted, nsExisted bool)
 	}
 }
 
-// persist atomically rewrites one namespace's file via temp+rename. Callers
+// persist atomically rewrites namespace's file via temp+rename. Callers
 // hold the write lock. A rename is atomic on the same filesystem, so a crash
 // mid-write never leaves a torn file.
 func (s *Store) persist(ns string) error {

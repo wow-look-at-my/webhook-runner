@@ -1,7 +1,7 @@
 package runs
 
 // Parent attribution for spawned runs (the state API's POST /spawn) —
-// split from runs.go for the 750-line cap.
+// split from runs.go for the -line cap.
 
 // SpawnedBy names the parent run that started a run via the state API's
 // POST /spawn.

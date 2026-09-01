@@ -16,7 +16,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/attention"
 )
 
-// forceApplyLocked is the ONE Force-style apply path — reset the tree to
+// forceApplyLocked is the Force-style apply path — reset the tree to
 // sha, record it serving + verified (the operator, or a green the operator
 // picked, vouched), persist, record the event, and reload. Force and both
 // ManualSwitch outcomes go through it; unlike trySwitch it applies NO
@@ -54,14 +54,14 @@ func (g *Gate) forceApplyLocked(sha string, clearPending bool, eventKind, eventM
 // the right owner because it is the only thing that knows which commit was
 // serving a moment ago.
 //
-// A rollback that ITSELF fails to apply is the one genuinely unrecoverable
+// A rollback that ITSELF fails to apply is the genuinely unrecoverable
 // case (the previous tree no longer loads either, so there is nothing good
 // to serve); it is reported at full volume and the fleet is left with
 // whatever the previous apply had installed, which is the last known-good
 // registry — nothing is torn down on this path.
 //
 // Caller holds g.mu. prevSHA == "" means nothing was recorded as serving
-// (a first switch); there is nowhere to roll back to, so the refusal is
+// (a switch); there is nowhere to roll back to, so the refusal is
 // simply reported.
 func (g *Gate) applyOrRollbackLocked(sha, prevSHA string, prevVerified bool) error {
 	if g.apply == nil {

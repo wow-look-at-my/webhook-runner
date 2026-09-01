@@ -2,7 +2,7 @@
 // at a plain TCP URL. webhook-runner injects its own binary as a state hook's
 // container entrypoint; that binary runs Serve to proxy a localhost TCP port to
 // the bind-mounted KV Unix socket, then execs the hook's real command — so the
-// hook uses http://localhost:9002 with any HTTP client, no --unix-socket and no
+// hook uses http://localhost: with any HTTP client, no --unix-socket and no
 // networking.
 package kvproxy
 

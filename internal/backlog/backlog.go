@@ -1,36 +1,36 @@
 // Package backlog is the runner's durable BATCH BACKLOG: a named, per-hook
-// list of opaque item ids that one run fills and later runs drain a slice at a
+// list of opaque item ids that run fills and later runs drain a slice at a
 // time.
 //
 // NOT internal/queue, and the difference is the whole point. `queue` answers
 // WHEN to run: enqueue a key, and the dispatcher starts a run of that hook when
-// it comes due — one run per key, deduped, schedulable, anti-spammed. That is
+// it comes due — run per key, deduped, schedulable, anti-spammed. That is
 // the right primitive for "this subject needs another look soon". It is the
-// wrong one for a fleet walk: pr-minder's hourly reconcile has ~250 open PRs to
-// re-check, and one container per PR is not a reconcile, it is a stampede.
+// wrong for a fleet walk: pr-minder's hourly reconcile has ~ open PRs to
+// re-check, and container per PR is not a reconcile, it is a stampede.
 //
 // This package answers the other half — WHAT IS LEFT — for a run that already
 // exists and can only afford part of the work:
 //
-//   - PUSH IS A SET UNION, ORDER PRESERVED. Pushing an item already queued is
-//     a no-op that keeps its ORIGINAL position, so a caller can re-push its
-//     whole candidate set every tick (the stateless way to describe "this is
-//     the work that exists") without the list growing without bound or its
-//     tail starving behind items that keep being re-pushed.
-//   - TAKE REMOVES a bounded slice, at-most-once, no leases or acks. Consumers
-//     are idempotent reconcilers whose next push restores anything a dying run
-//     drops — in exchange there is no lease to expire and no invisible
-//     in-flight state to leak.
-//   - Depth is observable, so "the backlog is not draining" is a number a hook
-//     logs and an operator reads, rather than an inference.
+// - PUSH IS A SET UNION, ORDER PRESERVED. Pushing an item already queued is
+// a no-op that keeps its ORIGINAL position, so a caller can re-push its
+// whole candidate set every tick (the stateless way to describe "this is
+// the work that exists") without the list growing without bound or its
+// tail starving behind items that keep being re-pushed.
+// - TAKE REMOVES a bounded slice, at-most-, no leases or acks. Consumers
+// are idempotent reconcilers whose next push restores anything a dying run
+// drops — in exchange there is no lease to expire and no invisible
+// in-flight state to leak.
+// - Depth is observable, so "the backlog is not draining" is a number a hook
+// logs and an operator reads, rather than an inference.
 //
 // WHY IT IS HERE AND NOT IN A HOOK (operator ruling: "Queue should exist in
 // webhook-runner. This is completely out of scope for a webhook impl"). A hook
-// run is a container that lives for one delivery, so "work I did not get to"
+// run is a container that lives for delivery, so "work I did not get to"
 // has nowhere to live inside it. The alternative a hook reaches for is a cursor
 // in its own KV — a position in a list the next run re-derives, which silently
 // means something else the moment that list changes. pr-minder shipped exactly
-// that and stranded 119 of 169 candidates behind a cap, hourly, forever.
+// that and stranded of candidates behind a cap, hourly, forever.
 //
 // DISK-BACKED (unlike the lock table, deliberately memory-only): outliving the
 // process that filled it is the entire point — a restart mid-fleet-walk must
@@ -51,14 +51,14 @@ import (
 	"sync"
 )
 
-// Config bounds the store. Zero values fall back to the defaults applied in
+// Config bounds the store. values fall back to the defaults applied in
 // New.
 type Config struct {
-	Dir           string // directory holding one <namespace>.json per namespace
-	MaxDepth      int    // items per queue (default 10000)
-	MaxItemBytes  int    // per item (default 512)
-	MaxQueues     int    // distinct queues per namespace (default 64)
-	MaxNamespaces int    // distinct namespaces (default 256)
+	Dir           string // directory holding <namespace>.json per namespace
+	MaxDepth      int    // items per queue (default )
+	MaxItemBytes  int    // per item (default )
+	MaxQueues     int    // distinct queues per namespace (default )
+	MaxNamespaces int    // distinct namespaces (default )
 }
 
 // Typed errors the HTTP layer maps onto status codes.
@@ -82,10 +82,10 @@ func validName(name string) bool {
 	return name != "" && len(name) <= 128 && namePattern.MatchString(name)
 }
 
-// ValidName exposes the name rule to the HTTP layer, so a bad name is a 400 from the router rather than an error only the mutating verbs can.
+// ValidName exposes the name rule to the HTTP layer, so a bad name is a from the router rather than an error only the mutating verbs can.
 func ValidName(name string) bool { return validName(name) }
 
-// Stat is one queue's observable state: what it is called and how much work is waiting.
+// Stat is queue's observable state: what it is called and how much work is waiting.
 type Stat struct {
 	Name  string `json:"name"`
 	Depth int    `json:"depth"`
@@ -240,7 +240,7 @@ func (s *Store) Push(ns, name string, items []string) (PushResult, error) {
 }
 
 // Take removes and returns up to count items from the head. A missing queue is
-// not an error — it is an empty one, which is what a caller draining a backlog
+// not an error — it is an empty , which is what a caller draining a backlog
 // means by "nothing to do".
 func (s *Store) Take(ns, name string, count int) ([]string, int, error) {
 	if !validNamespace(ns) {
@@ -288,7 +288,7 @@ func (s *Store) Take(ns, name string, count int) ([]string, int, error) {
 	return taken, len(rest), nil
 }
 
-// Depth reports how much work is waiting on one queue.
+// Depth reports how much work is waiting on queue.
 func (s *Store) Depth(ns, name string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -325,7 +325,7 @@ func (s *Store) rollback(ns, name string, prev []string, qExisted, nsExisted boo
 	}
 }
 
-// persist atomically rewrites one namespace's file via temp+rename. Callers
+// persist atomically rewrites namespace's file via temp+rename. Callers
 // hold the mutex. A rename is atomic on the same filesystem, so a crash
 // mid-write never leaves a torn file.
 func (s *Store) persist(ns string) error {

@@ -3,16 +3,16 @@
 // Seccomp is the ONLY layer the opt-in can lift, and where AppArmor ENFORCES,
 // that is not enough for bubblewrap. No --security-opt pair closes the gap:
 // docker-default grants the user namespace and denies `mount`, so bwrap dies at
-// `Failed to make / slave`; apparmor=unconfined trades that for Ubuntu 24.04's
+// `Failed to make / slave`; apparmor=unconfined trades that for Ubuntu .'s
 // unprivileged-userns restriction, so bwrap dies EARLIER, at `setting up uid
-// map`. Both measured on GitHub's runners, one commit apart. Only a profile
+// map`. Both measured on GitHub's runners, commit apart. Only a profile
 // loaded on the HOST lifts both, so apparmor=unconfined is a regression here,
 // not the missing half. The fleet's own host does not enforce AppArmor.
 //
-// WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly two
+// WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly
 // kinds of value -- the literal string "unconfined" (no syscall filtering
 // whatsoever) or a PATH to a profile document. There is no CLI syntax for
-// "the daemon's default profile, but also allow syscall X". Relaxing ONE
+// "the daemon's default profile, but also allow syscall X". Relaxing
 // syscall therefore requires handing docker a complete profile.
 //
 // WHY THE PROFILE IS VENDORED: the daemon's default profile is compiled
@@ -114,7 +114,7 @@ func seccompArgs(hook seccompHook, tmpDir, runID string) (args []string, cleanup
 }
 
 // seccompHook is the slice of *hooks.Hook seccompArgs needs, so the test
-// path and the live-run path can share one implementation.
+// path and the live-run path can share implementation.
 type seccompHook interface {
 	UsernsAllowed() bool
 }

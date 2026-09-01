@@ -68,7 +68,7 @@ func TestStateLockBlockingManagerInstanceWaitsForRelease(t *testing.T) {
 
 // The regression: a manager instance's blocking acquire must work with NO
 // run tracker configured at all. blockOnLock used to consult s.tracker
-// FIRST and 503 immediately when it was nil, before ever checking whether
+// and immediately when it was nil, before ever checking whether
 // the caller was a manager instance — wrong, since a manager instance's
 // liveness (TouchInstance) is independent of run tracking.
 func TestStateLockBlockingManagerInstanceWorksWithoutARunTracker(t *testing.T) {
@@ -104,7 +104,7 @@ func TestStateLockBlockingManagerInstanceWorksWithoutARunTracker(t *testing.T) {
 }
 
 // A manager instance that stops being current mid-wait (superseded by a
-// fresher one) gets refused on the next poll tick — it must never be handed
+// fresher ) gets refused on the next poll tick — it must never be handed
 // a lock, or block forever, on behalf of an instance that is gone.
 func TestStateLockBlockingManagerInstanceStopsWhenSuperseded(t *testing.T) {
 	s, fm, _, _, _, store := managerServer(t, managerDoc)
@@ -120,7 +120,7 @@ func TestStateLockBlockingManagerInstanceStopsWhenSuperseded(t *testing.T) {
 			strings.NewReader(`{"block":true,"block_timeout_seconds":10}`))
 	}()
 
-	// A fresher instance replaces inst-1 (a redeploy). inst-1's own block must not linger believing it is still current.
+	// A fresher instance replaces inst- (a redeploy). inst-'s own block must not linger believing it is still current.
 	time.Sleep(20 * time.Millisecond)
 	fm.bind("coord", "inst-2")
 

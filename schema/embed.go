@@ -7,7 +7,7 @@
 // repo pinning some other `$schema` URL. A manifest's own `$schema` field
 // still declares which published document it targets (CI validates against
 // that), while the runtime gate uses the copy compiled into the binary it is
-// running -- which is exactly what "deploy the runner first" means.
+// running -- which is exactly what "deploy the runner " means.
 package schema
 
 import _ "embed"

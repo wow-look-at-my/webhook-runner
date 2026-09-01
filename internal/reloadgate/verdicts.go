@@ -3,13 +3,12 @@ package reloadgate
 import "time"
 
 // The store answers "is this sha green?", never "should the tree switch to it?" --
-// trySwitch still gates every apply. See docs/internals/hooks-images-and-reload.md.
 const (
 	verdictTTL  = 7 * 24 * time.Hour // a sha this old can never pass trySwitch anyway
 	maxVerdicts = 200                // keeps the state file small on a busy repo
 )
 
-// verdictRecord is one sha's last known gating state ("success", "failure",
+// verdictRecord is sha's last known gating state ("success", "failure",
 // or "error" — "pending" is not a verdict and is never recorded).
 type verdictRecord struct {
 	SHA    string    `json:"sha"`
@@ -57,7 +56,7 @@ func (g *Gate) pruneVerdictsLocked(now time.Time) {
 	}
 }
 
-// verdictFor returns the recorded gating state for a sha, if one is on record
+// verdictFor returns the recorded gating state for a sha, if is on record
 // and unexpired.
 func (g *Gate) verdictFor(sha string) (string, bool) {
 	g.mu.Lock()

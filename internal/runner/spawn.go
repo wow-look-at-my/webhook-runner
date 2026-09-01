@@ -1,7 +1,7 @@
 package runner
 
 // Spawned-run dispatch (the state API's POST /spawn) — split from
-// runner.go for the 750-line cap.
+// runner.go for the -line cap.
 
 import (
 	"context"

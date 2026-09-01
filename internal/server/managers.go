@@ -1,7 +1,7 @@
 // Manager entity server surface: delivery dispatch into the inbox (with
 // synchronous holds and per-delivery github_status), the state API's
 // POST /inbox/next, and the admin roster/kill-switch/restart endpoints.
-// Managers are FIRST-CLASS — never runs: nothing here touches the tracker,
+// Managers are -CLASS — never runs: nothing here touches the tracker,
 // the run store, or the timeline.
 package server
 
@@ -44,7 +44,7 @@ const defaultInboxNextWaitSeconds = 60
 // conditions), then the delivery lands in the manager's bounded inbox
 // instead of booting a container. synchronous (or ?wait=true) holds the
 // response until the manager finishes processing that inbox event — its
-// next /inbox/next call — degrading to the async 202 on the sync timeout,
+// next /inbox/next call — degrading to the async on the sync timeout,
 // exactly the hook rule. github_status, when enabled, posts pending now
 // and success/error when the event settles.
 func (s *Server) handleManagerTrigger(w http.ResponseWriter, r *http.Request, mgr *hooks.Manager) {
@@ -130,7 +130,7 @@ func (s *Server) handleManagerTrigger(w http.ResponseWriter, r *http.Request, mg
 
 	// Synchronous: hold until the manager finishes THAT event. The hold is
 	// a response bound, never an event bound — on timeout the response
-	// degrades to the async 202 and the event stays queued/processing.
+	// degrades to the async and the event stays queued/processing.
 	select {
 	case <-d.Done():
 		if d.Completed() {
@@ -162,11 +162,11 @@ func (s *Server) handleManagerTrigger(w http.ResponseWriter, r *http.Request, mg
 }
 
 // handleInboxNext implements POST /inbox/next on the state API: the
-// manager's long-poll event pop. Body {"wait_seconds": 1..600} (default
-// 60). 200 = an event (JSON, see managers.Event); 204 = the wait elapsed
-// with nothing queued (re-poll, flat); 409 = the caller is not the
+// manager's long-poll event pop. Body {"wait_seconds": ..} (default
+// ). = an event (JSON, see managers.Event); = the wait elapsed
+// with nothing queued (re-poll, flat); = the caller is not the
 // manager's CURRENT instance (a stale token from a dead instance — the
-// API-level single-instance guard); 404 = the namespace is not a manager.
+// API-level single-instance guard); = the namespace is not a manager.
 func (s *Server) handleInboxNext(w http.ResponseWriter, r *http.Request, ns, runID string) {
 	if s.managers == nil || s.registry == nil {
 		writeError(w, http.StatusNotFound, "not a manager")
@@ -246,7 +246,7 @@ func (s *Server) handleManagerDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, managerDetail{Status: st, Output: s.managers.OutputTail(id)})
 }
 
-// handleManagerDisable / handleManagerEnable are the manager kill switch — the same persisted overrides store as hooks (ids share one.
+// handleManagerDisable / handleManagerEnable are the manager kill switch — the same persisted overrides store as hooks (ids share .
 func (s *Server) handleManagerDisable(w http.ResponseWriter, r *http.Request) {
 	s.setManagerDisabled(w, r, true)
 }
@@ -297,7 +297,7 @@ func (s *Server) setManagerDisabled(w http.ResponseWriter, r *http.Request, disa
 }
 
 // handleManagerRestart bounces the live instance (graceful stop; the
-// supervisor starts a fresh one immediately) — the operator's "kick it"
+// supervisor starts a fresh immediately) — the operator's "kick it"
 // button, replacing the run-cancel a session-as-run would have had.
 func (s *Server) handleManagerRestart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

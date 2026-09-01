@@ -14,7 +14,7 @@ import (
 )
 
 // A hook with no timeout must not get a deadline at all: runContext is the
-// seam execute() bounds container processing through, and for 0 it returns a
+// seam execute() bounds container processing through, and for it returns a
 // plain cancellable context — the run is uncapped (bounded only by
 // idle_timeout, an explicit cancel, or the container exiting).
 func TestRunContextZeroTimeoutHasNoDeadline(t *testing.T) {
@@ -54,7 +54,7 @@ func TestRunContextZeroTimeoutFollowsParentCancel(t *testing.T) {
 }
 
 // End-to-end through execute(): a hook that omits timeout runs and finishes
-// normally. (An absent timeout used to mean a 5m default ceiling; it now
+// normally. (An absent timeout used to mean a m default ceiling; it now
 // means no absolute ceiling at all.)
 func TestRunnerNoTimeoutRunsToCompletion(t *testing.T) {
 	dir := t.TempDir()

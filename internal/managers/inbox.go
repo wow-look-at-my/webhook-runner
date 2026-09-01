@@ -1,12 +1,12 @@
 // Package managers supervises the fleet's MANAGER entities: persistent,
 // single-instance watchers declared at src/managers/<id>/ in the hooks
-// tree, each run as ONE long-lived container (an "instance") that the
+// tree, each run as long-lived container (an "instance") that the
 // supervisor restarts flat on any exit and hands events through an
-// UNBOUNDED in-memory inbox -- it dropped the oldest entry at 256 until a
+// UNBOUNDED in-memory inbox -- it dropped the oldest entry at until a
 // fan-out tick against a large fleet lost real work behind a wall of
 // manager.inbox_dropped, and a dropped event never comes back while a queue
 // drains. A wedged consumer is the wedge guard's job, not the queue's.
-// A manager instance is a first-class identity, not a
+// A manager instance is a -class identity, not a
 // run: it never appears in the runs list, the run store, or the timeline.
 // The run-shaped mechanisms it needs (the state token, cooperative locks
 // incl. pinning, /wait, /title, /spawn parentage, the activity watchdog)
@@ -32,13 +32,13 @@ var ErrNotSession = errors.New("managers: not the current manager instance")
 const (
 	// KindDelivery: an authenticated, skip_if-filtered POST /hook/<id> delivery — headers + raw payload, verbatim.
 	KindDelivery = "delivery"
-	// KindTick: the runner-injected reconcile signal (reconcile_interval; coalesced — at most one queued at a time — plus one at session start).
+	// KindTick: the runner-injected reconcile signal (reconcile_interval; coalesced — at most queued at a time — plus at session start).
 	KindTick = "tick"
 	// KindStart: session start for EVENT-ONLY managers (no reconcile_interval): a chance to warm up, never a sweep mandate.
 	KindStart = "start"
 )
 
-// Event is one inbox entry, JSON-shaped exactly as POST /inbox/next
+// Event is inbox entry, JSON-shaped exactly as POST /inbox/next
 // returns it. ID identifies the event for completion tracking (the
 // synchronous-delivery hold and per-delivery github_status ride it).
 type Event struct {
@@ -94,7 +94,7 @@ type entry struct {
 	d  *Delivered
 }
 
-// Inbox is one manager's bounded event queue plus its instance binding. It exists per DECLARED manager (created at reload, surviving instance restarts — buffering while the manager is down is the point) and is bound to the CURRENT instance's identity while one is live, which is what lets POST /inbox/next refuse a stale instance's token. The inbox also owns the manager-shaped WATCHDOG arming (the arm/disarm instance hooks): the instance's idle watchdog runs only while an event is CHECKED OUT — delivered by Next and not yet followed by the manager's next Next call — or when events sit queued with no consumer parked and nothing checked out (a manager that stopped calling Next is as wedged as one that went silent mid-event).
+// Inbox is manager's bounded event queue plus its instance binding. It exists per DECLARED manager (created at reload, surviving instance restarts — buffering while the manager is down is the point) and is bound to the CURRENT instance's identity while is live, which is what lets POST /inbox/next refuse a stale instance's token. The inbox also owns the manager-shaped WATCHDOG arming (the arm/disarm instance hooks): the instance's idle watchdog runs only while an event is CHECKED OUT — delivered by Next and not yet followed by the manager's next Next call — or when events sit queued with no consumer parked and nothing checked out (a manager that stopped calling Next is as wedged as that went silent mid-event).
 type Inbox struct {
 	mu   sync.Mutex
 	cond *sync.Cond
@@ -107,7 +107,7 @@ type Inbox struct {
 	disarm     func() // watchdog Disarm — nil-safe
 	touch      func() // watchdog Touch — the /wait activity feed; nil-safe
 	checkedOut *entry // the event delivered by the last Next, until the next Next
-	// parked counts Next calls currently IN FLIGHT — from the moment one passes its instance check to whichever return it takes, not merely the.
+	// parked counts Next calls currently IN FLIGHT — from the moment passes its instance check to whichever return it takes, not merely the.
 	parked int
 
 	// lastDelivered/lastTick are observability stamps for the admin API.
@@ -202,7 +202,7 @@ func (ib *Inbox) Depth() int {
 	return len(ib.buf)
 }
 
-// Stamps reports when the inbox last accepted a delivery and a tick (zero
+// Stamps reports when the inbox last accepted a delivery and a tick (
 // = never) — the admin surface's "last event / last tick" columns.
 func (ib *Inbox) Stamps() (lastDelivered, lastTick time.Time) {
 	ib.mu.Lock()
@@ -229,7 +229,7 @@ func (ib *Inbox) PushDelivery(headers http.Header, payload []byte) *Delivered {
 	return d
 }
 
-// PushTick enqueues a reconcile tick, COALESCED: at most one tick sits in the buffer at a time (a slow manager never accumulates a tick backlog — the next tick after it catches up covers everything).
+// PushTick enqueues a reconcile tick, COALESCED: at most tick sits in the buffer at a time (a slow manager never accumulates a tick backlog — the next tick after it catches up covers everything).
 func (ib *Inbox) PushTick() bool {
 	ib.mu.Lock()
 	if ib.tickQueued {
@@ -269,11 +269,11 @@ func (ib *Inbox) push(e entry) {
 }
 
 // Next is the long-poll pop behind POST /inbox/next: called by the CURRENT
-// instance (instanceID must match the binding), it first settles the
+// instance (instanceID must match the binding), it settles the
 // previous checked-out event as PROCESSED — disarming the watchdog before
 // any parking, so a long empty-inbox park can never be reaped as silence —
-// then waits up to wait for an event. Delivering one arms the watchdog and
-// checks it out; an elapsed wait returns ok=false (the 204 re-poll).
+// then waits up to wait for an event. Delivering arms the watchdog and
+// checks it out; an elapsed wait returns ok=false (the re-poll).
 // ErrNotSession reports a stale or foreign instance token. ctx aborts the
 // wait (client disconnect / server shutdown) without popping anything.
 func (ib *Inbox) Next(ctx context.Context, instanceID string, wait time.Duration) (Event, bool, error) {
@@ -352,13 +352,13 @@ func (ib *Inbox) Next(ctx context.Context, instanceID string, wait time.Duration
 	}
 }
 
-// NewInstanceID mints a manager-instance identity: 16 random bytes,
-// base32-lowercased — the run-ID alphabet (a-z2-7), so everything that
+// NewInstanceID mints a manager-instance identity: random bytes,
+// base-lowercased — the run-ID alphabet (a-z-), so everything that
 // composes ids into names/tokens treats instances and runs identically.
 func NewInstanceID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Timestamp fallback: uniqueness within one process is all the callers need (tokens bind ns+id; container names are per-manager).
+		// Timestamp fallback: uniqueness within process is all the callers need (tokens bind ns+id; container names are per-manager).
 		return "mgr" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(time.Now().String())))[:23]
 	}
 	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))

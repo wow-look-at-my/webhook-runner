@@ -2,7 +2,7 @@
 // red switch" on the admin dashboard: per-hook kill switches (reject
 // deliveries, skip scheduled runs) and concurrency-group limit overrides.
 //
-// Overrides are OPERATIONAL state, not hooks-repo config: they live in one
+// Overrides are OPERATIONAL state, not hooks-repo config: they live in
 // JSON file under the data dir (next to runs.db and kv/), survive restarts,
 // and are re-applied on top of every hooks-repo reload — flipping a switch
 // never requires a config PR, and a config push never silently wipes a
@@ -12,7 +12,7 @@
 //
 // Persistence follows internal/kv's rules: writes are atomic (temp+rename)
 // and a persist failure rolls the in-memory mutation back so memory never
-// diverges from disk — callers surface the error loudly (HTTP 500 + an
+// diverges from disk — callers surface the error loudly (HTTP + an
 // activity event), never a quiet degrade.
 package overrides
 
@@ -26,7 +26,7 @@ import (
 	"sync"
 )
 
-// Store holds the operator overrides, mirrored to one JSON file. A nil *Store is valid for the read methods (no overrides), so servers built without one — tests, mostly — need no nil checks on the hot paths; the write methods on a nil Store return an error (never a silent no-op). The hook kill switch is TRI-STATE: per hook the store holds either no override (the hook.json `enable` default applies) or an EXPLICIT enabled/disabled override.
+// Store holds the operator overrides, mirrored to JSON file. A nil *Store is valid for the read methods (no overrides), so servers built without — tests, mostly — need no nil checks on the hot paths; the write methods on a nil Store return an error (never a silent no-op). The hook kill switch is TRI-STATE: per hook the store holds either no override (the hook.json `enable` default applies) or an EXPLICIT enabled/disabled override.
 type Store struct {
 	mu         sync.Mutex
 	path       string
@@ -37,7 +37,7 @@ type Store struct {
 	globalLimit int
 	globalSet   bool
 
-	// settings holds per-entity settings overrides: entity id -> RFC 6901 JSON Pointer -> the operator's value.
+	// settings holds per-entity settings overrides: entity id -> RFC JSON Pointer -> the operator's value.
 	settings map[string]map[string]json.RawMessage
 }
 
@@ -55,7 +55,7 @@ type fileFormat struct {
 }
 
 // Open loads the overrides file at path, creating the parent directory if
-// needed. A missing file is the zero state (no overrides). A file that
+// needed. A missing file is the state (no overrides). A file that
 // exists but does not parse is a hard error: booting with the operator's
 // kill switches silently dropped is exactly the failure this package
 // exists to prevent, so startup fails loudly instead.
@@ -116,7 +116,7 @@ func copyPointerMap(in map[string]json.RawMessage) map[string]json.RawMessage {
 	return out
 }
 
-// HookOverride returns the operator's explicit enable/disable override for the hook: (state, true) when one exists, (_, false) when the operator has never overridden this hook.
+// HookOverride returns the operator's explicit enable/disable override for the hook: (state, true) when exists, (_, false) when the operator has never overridden this hook.
 func (s *Store) HookOverride(id string) (enabled, ok bool) {
 	if s == nil {
 		return false, false
@@ -127,7 +127,7 @@ func (s *Store) HookOverride(id string) (enabled, ok bool) {
 	return enabled, ok
 }
 
-// HookDisabled reports the hook's EFFECTIVE kill-switch state: the operator's explicit override when one exists, else the hook.json default the caller.
+// HookDisabled reports the hook's EFFECTIVE kill-switch state: the operator's explicit override when exists, else the hook.json default the caller.
 func (s *Store) HookDisabled(id string, defaultEnabled bool) bool {
 	if enabled, ok := s.HookOverride(id); ok {
 		return !enabled
@@ -171,7 +171,7 @@ func (s *Store) disabledLocked() []string {
 	return out
 }
 
-// SetHookDisabled records an EXPLICIT override for one hook's kill switch
+// SetHookDisabled records an EXPLICIT override for hook's kill switch
 // and persists immediately: disabled=true pins the hook off, disabled=false
 // pins it on — either way overriding the hook.json `enable` default from
 // then on. It is idempotent: changed=false means the same explicit override
@@ -226,7 +226,7 @@ func (s *Store) ConcurrencyLimits() map[string]int {
 }
 
 // SetConcurrencyLimit records a limit override for group and persists
-// immediately. limit must be >= 1 — a zero limit would leave queued runs
+// immediately. limit must be >= — a limit would leave queued runs
 // waiting forever (disable the hooks instead). Idempotent (changed=false
 // when the same override was already set); a persist failure rolls the
 // mutation back and returns the error.
@@ -277,7 +277,7 @@ func (s *Store) ClearConcurrencyLimit(group string) (changed bool, err error) {
 }
 
 // GlobalRunLimit returns the operator's override for the global run cap,
-// if one is set.
+// if is set.
 func (s *Store) GlobalRunLimit() (int, bool) {
 	if s == nil {
 		return 0, false
@@ -288,7 +288,7 @@ func (s *Store) GlobalRunLimit() (int, bool) {
 }
 
 // SetGlobalRunLimit records an override for the global run cap and persists
-// immediately. limit must be >= 1 — a 0 cap would block every run forever.
+// immediately. limit must be >= — a cap would block every run forever.
 // Idempotent (changed=false when the same override was already set); a
 // persist failure rolls the mutation back and returns the error.
 func (s *Store) SetGlobalRunLimit(limit int) (changed bool, err error) {

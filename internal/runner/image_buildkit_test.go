@@ -1,8 +1,8 @@
-// Two guarantees about hook image builds, both learned from one outage:
+// guarantees about hook image builds, both learned from outage:
 // the build must run under BuildKit (the legacy builder rejects `# syntax=`
 // frontends and flags like `ADD --unpack`), and a FAILED build must carry
 // docker's own error back to the caller — it used to surface as a bare
-// "exit status 1" with the real message only in the server's log.
+// "exit status " with the real message only in the server's log.
 package runner
 
 import (
@@ -57,7 +57,7 @@ func TestEnsureImageSelectsBuildKit(t *testing.T) {
 }
 
 // A build failure's error must quote what docker printed. Without this the
-// operator sees only "exit status 1" and has to guess at the cause.
+// operator sees only "exit status " and has to guess at the cause.
 func TestEnsureImageFailureCarriesBuildOutput(t *testing.T) {
 	root := buildKitTestHook(t)
 	const dockerErr = "Error response from daemon: dockerfile parse error on line 70: unknown flag: --unpack"

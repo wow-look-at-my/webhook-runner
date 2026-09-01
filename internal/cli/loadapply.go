@@ -23,14 +23,14 @@ import (
 // and the concurrency-group config from disk, rejects hooks that reference
 // an undeclared group, then atomically updates the concurrency manager, the
 // scheduler, and the registry. Folding the scheduler in here (rather than a
-// second reload path) keeps the registry and the set of scheduled hooks from
+// reload path) keeps the registry and the set of scheduled hooks from
 // ever drifting apart.
 //
 // THE FLEET IS ALL-OR-NOTHING, AND THAT IS THE POINT.
 //
 // A load in which ANY entity failed is REFUSED: nothing is swapped, the
 // previous registry keeps serving, and the caller gets an error. It used to
-// apply the partial set, which fails OPEN in the one situation that produces
+// apply the partial set, which fails OPEN in the situation that produces
 // fleet-wide load errors -- a binary and a tree that disagree about the
 // manifest contract. Every entity using the disputed field just stopped
 // serving, silently, with a "hooks reloaded" line to match; the reload gate
@@ -40,13 +40,13 @@ import (
 //
 // Refusing instead makes both deploy directions safe and loud:
 //
-//   - The TREE moved (a manifest using a field this binary lacks): the gate
-//     resets to the commit that was serving and applies that, so the fleet
-//     keeps running and the deploy is HELD, not half-applied.
-//   - The BINARY moved (a field this tree still uses was removed): the
-//     startup load fails and serve exits non-zero naming the entities, so
-//     the deploy fails visibly instead of coming up serving a fraction of
-//     the fleet.
+// - The TREE moved (a manifest using a field this binary lacks): the gate
+// resets to the commit that was serving and applies that, so the fleet
+// keeps running and the deploy is HELD, not half-applied.
+// - The BINARY moved (a field this tree still uses was removed): the
+// startup load fails and serve exits non- naming the entities, so
+// the deploy fails visibly instead of coming up serving a fraction of
+// the fleet.
 //
 // This is only safe to make strict because a load error cannot reach a
 // gated deploy by the normal path: the reload gate requires the hooks repo's
@@ -59,11 +59,11 @@ import (
 // re-applies limit overrides inside Update — so a reload can never silently
 // wipe a kill switch. What a reload CAN do is orphan an override (its hook
 // or group no longer exists in the fresh config): the override is KEPT
-// (inert; it re-applies if the target comes back) and announced with one
+// (inert; it re-applies if the target comes back) and announced with
 // override.orphaned event per orphaning, never silently dropped.
 //
 // The attention aggregator (agg) is re-derived here too: the collected
-// load errors become the current "load"/"zero-hooks" problem sets, and
+// load errors become the current "load"/"-hooks" problem sets, and
 // ApplyServeProbe statically re-checks each LOADED hook's ${NAME}
 // api_key/env references and sops decrypt (via the shared secrets loader)
 // — serve-path only, exactly like the reload itself; `validate` stays
@@ -75,7 +75,7 @@ import (
 // statuses dropped before a request is built, so the reload names it
 // rather than letting the entity run green and publish nothing.
 func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurrency.Manager, sched *scheduler.Scheduler, sup *managers.Supervisor, ov *overrides.Store, agg *attention.Aggregator, secrets *hooks.SecretsLoader, ghStatusConfigured bool, logger *slog.Logger, rec *events.Recorder) func() error {
-	// Orphan announcements are deduped per target across reloads: one event when a reload first finds an override pointing at nothing, not one.
+	// Orphan announcements are deduped per target across reloads: event when a reload finds an override pointing at nothing, not .
 	var orphanMu sync.Mutex
 	announced := set.New[string]()
 	return func() error {
@@ -184,7 +184,7 @@ func buildLoadAndApply(hooksDir string, registry *hooks.Registry, mgr *concurren
 	}
 }
 
-// applySettingsOverrides merges the operator's pinned settings fields into the freshly loaded entities. A REJECTED OVERRIDE MUST NEVER REFUSE THE TREE. Everything else in this file fails the whole load when one entity is bad, and that is right for a manifest: the tree is reviewed, CI-gated, and rollback-able. An override is none of those — it is a value typed into a dashboard and stored under the data dir, and the tree it was valid against can move underneath it (a manifest that renames the field, a schema that tightens the range). If that could refuse the load, one stale override would take the entire fleet down on the next reload, with the fix reachable only by hand-editing overrides.json on the runner host. So the degrade is per entity: drop THAT entity's overrides for this load, serve its manifest values, and be loud.
+// applySettingsOverrides merges the operator's pinned settings fields into the freshly loaded entities. A REJECTED OVERRIDE MUST NEVER REFUSE THE TREE. Everything else in this file fails the whole load when entity is bad, and that is right for a manifest: the tree is reviewed, CI-gated, and rollback-able. An override is none of those — it is a value typed into a dashboard and stored under the data dir, and the tree it was valid against can move underneath it (a manifest that renames the field, a schema that tightens the range). If that could refuse the load, stale override would take the entire fleet down on the next reload, with the fix reachable only by hand-editing overrides.json on the runner host. So the degrade is per entity: drop THAT entity's overrides for this load, serve its manifest values, and be loud.
 func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[string]*hooks.Manager, ov *overrides.Store, logger *slog.Logger, rec *events.Recorder) {
 	all := ov.AllSettingsOverrides()
 	if len(all) == 0 {
@@ -215,7 +215,7 @@ func applySettingsOverrides(loaded map[string]*hooks.Hook, loadedManagers map[st
 	}
 }
 
-// serving reports how many entities the registry is currently serving — zero means nothing has ever been applied, i.e. this is the startup.
+// serving reports how many entities the registry is currently serving — means nothing has ever been applied, i.e. this is the startup.
 func serving(registry *hooks.Registry) int {
 	return len(registry.All()) + len(registry.AllManagers())
 }
@@ -226,7 +226,7 @@ type refusedError struct {
 	serving int
 }
 
-// refusedErrorSamples bounds the entity list in the message: a contract mismatch fails EVERY entity, and a 13-line error string buries the.
+// refusedErrorSamples bounds the entity list in the message: a contract mismatch fails EVERY entity, and a -line error string buries the.
 const refusedErrorSamples = 3
 
 func (e refusedError) Error() string {
@@ -256,8 +256,8 @@ func (e refusedError) Error() string {
 func (e refusedError) Unwrap() []error { return e.errs }
 
 // announceOrphanedOverrides compares the operator overrides against the
-// freshly loaded hooks/groups and records one override.orphaned event per
-// override whose target vanished — once per orphaning, deduped in
+// freshly loaded hooks/groups and records override.orphaned event per
+// override whose target vanished — per orphaning, deduped in
 // `announced` across reloads (targets that return are forgotten so a later
 // re-orphaning is announced again). Orphaned overrides are never removed:
 // they stay stored and re-apply if the hook/group comes back.

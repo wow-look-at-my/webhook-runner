@@ -19,8 +19,8 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// ?before= pages the run list: a valid RFC3339(Nano) cursor keeps only
-// strictly-older runs (the live tracker is filtered too), garbage is a 400
+// ?before= pages the run list: a valid RFC(Nano) cursor keeps only
+// strictly-older runs (the live tracker is filtered too), garbage is a
 // in the standard JSON error shape, and an omitted or empty cursor keeps
 // today's unpaged view byte-for-byte.
 func TestListRunsBeforeParam(t *testing.T) {
@@ -44,12 +44,12 @@ func TestListRunsBeforeParam(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, r1.ID(), got[0].ID)
 
-	// Plain RFC3339 (no fractional seconds) parses too.
+	// Plain RFC (no fractional seconds) parses too.
 	plain := url.QueryEscape(time.Now().UTC().Add(time.Hour).Format(time.RFC3339))
 	require.NoError(t, json.Unmarshal([]byte(body("/runs?before="+plain, http.StatusOK)), &got))
 	assert.Len(t, got, 2)
 
-	// Garbage is a 400 with the handlers' JSON error shape.
+	// Garbage is a with the handlers' JSON error shape.
 	var e map[string]string
 	require.NoError(t, json.Unmarshal([]byte(body("/runs?before=yesterday", http.StatusBadRequest)), &e))
 	assert.Contains(t, e["error"], `invalid before="yesterday"`)

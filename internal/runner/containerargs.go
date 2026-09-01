@@ -1,8 +1,6 @@
 package runner
 
-// The ONE place `docker run` argv is assembled, for every container start
-// (hook run, manager instance, hook test). This is what makes GSM routing
-// and PID-namespace isolation hold for all of them: nothing else builds argv.
+// The place `docker run` argv is assembled, for every container start
 
 import (
 	"sort"
@@ -10,7 +8,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// containerSpec is one container start, as data. Every field is what the CALLER
+// containerSpec is container start, as data. Every field is what the CALLER
 // chose; nothing is derived from a hook here, so a path that deliberately omits
 // something -- a test container takes no secrets and no payload -- simply
 // leaves it unset instead of needing a flag to suppress it.
@@ -48,8 +46,8 @@ type containerSpec struct {
 //
 // The order is fixed here rather than at each call site: docker does not care
 // how -v and -e interleave, but it does care that everything precedes the
-// image, and a reader comparing two container starts should be comparing the
-// specs, not two hand-built slices.
+// image, and a reader comparing container starts should be comparing the
+// specs, not hand-built slices.
 func (s containerSpec) args() []string {
 	args := []string{"run", "--rm", "--name", s.name}
 	if s.label != "" {
@@ -85,9 +83,6 @@ func (s containerSpec) args() []string {
 		args = append(args, "--workdir", s.workdir)
 	}
 	// The anonymous /var/lib/docker volume gives the nested daemon storage on a
-	// real filesystem -- its overlay driver cannot stack on the outer
-	// container's overlay rootfs -- and --rm above reaps it at exit, so inner
-	// storage never leaks between runs. The host's daemon is never exposed.
 	args = append(args, dindArgs(s.dind)...)
 	for _, d := range s.devices {
 		args = append(args, "--device", d)

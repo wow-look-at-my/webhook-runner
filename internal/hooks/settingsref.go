@@ -1,34 +1,34 @@
 // References inside a settings document: `${env:NAME}` and
-// `${settings:a.b[2].c}`.
+// `${settings:a.b[].c}`.
 //
 // Why both, and why they resolve at DIFFERENT times:
 //
-//   - `${settings:...}` names another value in the SAME document. It depends on
-//     nothing outside the manifest, so it resolves at LOAD, before the schema
-//     runs -- the schema then validates real values, not reference text, and a
-//     typo'd path is a load error rather than a surprise at run time.
-//   - `${env:NAME}` names a variable on the runner host (the entity's
-//     sops secrets first, then the host environment). Neither exists at
-//     validation time -- `validate` in CI must never read the runner's
-//     environment -- so it resolves when the container is about to start, and
-//     an unresolvable one FAILS THE RUN. It is never quietly replaced with an
-//     empty string: that is precisely how a hook comes up looking healthy with
-//     no credential and fails downstream instead.
+// - `${settings:...}` names another value in the SAME document. It depends on
+// nothing outside the manifest, so it resolves at LOAD, before the schema
+// runs -- the schema then validates real values, not reference text, and a
+// typo'd path is a load error rather than a surprise at run time.
+// - `${env:NAME}` names a variable on the runner host (the entity's
+// sops secrets , then the host environment). Neither exists at
+// validation time -- `validate` in CI must never read the runner's
+// environment -- so it resolves when the container is about to start, and
+// an unresolvable FAILS THE RUN. It is never quietly replaced with an
+// empty string: that is precisely how a hook comes up looking healthy with
+// no credential and fails downstream instead.
 //
-// The consequence for schema authors, stated plainly because it is the one
+// The consequence for schema authors, stated plainly because it is the
 // surprising part: a field you intend to fill with `${env:...}` is validated
 // AT LOAD against the reference text, since the value does not exist yet. Model
 // it so both forms pass, e.g.
 //
-//	{"anyOf": [{"pattern": "^sst_[A-Za-z0-9_-]+$"}, {"pattern": "^\\$\\{env:"}]}
+//	{"anyOf": [{"pattern": "^sst_[A-Za-z-_-]+$"}, {"pattern": "^\\$\\{env:"}]}
 //
 // There is deliberately no hidden exemption for referenced fields: a schema
-// that silently stopped applying to some values would be worse than one that
+// that silently stopped applying to some values would be worse than that
 // makes the author say what it accepts.
 //
-// TYPE PRESERVATION: a string that is EXACTLY one `${settings:...}` reference
+// TYPE PRESERVATION: a string that is EXACTLY `${settings:...}` reference
 // takes the referenced value's own type -- `"${settings:limits.max}"` pointing
-// at the number 5 yields 5, not "5". A reference embedded in surrounding text
+// at the number yields , not "". A reference embedded in surrounding text
 // stringifies, because the result is text either way.
 package hooks
 
@@ -40,7 +40,7 @@ import (
 	"strings"
 )
 
-// refPattern matches one reference: ${<kind>:<body>}.
+// refPattern matches reference: ${<kind>:<body>}.
 var refPattern = regexp.MustCompile(`\$\{([a-zA-Z]+):([^}]*)\}`)
 
 // malformedRefPattern catches an opening `${` whose reference never closes, so a truncated reference is a load error rather than a literal.
@@ -119,7 +119,7 @@ func walkSettings(node any, fn func(string) (any, error)) (any, error) {
 	}
 }
 
-// expandOne resolves the `${settings:...}` references in one string, leaving
+// expandOne resolves the `${settings:...}` references in string, leaving
 // `${env:...}` alone and rejecting anything malformed.
 func expandOne(s string, root any, depth int) (any, error) {
 	if depth > maxRefDepth {
@@ -133,7 +133,7 @@ func expandOne(s string, root any, depth int) (any, error) {
 		return s, nil
 	}
 
-	// A string that is EXACTLY one settings reference adopts the referenced
+	// A string that is EXACTLY settings reference adopts the referenced
 	// value's type, so a number stays a number.
 	if len(matches) == 1 && matches[0][0] == 0 && matches[0][1] == len(s) {
 		kind, body := s[matches[0][2]:matches[0][3]], s[matches[0][4]:matches[0][5]]
@@ -181,7 +181,7 @@ func expandOne(s string, root any, depth int) (any, error) {
 	return b.String(), nil
 }
 
-// expandEnvIn resolves `${env:NAME}` in one string. Same type-preservation
+// expandEnvIn resolves `${env:NAME}` in string. Same type-preservation
 // rule does not apply: an environment variable is always text.
 func expandEnvIn(s string, lookup func(string) (string, bool)) (any, error) {
 	matches := refPattern.FindAllStringSubmatchIndex(s, -1)
@@ -226,7 +226,7 @@ func stringifyRef(val any, path string) (string, error) {
 	}
 }
 
-// pathSegment splits `a.b[2].c` into its walkable parts.
+// pathSegment splits `a.b[].c` into its walkable parts.
 var pathSegment = regexp.MustCompile(`\[(\d+)\]|([^.\[\]]+)`)
 
 // lookupSettingsPath walks a dotted path with optional [n] indexing.

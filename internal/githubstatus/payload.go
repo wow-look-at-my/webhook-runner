@@ -10,10 +10,10 @@ import (
 // relevant commit SHA from a webhook payload.
 //
 // The SHA is searched in this order:
-//  1. top-level "after"          (push events)
-//  2. "pull_request.head.sha"    (pull_request events)
-//  3. "check_suite.head_sha"     (check_suite events)
-//  4. "head_commit.id"           (legacy push)
+// . top-level "after" (push events)
+// . "pull_request.head.sha" (pull_request events)
+// . "check_suite.head_sha" (check_suite events)
+// . "head_commit.id" (legacy push)
 //
 // repository.full_name is required. Missing values return empty strings;
 // callers should treat empty as "skip the GitHub update for this run".
@@ -54,7 +54,7 @@ func ParseRepoSHA(payload []byte) (repo, sha string) {
 	return repo, sha
 }
 
-// isZeroSHA returns true when s is the all-zero SHA GitHub sends on
+// isZeroSHA returns true when s is the all- SHA GitHub sends on
 // branch deletion events (we don't want to post a status to that).
 func isZeroSHA(s string) bool {
 	if len(s) < 8 {

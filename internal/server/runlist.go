@@ -1,5 +1,5 @@
 // The /runs read surface: the single-run read (tracker -> persisted-history
-// fallback), the merged list with its active-truth partition, the ?live=1
+// fallback), the merged list with its active-truth partition, the ?live=
 // active-set view, and the derived holder-side waiter decoration. Split
 // from handlers.go, which keeps the trigger/cancel/reload handlers.
 package server
@@ -55,7 +55,7 @@ func tailOutput(st *runs.RunState, tail int) {
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	// ?live=1: exactly the current ACTIVE (non-terminal) set — the one-shot truth fetch for clients reconciling against the stream's hb.
+	// ?live=: exactly the current ACTIVE (non-terminal) set — the -shot truth fetch for clients reconciling against the stream's hb.
 	exclude, err := excludedStatuses(r.URL.Query().Get("exclude"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -73,7 +73,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			max = n
 		}
 	}
-	// ?before= pages into history: only runs queued STRICTLY before the instant (RFC3339, fractional seconds optional).
+	// ?before= pages into history: only runs queued STRICTLY before the instant (RFC, fractional seconds optional).
 	var before time.Time
 	if b := r.URL.Query().Get("before"); b != "" {
 		t, err := time.Parse(time.RFC3339Nano, b)
@@ -87,7 +87,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 // excludedStatuses parses ?exclude= into a set. Empty/absent yields nil (no
-// filtering). An unrecognized status is a 400, matching ?before=: a filter
+// filtering). An unrecognized status is a , matching ?before=: a filter
 // silently matching nothing would look exactly like "this hook has no runs",
 // which is the failure mode this whole parameter exists to remove.
 func excludedStatuses(raw string) (map[runs.Status]bool, error) {
@@ -120,8 +120,8 @@ func keeper(exclude map[runs.Status]bool) func(runs.Status) bool {
 	return func(st runs.Status) bool { return !exclude[st] }
 }
 
-// liveRuns is GET /runs?live=1: every non-terminal tracked run, output
-// stripped, newest-first, waiters attached — the same row shape as /runs.
+// liveRuns is GET /runs?live=: every non-terminal tracked run, output
+// stripped, newest-, waiters attached — the same row shape as /runs.
 // Always non-nil so an idle server answers [] (a real "nothing is active"
 // verdict), never null.
 func (s *Server) liveRuns(hookID string, exclude map[runs.Status]bool) []runs.RunState {
@@ -148,12 +148,12 @@ func (s *Server) liveRuns(hookID string, exclude map[runs.Status]bool) []runs.Ru
 // mergedRuns is the /runs read path: live tracker runs (active + recent)
 // merged with the persisted completed history, deduped by run ID (the live
 // copy wins — for the same run it can never be older than the persisted
-// one), newest-first. On the CURSORLESS live windows (the plain /runs
+// ), newest-. On the CURSORLESS live windows (the plain /runs
 // list, the SSE connect snapshot) the cap applies to TERMINAL rows only:
 // every active (non-terminal) run is ALWAYS included, however small max is
 // — a live window must never hide work that is happening right now (the
 // old total cap cut still-running runs out of flood-time snapshots, and
-// clients read absence as termination). A non-zero before keeps only runs
+// clients read absence as termination). A non- before keeps only runs
 // queued strictly before it (the page cursor) and KEEPS the legacy
 // newest-max total cap: history pages must be complete down to their
 // oldest row — the paging walk advances its cursor from it, and an
@@ -193,7 +193,7 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude ma
 		}
 	}
 	if s.runstore != nil {
-		// Persisted history is terminal by construction (write-once at terminal status), so it always lands in the capped partition.
+		// Persisted history is terminal by construction (write- at terminal status), so it always lands in the capped partition.
 		var persisted []runs.RunState
 		if hookID != "" {
 			persisted = s.runstore.ListByHookBeforeFiltered(hookID, before, max, keeper(exclude))
@@ -226,10 +226,10 @@ func (s *Server) mergedRuns(hookID string, before time.Time, max int, exclude ma
 // ("N runs waiting on this run"). DERIVED, never stored: a blocked acquire
 // stamps its own run's WaitingOn with the holder(s) it is waiting on
 // (re-stamped as holders change), so the live tracker already contains the
-// whole graph and one pass inverts it. Two kinds contribute: a lock wait
+// whole graph and pass inverts it. kinds contribute: a lock wait
 // names its single holder (Key = the lock key), and a concurrency-group
 // wait names every current slot holder (Key = "group:<name>", so renderers
-// can tell the two apart). Waiter lists are sorted for stable JSON.
+// can tell the apart). Waiter lists are sorted for stable JSON.
 // Terminal/persisted runs never hold locks or slots, so they simply never
 // match.
 func (s *Server) attachWaiters(states []runs.RunState) {

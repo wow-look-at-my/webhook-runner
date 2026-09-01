@@ -7,7 +7,7 @@ import (
 	"sort"
 )
 
-// hook.schema.json and manager.schema.json are GENERATED from src/, and the reason is a bug this repo already shipped: the two documents.
+// hook.schema.json and manager.schema.json are GENERATED from src/, and the reason is a bug this repo already shipped: the documents.
 
 const commonRef = "#/$defs/common"
 
@@ -18,7 +18,7 @@ type overlay struct {
 	Properties   map[string]json.RawMessage `json:"properties"`
 }
 
-// Generate assembles one published schema from the shared base and an entity
+// Generate assembles published schema from the shared base and an entity
 // overlay. base and doc are the raw src/common.json and src/<entity>.json.
 func Generate(base, doc []byte) ([]byte, error) {
 	var common map[string]json.RawMessage
@@ -59,7 +59,7 @@ func Generate(base, doc []byte) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-// buildOverlay strips the keys Generate owns and refuses the one keyword that
+// buildOverlay strips the keys Generate owns and refuses the keyword that
 // would silently break composition.
 func buildOverlay(doc []byte) (map[string]json.RawMessage, error) {
 	var out map[string]json.RawMessage
@@ -81,7 +81,7 @@ func buildOverlay(doc []byte) (map[string]json.RawMessage, error) {
 	return out, nil
 }
 
-// sharedDefs wraps the shared constraints as the one $defs.common subschema
+// sharedDefs wraps the shared constraints as the $defs.common subschema
 // both documents $ref.
 func sharedDefs(common map[string]json.RawMessage) (json.RawMessage, error) {
 	encoded, err := encodeObject(common)
@@ -98,7 +98,7 @@ func sharedDefs(common map[string]json.RawMessage) (json.RawMessage, error) {
 	return encodeObject(map[string]json.RawMessage{"common": block})
 }
 
-// composeAllOf puts the shared block first, keeping any allOf the entity
+// composeAllOf puts the shared block , keeping any allOf the entity
 // already declared (the manager's mutually-exclusive auth rules).
 func composeAllOf(existing json.RawMessage) (json.RawMessage, error) {
 	branches := []json.RawMessage{json.RawMessage(`{"$ref": "` + commonRef + `"}`)}
@@ -132,7 +132,7 @@ func properties(common map[string]json.RawMessage, ov overlay) (json.RawMessage,
 	props := map[string]json.RawMessage{}
 	for name, def := range ov.Properties {
 		if _, clash := common[name]; clash {
-			// An entity redefining a shared property is the twin coming back: two definitions, one silently shadowing the other.
+			// An entity redefining a shared property is the twin coming back: definitions, silently shadowing the other.
 			return nil, fmt.Errorf("property %q is declared in both common.json and the overlay", name)
 		}
 		props[name] = def

@@ -131,7 +131,7 @@ func TestIncrPreservesTTL(t *testing.T) {
 	s := newStore(t)
 	_, err := s.Incr("ns", "c", 1, time.Hour)
 	require.NoError(t, err)
-	// ttl<=0 must not drop the existing expiry.
+	// ttl<= must not drop the existing expiry.
 	_, err = s.Incr("ns", "c", 1, 0)
 	require.NoError(t, err)
 
@@ -168,13 +168,13 @@ func TestCaps(t *testing.T) {
 
 	require.Equal(t, ErrValueTooLarge, s.Set("ns", "k", []byte("123456789"), 0))
 	require.NoError(t, s.Set("ns", "a", []byte("x"), 0))
-	// ns is the first namespace; one more is allowed, a third is not.
+	// ns is the namespace; more is allowed, a is not.
 	require.NoError(t, s.Set("ns2", "k", []byte("x"), 0))
 	require.Equal(t, ErrTooManyNS, s.Set("ns3", "k", []byte("x"), 0))
 }
 
 func TestDefaultLimits(t *testing.T) {
-	// Zero-valued limits fall back to the built-in defaults.
+	// -valued limits fall back to the built-in defaults.
 	s := newStore(t)
 	require.Equal(t, 64*1024, s.cfg.MaxValueBytes)
 	require.Equal(t, 256, s.cfg.MaxNamespaces)
@@ -215,7 +215,7 @@ func TestToken(t *testing.T) {
 	_, _, ok = other.VerifyToken(tok)
 	require.False(t, ok)
 
-	// Garbage — including the retired two-part (no run identity) format.
+	// Garbage — including the retired -part (no run identity) format.
 	for _, bad := range []string{"", "no-dot", "ns.", ".mac", "ns.not-base64!!", "ns.mac", "ns.run.", "ns..mac", ".run.mac"} {
 		_, _, ok = s.VerifyToken(bad)
 		assert.Falsef(t, ok, "bad=%q", bad)
@@ -304,7 +304,7 @@ func TestEnsureSecret(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, a, 32)
 
-	// A second call returns the same persisted secret.
+	// A call returns the same persisted secret.
 	b, err := EnsureSecret(path)
 	require.NoError(t, err)
 	require.Equal(t, a, b)
@@ -347,7 +347,7 @@ func TestOnMutateSeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, n, "Incr fires")
 
-	// Expired entries are reclaimed by the sweep: one signal per sweep that removed anything, none for an idle sweep.
+	// Expired entries are reclaimed by the sweep: signal per sweep that removed anything, none for an idle sweep.
 	require.NoError(t, s.Set("ns", "t", []byte("x"), time.Millisecond))
 	assert.Equal(t, 4, n)
 	time.Sleep(10 * time.Millisecond)

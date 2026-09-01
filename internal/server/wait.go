@@ -26,7 +26,7 @@ const (
 )
 
 // waitResult is the POST /wait response body. A full wait is
-// {"waited": N}; an interrupted one adds "interrupted": true plus the cause,
+// {"waited": N}; an interrupted adds "interrupted": true plus the cause,
 // so a hook can tell "my time is up" from "my run is being torn down".
 type waitResult struct {
 	// Waited is the whole seconds actually spent waiting — the requested amount after a full wait, less when interrupted.
@@ -43,7 +43,7 @@ func interruptedResult(started time.Time, cause string) waitResult {
 	}
 }
 
-// handleWait implements POST /wait on the state API: a first-class declared
+// handleWait implements POST /wait on the state API: a -class declared
 // sleep. The hook says how long it wants to pause and why; the server blocks
 // the request for that long and returns {"waited": N}. While the wait is in
 // flight the run is visibly "waiting <reason>" on the dashboard AND the wait
@@ -95,7 +95,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	// connection nobody owns. The HookID check mirrors handleCancelRun's
 	// cross-hook guard; the HMAC already binds the pair, so it's belt-only.
 	if run == nil || run.HookID() != ns || run.Status().Terminal() {
-		// Manager instances are not runs (first-class identity): their tokens land here and get the manager-shaped wait — same hold, same watchdog.
+		// Manager instances are not runs (-class identity): their tokens land here and get the manager-shaped wait — same hold, same watchdog.
 		if s.managerCaller(ns, runID) {
 			s.managerWait(w, r, ns, runID, req.Seconds, reason)
 			return
@@ -124,7 +124,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 	for {
 		select {
 		case <-deadline.C:
-			// One last touch so the hook starts its next step with a full idle window, not one partially burned by the final tick gap.
+			// last touch so the hook starts its next step with a full idle window, not partially burned by the final tick gap.
 			run.TouchActivity()
 			writeJSON(w, http.StatusOK, waitResult{Waited: req.Seconds})
 			return
@@ -146,7 +146,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request, ns, runID st
 // managerWait is the /wait hold for a manager instance: block ~seconds,
 // feeding the instance's idle watchdog on the touch cadence, ending early
 // when the instance stops being current (the container is going away) or
-// the client hangs up. One manager.wait event, mirroring run.wait.
+// the client hangs up. manager.wait event, mirroring run.wait.
 func (s *Server) managerWait(w http.ResponseWriter, r *http.Request, ns, instanceID string, seconds int, reason string) {
 	s.events.Record("manager.wait",
 		fmt.Sprintf("%s instance %s waiting %ds: %s", ns, instanceID, seconds, reason),
@@ -177,7 +177,7 @@ func (s *Server) managerWait(w http.ResponseWriter, r *http.Request, ns, instanc
 }
 
 // waitTouchInterval picks how often an in-flight wait resets the caller's
-// idle watchdog: at least ~3 touches per idle window (see the constants
+// idle watchdog: at least ~ touches per idle window (see the constants
 // above). The namespace is the hook ID, so the hook's own timeout is a
 // registry lookup away (managers included); an unknown id (or no registry,
 // as in tests) gets the default cadence, which suits DefaultTimeout and

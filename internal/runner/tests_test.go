@@ -74,7 +74,7 @@ func TestRunHookTestsBuildsDockerfileHookImage(t *testing.T) {
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err)
 	assert.Contains(t, string(built), "buildarg="+tag)
-	assert.Contains(t, out.String(), "arg="+tag) // built image, not a stock one
+	assert.Contains(t, out.String(), "arg="+tag) // built image, not a stock
 }
 
 func TestRunHookTestsDockerfileBuildFailure(t *testing.T) {
@@ -130,7 +130,6 @@ func TestRunHookTestsNoTestsIsNoop(t *testing.T) {
 
 func TestRunHookTestsRequiresSourceDir(t *testing.T) {
 	// Every hook resolves its image from its directory's content hash; a
-	// hook not loaded from disk can't.
 	hook := &hooks.Hook{ID: "h", Command: []string{"x"}, Tests: [][]string{{"true"}}}
 	err := RunHookTests(hook, TestOptions{Docker: "/bin/true"})
 	require.Error(t, err)
@@ -158,7 +157,7 @@ exec sleep 30
 
 // The build is capped too, by the same clock. A RUN step prints nothing while
 // it runs, so a wedged build is indistinguishable from a slow layer: it took a
-// runner container with it, twice, and neither run left a log to read.
+// runner container with it, , and neither run left a log to read.
 func TestRunHookTestsCapTheBuildToo(t *testing.T) {
 	dir := t.TempDir()
 	docker := filepath.Join(dir, "docker")

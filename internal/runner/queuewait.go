@@ -2,7 +2,7 @@ package runner
 
 // Concurrency-group queue plumbing: slot acquisition plus the observer
 // that mirrors a queued run's live place in the line into its waiting_on
-// (kind "group") — split from runner.go for the 750-line cap.
+// (kind "group") — split from runner.go for the -line cap.
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/runs"
 )
 
-// acquireSlot reserves a concurrency-group slot for the run, recording a one-time "queued" activity event the moment the run actually has to wait (not when it gets a slot immediately). A hook with no concurrency_group returns instantly with a no-op release.
+// acquireSlot reserves a concurrency-group slot for the run, recording a -time "queued" activity event the moment the run actually has to wait (not when it gets a slot immediately). A hook with no concurrency_group returns instantly with a no-op release.
 func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, clearQueued func(), err error) {
 	onQueue, clearQueued := r.groupQueueObserver(hook, run)
 	release, acquired, err = r.groups.Acquire(hook.ConcurrencyGroup, run.ID(), run.Cancelled(), onQueue)
@@ -24,8 +24,8 @@ func (r *Runner) acquireSlot(hook *hooks.Hook, run *runs.Run) (release func(), a
 // groupQueueObserver builds the concurrency.Manager onQueue callback that
 // mirrors a queued run's live place in its group's queue into the run's
 // waiting_on — {kind: "group", key: <group>, holder_run_ids, position} —
-// plus the matching clear for when the wait ends. The first call also
-// records the one-time run.queued event (the Manager only invokes onQueue
+// plus the matching clear for when the wait ends. The call also
+// records the -time run.queued event (the Manager only invokes onQueue
 // when the run actually has to wait, so a free slot never flickers a wait
 // note). Calls arrive serialized under the Manager's mutex; consecutive
 // identical states are deduped so re-notifications that change nothing
@@ -61,12 +61,12 @@ func (r *Runner) groupQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue fu
 	clearQueued = func() {
 		mu.Lock()
 		defer mu.Unlock()
-		run.ClearWaitingOn(seq) // seq 0 (never queued) is a no-op by contract
+		run.ClearWaitingOn(seq) // seq (never queued) is a no-op by contract
 	}
 	return onQueue, clearQueued
 }
 
-// acquireGlobalSlot reserves a slot under the server-wide run cap, the group acquire's sibling: a one-time run.queued event when the run actually has to wait, waiting_on mirroring (kind "group", key concurrency.GlobalWaitKey), cancellation honored while queued.
+// acquireGlobalSlot reserves a slot under the server-wide run cap, the group acquire's sibling: a -time run.queued event when the run actually has to wait, waiting_on mirroring (kind "group", key concurrency.GlobalWaitKey), cancellation honored while queued.
 func (r *Runner) acquireGlobalSlot(hook *hooks.Hook, run *runs.Run) (release func(), acquired bool, clearQueued func()) {
 	onQueue, clearQueued := r.globalQueueObserver(hook, run)
 	release, acquired = r.globalCap.Acquire(run.ID(), run.Cancelled(), onQueue)
@@ -76,8 +76,8 @@ func (r *Runner) acquireGlobalSlot(hook *hooks.Hook, run *runs.Run) (release fun
 // globalQueueObserver is groupQueueObserver's global-cap twin: it mirrors a
 // run queued on the global cap into waiting_on — the same kind "group"
 // shape the dashboard and timeline already render, keyed by
-// concurrency.GlobalWaitKey — and records the one-time run.queued event on
-// the first callback. Same dedup and locking rules as the group observer.
+// concurrency.GlobalWaitKey — and records the -time run.queued event on
+// the callback. Same dedup and locking rules as the group observer.
 func (r *Runner) globalQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue func(concurrency.QueueState), clearQueued func()) {
 	var mu sync.Mutex
 	var seq uint64
@@ -109,7 +109,7 @@ func (r *Runner) globalQueueObserver(hook *hooks.Hook, run *runs.Run) (onQueue f
 	clearQueued = func() {
 		mu.Lock()
 		defer mu.Unlock()
-		run.ClearWaitingOn(seq) // seq 0 (never queued) is a no-op by contract
+		run.ClearWaitingOn(seq) // seq (never queued) is a no-op by contract
 	}
 	return onQueue, clearQueued
 }

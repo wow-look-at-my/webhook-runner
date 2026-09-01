@@ -1,10 +1,10 @@
 // Package concurrency implements named, centrally-declared concurrency
 // groups for hook runs — think GitHub Actions concurrency, but the set of
-// valid group names is fixed by one file at the hooks root rather than an
+// valid group names is fixed by file at the hooks root rather than an
 // arbitrary per-job expression.
 //
 // A hook opts into a group via hook.json's "concurrency_group". At most
-// that group's limit run at once; the rest queue. A hook that names no
+// that group's limit run at ; the rest queue. A hook that names no
 // group runs unbounded. A hook that names a group NOT declared in
 // concurrency.json is a load/validation error — the whole point is that
 // groups are a defined, shared resource, not a free-for-all.
@@ -12,13 +12,15 @@
 // The file at <hooks-root>/concurrency.json looks like:
 //
 //	{
-//	  "$schema": "https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json",
-//	  "groups": {
-//	    "ollama-local": { "description": "...", "limit": 1 }
-//	  }
+//
+// "$schema": "https://sites.pazer.build/webhook-runner/branch/master/concurrency.schema.json",
+// "groups": {
+// "ollama-local": { "description": "...", "limit": }
+// }
+//
 //	}
 //
-// limit defaults to 1 (full serialization) and must be >= 1.
+// limit defaults to (full serialization) and must be >= .
 package concurrency
 
 import (
@@ -34,12 +36,12 @@ import (
 // FileName is the central concurrency-groups file, read from the hooks root (the same directory hook folders live under).
 const FileName = "concurrency.json"
 
-// DefaultLimit is a group's max concurrency when it doesn't set one.
+// DefaultLimit is a group's max concurrency when it doesn't set .
 const DefaultLimit = 1
 
-// Group is one declared concurrency group.
+// Group is declared concurrency group.
 type Group struct {
-	// Limit is the maximum number of runs in this group that may execute at once; the rest queue. Defaults to DefaultLimit, must be >= 1.
+	// Limit is the maximum number of runs in this group that may execute at ; the rest queue. Defaults to DefaultLimit, must be >= .
 	Limit int `json:"limit,omitempty"`
 	// Description is optional human-facing documentation for the group.
 	Description string `json:"description,omitempty"`
@@ -53,7 +55,7 @@ type Config struct {
 
 // Parse decodes and validates a concurrency.json document. Unknown fields
 // are rejected (typo protection), JSONC comments are allowed, omitted
-// limits default to DefaultLimit, and every limit must be >= 1.
+// limits default to DefaultLimit, and every limit must be >= .
 func Parse(data []byte) (*Config, error) {
 	dec := json.NewDecoder(jsonc.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -105,7 +107,7 @@ func (c *Config) Has(name string) bool {
 	return ok
 }
 
-// Limit returns the declared limit for a group, or 0 when it isn't declared.
+// Limit returns the declared limit for a group, or when it isn't declared.
 func (c *Config) Limit(name string) int {
 	if c == nil {
 		return 0
