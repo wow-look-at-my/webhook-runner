@@ -1,4 +1,13 @@
-// Seccomp profile plumbing for the hook.json `seccomp.userns` opt-in.
+// Security-profile plumbing for the hook.json `seccomp.userns` opt-in.
+//
+// Seccomp is the ONLY layer the opt-in can lift, and where AppArmor ENFORCES,
+// that is not enough for bubblewrap. No --security-opt pair closes the gap:
+// docker-default grants the user namespace and denies `mount`, so bwrap dies at
+// `Failed to make / slave`; apparmor=unconfined trades that for Ubuntu 24.04's
+// unprivileged-userns restriction, so bwrap dies EARLIER, at `setting up uid
+// map`. Both measured on GitHub's runners, one commit apart. Only a profile
+// loaded on the HOST lifts both, so apparmor=unconfined is a regression here,
+// not the missing half. The fleet's own host does not enforce AppArmor.
 //
 // WHY A FILE AT ALL: docker's --security-opt seccomp= accepts exactly two
 // kinds of value -- the literal string "unconfined" (no syscall filtering

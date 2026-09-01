@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
@@ -71,14 +73,23 @@ func ImageTag(hook *hooks.Hook) (string, error) {
 	return imageRepoPrefix + hook.ID + ":" + h, nil
 }
 
-// EnsureImage makes sure the image for the hook's current content exists
-// locally, building it from the hook directory when it doesn't, and
-// returns the tag to run plus whether a build actually happened. The
-// content-hash tag is what makes runs immutable: a changed hook gets a
-// fresh build on its next run, an unchanged one reuses the existing
-// image, and in-flight runs keep the image they started with. Build
-// output is streamed to out.
+// DefaultBuildTimeout: a RUN step is silent while it runs, so a wedged build reads as a slow layer until something else dies of it.
+const DefaultBuildTimeout = 30 * time.Minute
+
+// EnsureImage builds the hook's image at DefaultBuildTimeout. See EnsureImageWithin.
 func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string, built bool, err error) {
+	return EnsureImageWithin(dockerBin, hook, out, DefaultBuildTimeout)
+}
+
+// EnsureImageWithin makes sure the image for the hook's current content exists
+// locally, building it from the hook directory when it doesn't, and returns the
+// tag to run plus whether a build happened. The content-hash tag is what makes
+// runs immutable: a changed hook gets a fresh build on its next run, an
+// unchanged one reuses the existing image, and in-flight runs keep the image
+// they started with. Build output is streamed to out, and the build is capped
+// so a wedged one fails with this entity's name rather than outliving the
+// caller that would have reported it.
+func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeout time.Duration) (tag string, built bool, err error) {
 	tag, err = ImageTag(hook)
 	if err != nil {
 		return "", false, err
@@ -92,7 +103,12 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 		args = append(args, "-f", filepath.Join(hook.Dir(), hooks.DockerfileName))
 	}
 	args = append(args, hook.BuildContext())
-	cmd := exec.Command(dockerBin, args...)
+	if timeout <= 0 {
+		timeout = DefaultBuildTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, dockerBin, args...)
 	// Select BuildKit explicitly.
 	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
 	// Tee the build output: `out` is the live stream, `tail` retains the last lines so the FAILURE below can carry the actual docker error.
@@ -100,6 +116,9 @@ func EnsureImage(dockerBin string, hook *hooks.Hook, out io.Writer) (tag string,
 	cmd.Stdout = io.MultiWriter(out, tail)
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("build produced nothing for %s and was killed", timeout)
+		}
 		return "", false, fmt.Errorf("docker build %s: %w\n%s", tag, err, tail.String())
 	}
 	removeSupersededImages(dockerBin, hook.ID, tag)

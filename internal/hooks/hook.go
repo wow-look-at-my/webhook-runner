@@ -444,6 +444,12 @@ func (h *Hook) validate() error {
 	if h.GitHubStatus != nil && h.GitHubStatus.Enabled && h.GitHubStatus.Context == "" {
 		return errors.New("github_status.context is required when github_status.enabled is true")
 	}
+	// --privileged runs seccomp UNCONFINED, so a profile passed beside it NARROWS
+	// the container that dind exists to widen -- the opposite of what declaring
+	// both reads as.
+	if h.Dind && h.UsernsAllowed() {
+		return errors.New("dind and seccomp.userns are mutually exclusive: dind already runs the container with seccomp unconfined, and a profile alongside it narrows the container instead")
+	}
 	return nil
 }
 
