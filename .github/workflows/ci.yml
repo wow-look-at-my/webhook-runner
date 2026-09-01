@@ -80,16 +80,14 @@ jobs:
         with:
           name: go-build
           path: build
-      # The harness runs ./build/webhook-runner, unsuffixed.
-      - name: Stage e2e binary
-        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
       # The sops e2e tests decrypt a committed test-only age key.
       - name: Install sops
         run: |
           curl -fsSL https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64 -o /tmp/sops
           sudo install -m 0755 /tmp/sops /usr/local/bin/sops
           sops --version
-      - uses: wow-look-at-my/actions@typescript#latest
+      - name: Run e2e tests
+        uses: wow-look-at-my/actions@typescript#latest
         with:
           file: e2e/e2e.test.ts
 
@@ -104,9 +102,6 @@ jobs:
         with:
           name: go-build
           path: build
-      # The suites fall back to build/webhook-runner here.
-      - name: Stage CLI binary
-        run: install -m 0755 build/webhook-runner_linux_amd64 build/webhook-runner
       # Prebuilt from buildhost into build/, so one PATH prepend covers both.
       - name: Install dats
         run: |
@@ -128,7 +123,8 @@ jobs:
           path: build
       - uses: wow-look-at-my/actions@secret-server#latest
       # An empty token must FAIL, never skip.
-      - uses: wow-look-at-my/actions@typescript#latest
+      - name: Require the secret-server token
+        uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
             if (!process.env.PRIVATE_ORG_REPO_READ) {
@@ -154,10 +150,11 @@ jobs:
           path: _webhooks_paired
           token: ${{ env.PRIVATE_ORG_REPO_READ }}
       # validate is docker-free: it loads and checks manifests, builds nothing.
-      - uses: wow-look-at-my/actions@typescript#latest
+      - name: Check deployability against webhooks master and paired branch
+        uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            const bin = 'build/webhook-runner_linux_amd64';
+            const bin = 'build/webhook-runner';
             const check = async (dir: string) => {
               const r = await $`${bin} validate ${dir}`.silent().nothrow();
               return { ok: r.exitCode === 0, out: `${r.stdout}\n${r.stderr}`.trim() };
