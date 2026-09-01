@@ -63,7 +63,7 @@ Configuration via environment:
   WEBHOOK_RUNNER_LOG_FORMAT           "text" (default) or "json"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// An explicitly passed --hooks-gate-context wins over the env var; the distinction matters because an EMPTY value disables the gate.
+		// An explicit flag wins over the env var; empty disables the gate.
 		serveOptsRoot.gateContextSet = cmd.Flags().Changed("hooks-gate-context")
 		if err := applyServeEnv(serveOptsRoot); err != nil {
 			return err

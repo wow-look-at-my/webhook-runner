@@ -167,6 +167,19 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
     the outside, identical to a hook with nothing to do, and every other
     source here only covers load-time or request-time defects. Clears
     the moment a run of that hook succeeds.
+  - `reload` (`internal/reloadgate`): a newer commit held awaiting its
+    gating status, or the serving tree not verified green. Reported and
+    resolved by the gate itself as commits verify, switch, or the operator
+    forces `/reload`.
+  - `tree-refused` (`internal/cli.buildLoadAndApply`): the whole hooks
+    tree failed to apply, so the fleet kept serving its prior tree
+    (all-or-nothing load — see the CLAUDE.md "Things easy to get wrong"
+    bullet). The per-entity `load` entries beside it name which entity
+    and field. Clears on the next load that applies whole.
+  - `manager` (`managers.Supervisor`): a manager that should be running
+    has no live instance (start failing, crash-looping, image
+    unbuildable). Re-derived on every supervisor state change; clears the
+    moment an instance runs, or the manager is disabled or removed.
   Everything is IN-MEMORY (the events/requestLog stance): a restart
   re-derives the state sources at the boot load (their `since` resets to
   boot) and loses event-derived entries until their events recur. Entries

@@ -221,6 +221,7 @@ func (r *Runner) RunManagerSession(ctx context.Context, m *hooks.Manager, ib *ma
 		user:     hook.User,
 		workdir:  hook.Workdir,
 		dind:     hook.Dind,
+		devices:  hook.Devices,
 	}
 	spec.mounts = append(spec.mounts, hook.Volumes...)
 	// seccomp.userns, same as the hook paths.

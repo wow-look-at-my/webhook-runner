@@ -7,12 +7,17 @@ import (
 	"path/filepath"
 )
 
-// LoadDir detects the tree's layout (see layout.go) and loads every hook in it.
+// LoadDir detects the tree's layout (see layout.go) and loads every hook
+// in it. serve, validate, and test all call this, so detection never drifts.
 func LoadDir(root string) (map[string]*Hook, []error) {
 	return LoadLayout(DetectLayout(root))
 }
 
-// LoadLayout walks the layout's hooks directory and loads every immediate child folder that contains a hook.json file. Folders without hook.json are silently skipped so the same directory can hold non-hook artifacts (README, scripts, etc.). The returned map is keyed by hook ID (the folder name). On error, any hooks that loaded successfully before the failure are still returned — callers can decide whether to use them. Two loud, typed error conditions ride in the error list: - ZeroHooksError when NOTHING loaded. A hooks root that yields zero hooks is almost always a layout mistake (e.g. a src/-restructured tree served by a binary predating layout detection scans the root, finds only a "src" folder, and would otherwise take the whole fleet offline with a green validate). Zero hooks must never be silent: validate exits non-zero on it and serve records an error-grade event.
+// LoadLayout walks the layout's hooks directory and loads each child
+// folder with a hook.json (others are skipped). The result is keyed by
+// hook ID; hooks loaded before a later failure are still returned.
+// ZeroHooksError and IgnoredLegacyDirError can ride the error list — see
+// their own doc comments for when each fires.
 func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	hooks := make(map[string]*Hook)
 	var errs []error
@@ -24,7 +29,7 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 		return hooks, errs
 	}
 
-	// SrcRoot is stored absolute, matching Hook.Dir()'s convention, so hashing and builds behave identically however the root was given.
+	// Absolute, to match Hook.Dir().
 	srcRoot := ""
 	if l.SDK {
 		srcRoot = l.SrcDir()
@@ -64,7 +69,8 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 	return hooks, errs
 }
 
-// HookLoadError attributes one hook directory's load/validation failure (unparseable hook.json, missing Dockerfile or $schema.
+// HookLoadError attributes one hook's load/validation failure to its
+// hook ID, so the attention aggregator can name the offending hook.
 type HookLoadError struct {
 	HookID string
 	Err    error
@@ -85,7 +91,10 @@ func (e ZeroHooksError) Error() string {
 		e.Dir, e.Layout, "<root>/<id>/hook.json")
 }
 
-// IgnoredLegacyDirError: the src layout is active (<root>/src/hooks/ exists) but a root-level directory still carries a hook.json — a.
+// IgnoredLegacyDirError fires when the src layout is active
+// (src/hooks/ exists) but a root-level directory still has a hook.json —
+// a mixed layout. It is a hard error: the dir is not loaded, and
+// validate/serve both fail loud on it.
 type IgnoredLegacyDirError struct {
 	Dir string // the offending top-level hook dir (absolute or as-given path)
 }

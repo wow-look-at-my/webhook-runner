@@ -46,7 +46,8 @@ func TestExecuteRecordsPhaseMarks(t *testing.T) {
 		assert.Contains(t, snap.Phases, p, "missing mark %q", p)
 	}
 
-	// Ordering is the whole basis of the derived spans: a boot figure computed from marks that can arrive out of order measures nothing.
+	// The launch chain runs start-to-finish on one goroutine, so these marks
+	// arrive in a strict sequence.
 	ordered := []runs.Phase{
 		runs.PhaseImageReady, runs.PhaseSlotAcquired, runs.PhaseSpawned,
 	}
@@ -54,7 +55,9 @@ func TestExecuteRecordsPhaseMarks(t *testing.T) {
 		prev, cur := snap.Phases[ordered[i-1]], snap.Phases[ordered[i]]
 		assert.False(t, cur.Before(prev), "%q must not precede %q", ordered[i], ordered[i-1])
 	}
-	// first_output and exited are NOT ordered against each other: different goroutines stamp them. first_output comes from the streamPipe reader (via AppendOutput); exited from this goroutine the moment.
+	// first_output and exited are stamped by different goroutines and are
+	// NOT ordered against each other. Only their common predecessor,
+	// PhaseSpawned, is guaranteed.
 	for _, p := range []runs.Phase{runs.PhaseFirstOutput, runs.PhaseExited} {
 		assert.False(t, snap.Phases[p].Before(snap.Phases[runs.PhaseSpawned]),
 			"%q must not precede %q", p, runs.PhaseSpawned)
@@ -62,7 +65,7 @@ func TestExecuteRecordsPhaseMarks(t *testing.T) {
 	assert.False(t, snap.Phases[runs.PhaseSpawned].Before(snap.Started),
 		"the launch handoff cannot precede the run being accepted")
 
-	// No shim is injected into a non-state hook, so there is no in-container vantage point: the boot figure must announce itself as a bound.
+	// No shim in a non-state hook, so the boot figure is only a bound.
 	_, exact, ok := snap.BootDuration()
 	require.True(t, ok)
 	assert.False(t, exact, "a hook with no injected shim can only be bounded from above")

@@ -1,22 +1,8 @@
-// The ONE place `docker run` arguments are assembled.
-//
-// There used to be three: a live hook run (runner.go), a manager instance
-// (managersession.go), and a hook's declared tests (tests.go). They agreed on
-// what a container gets by being edited together, which is not agreement --
-// each was free to drift, and a property that has to hold for ALL of them had
-// to be re-checked in three places or hold by luck. Two such properties:
-//
-//   - github-state-mirror routing reaches every container, no exemptions.
-//   - No container joins another PID namespace. Docker's default is a fresh
-//     one, and a whole isolation property downstream rests on it: dats binds
-//     the container's /proc read-only when the kernel refuses it a private
-//     procfs, which is safe exactly because that procfs lists the container's
-//     processes and nothing else. One --pid=host and hook code is reading the
-//     host's process table, with nothing failing to say so.
-//
-// Both now hold by construction: the first because this builder injects it,
-// the second because there is no field to ask for it and one function to read.
 package runner
+
+// The ONE place `docker run` argv is assembled, for every container start
+// (hook run, manager instance, hook test). This is what makes GSM routing
+// and PID-namespace isolation hold for all of them: nothing else builds argv.
 
 import (
 	"sort"
@@ -33,24 +19,26 @@ import (
 type containerSpec struct {
 	name  string
 	image string
-	// label is the orphan-sweep marker, set only where a later serve boot has to be able to find and reap the container (a live hook run).
+	// label is the orphan-sweep marker for a live hook run's reap-on-boot.
 	label string
 	// entrypoint overrides the image's, for the paths that inject the KV shim.
 	entrypoint string
-	// mounts are -v values in the caller's order: the payload/headers/settings files, the KV shim and socket, and a hook's declared volumes.
+	// mounts are -v values: payload/headers/settings files, the KV shim, a hook's volumes.
 	mounts []string
-	// env are -e KEY=VALUE values in the caller's order, applied BEFORE the mirror injection and the secrets below.
+	// env are -e values applied before the mirror injection and secrets below.
 	env []string
-	// secrets are injected after env and sorted by key, so one run's argv is reproducible instead of depending on map iteration.
+	// secrets apply after env, sorted by key for reproducible argv; a hook's own env still wins.
 	secrets map[string]string
-	// onReservedSecret is called for a secret shadowing a reserved key, which is skipped. Nil means the caller does not log them.
+	// onReservedSecret is called for a skipped, reserved-key secret. Nil means no logging.
 	onReservedSecret func(key string)
 	networks         []string
 	user             string
 	workdir          string
-	// dind gives the container storage a nested dockerd can use. It grants no privilege at all -- see dind.go.
+	// dind grants nested-dockerd privilege; it does not widen the PID namespace.
 	dind bool
-	// seccomp is whatever seccompArgs produced for this entity, already rendered. Empty for an entity that opted into nothing.
+	// devices are --device host node passthroughs, an audited grant like dind.
+	devices []string
+	// seccomp is the rendered seccompArgs output; empty when the entity opts into nothing.
 	seccomp []string
 	// argv trails the image: the command the container runs.
 	argv []string
@@ -76,7 +64,7 @@ func (s containerSpec) args() []string {
 	for _, e := range s.env {
 		args = append(args, "-e", e)
 	}
-	// Unconditional, and unconditional HERE so it cannot be forgotten by a fourth caller: every container's GitHub traffic rides the mirror.
+	// Unconditional: every container's GitHub traffic rides the mirror. No opt-out.
 	args = append(args, gsmInjectArgs()...)
 	for _, n := range s.networks {
 		args = append(args, "--network", n)
@@ -96,7 +84,14 @@ func (s containerSpec) args() []string {
 	if s.workdir != "" {
 		args = append(args, "--workdir", s.workdir)
 	}
+	// The anonymous /var/lib/docker volume gives the nested daemon storage on a
+	// real filesystem -- its overlay driver cannot stack on the outer
+	// container's overlay rootfs -- and --rm above reaps it at exit, so inner
+	// storage never leaks between runs. The host's daemon is never exposed.
 	args = append(args, dindArgs(s.dind)...)
+	for _, d := range s.devices {
+		args = append(args, "--device", d)
+	}
 	args = append(args, s.seccomp...)
 	args = append(args, s.image)
 	return append(args, s.argv...)

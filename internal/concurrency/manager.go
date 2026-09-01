@@ -8,12 +8,16 @@ import (
 	"time"
 )
 
-// Manager enforces per-group concurrency limits with one buffered-channel semaphore per declared group. It is safe for concurrent use and can be reconfigured on a hooks reload via Update.
+// Manager gates per-group concurrency with one semaphore channel per group.
+// Safe for concurrent use. An operator override wins over the declared
+// limit and survives an Update reload.
+// see docs/internals/runs-concurrency-and-overrides.md
 type Manager struct {
 	mu        sync.Mutex
 	groups    map[string]*groupSem
 	overrides map[string]int // group -> operator limit override (>= 1)
-	// queues is the advisory holder/waiter bookkeeping, keyed by group name (NOT by groupSem: it must survive semaphore swaps).
+	// queues is advisory holder/waiter data, keyed by group name so it
+	// survives semaphore swaps; pruned when both lists are empty.
 	queues map[string]*groupQueue
 }
 
@@ -34,7 +38,8 @@ type waiterRec struct {
 	notify func(QueueState)
 }
 
-// QueueState is a queued run's live place in its group's queue, delivered to the Acquire onQueue callback: who holds the slots right now and.
+// QueueState is a waiter's live position, delivered to the Acquire onQueue
+// callback. Position is 1-based (1 = next). Advisory display data only.
 type QueueState struct {
 	Holders  []string
 	Position int
@@ -146,7 +151,9 @@ func (m *Manager) queueState(group string, w *waiterRec) QueueState {
 	return st
 }
 
-// notifyWaiters re-delivers fresh QueueStates to every waiter of a group whose view changed (a holder came or went, or the line moved).
+// notifyWaiters re-delivers a fresh QueueState to every waiter in a group.
+// Runs synchronously under m.mu, so callbacks must be fast and must not
+// call back into the Manager.
 func (m *Manager) notifyWaiters(group string) {
 	q := m.queues[group]
 	if q == nil {
@@ -163,9 +170,13 @@ type groupSem struct {
 	declared   int  // limit from concurrency.json
 	limit      int  // effective limit (declared, or the operator override)
 	overridden bool // limit came from an operator override
-	// ch is the semaphore: capacity == limit, a token per active slot.
+	// ch is the semaphore: capacity == limit, one token per active slot.
+	// Immutable for this groupSem's life; a limit change swaps in a new
+	// groupSem rather than mutating this one.
+	// see docs/internals/runs-concurrency-and-overrides.md
 	ch chan struct{}
-	// retired is closed — exactly once, when this groupSem is replaced by a limit change or its group is removed from the config — as the signal.
+	// retired closes exactly once, when this groupSem is replaced, as the
+	// signal blocked waiters select on to re-bind.
 	retired chan struct{}
 	waiting atomic.Int64 // runs currently blocked waiting for a slot
 }
@@ -184,7 +195,19 @@ func NewManager(cfg *Config) *Manager {
 	return m
 }
 
-// Update reconfigures the declared groups, applying any operator limit overrides on top (an override wins over the declared limit — a reload re-applies it rather than silently reverting the operator's change). Groups whose effective limit is unchanged keep their existing semaphore so in-flight slot accounting survives the reload; new or limit-changed groups get a fresh semaphore, and removed groups are dropped (their overrides stay stored, inert, and re-apply if the group is re-declared). Runs already holding a slot release into the exact channel they acquired from (the release closure captures it), so a reload never loses or double-counts a token. Runs already QUEUED re-bind to the group's new semaphore (see groupSem.retired), so a changed limit takes effect for them immediately; a queued run whose group is removed fails its Acquire with an error instead of blocking forever.
+// Update reconfigures the declared groups, applying any operator limit
+// overrides on top (an override wins over the declared limit — a reload
+// re-applies it rather than silently reverting the operator's change).
+// Groups whose effective limit is unchanged keep their existing semaphore
+// so in-flight slot accounting survives the reload; new or limit-changed
+// groups get a fresh semaphore, and removed groups are dropped (their
+// overrides stay stored, inert, and re-apply if the group is re-declared).
+// Runs already holding a slot release into the exact channel they acquired
+// from (the release closure captures it), so a reload never loses or
+// double-counts a token. Runs already QUEUED re-bind to the group's new
+// semaphore (see groupSem.retired), so a changed limit takes effect for them
+// immediately; a queued run whose group is removed fails its Acquire with an
+// error instead of blocking forever.
 func (m *Manager) Update(cfg *Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -200,7 +223,7 @@ func (m *Manager) Update(cfg *Config) {
 				effective, overridden = ov, true
 			}
 			if old := m.groups[name]; old != nil && old.limit == effective {
-				// Same effective limit: keep the semaphore (and its slot accounting); refresh the reporting fields, which are only ever read under m.mu.
+				// Same effective limit: keep the semaphore and its slot accounting.
 				old.declared = declared
 				old.overridden = overridden
 				next[name] = old
@@ -209,7 +232,8 @@ func (m *Manager) Update(cfg *Config) {
 			next[name] = newGroupSem(declared, effective, overridden)
 		}
 	}
-	// Retire every semaphore not carried into the new config — the replaced sem of a limit-changed group AND a removed group's — so blocked waiters.
+	// Retire every semaphore not carried forward, so its blocked waiters
+	// re-bind (or fail their Acquire, if the group was removed).
 	for name, old := range m.groups {
 		if next[name] != old {
 			close(old.retired)
@@ -218,7 +242,11 @@ func (m *Manager) Update(cfg *Config) {
 	m.groups = next
 }
 
-// SetLimitOverride records an operator override for group's limit and, when the group is currently declared, swaps its semaphore live. limit must be >= 1: a 0 limit would leave queued runs blocked forever (disable the hooks instead). Recording is unconditional — an override for a group not currently declared stays inert and takes effect if a later Update declares it (the "override survives the group briefly disappearing from a reload" contract).
+// SetLimitOverride records an operator override for group's limit and, when
+// the group is currently declared, swaps its semaphore live. limit must be
+// >= 1 (disable the hooks instead of setting 0). An override for an
+// undeclared group stays inert and applies once a later Update declares it.
+// see docs/internals/runs-concurrency-and-overrides.md
 func (m *Manager) SetLimitOverride(group string, limit int) error {
 	if limit < 1 {
 		return fmt.Errorf("concurrency override for %q: limit must be >= 1, got %d", group, limit)
@@ -328,7 +356,7 @@ func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue f
 	default:
 	}
 
-	// Queue: register in the advisory wait line and tell the caller it is actually waiting (first onQueue call = the old one-shot onWait).
+	// Queue: register in the advisory wait line and notify the caller.
 	w := &waiterRec{id: runID, since: time.Now().UTC(), notify: onQueue}
 	if runID != "" {
 		m.queueFor(group).waiting = append(m.queueFor(group).waiting, w)
@@ -365,7 +393,7 @@ func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue f
 			m.mu.Unlock()
 			return nil, false, nil
 		case <-gs.retired:
-			// The semaphore this waiter was blocked on has been replaced (limit change) or dropped (group removed). Re-bind.
+			// This semaphore was replaced or dropped. Re-bind.
 			gs.waiting.Add(-1)
 			m.mu.Lock()
 			next := m.groups[group]
@@ -387,13 +415,14 @@ func (m *Manager) Acquire(group, runID string, cancel <-chan struct{}, onQueue f
 				return m.releaser(group, runID, gs.ch), true, nil
 			default:
 			}
-			// Still full at the new limit: stay in the advisory line (position and holder views re-derive from the name-keyed bookkeeping) and re-block.
+			// Still full at the new limit: stay queued, re-block on it.
 			m.mu.Unlock()
 		}
 	}
 }
 
-// releaser returns a single-use release closure for the given channel.
+// releaser returns a single-use release closure that returns the token to
+// ch and drops runID from the group's advisory holder list.
 func (m *Manager) releaser(group, runID string, ch chan struct{}) func() {
 	var once sync.Once
 	return func() {
@@ -407,7 +436,9 @@ func (m *Manager) releaser(group, runID string, ch chan struct{}) func() {
 	}
 }
 
-// GroupStatus is a snapshot of one group's live utilization.
+// GroupStatus is a snapshot of one group's live utilization. Limit is the
+// effective limit; Declared is the concurrency.json value; Overridden marks
+// them differing because of an operator override.
 type GroupStatus struct {
 	Name       string `json:"name"`
 	Limit      int    `json:"limit"`

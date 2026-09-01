@@ -2,12 +2,11 @@ package reloadgate
 
 import "time"
 
-// Recorded gating verdicts: every terminal gating status the gate accepts is written down, whether or not it was applicable at the time.
+// The store answers "is this sha green?", never "should the tree switch to it?" --
+// trySwitch still gates every apply. See docs/internals/hooks-images-and-reload.md.
 const (
-	// Verdicts older than the ordering window are dead weight: a sha too old to be within fetchDepth of the tip can never pass trySwitch anyway.
-	verdictTTL = 7 * 24 * time.Hour
-	// Count cap so the state file stays small on a busy repo.
-	maxVerdicts = 200
+	verdictTTL  = 7 * 24 * time.Hour // a sha this old can never pass trySwitch anyway
+	maxVerdicts = 200                // keeps the state file small on a busy repo
 )
 
 // verdictRecord is one sha's last known gating state ("success", "failure",

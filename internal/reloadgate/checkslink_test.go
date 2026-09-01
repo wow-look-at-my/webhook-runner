@@ -25,7 +25,7 @@ func TestWithChecks(t *testing.T) {
 		"all-builds failure — https://github.com/wow-look-at-my/webhooks/commit/"+sha+"/checks",
 		g.withChecks("all-builds failure", sha))
 
-	// The full sha, never the abbreviation the message text carries: the link must stay unambiguous even though the prose is shortened.
+	// Full sha, not the shortened message text.
 	assert.Contains(t, g.withChecks("x", sha), sha)
 
 	for name, gate := range map[string]*Gate{

@@ -31,6 +31,12 @@
         "description": {
           "type": "string"
         },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "dind": {
           "type": "boolean",
           "default": false
@@ -279,6 +285,9 @@
     },
     "description": {
       "description": "Human-readable description of what this manager does."
+    },
+    "devices": {
+      "description": "Host device nodes passed as --device flags for the session container, exactly the hook devices contract. AUDITED opt-in like dind and seccomp.userns: enable only for trusted, operator-curated managers."
     },
     "dind": {
       "description": "When true, give the manager's session container the STORAGE a nested container daemon needs: an anonymous volume at /var/lib/docker, exactly the hook dind contract (applied on the session and `webhook-runner test` paths alike). Note the volume lives as long as the INSTANCE — a persistent manager's nested storage persists across the events it processes and is discarded on restart. The host's docker daemon is NEVER exposed. It grants NO privilege: --privileged is refused by operator ruling, so a nested daemon started as root cannot come up here."

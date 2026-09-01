@@ -218,6 +218,12 @@
       "type": "string"
     }
   },
+  "devices": {
+    "type": "array",
+    "items": {
+      "type": "string"
+    }
+  },
   "workdir": {
     "type": "string"
   }

@@ -79,7 +79,7 @@ func groupStatus(t *testing.T, mgr *concurrency.Manager, name string) concurrenc
 func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	root := t.TempDir()
 	writeTestHook(t, root, "h1")
-	// A second hook that never goes away: removing the LAST hook empties the fleet, which is a load error, and a load with errors is refused whole.
+	// Keeps the fleet non-empty, so removing h1 alone stays a valid load.
 	writeTestHook(t, root, "h2")
 	writeConcurrencyJSON(t, root, `{"groups":{"g":{"limit":3}}}`)
 
@@ -96,7 +96,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	rec := events.NewRecorder(200)
 	loadAndApply := buildLoadAndApply(root, reg, mgr, nil, nil, ov, nil, nil, true, testLogger(), rec)
 
-	// Initial load: the hook is registered (disabling never unloads it) and the limit override is effective on top of the declared config.
+	// Disabling never unloads the hook; the limit override applies too.
 	require.NoError(t, loadAndApply())
 	_, ok := reg.Get("h1")
 	require.True(t, ok, "a disabled hook stays loaded/registered")
@@ -107,7 +107,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	assert.True(t, st.Overridden)
 	assert.Zero(t, countEvents(rec, "override.orphaned"))
 
-	// An ordinary reload changes nothing: overrides still applied, no orphan noise.
+	// An ordinary reload changes nothing.
 	require.NoError(t, loadAndApply())
 	assert.True(t, ov.HookDisabled("h1", true))
 	st = groupStatus(t, mgr, "g")
@@ -115,7 +115,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 	assert.True(t, st.Overridden)
 	assert.Zero(t, countEvents(rec, "override.orphaned"))
 
-	// The hook and the group disappear from the repo: both overrides become orphans — KEPT in the store, announced exactly once each.
+	// Both overrides become orphans: kept in the store, announced once each.
 	require.NoError(t, os.RemoveAll(filepath.Join(root, "h1")))
 	require.NoError(t, os.Remove(filepath.Join(root, concurrency.FileName)))
 	require.NoError(t, loadAndApply())
@@ -153,7 +153,7 @@ func TestLoadAndApplyReappliesOverridesAndAnnouncesOrphans(t *testing.T) {
 func TestOverridesSurviveRestart(t *testing.T) {
 	root := t.TempDir()
 	writeTestHook(t, root, "h1")
-	// A second hook that never goes away: removing the LAST hook empties the fleet, which is a load error, and a load with errors is refused whole.
+	// Keeps the fleet non-empty, so removing h1 alone stays a valid load.
 	writeTestHook(t, root, "h2")
 	writeConcurrencyJSON(t, root, `{"groups":{"g":{"limit":3}}}`)
 	ovPath := filepath.Join(t.TempDir(), "overrides.json")
@@ -166,7 +166,7 @@ func TestOverridesSurviveRestart(t *testing.T) {
 	_, err = ov1.SetConcurrencyLimit("g", 2)
 	require.NoError(t, err)
 
-	// "Restart": everything rebuilt from disk, in runServe's order — open store, seed manager, then the first load.
+	// "Restart": rebuilt from disk, in runServe's order.
 	ov2, err := overrides.Open(ovPath)
 	require.NoError(t, err)
 	reg := hooks.NewRegistry()
@@ -197,7 +197,8 @@ func TestScheduleFireSkipsDisabledHook(t *testing.T) {
 	require.NoError(t, err)
 	rec := events.NewRecorder(50)
 	rn := runner.New(runner.Options{Tracker: tracker, Logger: testLogger(), TmpDir: dir, Docker: docker})
-	// The re-enabled ticks below dispatch REAL async runs, which use context.Background() and so outlive the test body.
+	// Async runs use context.Background() and outlive the test, racing
+	// TempDir's cleanup. Registered here so LIFO drains the runner first.
 	t.Cleanup(rn.Wait)
 	fire := buildScheduleFire(reg, tracker, ov, rn, testLogger(), rec)
 
@@ -219,7 +220,7 @@ func TestScheduleFireSkipsDisabledHook(t *testing.T) {
 	assert.Equal(t, 1, countEvents(rec, "schedule.fired"))
 	assert.Len(t, tracker.ListAll(0), 1)
 
-	// The hook.json enable:false DEFAULT gates the schedule path too, with no override stored; an explicit enable override outranks it.
+	// enable:false in hook.json gates the schedule path too, with no override stored.
 	off := false
 	reg.Set(&hooks.Hook{ID: "d", Command: []string{"x"}, Schedule: "5m", Enable: &off})
 	fire("d")
@@ -242,7 +243,7 @@ func TestGlobalCapOverrideSurvivesRestart(t *testing.T) {
 	_, err = ov1.SetGlobalRunLimit(8)
 	require.NoError(t, err)
 
-	// "Restart": open store, build the cap at its default, seed the persisted override — exactly runServe's sequence.
+	// "Restart": exactly runServe's sequence.
 	ov2, err := overrides.Open(ovPath)
 	require.NoError(t, err)
 	g := concurrency.NewGlobal(concurrency.DefaultGlobalLimit)

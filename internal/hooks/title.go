@@ -1,34 +1,3 @@
-// Friendly run titles ("run_title").
-//
-// A hook may declare a template for the display title of its runs, so the
-// dashboard can say "wow-look-at-my/go-toolchain#47" instead of the opaque
-// run id. {{path.to.field}} placeholders resolve against the delivery's
-// payload JSON — object fields by name, array elements by numeric index —
-// or a request header via the "header:" prefix, using THE SAME bounded
-// traversal skip_if keys use (parsePayloadTree/resolvePath/leafString in
-// skip.go): stringified scalar leaves only, total, and terminating in time
-// bounded by the already size-capped payload. No expressions, no user code.
-//
-// Semantics (graceful, never blocking — a title is decoration, so run-time
-// resolution NEVER errors and never stops a run):
-//   - Each placeholder resolves to a scalar leaf's string form. A missing
-//     path, a non-leaf (object/array), and JSON null all become "" — null
-//     deliberately diverges from skip_if's "null" leaf text, because the
-//     whole point of a title is to never render junk.
-//   - When EVERY placeholder resolved empty and the template has at least
-//     one, the run gets NO title at all: the surrounding literal text alone
-//     ("PR " with no PR) is noise, and the dashboard's run-id fallback is
-//     more honest.
-//   - Otherwise empty placeholders collapse: a literal made purely of
-//     separators (no letters or digits) touching an empty placeholder is
-//     dropped ("a/b" + dropped "#" for "{{repo}}#{{num}}" with num missing),
-//     runs of whitespace fold to one space, and the ends are trimmed.
-//   - A template with no placeholders is a static title, always set.
-//
-// Malformed templates — an unterminated "{{", an empty "{{}}" — are a
-// LOAD/validation error (the hook is dropped), the same fail-closed rule as
-// a non-compiling skip_if regex: broken config must be caught in CI, never
-// discovered as a silently missing title.
 package hooks
 
 import (
@@ -40,13 +9,23 @@ import (
 	"unicode/utf8"
 )
 
-// MaxRunTitleLen bounds a run title in bytes, template-rendered or set mid-run via the state API's POST /title (which rejects longer; the.
+// Friendly run titles ("run_title"): a hook can template the display title
+// of its runs. {{path.to.field}} placeholders resolve using skip_if's exact
+// traversal (parsePayloadTree/resolvePath/leafString in skip.go).
+// Resolution never errors: a title is decoration, so a missing or bad
+// placeholder just yields no title, never a stopped run.
+// see docs/internals/runs-concurrency-and-overrides.md
+
+// MaxRunTitleLen bounds a run title in bytes: enough for a subject line,
+// small enough to stay a chip label. POST /title rejects longer; the
+// template renderer clamps instead of erroring.
 const MaxRunTitleLen = 200
 
-// ScheduleFallbackTitle is the title a schedule-triggered run gets when the hook's template (if any) resolves nothing against the.
+// ScheduleFallbackTitle titles a schedule-triggered run when its template
+// resolves nothing against the synthetic schedule payload.
 const ScheduleFallbackTitle = "schedule"
 
-// titleTemplate is a run_title parsed into literal and placeholder segments at load/validation time, so rendering never re-scans the raw.
+// titleTemplate is a run_title parsed into segments at load time.
 type titleTemplate struct {
 	segs         []titleSeg
 	placeholders int
@@ -101,7 +80,9 @@ func parseTitleTemplate(raw string) (*titleTemplate, error) {
 	}
 }
 
-// compileRunTitle parses RunTitle at load/validation time (into titleTmpl, which render uses), rejecting malformed templates so a broken one can never load — the skip_if regex rule.
+// compileRunTitle parses RunTitle at load/validation time (into titleTmpl,
+// which render uses), rejecting malformed templates so a broken one can
+// never load — the skip_if regex rule. No-op when the hook declares none.
 func (h *Hook) compileRunTitle() error {
 	if h.RunTitle == "" {
 		return nil
@@ -114,18 +95,16 @@ func (h *Hook) compileRunTitle() error {
 	return nil
 }
 
-// RenderRunTitle resolves the hook's run_title template against a
-// delivery's payload and headers, returning the run's friendly title or ""
-// for "no title" (no template declared, or every placeholder came up
-// empty). It never errors: titles are decoration, and resolution happens
-// once at run creation on the hot dispatch path.
+// RenderRunTitle resolves the run_title template into the run's title, or
+// "" for no title. It never errors; titles are decoration.
 func (h *Hook) RenderRunTitle(payload []byte, header http.Header) string {
 	if h.RunTitle == "" {
 		return ""
 	}
 	tmpl := h.titleTmpl
 	if tmpl == nil {
-		// Normal loads compile at validation time; this fallback covers hooks constructed in code.
+		// fallback for a hook built in code; parsed per call to avoid a
+		// data race on h.titleTmpl across concurrent deliveries
 		var err error
 		if tmpl, err = parseTitleTemplate(h.RunTitle); err != nil {
 			return ""
@@ -134,7 +113,8 @@ func (h *Hook) RenderRunTitle(payload []byte, header http.Header) string {
 	return tmpl.render(payload, header)
 }
 
-// ScheduleRunTitle titles a schedule-triggered run: the template resolved against the synthetic schedule payload when that yields anything, else the "schedule".
+// ScheduleRunTitle titles a schedule-triggered run: the resolved template,
+// else ScheduleFallbackTitle so a tick chip is never gibberish.
 func (h *Hook) ScheduleRunTitle(payload []byte, header http.Header) string {
 	if t := h.RenderRunTitle(payload, header); t != "" {
 		return t
@@ -142,9 +122,7 @@ func (h *Hook) ScheduleRunTitle(payload []byte, header http.Header) string {
 	return ScheduleFallbackTitle
 }
 
-// render substitutes placeholders and applies the collapse rules. The
-// payload tree is parsed lazily at most once — same convention as
-// EvaluateSkip — so a static template never touches the body.
+// render substitutes placeholders and applies the collapse rules.
 func (t *titleTemplate) render(payload []byte, header http.Header) string {
 	var root any
 	parsed := false
@@ -169,7 +147,9 @@ func (t *titleTemplate) render(payload []byte, header http.Header) string {
 			anyValue = true
 		}
 	}
-	// All placeholders empty (and there was at least one): no title — the literal scaffolding alone would be noise.
+	// All placeholders empty (and there was at least one): no title — the
+	// literal scaffolding alone would be noise. A placeholder-free template
+	// is static and always set.
 	if t.placeholders > 0 && !anyValue {
 		return ""
 	}
@@ -179,14 +159,19 @@ func (t *titleTemplate) render(payload []byte, header http.Header) string {
 		if resolved[i] == "" {
 			continue
 		}
-		// A literal that is pure separators (no letter or digit) next to an empty placeholder is that placeholder's leftover scaffolding —.
+		// A literal that is pure separators (no letter or digit) next to an
+		// empty placeholder is that placeholder's leftover scaffolding —
+		// "{{repo}}#{{num}}" with num missing must render "a/b", not "a/b#".
+		// Segments alternate literal/placeholder (only placeholders can be
+		// adjacent), so checking the immediate neighbors is exhaustive.
 		if !seg.path && separatorOnly(resolved[i]) &&
 			(emptyPlaceholderAt(t.segs, resolved, i-1) || emptyPlaceholderAt(t.segs, resolved, i+1)) {
 			continue
 		}
 		b.WriteString(resolved[i])
 	}
-	// Fold whitespace runs (dropped segments leave doubles; payload values can carry newlines a one-line chip must not) and clamp.
+	// Fold whitespace runs (dropped segments leave doubles; payload values
+	// can carry newlines a one-line chip must not) and clamp.
 	return clampTitle(strings.Join(strings.Fields(b.String()), " "))
 }
 
@@ -213,7 +198,8 @@ func resolveTitleKey(key string, payloadTree func() any, header http.Header) str
 	return strings.TrimSpace(leaf)
 }
 
-// separatorOnly reports whether s contains no letter or digit — the "pure scaffolding" test for dropping a literal stranded by an empty.
+// separatorOnly reports whether s contains no letter or digit — the "pure
+// scaffolding" test for dropping a literal stranded by an empty neighbor.
 func separatorOnly(s string) bool {
 	for _, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -223,12 +209,17 @@ func separatorOnly(s string) bool {
 	return true
 }
 
-// emptyPlaceholderAt reports whether segs[i] exists, is a placeholder, and resolved empty.
+// emptyPlaceholderAt reports whether segs[i] exists, is a placeholder, and
+// resolved empty. Out-of-range i (a literal at either end) is false.
 func emptyPlaceholderAt(segs []titleSeg, resolved []string, i int) bool {
 	return i >= 0 && i < len(segs) && segs[i].path && resolved[i] == ""
 }
 
-// clampTitle bounds a rendered title to MaxRunTitleLen bytes, cutting at a rune boundary (payload values aren't ASCII-only) and re-trimming.
+// clampTitle bounds a rendered title to MaxRunTitleLen bytes, cutting at a
+// rune boundary (payload values aren't ASCII-only) and re-trimming. The
+// renderer clamps silently — run-time resolution never errors — while the
+// state API's /title rejects overlong input instead (a hook naming itself
+// can be told no; a template can't).
 func clampTitle(s string) string {
 	if len(s) <= MaxRunTitleLen {
 		return s
