@@ -155,3 +155,25 @@ exec sleep 30
 	assert.Contains(t, err.Error(), "timed out")
 	assert.Less(t, time.Since(start), 10*time.Second)
 }
+
+// The build is capped too, by the same clock. A RUN step prints nothing while
+// it runs, so a wedged build is indistinguishable from a slow layer: it took a
+// runner container with it, twice, and neither run left a log to read.
+func TestRunHookTestsCapTheBuildToo(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	script := `#!/bin/sh
+if [ "$1" = "image" ]; then exit 1; fi
+if [ "$1" = "build" ]; then exec sleep 30; fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+	hook := testsHook(t, dir, [][]string{{"whatever"}})
+
+	start := time.Now()
+	err := RunHookTests(hook, TestOptions{Docker: docker, Timeout: 100 * time.Millisecond})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "myhook", "the wedged entity must be named")
+	assert.Contains(t, err.Error(), "produced nothing")
+	assert.Less(t, time.Since(start), 10*time.Second)
+}
