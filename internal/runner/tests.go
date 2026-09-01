@@ -12,7 +12,8 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/hooks"
 )
 
-// DefaultTestTimeout caps a single test command when the caller doesn't specify one.
+// DefaultTestTimeout caps a single test command, independent of the hook's
+// (production-sized) run timeout.
 const DefaultTestTimeout = 10 * time.Minute
 
 // TestOptions configure RunHookTests.
@@ -83,15 +84,18 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	}
 	name := "webhook-runner-test-" + hex.EncodeToString(suffix)
 
-	// The same builder the live-run and manager paths use, which is what makes run/test parity a property rather than a habit: a test container.
+	// The same builder live runs and managers use, so tests get the same
+	// isolation. No secrets, payload, volumes, or networks: those fields stay unset.
 	spec := containerSpec{
-		name:  name,
-		image: image,
-		env:   []string{"HOOK_ID=" + hook.ID},
-		dind:  hook.Dind,
-		argv:  argv,
+		name:    name,
+		image:   image,
+		env:     []string{"HOOK_ID=" + hook.ID},
+		dind:    hook.Dind,
+		devices: hook.Devices,
+		argv:    argv,
 	}
-	// Same run/test parity for seccomp.userns: a hook whose tests exercise a sandbox (bwrap, dats' default backend) needs the relaxed profile.
+	// Same seccomp.userns relaxation as a live run, so a hook whose tests
+	// sandbox (bwrap) get the same profile. Empty tmpDir means the OS default.
 	seccompFlags, seccompCleanup, err := seccompArgs(hook, "", hex.EncodeToString(suffix))
 	if err != nil {
 		return err
@@ -114,7 +118,7 @@ func runOneTest(docker string, hook *hooks.Hook, image string, argv []string, ti
 	case err := <-done:
 		return err
 	case <-timer.C:
-		// Same rationale as execute(): kill the container by name, not the docker CLI — a SIGKILLed CLI can leave the container running.
+		// Kill by container name, not the docker CLI: a SIGKILLed CLI can leave the container running.
 		_ = exec.Command(docker, "kill", name).Run()
 		killTimer := time.AfterFunc(2*time.Second, func() {
 			if cmd.Process != nil {

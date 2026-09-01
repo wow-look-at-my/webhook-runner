@@ -58,7 +58,7 @@ func (g *Gate) Startup() {
 func (g *Gate) startupFreshLocked() {
 	head, err := g.repo.Head()
 	if err != nil {
-		// Degrade: stay up on whatever the tree holds; the next status event or admin /reload settles it.
+		// Log and keep going; a later status event or admin /reload settles the tree.
 		g.log.Error("reload gate: reading hooks repo HEAD failed", "err", err)
 		g.events.Record("reload.failed", "reload gate: reading hooks repo head failed: "+err.Error(), nil)
 	}
@@ -91,14 +91,14 @@ func (g *Gate) startupRestoreLocked() {
 			return
 		}
 	}
-	// The recorded commit is gone (force-push removed it?): fall to the branch tip, loudly unverified.
+	// The recorded commit is gone: fall to the branch tip, loudly unverified.
 	lost := g.servingSHA
 	tip, terr := g.fetchBranchBounded()
 	if terr == nil {
 		terr = g.repo.ResetTo(tip)
 	}
 	if terr != nil {
-		// Full git failure: serve whatever the tree holds, and keep the last-good record on disk for the next boot — this boot runs degraded but runs.
+		// Full git failure: serve the tree as-is; the last-good record stays on disk.
 		g.log.Error("reload gate: falling back to hooks repo tip failed", "err", terr)
 		g.events.Record("reload.failed", "reload gate: falling back to hooks repo tip failed: "+terr.Error(), nil)
 		g.servingSHA, g.verified = head, false

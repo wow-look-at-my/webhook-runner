@@ -48,10 +48,9 @@ func TestRunHookTestsDockerInvocation(t *testing.T) {
 	} {
 		assert.Contains(t, got, want)
 	}
-	// Live-run plumbing must not leak into test containers: no payload or headers, no code mount, no settings, and not the hook's own command.
+	// Live-run plumbing must not leak into test containers.
 	assert.NotContains(t, got, "HOOK_PAYLOAD_FILE")
 	assert.NotContains(t, got, "HOOK_HEADERS_FILE")
-	// Tests are self-contained by contract: no payload, no secrets, and no settings either -- a suite must never depend on deployed.
 	assert.NotContains(t, got, "HOOK_SETTINGS_FILE")
 	assert.NotContains(t, got, "live_runs_only")
 	assert.NotContains(t, got, "HOOK_RUN_ID")
@@ -75,8 +74,7 @@ func TestRunHookTestsBuildsDockerfileHookImage(t *testing.T) {
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err)
 	assert.Contains(t, string(built), "buildarg="+tag)
-	// Tests run in the built image, not a stock one.
-	assert.Contains(t, out.String(), "arg="+tag)
+	assert.Contains(t, out.String(), "arg="+tag) // built image, not a stock one
 }
 
 func TestRunHookTestsDockerfileBuildFailure(t *testing.T) {
@@ -131,7 +129,8 @@ func TestRunHookTestsNoTestsIsNoop(t *testing.T) {
 }
 
 func TestRunHookTestsRequiresSourceDir(t *testing.T) {
-	// Every hook resolves its image from its directory's content hash; a hook not loaded from disk can't.
+	// Every hook resolves its image from its directory's content hash; a
+	// hook not loaded from disk can't.
 	hook := &hooks.Hook{ID: "h", Command: []string{"x"}, Tests: [][]string{{"true"}}}
 	err := RunHookTests(hook, TestOptions{Docker: "/bin/true"})
 	require.Error(t, err)
@@ -141,7 +140,7 @@ func TestRunHookTestsRequiresSourceDir(t *testing.T) {
 func TestRunHookTestsTimeout(t *testing.T) {
 	dir := t.TempDir()
 	docker := filepath.Join(dir, "docker")
-	// exec replaces the fake-docker shell with sleep, so the fallback Process.Kill genuinely reaps it (no orphan holding the output pipe).
+	// exec replaces the shell with sleep, so Process.Kill genuinely reaps it.
 	script := `#!/bin/sh
 if [ "$1" = "kill" ]; then exit 0; fi
 if [ "$1" = "image" ] || [ "$1" = "build" ]; then exit 0; fi

@@ -31,6 +31,12 @@
         "description": {
           "type": "string"
         },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "dind": {
           "type": "boolean",
           "default": false
@@ -314,6 +320,9 @@
     },
     "description": {
       "description": "Human-readable description of what this hook does."
+    },
+    "devices": {
+      "description": "Host device nodes passed as --device flags (docker's \"src[:dst][:permissions]\" syntax, e.g. \"/dev/net/tun\"). Unlike volumes this exposes a HOST resource into the container, not container-private storage, so it is an AUDITED opt-in like dind and seccomp.userns: enable only for trusted, operator-curated hooks that need a specific device (e.g. a nested rootless dockerd's own network namespace needs /dev/net/tun for slirp4netns). Applied identically on the live-run and `webhook-runner test` paths. Default: none."
     },
     "dind": {
       "description": "When true, give the hook's container the STORAGE a nested container daemon needs: an anonymous volume at /var/lib/docker (--mount type=volume,dst=/var/lib/docker), applied identically on the live-run and `webhook-runner test` paths. That path must be a real volume because an inner overlay driver cannot stack on the outer container's overlay rootfs; --rm reaps the volume, so inner storage never leaks between runs. The host's docker daemon is NEVER exposed — no docker socket is mounted. It grants NO privilege. --privileged is refused by operator ruling because it is host-root-equivalent, so a nested daemon started as root cannot come up here and the run fails saying so; an image that wants one must run it rootless. Default: false."

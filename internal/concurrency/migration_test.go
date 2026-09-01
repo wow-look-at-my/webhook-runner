@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// queueSignal returns an onQueue callback that signals ch exactly once, on the waiter's first notification — its registration, which runs.
+// queueSignal returns an onQueue callback that signals ch once, on the
+// waiter's first (registration) notification.
 func queueSignal(ch chan<- struct{}) func(QueueState) {
 	first := true
 	return func(QueueState) {
@@ -117,7 +118,7 @@ func TestLimitRaiseAdmitsQueuedWaiters(t *testing.T) {
 			}
 			assertNoAcquire(t, acquired, "a waiter acquired below the limit")
 
-			// Raise the limit: EVERY queued waiter must acquire promptly, without any holder releasing.
+			// Raise the limit: every queued waiter must acquire promptly.
 			tc.raise(t, m)
 			rels := make([]func(), 0, waiters)
 			for i := 0; i < waiters; i++ {
@@ -204,12 +205,12 @@ func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 
 			tc.lower(t, m)
 
-			// Exactly two migrate into the fresh limit-2 channel; the third keeps contending at the lowered limit.
+			// Exactly two migrate into the fresh limit-2 channel.
 			relW1 := awaitAcquire(t, acquired, "first migrated waiter")
 			relW2 := awaitAcquire(t, acquired, "second migrated waiter")
 			assertNoAcquire(t, acquired, "a third waiter fit a limit-2 semaphore")
 
-			// An OLD holder releasing frees nothing at the new limit — its token lives in the retired channel.
+			// An OLD holder releasing frees nothing at the new limit.
 			holderRels[0]()
 			assertNoAcquire(t, acquired, "an old-semaphore release admitted a waiter")
 
@@ -217,7 +218,7 @@ func TestLimitLowerMigratesQueuedWaiters(t *testing.T) {
 			relW1()
 			relW3 := awaitAcquire(t, acquired, "the last waiter after a new-semaphore release")
 
-			// Drain everything; the new semaphore gates at exactly 2 — no token lost or double-counted.
+			// Drain everything; the new semaphore gates at exactly 2.
 			relW2()
 			relW3()
 			for _, rel := range holderRels[1:] {
@@ -265,7 +266,8 @@ func TestCancelAfterWaiterMigration(t *testing.T) {
 		awaitSignal(t, queued, "waiter registration")
 	}
 
-	// Raise to 2: exactly two waiters fit the fresh semaphore; the third migrates and re-blocks on the new (now full) channel.
+	// Raise to 2: exactly two waiters fit the fresh semaphore; the third
+	// migrates and re-blocks on the new (now full) channel.
 	require.NoError(t, m.SetLimitOverride("g", 2))
 	rel1 := awaitAcquire(t, acquired, "first migrated waiter")
 	rel2 := awaitAcquire(t, acquired, "second migrated waiter")
@@ -318,7 +320,8 @@ func TestUpdateRemovingGroupFailsQueuedWaiters(t *testing.T) {
 		}
 	}
 
-	// The wait line is gone; the removed group's holder stays listed until it releases (name-keyed bookkeeping), and its release stays safe.
+	// The wait line is gone; the removed group's holder stays listed until
+	// it releases (name-keyed bookkeeping), and its release stays safe.
 	holders, waiting := m.QueueDetail("g")
 	assert.Empty(t, waiting)
 	require.Len(t, holders, 1)
@@ -368,7 +371,9 @@ func TestQueueBookkeepingCoherentAcrossLimitRaise(t *testing.T) {
 	require.Len(t, st, 1)
 	assert.Equal(t, 5, st[0].Limit)
 	assert.Equal(t, 0, st[0].Waiting, "no waiter counter may linger after migration")
-	// Active counts the CURRENT semaphore's tokens only — the two migrated waiters; the pre-raise holders drain into the retired channel.
+	// Active counts the CURRENT semaphore's tokens only — the two migrated
+	// waiters; the pre-raise holders drain into the retired channel.
+	// Pre-existing display semantics, unchanged.
 	assert.Equal(t, 2, st[0].Active)
 
 	rel1()
