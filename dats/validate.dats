@@ -488,3 +488,22 @@ tests:
 	  outputs:
 		stdout:
 			- ok  myhook
+
+	# --privileged runs seccomp unconfined, so a profile beside it takes back what
+	# dind exists to grant. Declaring both reads as the opposite of what it does.
+	- desc: dind together with seccomp.userns is a load error
+	  cmd: '"${GO_TOOLCHAIN_DATS_BUILD_DIR:-build}/webhook-runner" validate "$(dirname "{inputs.myhook/hook.json}")/.."'
+	  inputs:
+		files:
+			myhook/hook.json: |
+				{
+					"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+					"dind": true,
+					"seccomp": { "userns": true }
+				}
+			myhook/Dockerfile: |
+				FROM alpine
+	  exit: 1
+	  outputs:
+		stderr:
+			- 'mutually exclusive'

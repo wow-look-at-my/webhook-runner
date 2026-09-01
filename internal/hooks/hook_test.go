@@ -102,6 +102,16 @@ func TestParseDind(t *testing.T) {
 	assert.False(t, h.Dind, "dind defaults to false when omitted")
 }
 
+// Declaring both reads as "privileged, and narrowly allowed to sandbox", and
+// it delivers the opposite: --privileged runs seccomp unconfined, and the
+// profile beside it takes that back. gha-runner-dind shipped the pair once and
+// its own tests stopped finishing.
+func TestParseRejectsDindWithSeccompUserns(t *testing.T) {
+	_, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","dind":true,"seccomp":{"userns":true}}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
 // enable is the hook's DEFAULT kill-switch position: absent (or true)
 // means enabled, so every existing hook is unchanged; an explicit false
 // loads the hook disabled until an operator override — which always wins
