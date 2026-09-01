@@ -58,7 +58,7 @@ docs/                      the depth CLAUDE.md points at (internals/, design doc
   first form and warns on the second, and there is no per-line exemption.
   A `map[K]bool` whose false values carry meaning is a real map — keep it,
   and keep its literals from being all-true.
-- **A workflow comment is ONE line.** `go-toolchain@master` embeds
+- **A workflow comment is ONE line.** `go-toolchain@lkgb` embeds
   `wow-look-at-my/actions@yaml-comment-block`, which fails CI on any run of
   more than one `#` line in a workflow (a blank line does not split a run).
   One line is enough for the fact a next editor breaks without; the rest is

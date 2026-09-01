@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: wow-look-at-my/go-toolchain@master
+      - uses: wow-look-at-my/go-toolchain@lkgb
         with:
           autorelease: true
           # Native binaries, not the default fat APE: bbolt needs a real libc.
