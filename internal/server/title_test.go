@@ -33,12 +33,14 @@ func TestStateTitleValidation(t *testing.T) {
 	// Bad bodies: not JSON, absent/empty/blank titles, overlong titles. A
 	// hook naming itself can be told no — unlike the template renderer,
 	// which clamps silently.
+	overlongTitle, err := json.Marshal(map[string]string{"title": strings.Repeat("t", hooks.MaxRunTitleLen+1)})
+	require.NoError(t, err)
 	for _, body := range []string{
 		`not json`,
 		`{}`,
 		`{"title":""}`,
 		`{"title":"   "}`,
-		`{"title":"` + strings.Repeat("t", hooks.MaxRunTitleLen+1) + `"}`,
+		string(overlongTitle),
 	} {
 		rr := stateReq(t, s, "POST", "/title", tok, strings.NewReader(body))
 		require.Equalf(t, 400, rr.Code, "body=%q -> %s", body, rr.Body.String())

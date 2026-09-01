@@ -82,10 +82,25 @@ func TestPreTitleRowsReadBackTitleless(t *testing.T) {
 	// blob without the "title" key (what old binaries marshaled) and the
 	// legacy two-field summary value.
 	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
-		blob := fmt.Sprintf(
-			`{"id":%q,"hook_id":"h","started":%q,"finished":%q,"status":"success","exit_code":0}`,
-			st.ID, st.Started.Format(time.RFC3339Nano), st.Finished.Format(time.RFC3339Nano))
-		if err := tx.Bucket(bucketMeta).Put([]byte(st.ID), []byte(blob)); err != nil {
+		blob, err := json.Marshal(struct {
+			ID       string `json:"id"`
+			HookID   string `json:"hook_id"`
+			Started  string `json:"started"`
+			Finished string `json:"finished"`
+			Status   string `json:"status"`
+			ExitCode int    `json:"exit_code"`
+		}{
+			ID:       st.ID,
+			HookID:   "h",
+			Started:  st.Started.Format(time.RFC3339Nano),
+			Finished: st.Finished.Format(time.RFC3339Nano),
+			Status:   "success",
+			ExitCode: 0,
+		})
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketMeta).Put([]byte(st.ID), blob); err != nil {
 			return err
 		}
 		hb := tx.Bucket(bucketByHook).Bucket([]byte("h"))

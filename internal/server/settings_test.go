@@ -291,6 +291,10 @@ func TestSettingsWithoutASchemaServesNoSchema(t *testing.T) {
 // A value big enough to be a memory sink belongs in the manifest.
 func TestSettingsPutBoundsTheValueSize(t *testing.T) {
 	s, _, _ := settingsServer(t)
-	huge := `{"pointer":"/ai/model","value":"` + strings.Repeat("x", maxSettingsValueBytes+1) + `"}`
-	assert.Equal(t, http.StatusBadRequest, putSetting(s, huge).Code)
+	hugeJSON, err := json.Marshal(map[string]any{
+		"pointer": "/ai/model",
+		"value":   strings.Repeat("x", maxSettingsValueBytes+1),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, putSetting(s, string(hugeJSON)).Code)
 }

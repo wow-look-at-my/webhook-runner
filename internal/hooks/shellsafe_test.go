@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// hookDocWithCommand marshals a minimal hook.json document carrying the
+// given command argv, so a test's dynamic command never joins the JSON by
+// string concatenation.
+func hookDocWithCommand(t *testing.T, cmd string) string {
+	t.Helper()
+	doc, err := json.Marshal(map[string]any{
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+		"command": json.RawMessage(cmd),
+	})
+	require.NoError(t, err)
+	return string(doc)
+}
 
 // A manifest may not carry a shell program. Both gates fire on these -- the Go
 // check (better message) and the published schema -- and either alone would be
@@ -23,7 +37,7 @@ func TestShellSubstitutionInCommandIsALoadError(t *testing.T) {
 	}
 	for name, cmd := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := parseHookDoc(t, `{`+schemaURL+`, "command": `+cmd+`}`)
+			err := parseHookDoc(t, hookDocWithCommand(t, cmd))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "must not carry a shell program")
 			assert.Contains(t, err.Error(), ".sh file", "the message must say what to do instead")
@@ -53,7 +67,7 @@ func TestPlainVariableReferencesStayLegal(t *testing.T) {
 		`["sh","run.sh"]`,
 		`["node","main.ts"]`,
 	} {
-		require.NoError(t, parseHookDoc(t, `{`+schemaURL+`, "command": `+cmd+`}`), cmd)
+		require.NoError(t, parseHookDoc(t, hookDocWithCommand(t, cmd)), cmd)
 	}
 }
 

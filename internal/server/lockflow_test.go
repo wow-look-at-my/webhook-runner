@@ -321,18 +321,23 @@ func TestStateLockWaitingOnAndWaitersJSON(t *testing.T) {
 	detail := httptest.NewRecorder()
 	admin(s).ServeHTTP(detail, httptest.NewRequest("GET", "/runs/"+blocked.ID(), nil))
 	require.Equal(t, 200, detail.Code)
-	assert.Contains(t, detail.Body.String(), `"kind": "lock"`)
-	assert.Contains(t, detail.Body.String(), `"key": "pr-7"`)
-	assert.Contains(t, detail.Body.String(), `"holder_run_id": "`+holder.ID()+`"`)
-	assert.Contains(t, detail.Body.String(), `"holder_hook_id": "h"`)
+	var detailState runs.RunState
+	require.NoError(t, json.Unmarshal(detail.Body.Bytes(), &detailState))
+	require.NotNil(t, detailState.WaitingOn)
+	assert.Equal(t, "lock", detailState.WaitingOn.Kind)
+	assert.Equal(t, "pr-7", detailState.WaitingOn.Key)
+	assert.Equal(t, holder.ID(), detailState.WaitingOn.HolderRunID)
+	assert.Equal(t, "h", detailState.WaitingOn.HolderHookID)
 
 	// The holder side: /runs/{id} carries the derived waiters list.
 	hd := httptest.NewRecorder()
 	admin(s).ServeHTTP(hd, httptest.NewRequest("GET", "/runs/"+holder.ID(), nil))
 	require.Equal(t, 200, hd.Code)
-	assert.Contains(t, hd.Body.String(), `"waiters"`)
-	assert.Contains(t, hd.Body.String(), `"run_id": "`+blocked.ID()+`"`)
-	assert.Contains(t, hd.Body.String(), `"key": "pr-7"`)
+	var holderState runs.RunState
+	require.NoError(t, json.Unmarshal(hd.Body.Bytes(), &holderState))
+	require.NotEmpty(t, holderState.Waiters)
+	assert.Equal(t, blocked.ID(), holderState.Waiters[0].RunID)
+	assert.Equal(t, "pr-7", holderState.Waiters[0].Key)
 
 	// And the list view is decorated the same way.
 	list := httptest.NewRecorder()

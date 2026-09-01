@@ -47,6 +47,8 @@ func TestStateWaitValidation(t *testing.T) {
 	require.Equal(t, 401, stateReq(t, s, "POST", "/wait", "h.bogus", strings.NewReader(`{"seconds":1,"reason":"x"}`)).Code)
 
 	// Bad bodies are rejected before any blocking happens.
+	overlongReason, err := json.Marshal(map[string]any{"seconds": 5, "reason": strings.Repeat("r", maxWaitReasonLen+1)})
+	require.NoError(t, err)
 	for _, body := range []string{
 		`not json`,
 		`{"seconds":0,"reason":"x"}`,
@@ -56,7 +58,7 @@ func TestStateWaitValidation(t *testing.T) {
 		`{"seconds":5}`,
 		`{"seconds":5,"reason":""}`,
 		`{"seconds":5,"reason":"   "}`,
-		`{"seconds":5,"reason":"` + strings.Repeat("r", maxWaitReasonLen+1) + `"}`,
+		string(overlongReason),
 	} {
 		rr := stateReq(t, s, "POST", "/wait", tok, strings.NewReader(body))
 		require.Equalf(t, 400, rr.Code, "body=%q -> %s", body, rr.Body.String())

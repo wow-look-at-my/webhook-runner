@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -132,7 +131,12 @@ func TestSkipMatcherMarshalRoundTrip(t *testing.T) {
 // compiled, conditions validated).
 func skipHook(t *testing.T, skipIf string) *Hook {
 	t.Helper()
-	h, err := parseInDir(t, `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json","skip_if":`+skipIf+`}`)
+	doc, err := json.Marshal(map[string]any{
+		"$schema": "https://sites.pazer.build/webhook-runner/branch/master/hook.schema.json",
+		"skip_if": json.RawMessage(skipIf),
+	})
+	require.NoError(t, err)
+	h, err := parseInDir(t, string(doc))
 	require.NoError(t, err)
 	return h
 }
@@ -158,7 +162,9 @@ func TestEvaluateSkipHeaderEquality(t *testing.T) {
 
 func TestEvaluateSkipHeaderNameCaseInsensitive(t *testing.T) {
 	for _, key := range []string{"header:x-github-event", "header:X-GitHub-Event", "header:X-GITHUB-EVENT"} {
-		h := skipHook(t, fmt.Sprintf(`[{%q: "push"}]`, key))
+		skipIf, err := json.Marshal([]map[string]string{{key: "push"}})
+		require.NoError(t, err)
+		h := skipHook(t, string(skipIf))
 		_, matched := h.EvaluateSkip(nil, ghHeaders("push"))
 		assert.True(t, matched, "condition key %q must match", key)
 	}

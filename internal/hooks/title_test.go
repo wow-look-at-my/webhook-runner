@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -95,12 +96,16 @@ func TestRunTitleUncompiledFallbacks(t *testing.T) {
 func TestRunTitleClamped(t *testing.T) {
 	h := titledHook(t, "{{msg}}")
 	long := strings.Repeat("x", MaxRunTitleLen+50)
-	got := h.RenderRunTitle([]byte(`{"msg":"`+long+`"}`), http.Header{})
+	longPayload, err := json.Marshal(map[string]string{"msg": long})
+	require.NoError(t, err)
+	got := h.RenderRunTitle(longPayload, http.Header{})
 	assert.Len(t, got, MaxRunTitleLen)
 
 	// Multi-byte content still cuts on a rune boundary and stays valid.
 	wide := strings.Repeat("é", MaxRunTitleLen) // 2 bytes each
-	got = h.RenderRunTitle([]byte(`{"msg":"`+wide+`"}`), http.Header{})
+	widePayload, err := json.Marshal(map[string]string{"msg": wide})
+	require.NoError(t, err)
+	got = h.RenderRunTitle(widePayload, http.Header{})
 	assert.LessOrEqual(t, len(got), MaxRunTitleLen)
 	assert.True(t, strings.HasPrefix(wide, got), "clamp must cut whole runes: %q", got)
 }

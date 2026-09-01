@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -115,7 +114,29 @@ func (f *spawnFixture) targetHook(t *testing.T, h *hooks.Hook) *hooks.Hook {
 }
 
 func spawnBody(hook string, count int) string {
-	return fmt.Sprintf(`{"hook":%q,"count":%d,"payload":{"a":1}}`, hook, count)
+	b, err := json.Marshal(map[string]any{
+		"hook":    hook,
+		"count":   count,
+		"payload": map[string]any{"a": 1},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// spawnPadBody builds a spawn body whose payload.pad is `pad` bytes of "a" --
+// used to probe the payload-size and request-body-size bounds.
+func spawnPadBody(pad int) string {
+	b, err := json.Marshal(map[string]any{
+		"hook":    "t",
+		"count":   1,
+		"payload": map[string]any{"pad": strings.Repeat("a", pad)},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 // deniedEvents returns the spawn.denied events on the feed, oldest last.
@@ -153,6 +174,14 @@ func TestSpawnValidation(t *testing.T) {
 	f := newSpawnFixture(t)
 	_, tok := f.managerParent(t, "t")
 
+	longEvent, err := json.Marshal(map[string]any{
+		"hook":    "t",
+		"count":   1,
+		"payload": map[string]any{},
+		"event":   strings.Repeat("e", maxSpawnEventLen+1),
+	})
+	require.NoError(t, err)
+
 	for _, body := range []string{
 		`not json`,
 		`{"count":1,"payload":{}}`, // hook missing
@@ -166,18 +195,18 @@ func TestSpawnValidation(t *testing.T) {
 		`{"hook":"t","count":1,"payload":null}`,
 		`{"hook":"t","count":1,"payload":[1]}`,
 		`{"hook":"t","count":1,"payload":"x"}`,
-		`{"hook":"t","count":1,"payload":{},"event":"` + strings.Repeat("e", maxSpawnEventLen+1) + `"}`,
+		string(longEvent),
 	} {
 		rr := stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(body))
 		require.Equalf(t, 400, rr.Code, "body=%q -> %s", body, rr.Body.String())
 	}
 
 	// Payload bound: over maxSpawnPayloadBytes is refused even when the whole body still fits the reader cap...
-	big := fmt.Sprintf(`{"hook":"t","count":1,"payload":{"pad":%q}}`, strings.Repeat("a", maxSpawnPayloadBytes))
+	big := spawnPadBody(maxSpawnPayloadBytes)
 	require.Less(t, len(big), maxSpawnBody, "test setup: body must fit the reader cap")
 	require.Equal(t, 413, stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(big)).Code)
 	// ...and a body over the reader cap is refused by the reader itself.
-	huge := fmt.Sprintf(`{"hook":"t","count":1,"payload":{"pad":%q}}`, strings.Repeat("a", maxSpawnBody))
+	huge := spawnPadBody(maxSpawnBody)
 	require.Equal(t, 413, stateReq(t, f.s, "POST", "/spawn", tok, strings.NewReader(huge)).Code)
 
 	// Nothing above started anything.

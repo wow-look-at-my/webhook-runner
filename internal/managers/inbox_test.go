@@ -2,7 +2,7 @@ package managers
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -74,7 +74,9 @@ func TestInboxKeepsEveryEventUnderABurst(t *testing.T) {
 
 	handles := make([]*Delivered, 0, burst)
 	for i := range burst {
-		handles = append(handles, ib.PushDelivery(nil, fmt.Appendf(nil, `{"n":%d}`, i)))
+		payload, err := json.Marshal(map[string]int{"n": i})
+		require.NoError(t, err)
+		handles = append(handles, ib.PushDelivery(nil, payload))
 	}
 	assert.Equal(t, burst, ib.Depth(), "every pushed event is still queued")
 
@@ -92,7 +94,9 @@ func TestInboxKeepsEveryEventUnderABurst(t *testing.T) {
 		ev, ok, err := ib.Next(context.Background(), "i", time.Second)
 		require.NoError(t, err)
 		require.True(t, ok)
-		assert.JSONEq(t, fmt.Sprintf(`{"n":%d}`, i), string(ev.Payload))
+		want, err := json.Marshal(map[string]int{"n": i})
+		require.NoError(t, err)
+		assert.JSONEq(t, string(want), string(ev.Payload))
 	}
 }
 
