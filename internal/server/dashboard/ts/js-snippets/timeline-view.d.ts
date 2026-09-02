@@ -251,6 +251,14 @@ export interface TimelineLegendEntry {
  * the in-place glyph dictionary; consumers append their own rows via the
  * `legendEntries` property).
  *
+ * STATIC BOUNDS (`minTime` / `maxTime`, both null by default) limit the
+ * scrollable range. They are INDEPENDENT: `minTime` alone caps how far
+ * back a live chart scrolls, `maxTime` alone freezes the right edge over
+ * an unlimited past, and both together bound a finished window. Setting
+ * `maxTime` is what makes a chart STATIC — it replaces the clock as the
+ * live edge, so follow mode, the now line, the jump-to-now pill and feed
+ * staleness switch off and nothing moves without a gesture.
+ *
  * Auto-fit (default ON): each layout pass compares the natural lane stack
  * (every lane at --timeline-track-height) against the host's plot height;
  * while it overflows, whole lanes are demoted to the compact track height
@@ -326,6 +334,8 @@ export declare class TimelineViewElement extends HTMLElement {
     private following;
     private viewTouched;
     private laneScroll;
+    private minTimeMs;
+    private maxTimeMs;
     private leadFrac;
     private leadAnim;
     private lastFreshMs;
@@ -541,6 +551,38 @@ export declare class TimelineViewElement extends HTMLElement {
     fitToInterval(id: string, opts?: {
         pad?: number;
     }): boolean;
+    /**
+     * The earliest time the view may scroll back to (ms since epoch; null =
+     * unbounded, the default). Every gesture, jump and default-span
+     * re-derivation stops here, and `loadRange` is never probed for a range
+     * before it — set it to the first timestamp the consumer can serve.
+     * Independent of `maxTime`: the right edge keeps following the live
+     * clock unless that one is set too.
+     */
+    get minTime(): number | null;
+    set minTime(v: number | Date | null);
+    /**
+     * The latest time the view may reach (ms since epoch; null = unbounded,
+     * the default). Setting it STOPS the forward scroll: this instant
+     * becomes the live edge, so the right stop, ongoing (end = null) bar
+     * ends and hit tests read it instead of the clock, and follow mode, the
+     * now line, the jump-to-now pill and feed staleness all switch off —
+     * a chart of finished content instead of a live feed. Independent of
+     * `minTime`: the past stays unlimited unless that one is set too.
+     */
+    get maxTime(): number | null;
+    set maxTime(v: number | Date | null);
+    /** Re-clamp the current view after a bounds change and republish it. */
+    private applyBounds;
+    /**
+     * Clamp a view into the configured bounds. `max` overrides the right
+     * stop with the caller's own ceiling — the follow lead's decaying one
+     * on the gesture paths, which is never past maxTime once the lead has
+     * glided out.
+     */
+    private clampBounds;
+    /** The zoom-out ceiling: the whole bounded range when both sides are set. */
+    private maxZoomSpan;
     /** Whether the right edge is pinned to live "now" (default true). */
     get followNow(): boolean;
     set followNow(v: boolean);
@@ -548,6 +590,8 @@ export declare class TimelineViewElement extends HTMLElement {
      * Re-engage follow mode, keeping the current span: a fast
      * JUMP_TO_NOW_TWEEN_MS glide from wherever the view is to the followed
      * position — never a single-frame teleport (reduced motion snaps).
+     * Under `maxTime` there is nothing to follow, so it parks the view at
+     * that stop instead: the same "take me to the end" gesture.
      */
     jumpToNow(): void;
     /** Re-read the --timeline-* custom properties (call after retheming). */
@@ -735,9 +779,11 @@ export declare class TimelineViewElement extends HTMLElement {
      * to "now" one by one and horizontal panning never escaped follow mode).
      * The follow rule reads the RAW gesture (an overshoot past now must
      * count as "at the stop"); the view actually applied hard-stops at now
-     * (clampViewToNow), so every input path — wheel, drag, pinch, keyboard,
-     * setViewport — parks exactly at the end stop, which is what makes the
-     * tiny re-engage zone reliably hittable. Non-zoom interactive gestures
+     * and at the configured bounds (clampBounds), so every input path —
+     * wheel, drag, pinch, keyboard, setViewport — parks exactly at the end
+     * stop, which is what makes the tiny re-engage zone reliably hittable.
+     * A set `maxTime` replaces that clock stop with a fixed instant, and a
+     * gesture that docks there stays parked: static content never follows. Non-zoom interactive gestures
      * keep the pin while following (a forward pan at the stop stays live);
      * ZOOMS (`zoom`) and programmatic setViewport (`jump`) are exempt.
      * Zooms because the ANCHOR must win during the gesture: while pinned,
