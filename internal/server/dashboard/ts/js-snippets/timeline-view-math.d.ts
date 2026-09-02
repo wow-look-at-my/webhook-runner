@@ -98,6 +98,33 @@ export declare function panView(view: TimeView, dt: number): TimeView;
  */
 export declare function clampViewToNow(view: TimeView, now: number): TimeView;
 /**
+ * Static scroll bounds: the earliest time the view may start at and the
+ * latest it may end at. Each side is INDEPENDENT — a null side is
+ * unbounded, so `{ min, max: null }` limits how far back the user can
+ * scroll while the right edge still tracks the live clock, and
+ * `{ min: null, max }` freezes the right edge over an unlimited past.
+ */
+export interface TimeBounds {
+    min: number | null;
+    max: number | null;
+}
+/**
+ * Clamp a view into `bounds`, preserving its span: a view past `max`
+ * shifts back, one before `min` shifts forward. A span WIDER than the
+ * bounded range cannot preserve both stops, so it collapses to exactly
+ * [min, max] — which is what a zoom-out against a short static window
+ * should land on. Null and non-finite sides are ignored, so an unbounded
+ * view comes back untouched.
+ */
+export declare function clampViewToBounds(view: TimeView, bounds: TimeBounds): TimeView;
+/**
+ * The widest span `bounds` can show, for a zoom clamp: the distance
+ * between two finite stops, else `maxSpan`. Never below `minSpan` — a
+ * bounded range narrower than the hard zoom floor still zooms to the
+ * floor, and clampViewToBounds then parks that window over the range.
+ */
+export declare function boundedMaxSpan(bounds: TimeBounds, maxSpan?: number, minSpan?: number): number;
+/**
  * Zoom the view by `factor` (> 1 zooms in) keeping `anchor` at the same
  * on-screen fraction — the time under the cursor stays under the cursor.
  * The span is clamped to [minSpan, maxSpan]; clamping preserves the anchor
