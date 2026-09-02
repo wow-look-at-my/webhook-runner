@@ -85,7 +85,7 @@ func TestRunnerGlobalCapRaiseAdmitsQueued(t *testing.T) {
 		GlobalCap: cap1,
 	})
 
-	hookA := diskHook(t, dir, &hooks.Hook{ID: "a", Command: []string{"SLEEP_2"}})
+	hookA := diskHook(t, dir, &hooks.Hook{ID: "a", Command: []string{"SLEEP_1"}})
 	runA, err := r.Start(context.Background(), hookA, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
 	waitStatus(t, runA, runs.StatusRunning, 2*time.Second)
