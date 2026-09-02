@@ -198,11 +198,12 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 		Docker:  docker,
 	})
 
-	// A line every ~s for ~s of runtime, against a s idle_timeout: every silent gap stays well under the limit while the total runtime exceeds it — under a naive wall-clock semantics this.
+	// A line every quarter of the idle budget, over a runtime longer than
+	// the budget: no gap trips it, yet a wall clock would kill this run.
 	hook := diskHook(t, dir, &hooks.Hook{
 		ID:             "h",
-		Command:        []string{"tick", "SLEEP_1", "tock", "SLEEP_1", "tick", "SLEEP_1", "tock", "SLEEP_1", "done"},
-		IdleTimeoutRaw: "3s",
+		Command:        []string{"tick", "SLEEP_0.25", "tock", "SLEEP_0.25", "tick", "SLEEP_0.25", "tock", "SLEEP_0.25", "done"},
+		IdleTimeoutRaw: "750ms",
 	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
 	require.NoError(t, err)
@@ -212,8 +213,7 @@ func TestRunnerTimeoutOutputKeepsRunAlive(t *testing.T) {
 	assert.Equal(t, runs.StatusSuccess, snap.Status,
 		"steady output must keep the run alive past its timeout value: %s", snap.Error)
 	assert.Contains(t, snap.Output, "done")
-	// The run provably outlived its timeout: >=s of processing vs s.
-	assert.Greater(t, snap.Finished.Sub(snap.StartedAt), 3*time.Second,
+	assert.Greater(t, snap.Finished.Sub(snap.StartedAt), 750*time.Millisecond,
 		"the run must have outlived its timeout value while producing output")
 }
 
@@ -257,7 +257,7 @@ func TestRunnerTouchActivityDefersIdleTimeout(t *testing.T) {
 
 	hook := diskHook(t, dir, &hooks.Hook{
 		ID:             "h",
-		Command:        []string{"SLEEP_1"},
+		Command:        []string{"SLEEP_0.5"},
 		IdleTimeoutRaw: "300ms",
 	})
 	run, err := r.Start(context.Background(), hook, []byte("p"), http.Header{}, "")
