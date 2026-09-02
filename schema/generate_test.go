@@ -12,7 +12,13 @@ import (
 	"github.com/wow-look-at-my/json-validator/validator"
 )
 
-var update = flag.Bool("update", false, "rewrite the generated schemas from src/")
+var updateFlag = flag.Bool("update", false, "rewrite the generated schemas from src/")
+
+// updateEnv rewrites the schemas the way -update does, reachable through
+// go-toolchain, which cannot pass a test flag through.
+const updateEnv = "WEBHOOK_RUNNER_UPDATE_SCHEMAS"
+
+func updating() bool { return *updateFlag || os.Getenv(updateEnv) != "" }
 
 var generated = []struct{ overlay, out string }{
 	{"src/hook.json", "hook.schema.json"},
@@ -21,7 +27,7 @@ var generated = []struct{ overlay, out string }{
 
 // The committed schemas are what go:embed compiles in and what CI publishes,
 // so a drifted checkout would validate manifests against something nobody
-// reviewed. Regenerate with `go test ./schema -update`.
+// reviewed. Regenerate by setting WEBHOOK_RUNNER_UPDATE_SCHEMAS for a run.
 func TestGeneratedSchemasMatchSources(t *testing.T) {
 	base, err := os.ReadFile("src/common.json")
 	require.NoError(t, err)
@@ -33,14 +39,14 @@ func TestGeneratedSchemasMatchSources(t *testing.T) {
 			want, err := Generate(base, doc)
 			require.NoError(t, err)
 
-			if *update {
+			if updating() {
 				require.NoError(t, os.WriteFile(filepath.Clean(g.out), want, 0o644))
 				return
 			}
 			got, err := os.ReadFile(g.out)
 			require.NoError(t, err)
 			assert.Equal(t, string(want), string(got),
-				"%s is stale -- regenerate with: go test ./schema -update", g.out)
+				"%s is stale -- regenerate with: %s=1 go-toolchain", g.out, updateEnv)
 		})
 	}
 }

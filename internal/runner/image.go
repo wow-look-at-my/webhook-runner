@@ -64,6 +64,45 @@ func (w *tailWriter) String() string {
 	return strings.Join(lines, "\n")
 }
 
+// baseRepoPrefix namespaces the locally built shared base images.
+const baseRepoPrefix = "whr-base/"
+
+// BaseImageArg carries the resolved base tag into a consumer's Dockerfile: `ARG BASE_IMAGE` then `FROM ${BASE_IMAGE}`.
+const BaseImageArg = "BASE_IMAGE"
+
+// BaseImageTag is the local tag for the base an entity declares, "" when it declares none. Hashing that directory alone makes its consumers resolve the same tag and share the build; their own tags still move with it, as src/base is inside every ContentHash.
+func BaseImageTag(hook *hooks.Hook) (string, error) {
+	dir := hook.BaseDir()
+	if dir == "" {
+		return "", nil
+	}
+	h, err := hooks.DirHash(dir)
+	if err != nil {
+		return "", fmt.Errorf("hash base dir %s: %w", dir, err)
+	}
+	return baseRepoPrefix + hook.Base + ":" + h, nil
+}
+
+// ensureBaseImage builds the entity's declared base image when that exact
+// content is not already present, and returns the tag to build against.
+// Failure is the consumer's failure: a base that will not build is a
+// consumer that cannot be built either, and reporting it here names the
+// base rather than leaving docker to report an unresolvable FROM.
+func ensureBaseImage(dockerBin string, hook *hooks.Hook, out io.Writer, timeout time.Duration) (string, error) {
+	tag, err := BaseImageTag(hook)
+	if err != nil || tag == "" {
+		return "", err
+	}
+	if exec.Command(dockerBin, "image", "inspect", tag).Run() == nil {
+		return tag, nil
+	}
+	args := []string{"build", "-t", tag, "-f", filepath.Join(hook.BaseDir(), hooks.DockerfileName), hook.BuildContext()}
+	if err := runBuild(dockerBin, args, out, timeout); err != nil {
+		return "", fmt.Errorf("base %q: %w", hook.Base, err)
+	}
+	return tag, nil
+}
+
 // ImageTag returns the local image tag for a Dockerfile hook at its current content: whr-hook/<id>:<content-hash>.
 func ImageTag(hook *hooks.Hook) (string, error) {
 	h, err := hook.ContentHash()
@@ -97,12 +136,30 @@ func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeou
 	if exec.Command(dockerBin, "image", "inspect", tag).Run() == nil {
 		return tag, false, nil
 	}
+	// The base is built ahead of the consumer and tagged by content, so entities sharing a base share the build rather than repeating it.
+	base, err := ensureBaseImage(dockerBin, hook, out, timeout)
+	if err != nil {
+		return "", false, err
+	}
 	// Legacy hooks build from their own directory with its Dockerfile (the docker default — invocation unchanged).
 	args := []string{"build", "-t", tag}
+	if base != "" {
+		args = append(args, "--build-arg", BaseImageArg+"="+base)
+	}
 	if hook.SDKLayout() {
 		args = append(args, "-f", filepath.Join(hook.Dir(), hooks.DockerfileName))
 	}
 	args = append(args, hook.BuildContext())
+	if err := runBuild(dockerBin, args, out, timeout); err != nil {
+		return "", false, fmt.Errorf("%s: %w", tag, err)
+	}
+	removeSupersededImages(dockerBin, hook.ID, tag)
+	return tag, true, nil
+}
+
+// runBuild invokes `docker build`, capped so a wedged build fails with the
+// caller's name rather than outliving the caller that would have reported it.
+func runBuild(dockerBin string, args []string, out io.Writer, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = DefaultBuildTimeout
 	}
@@ -119,10 +176,9 @@ func EnsureImageWithin(dockerBin string, hook *hooks.Hook, out io.Writer, timeou
 		if ctx.Err() != nil {
 			err = fmt.Errorf("build produced nothing for %s and was killed", timeout)
 		}
-		return "", false, fmt.Errorf("docker build %s: %w\n%s", tag, err, tail.String())
+		return fmt.Errorf("docker build %w\n%s", err, tail.String())
 	}
-	removeSupersededImages(dockerBin, hook.ID, tag)
-	return tag, true, nil
+	return nil
 }
 
 // ImageInfo describes locally present build of a hook's image.

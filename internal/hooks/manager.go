@@ -259,6 +259,10 @@ func LoadManagers(l Layout) (map[string]*Manager, []error) {
 		}
 		// Same build-context/hash semantics as hooks: hash covers src/sdk too.
 		m.SrcRoot = srcRoot
+		if err := m.checkBase(); err != nil {
+			errs = append(errs, ManagerLoadError{ManagerID: id, Err: err})
+			continue
+		}
 		managers[id] = m
 	}
 	return managers, errs

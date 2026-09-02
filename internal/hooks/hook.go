@@ -20,9 +20,6 @@ import (
 	"github.com/wow-look-at-my/webhook-runner/internal/jsonc"
 )
 
-// DockerfileName is the file every hook must ship next to its hook.json: hooks run images built from their own directory, code baked in.
-const DockerfileName = "Dockerfile"
-
 const DefaultSignatureHeader = "X-Signature-Ed25519"
 const LegacySignatureHeader = "X-Hub-Signature-256"
 const DefaultAPIKeyHeader = "X-API-Key"
@@ -43,14 +40,16 @@ type Hook struct {
 	SourcePath string `json:"-"`
 
 	// SrcRoot is the absolute path of the hooks repo's src/ directory when this hook was loaded from the src (SDK) layout, "" for legacy hooks.
-	SrcRoot     string     `json:"-"`
-	Schema      string     `json:"$schema,omitempty"`
-	Description string     `json:"description"`
-	Command     []string   `json:"command,omitempty"`
-	Script      *Script    `json:"script,omitempty"`
-	Tests       [][]string `json:"tests,omitempty"`
-	Networks    []string   `json:"networks,omitempty"`
-	Volumes     []string   `json:"volumes,omitempty"`
+	SrcRoot     string `json:"-"`
+	Schema      string `json:"$schema,omitempty"`
+	Description string `json:"description"`
+	// Base names a shared image under src/base/<name>/ that this entity's build is given as the BASE_IMAGE build arg. See BaseDir.
+	Base     string     `json:"base,omitempty"`
+	Command  []string   `json:"command,omitempty"`
+	Script   *Script    `json:"script,omitempty"`
+	Tests    [][]string `json:"tests,omitempty"`
+	Networks []string   `json:"networks,omitempty"`
+	Volumes  []string   `json:"volumes,omitempty"`
 	// Devices are --device passthroughs (host device node -> container node,
 	Devices []string `json:"devices,omitempty"`
 	// Settings is the hook's OWN configuration: arbitrary JSON this runner
@@ -297,15 +296,6 @@ func (h *Hook) resolveScript() error {
 		}
 	}
 	return nil
-}
-
-func (h *Hook) hasDockerfile() bool {
-	dir := h.Dir()
-	if dir == "" {
-		return false
-	}
-	fi, err := os.Stat(filepath.Join(dir, DockerfileName))
-	return err == nil && !fi.IsDir()
 }
 
 // ContentHash digests the files that determine this hook's image, tagging the build so a changed hook rebuilds on its next run while an unchanged reuses the already built image. LEGACY layout: every file under the hook's directory, hashed as relative path + content — byte-identical to the historical algorithm (existing deployments must not re-tag on upgrade). SDK (src/) layout: a deterministic walk of src/hooks/<id>/ AND every SHARED dir (see SharedDirs — src/sdk, src/actions-runner, whatever the tree has) — never sibling entity dirs — hashed as src-relative path + file mode + content. A shared-code edit re-tags every src-layout entity (lazy rebuild on its next run, intended even for non-consumers); an edit to hook A never re-tags hook B.

@@ -56,6 +56,11 @@ func LoadLayout(l Layout) (map[string]*Hook, []error) {
 		if l.SDK {
 			h.SrcRoot = srcRoot
 		}
+		// After SrcRoot: a base names a path under it, so it cannot be checked while parsing.
+		if err := h.checkBase(); err != nil {
+			errs = append(errs, HookLoadError{HookID: id, Err: err})
+			continue
+		}
 		hooks[id] = h
 	}
 
