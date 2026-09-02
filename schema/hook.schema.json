@@ -14,6 +14,10 @@
           "type": "string",
           "default": "X-API-Key"
         },
+        "base": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
         "command": {
           "type": "array",
           "items": {
@@ -311,6 +315,9 @@
     },
     "api_key_header": {
       "description": "HTTP header to read the API key from. Default: X-API-Key."
+    },
+    "base": {
+      "description": "Name of a shared base image directory under src/base/. The runner builds src/base/\u003cname\u003e/Dockerfile first, tagged by that directory's content, and passes the resulting tag to this hook's build as the BASE_IMAGE build arg — so the Dockerfile reads `ARG BASE_IMAGE` and then `FROM ${BASE_IMAGE}`. Entities naming the same base share the built image. src/base is a shared directory, so editing the base also moves every consumer's own content hash and rebuilds it; a name that resolves to no src/base/\u003cname\u003e/Dockerfile is a load error that drops the hook. Requires the src layout. Omit to build FROM a registry image directly."
     },
     "command": {
       "description": "Optional override of the image's CMD, passed to docker run after the image name. Every hook runs the image webhook-runner builds from the Dockerfile in its directory (tagged by content hash) — code is baked in and immutable per run; when command is omitted, the image's CMD/ENTRYPOINT runs."

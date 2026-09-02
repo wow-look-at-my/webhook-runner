@@ -75,6 +75,9 @@ func (l Layout) SrcDir() string {
 	return ""
 }
 
+// BaseDirName is the shared directory holding base-image builds: src/base/<name>/Dockerfile.
+const BaseDirName = "base"
+
 // SharedDirs lists the shared-code directories hashed into every src-layout entity's content tag: every immediate child of <root>/src.
 func (l Layout) SharedDirs() ([]string, error) { return SharedDirs(l.SrcDir()) }
 
