@@ -21,6 +21,56 @@ const SECTION_COALESCE_MS = 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
 
+
+/** A column of <data-table>. */
+interface TableColumn<T> {
+	key: string;
+	label: string;
+	align?: string;
+	value?: (row: T) => unknown;
+	text?: (row: T) => string;
+	render?: (row: T) => Node | string;
+}
+
+/** A facet chip group of <data-table>. */
+interface TableFacet<T> {
+	key: string;
+	label: string;
+	of: (row: T) => string;
+	local?: boolean;
+	counts?: Record<string, number>;
+	always?: readonly string[];
+}
+
+/** The <data-table> surface this file drives. Upstream owns the component;
+ * these are the properties this dashboard sets and reads. */
+interface DataTableElement<T = Record<string, unknown>> extends HTMLElement {
+	columns: TableColumn<T>[];
+	rows: T[];
+	facets?: TableFacet<T>[];
+	rowId?: (row: T) => string;
+	styleText?: string;
+	empty?: string;
+	search?: boolean;
+}
+
+/** The <activity-feed> surface this file drives. */
+interface ActivityFeedElement extends HTMLElement {
+	entries: unknown[];
+	messageRenderer?: (msg: string) => Node | string;
+	timeFormatter?: (t: string) => string;
+	familyAliases?: Record<string, string>;
+}
+
+/** A detail-carrying event from one of those elements. */
+type DetailEvent<D> = CustomEvent<D>;
+
+/** document.getElementById for an element this file drives. Returns null the
+ * same way getElementById does; every caller already guards. */
+function byId<T extends HTMLElement>(id: string): T | null {
+	return document.getElementById(id) as T | null;
+}
+
 /** The message of a caught value, which TypeScript hands over as unknown. */
 function errText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
@@ -35,15 +85,15 @@ async function fetchJSON(url: string): Promise<unknown> {
   return res.json();
 }
 
-type Attrs = Record<string, string | Record<string, string> | undefined | null>;
+type Attrs = Record<string, unknown>;
 type Kid = string | Node | null | undefined;
 function el(tag: string, attrs?: Attrs | null, ...children: Kid[]): HTMLElement {
   const node = document.createElement(tag);
   if (attrs) {
     for (const [k, v] of Object.entries(attrs)) {
-      if (k === "class") node.className = v;
-      else if (k === "data") for (const [dk, dv] of Object.entries(v)) node.dataset[dk] = dv;
-      else if (v !== undefined && v !== null) node.setAttribute(k, v);
+      if (k === "class") node.className = String(v);
+      else if (k === "data") for (const [dk, dv] of Object.entries(v as Record<string, string>)) node.dataset[dk] = dv;
+      else if (v !== undefined && v !== null) node.setAttribute(k, String(v));
     }
   }
   for (const c of children) {
@@ -569,13 +619,13 @@ function applyPage(page) {
 function updateNav(page) {
   const hookId = currentHookId();
   const managerId = currentManagerId();
-  document.querySelectorAll("#sidebar .nav-link").forEach((a) => {
+  document.querySelectorAll<HTMLElement>("#sidebar .nav-link").forEach((a) => {
     a.classList.toggle("active", !hookId && a.dataset.page === page);
   });
-  document.querySelectorAll("#nav-hooks a").forEach((a) => {
+  document.querySelectorAll<HTMLElement>("#nav-hooks a").forEach((a) => {
     a.classList.toggle("active", !!hookId && a.dataset.hook === hookId);
   });
-  document.querySelectorAll("#nav-managers a").forEach((a) => {
+  document.querySelectorAll<HTMLElement>("#nav-managers a").forEach((a) => {
     a.classList.toggle("active", !!managerId && a.dataset.manager === managerId);
   });
 }
@@ -691,7 +741,7 @@ function renderRunOutput(view) {
     container.appendChild(el("pre", { class: "raw-log" }, "(no output)"));
   }
   container.scrollTop = 0;
-  for (const b of document.querySelectorAll("#run-detail-view-toggle button")) {
+  for (const b of document.querySelectorAll<HTMLElement>("#run-detail-view-toggle button")) {
     b.classList.toggle("active", b.dataset.view === view);
   }
 }
@@ -888,7 +938,7 @@ async function runSectionWork() {
 }
 
 window.addEventListener("whr:sections-changed", (e) => {
-  const secs = (e.detail && e.detail.sections) || [];
+  const secs = ((e as CustomEvent).detail && (e as CustomEvent).detail.sections) || [];
   const hookId = currentHookId();
   for (const s of secs) {
     if (s === "attention") {
@@ -907,7 +957,7 @@ window.addEventListener("whr:sections-changed", (e) => {
 // server-side signal.
 window.addEventListener("whr:run-delta", (e) => {
   const hookId = currentHookId();
-  const run = e.detail && e.detail.run;
+  const run = (e as CustomEvent).detail && (e as CustomEvent).detail.run;
   if (hookId) {
     if (run && run.hook_id === hookId) dirtySections.add("app");
   } else {
@@ -930,7 +980,7 @@ window.addEventListener("whr:runs-table-shown", () => {
 // round trip; while the stream is down the fallback poll's /health probe
 // owns the badge.
 window.addEventListener("whr:stream-state", (e) => {
-  if (!e.detail || !e.detail.live) return;
+  if (!(e as CustomEvent).detail || !(e as CustomEvent).detail.live) return;
   setBadge(true);
   dirtySections.clear();
   refresh();
@@ -1011,7 +1061,7 @@ function hookSwitch(id, disabled) {
 // link, a kill switch and a copyable endpoint, so "click anywhere" would
 // fight all three.
 function renderHooks(hooks) {
-  const t = document.getElementById("hooks-table");
+  const t = byId<DataTableElement>("hooks-table");
   if (!t) return;
   t.columns = [
     {
@@ -1139,7 +1189,7 @@ function renderNavManagers(list) {
 function renderManagers(list) {
   list = list || [];
   renderNavManagers(list);
-  const t = document.getElementById("managers-table");
+  const t = byId<DataTableElement>("managers-table");
   if (!t) return;
   t.columns = [
     {
@@ -1196,7 +1246,7 @@ function renderManagers(list) {
   if (!t.dataset.rowClickBound) {
     t.dataset.rowClickBound = "1";
     t.addEventListener("row-click", (e) => {
-      if (e.detail?.id) location.hash = managerHref(e.detail.id);
+      if ((e as CustomEvent).detail?.id) location.hash = managerHref((e as CustomEvent).detail.id);
     });
   }
   t.rows = list;
@@ -1399,7 +1449,7 @@ function renderAttention(payload) {
 
   const section = document.getElementById("attention-section");
   section.hidden = entries.length === 0;
-  const t = document.getElementById("attention-table");
+  const t = byId<DataTableElement>("attention-table");
   if (!t) return;
   t.columns = [
     { key: "message", label: "Problem", className: "attention-msg", render: (e) => linkifyGH(e.message) },
@@ -1444,7 +1494,7 @@ function renderAttention(payload) {
     t.dataset.rowClickBound = "1";
     t.addEventListener("row-click", (e) => {
       // A server-wide entry has no id and no destination.
-      if (e.detail?.id) location.hash = hookHref(e.detail.id);
+      if ((e as CustomEvent).detail?.id) location.hash = hookHref((e as CustomEvent).detail.id);
     });
   }
   t.rows = entries;
@@ -1553,7 +1603,7 @@ function renderGlobalCap(g) {
   if (!wrap) return;
   wrap.hidden = !g;
   if (!g) return;
-  const t = document.getElementById("concurrency-global-table");
+  const t = byId<DataTableElement>("concurrency-global-table");
   if (!t) return;
   t.columns = concurrencyColumns({
     nameLabel: "Scope",
@@ -1627,7 +1677,7 @@ function renderConcurrency(data) {
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
   renderGlobalCap(Array.isArray(data) ? null : data && data.global);
-  const t = document.getElementById("concurrency-table");
+  const t = byId<DataTableElement>("concurrency-table");
   if (!t) return;
   t.columns = concurrencyColumns({
     nameLabel: "Group",
@@ -1873,7 +1923,7 @@ function saveRunsHiddenStatuses(hidden) {
 const RUN_STATUSES = ["success", "failure", "error", "timeout", "running", "pending", "skipped", "cancelled"];
 
 function renderRuns(rs) {
-  const t = document.getElementById("runs-table");
+  const t = byId<DataTableElement>("runs-table");
   if (!t) return;
   t.columns = [
     { key: "started", label: "Queued", value: (r) => Date.parse(r.started), render: (r) => fmtTime(r.started) },
@@ -1912,10 +1962,10 @@ function renderRuns(rs) {
   if (!t.dataset.rowClickBound) {
     t.dataset.rowClickBound = "1";
     t.addEventListener("row-click", (e) => {
-      if (e.detail?.id) void showRun(e.detail.id);
+      if ((e as CustomEvent).detail?.id) void showRun((e as CustomEvent).detail.id);
     });
     t.addEventListener("table-filter-change", (e) => {
-      const next = new Set(e.detail?.hidden?.status || []);
+      const next = new Set((e as CustomEvent).detail?.hidden?.status || []);
       const current = runsHiddenStatuses();
       if (next.size === current.size && [...next].every((s) => current.has(s))) return;
       saveRunsHiddenStatuses(next);
@@ -1932,7 +1982,7 @@ function renderRuns(rs) {
 // tag abc123" and "what still needs building" are both text questions, and
 // the fleet is long enough that scrolling for them is the wrong answer.
 function renderImages(images) {
-  const t = document.getElementById("images-table");
+  const t = byId<DataTableElement>("images-table");
   if (!t) return;
   t.columns = [
     { key: "hook_id", label: "Hook", render: (im) => el("code", null, im.hook_id) },
@@ -2024,7 +2074,7 @@ function fmtBytes(n) {
 // the namespace's browser — the same destination as its link, so a click on
 // either is correct.
 function renderKV(namespaces, loadedHookIDs) {
-  const t = document.getElementById("kv-table");
+  const t = byId<DataTableElement>("kv-table");
   if (!t) return;
   t.columns = [
     {
@@ -2057,7 +2107,7 @@ function renderKV(namespaces, loadedHookIDs) {
   if (!t.dataset.rowClickBound) {
     t.dataset.rowClickBound = "1";
     t.addEventListener("row-click", (e) => {
-      if (e.detail?.id) location.hash = hookHref(e.detail.id, { kv: true });
+      if ((e as CustomEvent).detail?.id) location.hash = hookHref((e as CustomEvent).detail.id, { kv: true });
     });
   }
   t.rows = namespaces || [];
@@ -2159,7 +2209,7 @@ async function renderAppOrphanKV(id, listing) {
 // Orphan mode hides every app-body section that needs a loaded hook,
 // leaving only the State (KV) browser; renderApp flips it back off.
 function setAppOrphanMode(orphan) {
-  document.querySelector("#app-body .app-cards").hidden = orphan;
+  document.querySelector<HTMLElement>("#app-body .app-cards").hidden = orphan;
   document.getElementById("app-runs-section").hidden = orphan;
   document.getElementById("app-events-section").hidden = orphan;
 }
@@ -2345,7 +2395,7 @@ let lastAppStatusCounts = null;
 function renderAppRunsTable(runs, statusCounts) {
   lastAppRuns = runs || [];
   if (statusCounts) lastAppStatusCounts = statusCounts;
-  const t = document.getElementById("app-runs-table");
+  const t = byId<DataTableElement>("app-runs-table");
   if (!t) return;
   const hidden = appRunsHiddenStatuses();
 
@@ -2391,11 +2441,11 @@ function renderAppRunsTable(runs, statusCounts) {
 // A chip toggle changes the SERVER-side filter, so it refetches. Bound once
 // per element; the component re-emits on every toggle.
 function bindAppRunsFilterEvents() {
-  const t = document.getElementById("app-runs-table");
+  const t = byId<DataTableElement>("app-runs-table");
   if (!t || t.dataset.filterBound) return;
   t.dataset.filterBound = "1";
   t.addEventListener("table-filter-change", (e) => {
-    const next = new Set(e.detail?.hidden?.status || []);
+    const next = new Set((e as CustomEvent).detail?.hidden?.status || []);
     const current = appRunsHiddenStatuses();
     if (next.size === current.size && [...next].every((s) => current.has(s))) return;
     saveAppRunsHiddenStatuses(next);
@@ -2404,7 +2454,7 @@ function bindAppRunsFilterEvents() {
     else renderAppRunsTable(lastAppRuns);
   });
   t.addEventListener("row-click", (e) => {
-    if (e.detail?.id) void showRun(e.detail.id);
+    if ((e as CustomEvent).detail?.id) void showRun((e as CustomEvent).detail.id);
   });
 }
 
@@ -2446,7 +2496,7 @@ async function renderAppKV(info, listing) {
   const wantScroll = pendingKVScroll;
   pendingKVScroll = false;
   if (!info.state) return;
-  const t = document.getElementById("app-kv-table");
+  const t = byId<DataTableElement>("app-kv-table");
   if (!t) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
@@ -2723,14 +2773,14 @@ setInterval(() => {
 // for the full output rather than rendering the delta directly).
 window.addEventListener("whr:run-delta", (e) => {
   if (!currentRunId || !runDetailDialog.open) return;
-  const d = e.detail;
+  const d = (e as CustomEvent).detail;
   if (d && d.id === currentRunId) void refreshRunDetail(false);
 });
 // Stream recovery: a change the modal's run made while the stream was down
 // may never re-emit a delta (e.g. it went terminal in the gap) — one
 // refresh on reconnect closes that hole.
 window.addEventListener("whr:stream-state", (e) => {
-  if (!e.detail || !e.detail.live) return;
+  if (!(e as CustomEvent).detail || !(e as CustomEvent).detail.live) return;
   if (!currentRunId || currentRunTerminal || !runDetailDialog.open) return;
   void refreshRunDetail(false);
 });
@@ -3044,7 +3094,7 @@ async function refreshReloadCommits() {
 // is reading in.
 function renderReloadCommits(data) {
   const commits = (data && data.commits) || [];
-  const t = document.getElementById("reload-commits-table");
+  const t = byId<DataTableElement>("reload-commits-table");
   if (!t) return;
   // The note is now only for FETCH FAILURES (renderReloadCommits is not
   // called on those); the table owns its own empty state.
