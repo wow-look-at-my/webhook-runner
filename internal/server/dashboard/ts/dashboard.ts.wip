@@ -346,17 +346,45 @@ interface AttentionPayload {
 
 /** The /concurrency payload. */
 interface ConcurrencyData {
+	global?: ConcurrencyRow;
+	groups?: ConcurrencyRow[];
 	[k: string]: unknown;
 }
 
 /** One manager's detail page payload. */
 interface ManagerDetail {
+	id?: string;
+	title?: string;
+	description?: string;
+	status?: ManagerStatus;
+	output?: string[];
+	instance_id?: string;
+	instance_started?: string;
+	inbox_depth?: number;
+	restarts?: number;
+	consecutive_failures?: number;
+	reconcile_interval?: string;
+	concurrency_group?: string;
+	enabled_by_default?: boolean;
+	synchronous?: boolean;
+	last_tick?: string;
+	last_error?: string;
+	last_delivered?: string;
+	last_stop_reason?: string;
 	[k: string]: unknown;
 }
 
 /** One hook's detail page payload. */
 interface HookDetail {
 	info: Hook & { state?: unknown };
+	id?: string;
+	disabled?: boolean;
+	image?: ImageState;
+	kv?: KVListing;
+	live?: boolean;
+	run?: Run;
+	sections?: string[];
+	stats?: ManagerStatus;
 	[k: string]: unknown;
 }
 
@@ -377,6 +405,17 @@ interface Turn {
 	label: string;
 	entries: LogEntry[];
 	time?: string | null;
+}
+
+/** How concurrencyColumns builds a group table vs the global-cap table. */
+interface ConcurrencyColumnOptions {
+	nameLabel: string;
+	name?: (row: ConcurrencyRow) => Node | string;
+	declaredOf: (row: ConcurrencyRow) => unknown;
+	onOverride: (row: ConcurrencyRow) => void;
+	onRevert: (row: ConcurrencyRow) => void;
+	revertTitle: (row: ConcurrencyRow) => string;
+	overrideTitle: (row: ConcurrencyRow) => string;
 }
 
 /** A concurrency row: a named group, or the global cap. */
@@ -697,7 +736,7 @@ function currentHookId() {
 
 // The fragment for a hook's app page; kv: true additionally lands it on the
 // State (KV) key/value browser (consumed as a one-shot scroll by renderAppKV).
-function hookHref(id: string, opts) {
+function hookHref(id: string, opts: { tab?: string } | undefined) {
   return "#hook=" + encodeURIComponent(id) + (opts && opts.kv ? "&kv=1" : "");
 }
 
@@ -1459,7 +1498,7 @@ document.getElementById("manager-output-copy")!.addEventListener("click", (e) =>
   void copyManagerOutput(e.currentTarget);
 });
 
-function renderManagerDetail(d) {
+function renderManagerDetail(d: ManagerDetail) {
   const open = currentManagerId();
   const box = document.getElementById("manager-detail")!;
   if (!open || !d || d.id !== open) {
@@ -1477,7 +1516,7 @@ function renderManagerDetail(d) {
   );
   const meta = document.getElementById("manager-detail-meta")!;
   meta.innerHTML = "";
-  const row = (k: string, v) => {
+  const row = (k: string, v: Node | string) => {
     if (v == null || v === "") return;
     meta.appendChild(el("dt", null, k));
     meta.appendChild(el("dd", null, v));
@@ -1518,7 +1557,7 @@ function renderManagerDetail(d) {
 // True when the output box is scrolled to (or within a couple of pixels
 // of) the bottom — including the just-opened case, where the box has no
 // geometry yet and following the tail is the right default.
-function managerOutputAtBottom(out) {
+function managerOutputAtBottom(out: HTMLElement) {
   const height = Number(out.clientHeight) || 0;
   const total = Number(out.scrollHeight) || 0;
   const top = Number(out.scrollTop) || 0;
@@ -1528,7 +1567,7 @@ function managerOutputAtBottom(out) {
 
 // The instance-uptime text, recomputed from the detail payload's start
 // stamp (so it can advance without a refetch).
-function managerUptimeText(d) {
+function managerUptimeText(d: ManagerDetail) {
   return fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`;
 }
 
@@ -1590,7 +1629,7 @@ function copyJSONButton(value: unknown, title: string) {
 // attention` on a banner that could never hide, above a table with nothing
 // in it. An array is still accepted so a caller passing entries directly
 // (the tests do) works, but the endpoint's own shape is the contract.
-function renderAttention(payload) {
+function renderAttention(payload: AttentionPayload) {
   const entries = Array.isArray(payload) ? payload : (payload && payload.entries) || [];
   const banner = document.getElementById("attention-banner")!;
   banner.hidden = entries.length === 0;
@@ -1777,7 +1816,7 @@ function renderGlobalCap(g: ConcurrencyRow) {
 // The columns shared by the global cap and the named groups: the two differ
 // only in what names the row and where its declared limit comes from, so
 // they are one declaration parameterised rather than two that drift.
-function concurrencyColumns(o) {
+function concurrencyColumns(o: ConcurrencyColumnOptions) {
   return [
     { key: "name", label: o.nameLabel, value: (row: ConcurrencyRow) => row.name || "All runs", render: o.name || ((row: ConcurrencyRow) => el("code", null, row.name)) },
     { key: "declared", label: "Declared", align: "end", value: o.declaredOf, render: (row: ConcurrencyRow) => String(o.declaredOf(row)) },
@@ -1824,7 +1863,7 @@ function concurrencyColumns(o) {
 // component, so opening one no longer re-renders the whole page (which is
 // what the old concurrencyOpenGroup + refresh() dance did, losing scroll
 // position and any open prompt every time).
-function renderConcurrency(data) {
+function renderConcurrency(data: ConcurrencyData) {
   // {global, groups} from cap-aware servers; a bare array from older ones
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
@@ -2200,7 +2239,7 @@ function imagesOnDisk(im: ImageState) {
 // treats that as empty. The two hooks make it match the rest of this
 // dashboard: GitHub slugs in messages stay clickable, and timestamps use the
 // same fmtTime as every other table.
-function renderEventsInto(elementId: string, events) {
+function renderEventsInto(elementId: string, events: EventRecord[]) {
   const feed = document.getElementById(elementId);
   if (!feed) return;
   feed.messageRenderer = (msg: string) => linkifyGH(msg);
@@ -2211,7 +2250,7 @@ function renderEventsInto(elementId: string, events) {
   feed.entries = events || [];
 }
 
-function renderEvents(events) {
+function renderEvents(events: EventRecord[]) {
   renderEventsInto("events-feed", events);
 }
 
@@ -2225,7 +2264,7 @@ function fmtBytes(n: number) {
 // The KV namespace roster, as a <data-table>. The whole row navigates to
 // the namespace's browser — the same destination as its link, so a click on
 // either is correct.
-function renderKV(namespaces: Namespace[], loadedHookIDs) {
+function renderKV(namespaces: Namespace[], loadedHookIDs: Set<string>) {
   const t = byId<DataTableElement<Namespace>>("kv-table");
   if (!t) return;
   t.columns = [
@@ -2348,7 +2387,7 @@ function renderAppMissing(id: string) {
 // hook sections stay hidden, but the State (KV) key/value browser renders
 // exactly as it would for a live state hook — leftover data is the case
 // the operator most needs to inspect, not the one to hide.
-async function renderAppOrphanKV(id: string, listing) {
+async function renderAppOrphanKV(id: string, listing: KVListing) {
   renderAppMissing(id);
   const missing = document.getElementById("app-missing")!;
   missing.textContent =
@@ -2360,13 +2399,13 @@ async function renderAppOrphanKV(id: string, listing) {
 
 // Orphan mode hides every app-body section that needs a loaded hook,
 // leaving only the State (KV) browser; renderApp flips it back off.
-function setAppOrphanMode(orphan) {
+function setAppOrphanMode(orphan: boolean) {
   document.querySelector<HTMLElement>("#app-body .app-cards").hidden = orphan;
   document.getElementById("app-runs-section")!.hidden = orphan;
   document.getElementById("app-events-section")!.hidden = orphan;
 }
 
-function fillDl(dl, rows) {
+function fillDl(dl: HTMLElement, rows: [string, unknown][]) {
   dl.innerHTML = "";
   for (const [k, v] of rows) {
     dl.appendChild(el("dt", null, k));
@@ -2374,7 +2413,7 @@ function fillDl(dl, rows) {
   }
 }
 
-function renderApp(detail, runs: Run[], events) {
+function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
   const info = detail.info;
   document.getElementById("app-missing")!.hidden = true;
   document.getElementById("app-body")!.hidden = false;
@@ -2417,7 +2456,7 @@ function renderApp(detail, runs: Run[], events) {
         : "on — no data yet")],
   ]);
 
-  const st = detail.stats;
+  const st: ManagerStatus = detail.stats || { state: "" };
   document.getElementById("app-stats-window")!.textContent = st.retention
     ? `Window: live runs plus completed runs persisted for the last ${st.retention} (survives restarts; runs in flight during a restart are lost).`
     : `Recent window: the last ≤${st.max_tracked} runs held in memory (resets on restart).`;
@@ -2544,7 +2583,7 @@ let lastAppStatusCounts: Record<string, number> | null = null;
 // window), not from the page: a hidden status is simply absent from the
 // page, so a derived count would read ×0 on the very chip that needs a
 // number. "skipped ×4213" is the fact worth showing next to the toggle.
-function renderAppRunsTable(runs: Run[], statusCounts) {
+function renderAppRunsTable(runs: Run[], statusCounts: Record<string, number> | null) {
   lastAppRuns = runs || [];
   if (statusCounts) lastAppStatusCounts = statusCounts;
   const t = byId<DataTableElement<Run>>("app-runs-table");
@@ -2622,7 +2661,7 @@ function bindAppRunsFilterEvents() {
 
 let appKVHook = null; // which hook the expansion belongs to
 
-function fmtTTL(seconds) {
+function fmtTTL(seconds: number) {
   if (seconds == null) return "—";
   return fmtDuration(seconds * 1000);
 }
@@ -2640,7 +2679,7 @@ function kvSectionLink(text: string) {
   return a;
 }
 
-async function renderAppKV(info, listing) {
+async function renderAppKV(info: Hook, listing: KVListing) {
   const section = document.getElementById("app-kv-section")!;
   section.hidden = !info.state;
   // Consume the one-shot &kv=1 landing scroll even for a state-less hook,
@@ -2799,7 +2838,7 @@ async function refreshRunDetail(openDialog: boolean) {
 // A 404 means the run is genuinely not being served — no longer tracked by
 // this server (whatever the reason; wording stays neutral) — while any
 // other failure renders as a plain load error.
-function renderRunDetailUnavailable(id: string, err) {
+function renderRunDetailUnavailable(id: string, err: unknown) {
   currentRunTerminal = true; // nothing to live-poll — the run isn't served
   document.getElementById("run-detail-name")!.textContent = "Run";
   document.getElementById("run-detail-id")!.textContent = id;
@@ -2990,7 +3029,7 @@ copyBtn.addEventListener("click", async () => {
   }, 1500);
 });
 
-function parseGitHubURL(repoURL) {
+function parseGitHubURL(repoURL: string) {
   let m = repoURL.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
   if (m) return m[1];
   return null;
@@ -3066,7 +3105,7 @@ const SELF_REPO_URL = "https://github.com/wow-look-at-my/webhook-runner";
 // The commit the running build was made from. A stamped VCS revision is
 // authoritative; failing that, a Go pseudo-version ends in the commit's
 // 12-hex prefix, which GitHub resolves like any other sha.
-function buildCommit(v) {
+function buildCommit(v: Node | string) {
   if (v.revision) return v.revision;
   const m = /-([0-9a-f]{12})$/.exec(v.version || "");
   return m ? m[1] : "";
@@ -3136,7 +3175,7 @@ setInterval(() => {
 let reloadMode: string | null = null; // "gated" | "legacy" | null (panel hidden)
 let reloadSwitchInFlight = false;
 
-function reloadCIBadge(state) {
+function reloadCIBadge(state: string) {
   const s = state || "unknown";
   let cls = "badge";
   if (s === "success") cls += " ok";
@@ -3153,13 +3192,13 @@ function reloadCIBadge(state) {
   return el("span", { class: cls, title: titles[s] || "" }, "CI: " + s);
 }
 
-function reloadSrcBadge(has) {
+function reloadSrcBadge(has: boolean) {
   return has
     ? el("span", { class: "badge ok", title: "the commit's tree contains src/hooks — the layout this fleet loads" }, "src ok")
     : el("span", { class: "badge bad", title: "the commit's tree has NO src/hooks directory — reloading from it would load zero hooks" }, "no src/hooks");
 }
 
-function renderReloadStatus(data, statusErr) {
+function renderReloadStatus(data: Record<string, unknown>, statusErr: unknown) {
   const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
   reloadMode = usable ? data.mode : null;
   // The panel stays up NO MATTER WHAT. Hiding it on an unreadable status was
@@ -3244,7 +3283,7 @@ async function refreshReloadCommits() {
 // order deliberately until a header is clicked: the server sends them
 // newest-first, which is the order an operator picking "the last good one"
 // is reading in.
-function renderReloadCommits(data) {
+function renderReloadCommits(data: Record<string, unknown>) {
   const commits = (data && data.commits) || [];
   const t = byId<DataTableElement<Record<string, unknown>>>("reload-commits-table");
   if (!t) return;
@@ -3311,7 +3350,7 @@ async function refreshReloadPanel() {
   }
 }
 
-async function postJSON(url: string, body) {
+async function postJSON(url: string, body: unknown) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -3381,7 +3420,7 @@ async function reloadForceTip() {
 // exists only to be refused, no second dialog quoting reasons already on
 // screen. The server still records it loudly (reload.forced on the activity
 // feed); what is dropped here is ceremony, not the audit trail.
-async function reloadForceTo(ref: string, label: string, why) {
+async function reloadForceTo(ref: string, label: string, why: string) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
   const detail = why ? `\n\nThe gate is holding it: ${why}` : "";
