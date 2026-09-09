@@ -272,6 +272,9 @@ interface Run {
 	waiting_on?: Waiting;
 	/** Closed wait segments, ended at their real times by the server. */
 	wait_history?: Waiting[];
+	/** Runs queued behind this one. */
+	waiters?: Waiting[];
+	instance_id?: string;
 	wait_history_truncated?: boolean;
 	[extra: string]: unknown;
 }
@@ -385,6 +388,9 @@ interface ConcurrencyRow {
 	active?: number;
 	waiting?: number;
 	overridden?: boolean;
+	/** The runs holding this group's slots, and those queued for one. */
+	holders?: Run[];
+	waiting_runs?: Run[];
 	[extra: string]: unknown;
 }
 
