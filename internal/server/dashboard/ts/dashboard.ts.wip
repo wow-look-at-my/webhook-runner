@@ -30,6 +30,8 @@ interface TableColumn<T> {
 	value?: (row: T) => unknown;
 	text?: (row: T) => string;
 	render?: (row: T) => Node | string;
+	className?: string;
+	sortable?: boolean;
 }
 
 /** A facet chip group of <data-table>. */
@@ -400,6 +402,8 @@ interface Waiting {
 	holder_hook_id?: string;
 	holder_run_id?: string;
 	holder_run_ids?: string[];
+	run_id?: string;
+	hook_id?: string;
 	keys?: string[];
 }
 
@@ -711,7 +715,7 @@ let pendingKVScroll = hashWantsKV();
 // repo configured, the runs table behind timeline.js's toggle). Every
 // section stays in the DOM and keeps refreshing over the same SSE section
 // feed — nothing is lost, only organized.
-const PAGE_SECTIONS = {
+const PAGE_SECTIONS: Record<string, string[]> = {
   overview: ["timeline-section", "runs-section"],
   hooks: ["hooks-section"],
   managers: ["managers-section"],
@@ -1203,7 +1207,7 @@ function hookSwitch(id: string, disabled: boolean) {
 // link, a kill switch and a copyable endpoint, so "click anywhere" would
 // fight all three.
 function renderHooks(hooks: Hook[]) {
-  const t = byId<DataTableElement>("hooks-table");
+  const t = byId<DataTableElement<Hook>>("hooks-table");
   if (!t) return;
   t.columns = [
     {
@@ -1331,7 +1335,7 @@ function renderNavManagers(list: ManagerStatus[]) {
 function renderManagers(list: ManagerStatus[]) {
   list = list || [];
   renderNavManagers(list);
-  const t = byId<DataTableElement>("managers-table");
+  const t = byId<DataTableElement<ManagerStatus>>("managers-table");
   if (!t) return;
   t.columns = [
     {
@@ -1591,7 +1595,7 @@ function renderAttention(payload) {
 
   const section = document.getElementById("attention-section")!;
   section.hidden = entries.length === 0;
-  const t = byId<DataTableElement>("attention-table");
+  const t = byId<DataTableElement<Record<string, unknown>>>("attention-table");
   if (!t) return;
   t.columns = [
     { key: "message", label: "Problem", className: "attention-msg", render: (e) => linkifyGH(e.message) },
@@ -1745,7 +1749,7 @@ function renderGlobalCap(g: ConcurrencyRow) {
   if (!wrap) return;
   wrap.hidden = !g;
   if (!g) return;
-  const t = byId<DataTableElement>("concurrency-global-table");
+  const t = byId<DataTableElement<ConcurrencyRow>>("concurrency-global-table");
   if (!t) return;
   t.columns = concurrencyColumns({
     nameLabel: "Scope",
@@ -1819,7 +1823,7 @@ function renderConcurrency(data) {
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
   renderGlobalCap(Array.isArray(data) ? null : data && data.global);
-  const t = byId<DataTableElement>("concurrency-table");
+  const t = byId<DataTableElement<ConcurrencyRow>>("concurrency-table");
   if (!t) return;
   t.columns = concurrencyColumns({
     nameLabel: "Group",
@@ -2065,7 +2069,7 @@ function saveRunsHiddenStatuses(hidden: Set<string>) {
 const RUN_STATUSES = ["success", "failure", "error", "timeout", "running", "pending", "skipped", "cancelled"];
 
 function renderRuns(rs: Run[]) {
-  const t = byId<DataTableElement>("runs-table");
+  const t = byId<DataTableElement<Run>>("runs-table");
   if (!t) return;
   t.columns = [
     { key: "started", label: "Queued", value: (r) => Date.parse(r.started), render: (r) => fmtTime(r.started) },
@@ -2124,7 +2128,7 @@ function renderRuns(rs: Run[]) {
 // tag abc123" and "what still needs building" are both text questions, and
 // the fleet is long enough that scrolling for them is the wrong answer.
 function renderImages(images: ImageState[]) {
-  const t = byId<DataTableElement>("images-table");
+  const t = byId<DataTableElement<ImageState>>("images-table");
   if (!t) return;
   t.columns = [
     { key: "hook_id", label: "Hook", render: (im) => el("code", null, im.hook_id) },
@@ -2216,7 +2220,7 @@ function fmtBytes(n: number) {
 // the namespace's browser — the same destination as its link, so a click on
 // either is correct.
 function renderKV(namespaces: Namespace[], loadedHookIDs) {
-  const t = byId<DataTableElement>("kv-table");
+  const t = byId<DataTableElement<Namespace>>("kv-table");
   if (!t) return;
   t.columns = [
     {
@@ -2537,7 +2541,7 @@ let lastAppStatusCounts: Record<string, number> | null = null;
 function renderAppRunsTable(runs: Run[], statusCounts) {
   lastAppRuns = runs || [];
   if (statusCounts) lastAppStatusCounts = statusCounts;
-  const t = byId<DataTableElement>("app-runs-table");
+  const t = byId<DataTableElement<Run>>("app-runs-table");
   if (!t) return;
   const hidden = appRunsHiddenStatuses();
 
@@ -2583,7 +2587,7 @@ function renderAppRunsTable(runs: Run[], statusCounts) {
 // A chip toggle changes the SERVER-side filter, so it refetches. Bound once
 // per element; the component re-emits on every toggle.
 function bindAppRunsFilterEvents() {
-  const t = byId<DataTableElement>("app-runs-table");
+  const t = byId<DataTableElement<Run>>("app-runs-table");
   if (!t || t.dataset.filterBound) return;
   t.dataset.filterBound = "1";
   t.addEventListener("table-filter-change", (e) => {
@@ -2638,7 +2642,7 @@ async function renderAppKV(info, listing) {
   const wantScroll = pendingKVScroll;
   pendingKVScroll = false;
   if (!info.state) return;
-  const t = byId<DataTableElement>("app-kv-table");
+  const t = byId<DataTableElement<Namespace>>("app-kv-table");
   if (!t) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
@@ -3236,7 +3240,7 @@ async function refreshReloadCommits() {
 // is reading in.
 function renderReloadCommits(data) {
   const commits = (data && data.commits) || [];
-  const t = byId<DataTableElement>("reload-commits-table");
+  const t = byId<DataTableElement<Record<string, unknown>>>("reload-commits-table");
   if (!t) return;
   // The note is now only for FETCH FAILURES (renderReloadCommits is not
   // called on those); the table owns its own empty state.
