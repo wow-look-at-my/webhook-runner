@@ -629,7 +629,7 @@ function waitNote(r: Run) {
   }
   if (w.kind === "wait") {
     if (!tsPresent(w.until)) return null;
-    const left = new Date(w.until) - Date.now();
+    const left = new Date(w.until as string).getTime() - Date.now();
     const t = left > 0 ? fmtDuration(left) : "0s";
     return el("span", { class: "wait-note" },
       linkifyGH(`waiting ${t}${w.reason ? ": " + w.reason : ""}`));
@@ -750,7 +750,7 @@ function currentHookId() {
 
 // The fragment for a hook's app page; kv: true additionally lands it on the
 // State (KV) key/value browser (consumed as a one-shot scroll by renderAppKV).
-function hookHref(id: string, opts: { tab?: string } | undefined) {
+function hookHref(id: string, opts?: { tab?: string }) {
   return "#hook=" + encodeURIComponent(id) + (opts && opts.kv ? "&kv=1" : "");
 }
 
@@ -1582,7 +1582,7 @@ function managerOutputAtBottom(out: HTMLElement) {
 // The instance-uptime text, recomputed from the detail payload's start
 // stamp (so it can advance without a refetch).
 function managerUptimeText(d: ManagerDetail) {
-  return fmtDuration(Date.now() - new Date(d.instance_started)) + ` (since ${fmtTime(d.instance_started)})`;
+  return fmtDuration(Date.now() - new Date(d.instance_started as string).getTime()) + ` (since ${fmtTime(d.instance_started)})`;
 }
 
 // The uptime ticker: purely local, no requests — everything else on this
@@ -1674,10 +1674,10 @@ function renderAttention(payload: AttentionPayload) {
       // re-derivations while it persists), so sorting by it puts the
       // longest-standing problem at one end. Sorts on the instant, not the
       // rendered duration, which would order "9m" after "10s".
-      value: (e) => Date.parse(e.since),
+      value: (e) => Date.parse(e.since as string),
       text: (e) => fmtTime(e.since),
       render: (e) => el("span", { title: fmtTime(e.since) },
-        fmtDuration(Date.now() - new Date(e.since)) || "0s"),
+        fmtDuration(Date.now() - new Date(e.since as string).getTime()) || "0s"),
     },
     {
       key: "copy",
@@ -1933,13 +1933,13 @@ function groupDetailContent(g: ConcurrencyRow) {
     box.appendChild(el("div", { class: "group-detail-head" },
       `Holding ${holders.length === 1 ? "the slot" : holders.length + " slots"}:`));
     for (const h of holders) {
-      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since)) || "0s"}`));
+      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since).getTime()) || "0s"}`));
     }
   }
   if (waiting.length) {
     box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
     waiting.forEach((r: Run, i: number) => {
-      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
+      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since).getTime()) || "0s"}`));
     });
   }
   return box;
@@ -2656,7 +2656,7 @@ function bindAppRunsFilterEvents() {
     saveAppRunsHiddenStatuses(next);
     const id = currentHookId();
     if (id) void refreshApp(id);
-    else renderAppRunsTable(lastAppRuns);
+    else renderAppRunsTable(lastAppRuns, lastAppStatusCounts);
   });
   t.addEventListener("row-click", (e) => {
     if ((e as CustomEvent).detail?.id) void showRun((e as CustomEvent).detail.id);
