@@ -24,7 +24,6 @@ import (
 // state transitions, for the instance's output line, and for an inbox
 // delivery — none of which record an event of their own.
 func TestSupervisorOnChangeCoversTheAdminSurface(t *testing.T) {
-	shrinkCadences(t)
 	fr := newFakeRunner()
 	var n atomic.Int64
 	s := New(Options{Runner: fr, Events: events.NewRecorder(50)})
