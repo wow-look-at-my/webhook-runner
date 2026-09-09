@@ -23,15 +23,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # A higher ?v= is not a newer master -- docs/internals/shim-and-timeline.md.
-      - name: Install ts0 (prebuilt, from buildhost)
-        run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
-      # timeline.js is built, not committed, so this type-checks ts/ instead.
-      - name: Build the dashboard bundle
-        run: node /tmp/ts0.cjs build
+      # The script owns which entries ts0 builds, and pins the ts0 it fetches.
+      - name: Build the dashboard bundles
+        run: sh generate-timeline.sh
         working-directory: internal/server/dashboard
-      - name: Check the build produced the bundle
-        run: test -s internal/server/dashboard/assets/timeline.js
+      - name: Check the build produced both bundles
+        run: |
+          test -s internal/server/dashboard/assets/timeline.js
+          test -s internal/server/dashboard/assets/dashboard.js
 
   # GitHub-hosted, not wow-dind: go-toolchain's dats phase needs a sandbox backend.
   test:
@@ -75,11 +74,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # The harness reads assets/timeline.js, which is built, not committed.
-      - name: Build the dashboard bundle
-        run: |
-          curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
-          (cd internal/server/dashboard && node /tmp/ts0.cjs build)
+      # The harness reads both bundles, which are built, not committed.
+      - name: Build the dashboard bundles
+        run: sh generate-timeline.sh
+        working-directory: internal/server/dashboard
       - name: Dashboard client harness
         run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
       # Restores the test job's go-build hand-off.
