@@ -848,7 +848,7 @@ function managerHref(id: string) {
 
 function applyPage(page: string) {
   const show = new Set(PAGE_SECTIONS[page] || PAGE_SECTIONS.overview);
-  const all = new Set();
+  const all = new Set<string>();
   for (const ids of Object.values(PAGE_SECTIONS)) for (const id of ids) all.add(id);
   for (const id of all) {
     const sec = document.getElementById(id)!;
@@ -931,7 +931,7 @@ function isLogLine(line: string) {
 function parseConversation(entries: LogEntry[]) {
   if (!entries.some((e: LogEntry) => classifyMarker(e.text))) return null;
   const turns: Turn[] = [];
-  let cur = null;
+  let cur: Turn | null = null;
   const pushLog = (e: LogEntry) => {
     const last = turns[turns.length - 1];
     if (last && last.role === "log") last.entries.push(e);
@@ -1092,7 +1092,7 @@ async function refresh() {
     setBadge(false);
   }
   const hookId = currentHookId();
-  setView(hookId);
+  setView(hookId ?? "");
   try {
     if (hookId) {
       // The attention banner is global — keep it fresh on the app view too.
@@ -1411,7 +1411,7 @@ function managerStateChip(st: ManagerStatus) {
 
 // "Last event" = the freshest of delivery/tick, as an age.
 function managerLastEvent(st: ManagerStatus) {
-  const stamps: number[] = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s));
+  const stamps: number[] = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s as string).getTime());
   if (!stamps.length) return "—";
   const latest = new Date(Math.max(...stamps)).getTime();
   return fmtDuration(Date.now() - latest) + " ago";
@@ -1568,7 +1568,7 @@ function renderManagerDetail(d: ManagerDetail) {
   document.getElementById("manager-detail-title")!.replaceChildren(
     el("code", null, d.id),
     " ",
-    managerStateChip(d),
+    managerStateChip(d.status || { state: "" }),
   );
   const meta = document.getElementById("manager-detail-meta")!;
   meta.innerHTML = "";
@@ -1696,7 +1696,7 @@ function renderAttention(payload: AttentionPayload) {
 
   const section = document.getElementById("attention-section")!;
   section.hidden = entries.length === 0;
-  const t = byId<DataTableElement<Record<string, unknown>>>("attention-table");
+  const t = byId<DataTableElement<AttentionEntry>>("attention-table");
   if (!t) return;
   t.columns = [
     { key: "message", label: "Problem", className: "attention-msg", render: (e) => linkifyGH(e.message) },
@@ -2212,7 +2212,7 @@ function renderRuns(rs: Run[]) {
       if ((e as CustomEvent).detail?.id) void showRun((e as CustomEvent).detail.id);
     });
     t.addEventListener("table-filter-change", (e) => {
-      const next = new Set((e as CustomEvent).detail?.hidden?.status || []);
+      const next = new Set<string>((e as CustomEvent).detail?.hidden?.status || []);
       const current = runsHiddenStatuses();
       if (next.size === current.size && [...next].every((s) => current.has(s))) return;
       saveRunsHiddenStatuses(next);
@@ -2296,7 +2296,7 @@ function imagesOnDisk(im: ImageState) {
 // dashboard: GitHub slugs in messages stay clickable, and timestamps use the
 // same fmtTime as every other table.
 function renderEventsInto(elementId: string, events: EventRecord[]) {
-  const feed = document.getElementById(elementId);
+  const feed = byId<ActivityFeedElement>(elementId);
   if (!feed) return;
   feed.messageRenderer = (msg: string) => linkifyGH(msg);
   feed.timeFormatter = (t: string) => fmtTime(t);
@@ -2692,7 +2692,7 @@ function bindAppRunsFilterEvents() {
   if (!t || t.dataset.filterBound) return;
   t.dataset.filterBound = "1";
   t.addEventListener("table-filter-change", (e) => {
-    const next = new Set((e as CustomEvent).detail?.hidden?.status || []);
+    const next = new Set<string>((e as CustomEvent).detail?.hidden?.status || []);
     const current = appRunsHiddenStatuses();
     if (next.size === current.size && [...next].every((s) => current.has(s))) return;
     saveAppRunsHiddenStatuses(next);
