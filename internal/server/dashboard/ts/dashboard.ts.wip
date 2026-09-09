@@ -57,7 +57,7 @@ interface DataTableElement<T = Record<string, unknown>> extends HTMLElement {
 	search?: boolean;
 	rowClass?: (row: T) => string;
 	detailFor?: (row: T) => Node | null;
-	filter?: Record<string, string[]>;
+	filter?: { query?: string; hidden?: Record<string, string[]>; sort?: string | null; dir?: string | null };
 	expanded?: string[];
 }
 
@@ -302,6 +302,7 @@ interface ManagerStatus {
 	id?: string;
 	title?: string;
 	disabled?: boolean;
+	instance_id?: string;
 	state: string;
 	tracked?: number;
 	max_tracked?: number;
@@ -332,7 +333,7 @@ interface ImageState {
 	tag?: string;
 	built?: string;
 	error?: string;
-	images?: unknown[];
+	images?: ImageState[];
 	[extra: string]: unknown;
 }
 
@@ -1282,11 +1283,11 @@ async function toggleHook(id: string, disable: boolean) {
 // refresh move it, so a cancelled confirm or a failed POST leaves the
 // switch where the server is.
 function hookSwitch(id: string, disabled: boolean) {
-  const input: HTMLInputElement = el("input", {
+  const input = el("input", {
     type: "checkbox",
     role: "switch",
     "aria-label": `Enable hook ${id}`,
-  });
+  }) as HTMLInputElement;
   input.checked = !disabled;
   input.addEventListener("change", () => {
     const disable = !input.checked; // the flip the click asked for
@@ -1373,11 +1374,11 @@ async function toggleManager(id: string, disable: boolean) {
 // The hookSwitch pattern verbatim: server state only, the click's visual
 // flip reverts and the refresh moves it.
 function managerSwitch(id: string, disabled: boolean) {
-  const input: HTMLInputElement = el("input", {
+  const input = el("input", {
     type: "checkbox",
     role: "switch",
     "aria-label": `Enable manager ${id}`,
-  });
+  }) as HTMLInputElement;
   input.checked = !disabled;
   input.addEventListener("change", () => {
     const disable = !input.checked;
@@ -1847,7 +1848,7 @@ async function clearGlobalCapOverride(def: number) {
 // The server-wide run cap, as a one-row <data-table>. It is a table and not
 // a definition list because it IS the same shape as a concurrency group —
 // same columns, same drill-down — and the operator reads the two together.
-function renderGlobalCap(g: ConcurrencyRow) {
+function renderGlobalCap(g: ConcurrencyRow | null) {
   const wrap = document.getElementById("concurrency-global-cap");
   if (!wrap) return;
   wrap.hidden = !g;
@@ -2745,7 +2746,7 @@ async function renderAppKV(info: Hook, listing: KVListing) {
   const wantScroll = pendingKVScroll;
   pendingKVScroll = false;
   if (!info.state) return;
-  const t = byId<DataTableElement<Namespace>>("app-kv-table");
+  const t = byId<DataTableElement<KVEntry>>("app-kv-table");
   if (!t) return;
   if (appKVHook !== info.id) {
     // Switched to a different hook's page: collapse any open value row.
