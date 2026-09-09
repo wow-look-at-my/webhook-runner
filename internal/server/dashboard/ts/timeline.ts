@@ -148,24 +148,81 @@
  *     2026-07-15 full-window-crosshatch-over-live-bars incident.)
  */
 
-// Types only — erased at compile time, so this import resolves against the
-// committed ts/js-snippets/timeline-view.d.ts pair (fetched from upstream by
-// generate-timeline.sh) rather than the live URL below: TypeScript never
-// fetches an https:// specifier to type-check it. The component itself is
-// loaded at RUNTIME by loadComponentForever() below (a dynamic import of
-// COMPONENT_URL, kept verbatim in the built bundle via esbuild `external`);
-// the browser fetches it (and its sibling chunk imports) from js-snippets'
-// buildhost library site. Deliberately NOT a static side-effect import: a
-// static import that fails would kill this whole module, and the load must
-// retry forever instead.
-import type {
-	TimelineData,
-	TimelineHit,
-	TimelineInterval,
-	TimelineLane,
-	TimelineSegment,
-	TimelineViewElement,
-} from './js-snippets/timeline-view.d.ts';
+// The payloads THIS adapter builds and hands to <timeline-view>, plus the
+// element surface it drives. Upstream's own .d.ts is the single place the
+// component's full API is written down; these declare only what this file
+// constructs and calls, so nothing here can disagree with an API nobody here
+// uses. The component is loaded at RUNTIME by loadComponentForever() below (a
+// dynamic import of COMPONENT_URL, kept verbatim in the built bundle via
+// esbuild `external`); the browser fetches it from js-snippets' buildhost
+// library site. Deliberately NOT a static side-effect import: a static import
+// that fails would kill this whole module, and the load must retry forever.
+
+/** A swimlane: one labeled horizontal band. */
+interface TimelineLane {
+	id: string;
+	label: string;
+	group?: string;
+}
+
+/** A phase within an interval, rendered as a sub-span of the bar. */
+interface TimelineSegment {
+	start: number | Date;
+	end?: number | Date | null;
+	kind: string;
+}
+
+/** One bar on a lane. */
+interface TimelineInterval {
+	id: string;
+	laneId: string;
+	start: number | Date;
+	end?: number | Date | null;
+	label?: string;
+	labelTiers?: string[];
+	category?: string;
+	state?: string;
+	segments?: TimelineSegment[];
+	data?: unknown;
+}
+
+interface TimelineData {
+	lanes?: TimelineLane[];
+	intervals?: TimelineInterval[];
+	connectors?: never[];
+	coverage?: { start: number | Date; end: number | Date };
+}
+
+/** What the pointer is over. Only the variants this adapter answers for. */
+type TimelineHit =
+	| { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
+	| { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
+	| { type: 'connector' }
+	| { type: 'marker' }
+	| { type: 'lane'; lane: TimelineLane };
+
+/** One rendering treatment in the element's `styles` map. */
+interface IntervalStyle {
+	pattern?: 'solid' | 'hatch' | 'stipple' | 'outline';
+	saturationScale?: number;
+	lightnessScale?: number;
+	alphaScale?: number;
+}
+
+/** The element members this adapter drives. */
+interface TimelineViewElement extends HTMLElement {
+	setData(data: TimelineData): void;
+	mergeData(data: TimelineData): void;
+	setLanes(lanes: TimelineLane[]): void;
+	setViewport(start: number | Date, end: number | Date): void;
+	/** Feature-detected per call: an older component ships without it. */
+	markFresh?: (ts?: number | Date) => void;
+	staleAfterMs: number;
+	styles: Record<string, IntervalStyle>;
+	legendEntries: { glyph: string; text: string }[];
+	loadRange: ((start: number, end: number) => Promise<{ exhausted?: boolean } | void>) | null;
+	tooltipFor: ((hit: TimelineHit) => string | Node | null | undefined) | null;
+}
 
 import { mountSettings } from './settingsform.ts';
 
