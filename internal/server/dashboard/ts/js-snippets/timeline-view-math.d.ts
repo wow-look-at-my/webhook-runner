@@ -1,3 +1,4 @@
+import type { HitRect } from './hit-test.ts';
 /** A swimlane: one labeled horizontal band of the timeline. */
 export interface TimelineLane {
     /** Unique lane id — intervals reference it via `laneId`. */
@@ -926,31 +927,8 @@ export declare function minimapPan(view: TimeView, dxPx: number, extent: TimeVie
 export declare function minimapResize(view: TimeView, edge: 'left' | 'right', xPx: number, extent: TimeView, width: number, minSpan?: number, maxSpan?: number): TimeView;
 /** Click outside the window: re-center it at the clicked time, span preserved, extent-clamped like a pan. */
 export declare function minimapCenter(view: TimeView, xPx: number, extent: TimeView, width: number): TimeView;
-/** An axis-aligned hit rectangle (CSS px). */
-export interface HitRect {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-}
-/**
- * Widen a (possibly hairline) rect to at least `minW` px around its center —
- * instants get a hit target a few px larger than their visual so they stay
- * hoverable/clickable.
- */
-export declare function expandHitRect(r: HitRect, minW: number): HitRect;
-/**
- * Index of the TOPMOST (= last, matching paint order) rect containing the
- * point, or -1. Edges are inclusive.
- */
-export declare function hitTestRects(x: number, y: number, rects: readonly HitRect[]): number;
-/** Squared distance from point p to segment ab. */
-export declare function distSqToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number;
-/** True when the point is within `tol` px of the polyline. */
-export declare function hitTestPolyline(px: number, py: number, pts: readonly {
-    x: number;
-    y: number;
-}[], tol: number): boolean;
+export { expandHitRect, hitTestRects, distSqToSegment, hitTestPolyline } from './hit-test.ts';
+export type { HitRect } from './hit-test.ts';
 /**
  * Route for a connector from the right-center of `from` to the left-center
  * of `to`: a sampled cubic bezier with horizontal control handles, so the
@@ -986,65 +964,8 @@ export interface SegmentHit {
  * segment covers t (the pointer is over the base bar, or off it).
  */
 export declare function segmentAtTime(segments: readonly TimelineSegment[] | null | undefined, intervalStart: number, intervalEnd: number, t: number): SegmentHit | null;
-/** FNV-1a 32-bit hash (stable across sessions/platforms). */
-export declare function hashString(s: string): number;
-/**
- * Stable category → hue in [0, 360): FNV-1a scattered by the golden-ratio
- * conjugate, so similar strings land far apart and hues spread uniformly.
- * Same string = same hue, forever.
- */
-export declare function categoryHue(category: string): number;
-/**
- * Deterministic per-category lightness/chroma offsets (|dl| <= 0.05,
- * |dc| <= 0.02), derived from independent hash bits. A second visual
- * discriminator: two categories that happen to hash to nearby hues still
- * separate by tone, while every category keeps one stable color forever.
- */
-export declare function categoryJitter(category: string): {
-    dl: number;
-    dc: number;
-};
-/** Options for categoryColor. */
-export interface CategoryColorOptions {
-    /** 'oklch' (perceptually even lightness — preferred) or 'hsl' fallback. */
-    mode?: 'oklch' | 'hsl';
-    /** oklch lightness 0..1 (default 0.62 — readable chips on a dark bg). */
-    lightness?: number;
-    /** oklch chroma (default 0.11 — saturated but not neon). */
-    chroma?: number;
-    /** Alpha 0..1 (default 1). */
-    alpha?: number;
-}
-/**
- * CSS color for a category hue. oklch keeps perceived lightness even across
- * hues (label text stays readable on every category); the hsl fallback
- * approximates it for engines without oklch support.
- */
-export declare function categoryColor(hue: number, opts?: CategoryColorOptions): string;
-/**
- * The uniform DIM transform: 50% saturation, 50% value (HSV), hue and
- * alpha untouched — "a filter laid over the whole dimmed region". Applied
- * by the element to EVERY color painted inside a dimmed region (fill,
- * hatching, border, label text), so relative text-vs-fill contrast is
- * preserved while the whole section recedes. Accepts #hex, rgb()/rgba(),
- * hsl()/hsla(), and oklch() color forms; anything else (named colors,
- * var() references) is returned unchanged — the caller keeps a sane
- * color either way.
- */
-export declare function dimColor(color: string): string;
-/**
- * Halo color for canvas label text: the translucent counter-color rim
- * (`strokeText` under the fill) that guarantees label legibility over
- * ANY span surface — solid fills, dimmed/hatched segments, pattern
- * stripes, scrims — at every zoom. Picks whichever of black/white
- * contrasts more with the foreground itself (the WCAG-ratio crossover
- * sits at relative luminance ≈ 0.1791): dark halo under a light fg,
- * light halo under a dark fg, so the pairing holds on light themes
- * too. Alpha 0.55 keeps it a rim, not a box. Unparseable colors
- * (var() refs, named colors) fall back to the dark halo — the shape of
- * the dark default theme.
- */
-export declare function labelHaloColor(fg: string): string;
+export { hashString, categoryHue, categoryJitter, categoryColor, dimColor, labelHaloColor, } from './color.ts';
+export type { CategoryColorOptions } from './color.ts';
 /** Fill pattern for an interval state / segment kind. */
 export type StylePattern = 'solid' | 'hatch' | 'stipple' | 'outline';
 /** Rendering treatment for one interval `state` or segment `kind`. */
