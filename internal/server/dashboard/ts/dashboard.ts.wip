@@ -68,7 +68,7 @@ type DetailEvent<D> = CustomEvent<D>;
 /** document.getElementById for an element this file drives. Returns null the
  * same way getElementById does; every caller already guards. */
 function byId<T extends HTMLElement>(id: string): T | null {
-	return document.getElementById(id) as T | null;
+	return document.getElementById(id)! as T | null;
 }
 
 /** The message of a caught value, which TypeScript hands over as unknown. */
@@ -441,7 +441,7 @@ function waitDetail(r) {
   if (!w) return null;
   const frag = document.createDocumentFragment();
   const linkList = (ids) => {
-    ids.forEach((id, i) => {
+    ids.forEach((id: string, i: number) => {
       if (i > 0) frag.appendChild(document.createTextNode(", "));
       frag.appendChild(runLink(id));
     });
@@ -489,7 +489,7 @@ function waitersDetail(r) {
   const ws = r.waiters;
   if (!ws || !ws.length) return null;
   const frag = document.createDocumentFragment();
-  ws.forEach((x, i) => {
+  ws.forEach((x, i: number) => {
     if (i > 0) frag.appendChild(document.createTextNode("; "));
     frag.appendChild(runLink(x.run_id));
     frag.appendChild(document.createTextNode(` (${x.hook_id}) → ${waiterWants(x)}`));
@@ -499,7 +499,7 @@ function waitersDetail(r) {
 
 // "1st", "2nd", "3rd", "4th", … (11th-13th included) — the queue-position
 // vocabulary shared with the timeline's ⧗ badge.
-function ordinal(n) {
+function ordinal(n: number) {
   const rem = n % 100;
   if (rem >= 11 && rem <= 13) return `${n}th`;
   switch (n % 10) {
@@ -510,7 +510,7 @@ function ordinal(n) {
   }
 }
 
-function shortId(id) {
+function shortId(id: string) {
   return id && id.length > 10 ? id.slice(0, 10) + "…" : id || "";
 }
 
@@ -545,7 +545,7 @@ function currentHookId() {
 
 // The fragment for a hook's app page; kv: true additionally lands it on the
 // State (KV) key/value browser (consumed as a one-shot scroll by renderAppKV).
-function hookHref(id, opts) {
+function hookHref(id: string, opts) {
   return "#hook=" + encodeURIComponent(id) + (opts && opts.kv ? "&kv=1" : "");
 }
 
@@ -595,28 +595,28 @@ function currentManagerId() {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-function managerHref(id) {
+function managerHref(id: string) {
   return "#manager=" + encodeURIComponent(id);
 }
 
-function applyPage(page) {
+function applyPage(page: string) {
   const show = new Set(PAGE_SECTIONS[page] || PAGE_SECTIONS.overview);
   const all = new Set();
   for (const ids of Object.values(PAGE_SECTIONS)) for (const id of ids) all.add(id);
   for (const id of all) {
-    const sec = document.getElementById(id);
+    const sec = document.getElementById(id)!;
     if (sec) sec.classList.toggle("page-off", !show.has(id));
   }
   // The dedicated Runs page always shows the table (the overview keeps it
   // behind timeline.js's toggle — that toggle's `hidden` flips are its
   // own; the router only ever touches .page-off).
   if (page === "runs") {
-    document.getElementById("runs-section").hidden = false;
+    document.getElementById("runs-section")!.hidden = false;
   }
   updateNav(page);
 }
 
-function updateNav(page) {
+function updateNav(page: string) {
   const hookId = currentHookId();
   const managerId = currentManagerId();
   document.querySelectorAll<HTMLElement>("#sidebar .nav-link").forEach((a) => {
@@ -630,9 +630,9 @@ function updateNav(page) {
   });
 }
 
-function setView(hookId) {
-  document.getElementById("overview-view").hidden = !!hookId;
-  document.getElementById("app-view").hidden = !hookId;
+function setView(hookId: string) {
+  document.getElementById("overview-view")!.hidden = !!hookId;
+  document.getElementById("app-view")!.hidden = !hookId;
   if (!hookId) applyPage(currentPage());
   const managerId = currentManagerId();
   document.title = hookId
@@ -660,7 +660,7 @@ let currentRunLines = [];
 let currentRunTimes = [];
 let currentRunTurns = null;
 
-function classifyMarker(line) {
+function classifyMarker(line: string) {
   let m = line.match(/^--- model input: (.+?) ---$/);
   if (m) return { role: /^system prompt/.test(m[1]) ? "system" : "user", label: m[1] };
   m = line.match(/^--- model output(?: \((.*)\))? ---$/);
@@ -670,7 +670,7 @@ function classifyMarker(line) {
 
 // The hook's own log lines (progress, status, retries) that can appear between
 // or after model sections -- kept out of the conversation turns.
-function isLogLine(line) {
+function isLogLine(line: string) {
   return (
     /^[^\s/]+\/[^\s/]+#\d+:/.test(line) ||
     /^--- (summarizing part|diff is|\d+ section summaries)/.test(line) ||
@@ -708,7 +708,7 @@ function parseConversation(entries) {
 }
 
 function renderRunOutput(view) {
-  const container = document.getElementById("run-detail-output");
+  const container = document.getElementById("run-detail-output")!;
   container.innerHTML = "";
   if (view === "conversation" && currentRunTurns) {
     for (const t of currentRunTurns) {
@@ -818,7 +818,7 @@ const sectionFetchers = {
 };
 
 function stampUpdated() {
-  document.getElementById("updated").textContent =
+  document.getElementById("updated")!.textContent =
     "updated " + new Date().toLocaleTimeString();
 }
 
@@ -961,7 +961,7 @@ window.addEventListener("whr:run-delta", (e) => {
   if (hookId) {
     if (run && run.hook_id === hookId) dirtySections.add("app");
   } else {
-    const runsSection = document.getElementById("runs-section");
+    const runsSection = document.getElementById("runs-section")!;
     if (runsSection && !runsSection.hidden) dirtySections.add("runs");
   }
   if (dirtySections.size > 0) scheduleSectionWork();
@@ -986,8 +986,8 @@ window.addEventListener("whr:stream-state", (e) => {
   refresh();
 });
 
-function setBadge(ok) {
-  const b = document.getElementById("health-badge");
+function setBadge(ok: boolean) {
+  const b = document.getElementById("health-badge")!;
   b.textContent = ok ? "healthy" : "unhealthy";
   b.classList.toggle("ok", ok);
   b.classList.toggle("bad", !ok);
@@ -998,7 +998,7 @@ function setBadge(ok) {
 // are served on the separate hook port -- a URL built from location.origin
 // looks copyable but points at the wrong host. The path is the part we know;
 // .copyable (user-select: all) keeps it one-click selectable.
-function triggerPath(id) {
+function triggerPath(id: string) {
   return [
     el("code", { class: "copyable" }, `/hook/${id}`),
     " ",
@@ -1013,7 +1013,7 @@ function triggerPath(id) {
 // persist server-side (survive restarts AND hooks-repo reloads), so this
 // is the way to stop a runaway hook — no config PR, no repo surgery.
 
-async function toggleHook(id, disable) {
+async function toggleHook(id: string, disable: boolean) {
   if (disable && !confirm(`Disable hook ${id}? Deliveries will be rejected.`)) return;
   try {
     const res = await fetch(
@@ -1032,7 +1032,7 @@ async function toggleHook(id, disable) {
 // change handler reverts the click's visual flip and lets toggleHook()'s
 // refresh move it, so a cancelled confirm or a failed POST leaves the
 // switch where the server is.
-function hookSwitch(id, disabled) {
+function hookSwitch(id: string, disabled: boolean) {
   const input = el("input", {
     type: "checkbox",
     role: "switch",
@@ -1108,7 +1108,7 @@ function renderHooks(hooks) {
 // runs: their logs live on the #manager=<id> drill-down
 // (GET /managers/{id}'s output tail), never in /runs or the timeline.
 
-async function toggleManager(id, disable) {
+async function toggleManager(id: string, disable: boolean) {
   if (disable && !confirm(`Disable manager ${id}? Its instance will be stopped and deliveries rejected.`)) return;
   try {
     const res = await fetch(
@@ -1123,7 +1123,7 @@ async function toggleManager(id, disable) {
 
 // The hookSwitch pattern verbatim: server state only, the click's visual
 // flip reverts and the refresh moves it.
-function managerSwitch(id, disabled) {
+function managerSwitch(id: string, disabled: boolean) {
   const input = el("input", {
     type: "checkbox",
     role: "switch",
@@ -1145,7 +1145,7 @@ function managerSwitch(id, disabled) {
   return sw;
 }
 
-async function restartManager(id) {
+async function restartManager(id: string) {
   if (!confirm(`Restart manager ${id}? The live instance stops gracefully and a fresh one starts.`)) return;
   try {
     const res = await fetch(`/managers/${encodeURIComponent(id)}/restart`, { method: "POST" });
@@ -1251,7 +1251,7 @@ function renderManagers(list) {
   }
   t.rows = list;
   // The drill-down only renders while its fragment is open.
-  if (!currentManagerId()) document.getElementById("manager-detail").hidden = true;
+  if (!currentManagerId()) document.getElementById("manager-detail")!.hidden = true;
 }
 
 // --- Manager output copy ----------------------------------------------------
@@ -1275,7 +1275,7 @@ function managerOutputText(lines) {
 
 async function copyManagerOutput(btn) {
   const text = managerOutputText(managerDetailOutputLines);
-  const flash = (label) => {
+  const flash = (label: string) => {
     const prev = btn.textContent;
     btn.textContent = label;
     btn.disabled = true;
@@ -1303,13 +1303,13 @@ async function copyManagerOutput(btn) {
   }
 }
 
-document.getElementById("manager-output-copy").addEventListener("click", (e) => {
+document.getElementById("manager-output-copy")!.addEventListener("click", (e) => {
   void copyManagerOutput(e.currentTarget);
 });
 
 function renderManagerDetail(d) {
   const open = currentManagerId();
-  const box = document.getElementById("manager-detail");
+  const box = document.getElementById("manager-detail")!;
   if (!open || !d || d.id !== open) {
     box.hidden = true;
     managerDetailOutputLines = [];
@@ -1318,14 +1318,14 @@ function renderManagerDetail(d) {
   }
   managerDetailData = d;
   box.hidden = false;
-  document.getElementById("manager-detail-title").replaceChildren(
+  document.getElementById("manager-detail-title")!.replaceChildren(
     el("code", null, d.id),
     " ",
     managerStateChip(d),
   );
-  const meta = document.getElementById("manager-detail-meta");
+  const meta = document.getElementById("manager-detail-meta")!;
   meta.innerHTML = "";
-  const row = (k, v) => {
+  const row = (k: string, v) => {
     if (v == null || v === "") return;
     meta.appendChild(el("dt", null, k));
     meta.appendChild(el("dd", null, v));
@@ -1352,7 +1352,7 @@ function renderManagerDetail(d) {
   if (d.concurrency_group) row("Concurrency group", d.concurrency_group);
   row("Enable default", d.enabled_by_default ? "enabled (ships working; the switch is the emergency stop)" : "disabled in manager.json (explicit enable:false)");
   managerDetailOutputLines = d.output || [];
-  const out = document.getElementById("manager-detail-output");
+  const out = document.getElementById("manager-detail-output")!;
   // Follow the tail only while the operator is AT the tail: the log now
   // refetches on every pushed output line, and yanking a scrolled-back
   // reader to the bottom once a second would make history unreadable.
@@ -1385,7 +1385,7 @@ function managerUptimeText(d) {
 setInterval(() => {
   const d = managerDetailData;
   if (!d || !tsPresent(d.instance_started)) return;
-  const cell = document.getElementById("manager-uptime");
+  const cell = document.getElementById("manager-uptime")!;
   if (cell) cell.textContent = managerUptimeText(d);
 }, 1000);
 
@@ -1418,7 +1418,7 @@ function attentionSourceLabel(source) {
 // fields no column renders — an attention entry's `key` above all, which is
 // what identifies the problem across re-derivations and is what you need
 // when reporting one. stopPropagation because these rows navigate on click.
-function copyJSONButton(value, title) {
+function copyJSONButton(value, title: string) {
   const btn = el("button", { class: "toggle-btn", type: "button", title }, "Copy JSON");
   btn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -1440,14 +1440,14 @@ function copyJSONButton(value, title) {
 // (the tests do) works, but the endpoint's own shape is the contract.
 function renderAttention(payload) {
   const entries = Array.isArray(payload) ? payload : (payload && payload.entries) || [];
-  const banner = document.getElementById("attention-banner");
+  const banner = document.getElementById("attention-banner")!;
   banner.hidden = entries.length === 0;
-  document.getElementById("attention-banner-text").textContent =
+  document.getElementById("attention-banner-text")!.textContent =
     entries.length === 1
       ? "1 problem needs attention"
       : `${entries.length} problems need attention`;
 
-  const section = document.getElementById("attention-section");
+  const section = document.getElementById("attention-section")!;
   section.hidden = entries.length === 0;
   const t = byId<DataTableElement>("attention-table");
   if (!t) return;
@@ -1503,14 +1503,14 @@ function renderAttention(payload) {
 // The banner's "view" jump routes to the dedicated Attention page — the
 // panel is its whole content, so no scroll choreography is needed (the
 // old overview-scroll dance predates the sidebar's paged sections).
-document.getElementById("attention-banner-link").addEventListener("click", (e) => {
+document.getElementById("attention-banner-link")!.addEventListener("click", (e) => {
   e.preventDefault();
   location.hash = "#page=attention";
 });
 
 // --- Concurrency groups: declared vs effective + live override -------------
 
-async function overrideLimit(name, declared, current) {
+async function overrideLimit(name: string, declared, current) {
   const v = prompt(
     `Override the concurrency limit for group "${name}" (declared ${declared}).\n` +
     "Must be an integer >= 1 — to stop the group's hooks entirely, disable the hooks instead.",
@@ -1535,7 +1535,7 @@ async function overrideLimit(name, declared, current) {
   refresh();
 }
 
-async function clearLimitOverride(name, declared) {
+async function clearLimitOverride(name: string, declared) {
   if (!confirm(`Revert group "${name}" to its declared limit (${declared})?`)) return;
   try {
     const res = await fetch(`/concurrency/${encodeURIComponent(name)}/limit`, { method: "DELETE" });
@@ -1733,7 +1733,7 @@ function groupDetailContent(g) {
   }
   if (waiting.length) {
     box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
-    waiting.forEach((r, i) => {
+    waiting.forEach((r, i: number) => {
       box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
     });
   }
@@ -1817,7 +1817,7 @@ a:hover { text-decoration: underline; }
 function componentSupports(elm, prop, what) {
   if (prop in elm) return true;
   const id = `${elm.id}-degraded`;
-  if (!document.getElementById(id)) {
+  if (!document.getElementById(id)!) {
     elm.insertAdjacentElement("afterend", el("p", { id, class: "empty degraded-note" },
       `${what} unavailable: the loaded <${elm.localName}> is older than this page ` +
       `(no "${prop}"). Reload to pick up the current component; if it persists, the ` +
@@ -2018,7 +2018,7 @@ function renderImages(images) {
 // to.
 function imagesOnDisk(im) {
   return (im.images || [])
-    .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: number) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
     .join(", ");
 }
 
@@ -2048,10 +2048,10 @@ function imagesOnDisk(im) {
 // treats that as empty. The two hooks make it match the rest of this
 // dashboard: GitHub slugs in messages stay clickable, and timestamps use the
 // same fmtTime as every other table.
-function renderEventsInto(elementId, events) {
+function renderEventsInto(elementId: string, events) {
   const feed = document.getElementById(elementId);
   if (!feed) return;
-  feed.messageRenderer = (msg) => linkifyGH(msg);
+  feed.messageRenderer = (msg: string) => linkifyGH(msg);
   feed.timeFormatter = (t) => fmtTime(t);
   // The Go side records both "hooks.reloaded" and "hook.enabled"; they are
   // one subsystem, so they get one family (and one dot color).
@@ -2063,7 +2063,7 @@ function renderEvents(events) {
   renderEventsInto("events-feed", events);
 }
 
-function fmtBytes(n) {
+function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
@@ -2115,7 +2115,7 @@ function renderKV(namespaces, loadedHookIDs) {
 
 // --- Per-app view (app == one hook) ----------------------------------------
 
-async function refreshApp(id) {
+async function refreshApp(id: string) {
   const enc = encodeURIComponent(id);
   let detail;
   try {
@@ -2167,9 +2167,9 @@ async function refreshApp(id) {
 // hook, never on every poll: the form holds live edit state, and re-mounting
 // under someone mid-edit would throw their typing away.
 let appSettingsHook = null;
-function renderAppSettings(id) {
-  const section = document.getElementById("app-settings-section");
-  const host = document.getElementById("app-settings");
+function renderAppSettings(id: string) {
+  const section = document.getElementById("app-settings-section")!;
+  const host = document.getElementById("app-settings")!;
   if (!section || !host) return;
   // timeline.js is a module and loads after this script; on the very first
   // paint it may not have published the mount yet. Leaving the section
@@ -2181,27 +2181,27 @@ function renderAppSettings(id) {
   window.whrMountSettings(host, id);
 }
 
-function renderAppMissing(id) {
-  document.getElementById("app-title").textContent = id;
-  document.getElementById("app-desc").textContent = "";
-  const missing = document.getElementById("app-missing");
+function renderAppMissing(id: string) {
+  document.getElementById("app-title")!.textContent = id;
+  document.getElementById("app-desc")!.textContent = "";
+  const missing = document.getElementById("app-missing")!;
   missing.textContent = "No such hook.";
   missing.hidden = false;
-  document.getElementById("app-body").hidden = true;
-  document.getElementById("app-switch").hidden = true;
-  document.getElementById("app-diagnostics-link").hidden = true;
+  document.getElementById("app-body")!.hidden = true;
+  document.getElementById("app-switch")!.hidden = true;
+  document.getElementById("app-diagnostics-link")!.hidden = true;
 }
 
 // The app page for a namespace whose hook is gone (orphaned state): the
 // hook sections stay hidden, but the State (KV) key/value browser renders
 // exactly as it would for a live state hook — leftover data is the case
 // the operator most needs to inspect, not the one to hide.
-async function renderAppOrphanKV(id, listing) {
+async function renderAppOrphanKV(id: string, listing) {
   renderAppMissing(id);
-  const missing = document.getElementById("app-missing");
+  const missing = document.getElementById("app-missing")!;
   missing.textContent =
     "No such hook is loaded — showing this namespace's stored state (orphaned; left by a removed or renamed hook).";
-  document.getElementById("app-body").hidden = false;
+  document.getElementById("app-body")!.hidden = false;
   setAppOrphanMode(true);
   await renderAppKV({ id, state: true }, listing);
 }
@@ -2210,8 +2210,8 @@ async function renderAppOrphanKV(id, listing) {
 // leaving only the State (KV) browser; renderApp flips it back off.
 function setAppOrphanMode(orphan) {
   document.querySelector<HTMLElement>("#app-body .app-cards").hidden = orphan;
-  document.getElementById("app-runs-section").hidden = orphan;
-  document.getElementById("app-events-section").hidden = orphan;
+  document.getElementById("app-runs-section")!.hidden = orphan;
+  document.getElementById("app-events-section")!.hidden = orphan;
 }
 
 function fillDl(dl, rows) {
@@ -2224,25 +2224,25 @@ function fillDl(dl, rows) {
 
 function renderApp(detail, runs, events) {
   const info = detail.info;
-  document.getElementById("app-missing").hidden = true;
-  document.getElementById("app-body").hidden = false;
+  document.getElementById("app-missing")!.hidden = true;
+  document.getElementById("app-body")!.hidden = false;
   setAppOrphanMode(false);
-  document.getElementById("app-title").textContent = info.id;
-  setLinkifiedText(document.getElementById("app-desc"), info.description || "");
+  document.getElementById("app-title")!.textContent = info.id;
+  setLinkifiedText(document.getElementById("app-desc")!, info.description || "");
 
   // Operator kill switch for this hook: the same single switch as the
   // overview's Status column, next to the title.
-  const switchSlot = document.getElementById("app-switch");
+  const switchSlot = document.getElementById("app-switch")!;
   switchSlot.hidden = false;
   switchSlot.replaceChildren(hookSwitch(info.id, detail.disabled));
 
   // The server sets Content-Disposition: attachment on this response, so a
   // plain click downloads it — no blob/JS assembly needed.
-  const diagLink = document.getElementById("app-diagnostics-link");
+  const diagLink = document.getElementById("app-diagnostics-link")!;
   diagLink.hidden = false;
   diagLink.href = "/hooks/" + encodeURIComponent(info.id) + "/diagnostics";
 
-  fillDl(document.getElementById("app-info"), [
+  fillDl(document.getElementById("app-info")!, [
     ["Trigger path", triggerPath(info.id)],
     ["Operator switch", detail.disabled
       ? el("span", { class: "status failure" }, "DISABLED — deliveries rejected (503), scheduled runs skipped")
@@ -2257,7 +2257,7 @@ function renderApp(detail, runs, events) {
       : "none"],
     ["API key", info.api_key ? "configured" : "none"],
     ["Env vars", info.env_keys && info.env_keys.length
-      ? el("span", { class: "chips" }, ...info.env_keys.map((k) => el("code", null, k)))
+      ? el("span", { class: "chips" }, ...info.env_keys.map((k: string) => el("code", null, k)))
       : "none"],
     ["State (KV)", !info.state ? "off"
       : kvSectionLink(detail.kv
@@ -2266,12 +2266,12 @@ function renderApp(detail, runs, events) {
   ]);
 
   const st = detail.stats;
-  document.getElementById("app-stats-window").textContent = st.retention
+  document.getElementById("app-stats-window")!.textContent = st.retention
     ? `Window: live runs plus completed runs persisted for the last ${st.retention} (survives restarts; runs in flight during a restart are lost).`
     : `Recent window: the last ≤${st.max_tracked} runs held in memory (resets on restart).`;
   const byStatus = Object.entries(st.by_status || {}).map(([k, n]) =>
     el("span", { class: "status " + k }, `${k} ×${n}`));
-  fillDl(document.getElementById("app-stats"), [
+  fillDl(document.getElementById("app-stats")!, [
     ["Runs tracked", String(st.tracked)],
     ["By status", byStatus.length ? el("span", { class: "chips" }, ...byStatus) : "—"],
     ["Success rate", st.completed ? `${Math.round(st.success_rate * 100)}% of ${st.completed} completed` : "—"],
@@ -2315,9 +2315,9 @@ function renderApp(detail, runs, events) {
   else if (im.built) state = el("span", { class: "badge ok" }, "built");
   else state = el("span", { class: "badge warn" }, "will build on next run");
   const others = (im.images || [])
-    .map((i) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: number) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
     .join(", ");
-  fillDl(document.getElementById("app-image"), [
+  fillDl(document.getElementById("app-image")!, [
     ["Current tag", el("code", null, im.tag || "-")],
     ["State", state],
     ["On disk", others || "none"],
@@ -2479,17 +2479,17 @@ function fmtTTL(seconds) {
 // browser. A click handler rather than a real fragment href: an
 // "#app-kv-section" href would replace the #hook= fragment and route
 // back to the overview.
-function kvSectionLink(text) {
+function kvSectionLink(text: string) {
   const a = el("a", { href: "#", class: "kv-jump", title: "view stored keys and values below" }, text);
   a.addEventListener("click", (e) => {
     e.preventDefault();
-    document.getElementById("app-kv-section").scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("app-kv-section")!.scrollIntoView({ behavior: "smooth", block: "start" });
   });
   return a;
 }
 
 async function renderAppKV(info, listing) {
-  const section = document.getElementById("app-kv-section");
+  const section = document.getElementById("app-kv-section")!;
   section.hidden = !info.state;
   // Consume the one-shot &kv=1 landing scroll even for a state-less hook,
   // so it can never fire on a later poll of some other page.
@@ -2526,7 +2526,7 @@ async function renderAppKV(info, listing) {
   // shows a placeholder and paints when it resolves, and renders the error
   // into the row if the key expired between the listing and the click.
   if (componentSupports(t, "detailFor", "Stored-value inspection")) {
-    t.detailFor = (k) => kvValueContent(info.id, k.key);
+    t.detailFor = (k: string) => kvValueContent(info.id, k.key);
   }
   t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2537,7 +2537,7 @@ async function renderAppKV(info, listing) {
 // column-spanning cell). A fetch failure is thrown, not swallowed — the
 // component paints the message into the open row, which is what the
 // operator needs when a key expires between the listing and the click.
-async function kvValueContent(hookId, key) {
+async function kvValueContent(hookId: string, key: string) {
   const box = el("div", { class: "kv-value-box" });
   const e = await fetchJSON(
     `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
@@ -2563,7 +2563,7 @@ async function kvValueContent(hookId, key) {
 }
 
 // A run ID that opens the same output modal the runs tables use.
-function runLink(id) {
+function runLink(id: string) {
   const a = el("a", { href: "#", class: "run-link" }, el("code", null, id));
   a.addEventListener("click", (e) => {
     e.preventDefault();
@@ -2607,7 +2607,7 @@ let currentRunTerminal = false; // last rendered status was terminal
 // most one /runs/{id} per RUN_DETAIL_POLL_MS however many deltas arrive.
 let lastRunDetailFetch = 0;
 
-async function showRun(id) {
+async function showRun(id: string) {
   currentRunId = id;
   currentRunView = null;
   currentRunTerminal = false;
@@ -2647,12 +2647,12 @@ async function refreshRunDetail(openDialog) {
 // A 404 means the run is genuinely not being served — no longer tracked by
 // this server (whatever the reason; wording stays neutral) — while any
 // other failure renders as a plain load error.
-function renderRunDetailUnavailable(id, err) {
+function renderRunDetailUnavailable(id: string, err) {
   currentRunTerminal = true; // nothing to live-poll — the run isn't served
-  document.getElementById("run-detail-name").textContent = "Run";
-  document.getElementById("run-detail-id").textContent = id;
+  document.getElementById("run-detail-name")!.textContent = "Run";
+  document.getElementById("run-detail-id")!.textContent = id;
   const is404 = /: 404$/.test(String((err && err.message) || ""));
-  const dl = document.getElementById("run-detail-meta");
+  const dl = document.getElementById("run-detail-meta")!;
   dl.innerHTML = "";
   dl.appendChild(el("dt", null, "Status"));
   dl.appendChild(el("dd", null,
@@ -2660,9 +2660,9 @@ function renderRunDetailUnavailable(id, err) {
   currentRunLines = [];
   currentRunTimes = [];
   currentRunTurns = null;
-  document.getElementById("run-detail-view-toggle").hidden = true;
-  document.getElementById("run-detail-copy").disabled = true;
-  const out = document.getElementById("run-detail-output");
+  document.getElementById("run-detail-view-toggle")!.hidden = true;
+  document.getElementById("run-detail-copy")!.disabled = true;
+  const out = document.getElementById("run-detail-output")!;
   out.innerHTML = "";
   out.appendChild(el("pre", { class: "raw-log" },
     is404
@@ -2678,9 +2678,9 @@ function renderRunDetail(r, openDialog) {
   // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
   // generic "Run" word otherwise; the full id always sits beside it in
   // the (small, muted) code chip.
-  setLinkifiedText(document.getElementById("run-detail-name"), r.title || "Run", { bareRepo: true });
-  document.getElementById("run-detail-id").textContent = r.id;
-  const dl = document.getElementById("run-detail-meta");
+  setLinkifiedText(document.getElementById("run-detail-name")!, r.title || "Run", { bareRepo: true });
+  document.getElementById("run-detail-id")!.textContent = r.id;
+  const dl = document.getElementById("run-detail-meta")!;
   dl.innerHTML = "";
   // Queued→Started is the concurrency-group wait; Started→Finished is the
   // actual container time — kept separate so a long queue never reads as
@@ -2717,25 +2717,25 @@ function renderRunDetail(r, openDialog) {
   // Output: preserve the reading position across refreshes — restore the
   // scroll offset, or stay pinned to the bottom when the operator was
   // tailing the end (renderRunOutput itself resets to the top).
-  const out = document.getElementById("run-detail-output");
+  const out = document.getElementById("run-detail-output")!;
   const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
   const prevScroll = out.scrollTop;
   currentRunLines = r.output || [];
   currentRunTimes = r.output_times || [];
-  const entries = currentRunLines.map((text, i) => ({ text, time: currentRunTimes[i] }));
+  const entries = currentRunLines.map((text: string, i: number) => ({ text, time: currentRunTimes[i] }));
   currentRunTurns = parseConversation(entries);
-  document.getElementById("run-detail-view-toggle").hidden = !currentRunTurns;
-  document.getElementById("run-detail-copy").disabled = currentRunLines.length === 0;
+  document.getElementById("run-detail-view-toggle")!.hidden = !currentRunTurns;
+  document.getElementById("run-detail-copy")!.disabled = currentRunLines.length === 0;
   let view = currentRunView || (currentRunTurns ? "conversation" : "raw");
   if (view === "conversation" && !currentRunTurns) view = "raw"; // choice kept, content can't honor it
   renderRunOutput(view);
   if (!openDialog) out.scrollTop = atBottom ? out.scrollHeight : prevScroll;
-  const dlg = document.getElementById("run-detail");
+  const dlg = document.getElementById("run-detail")!;
   if (openDialog && !dlg.open) dlg.showModal();
 }
 
-const runDetailDialog = document.getElementById("run-detail");
-document.getElementById("run-detail-close").addEventListener("click", () => {
+const runDetailDialog = document.getElementById("run-detail")!;
+document.getElementById("run-detail-close")!.addEventListener("click", () => {
   runDetailDialog.close();
 });
 // Click outside the modal box (on the backdrop) closes it; Escape already does.
@@ -2749,7 +2749,7 @@ runDetailDialog.addEventListener("close", () => {
 });
 // Switch between the conversation and raw-log views of the same run output.
 // The choice persists across live refreshes until the modal is reopened.
-document.getElementById("run-detail-view-toggle").addEventListener("click", (e) => {
+document.getElementById("run-detail-view-toggle")!.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-view]");
   if (btn) {
     currentRunView = btn.dataset.view;
@@ -2799,7 +2799,7 @@ function buildCopyText() {
 // navigator.clipboard needs a secure context (the admin port is behind HTTPS
 // zero-trust, so it normally works); fall back to a hidden textarea + execCommand
 // for plain-HTTP access (e.g. port-forwarding over http://localhost).
-async function copyToClipboard(text) {
+async function copyToClipboard(text: string) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
@@ -2825,7 +2825,7 @@ async function copyToClipboard(text) {
   }
 }
 
-const copyBtn = document.getElementById("run-detail-copy");
+const copyBtn = document.getElementById("run-detail-copy")!;
 copyBtn.addEventListener("click", async () => {
   const text = buildCopyText();
   if (!text) return;
@@ -2849,8 +2849,8 @@ async function loadConfig() {
     const cfg = await fetchJSON("/config");
     if (!cfg.hooks_repo) return;
 
-    const section = document.getElementById("setup-section");
-    const content = document.getElementById("setup-content");
+    const section = document.getElementById("setup-section")!;
+    const content = document.getElementById("setup-content")!;
     section.hidden = false;
 
     const ghPath = parseGitHubURL(cfg.hooks_repo);
@@ -2860,7 +2860,7 @@ async function loadConfig() {
 
     // The repo identity stays visible; the one-time webhook setup recipe
     // lives inside the (collapsed) <details>.
-    const repoP = document.getElementById("setup-repo");
+    const repoP = document.getElementById("setup-repo")!;
     repoP.appendChild(document.createTextNode("Repository: "));
     repoP.appendChild(
       ghPath
@@ -3014,7 +3014,7 @@ function renderReloadStatus(data, statusErr) {
   // a silent degradation that removed the force controls from the page in
   // the one situation they exist for; a status we cannot read is a loud line
   // here and the controls stay usable (forcing a ref needs no status at all).
-  const errBox = document.getElementById("reload-status-error");
+  const errBox = document.getElementById("reload-status-error")!;
   if (usable) {
     errBox.hidden = true;
     errBox.textContent = "";
@@ -3026,10 +3026,10 @@ function renderReloadStatus(data, statusErr) {
   }
   // Per-commit switching needs the gate; legacy mode keeps the live view
   // and the Check & reload (pull to tip) but hides the picker.
-  document.getElementById("reload-picker").hidden = data && data.mode === "legacy";
+  document.getElementById("reload-picker")!.hidden = data && data.mode === "legacy";
   if (!usable) return;
 
-  const box = document.getElementById("reload-live");
+  const box = document.getElementById("reload-live")!;
   box.innerHTML = "";
   const live = data.live || {};
   box.appendChild(el("div", { class: "reload-live-row" },
@@ -3078,7 +3078,7 @@ function renderReloadStatus(data, statusErr) {
 }
 
 async function refreshReloadCommits() {
-  const note = document.getElementById("reload-commits-note");
+  const note = document.getElementById("reload-commits-note")!;
   try {
     renderReloadCommits(await fetchJSON("/reload/commits"));
   } catch (err: unknown) {
@@ -3098,7 +3098,7 @@ function renderReloadCommits(data) {
   if (!t) return;
   // The note is now only for FETCH FAILURES (renderReloadCommits is not
   // called on those); the table owns its own empty state.
-  const note = document.getElementById("reload-commits-note");
+  const note = document.getElementById("reload-commits-note")!;
   if (note) note.hidden = true;
   t.columns = [
     { key: "short", label: "Commit", render: (c) => el("code", { title: c.sha }, c.short) },
@@ -3154,12 +3154,12 @@ async function refreshReloadPanel() {
     statusErr = err && err.message ? err.message : String(err);
   }
   renderReloadStatus(data, statusErr);
-  if (reloadMode === "gated" && document.getElementById("reload-picker").open) {
+  if (reloadMode === "gated" && document.getElementById("reload-picker")!.open) {
     await refreshReloadCommits();
   }
 }
 
-async function postJSON(url, body) {
+async function postJSON(url: string, body) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -3178,8 +3178,8 @@ async function postJSON(url, body) {
 }
 
 async function reloadCheckNow() {
-  const btn = document.getElementById("reload-check");
-  const resultEl = document.getElementById("reload-check-result");
+  const btn = document.getElementById("reload-check")!;
+  const resultEl = document.getElementById("reload-check-result")!;
   btn.disabled = true;
   resultEl.textContent = "checking…";
   try {
@@ -3203,8 +3203,8 @@ async function reloadCheckNow() {
 // only on green: this one is the deliberate bypass, for the gate held behind
 // a check that is never going to arrive.
 async function reloadForceTip() {
-  const btn = document.getElementById("reload-force-tip");
-  const resultEl = document.getElementById("reload-check-result");
+  const btn = document.getElementById("reload-force-tip")!;
+  const resultEl = document.getElementById("reload-check-result")!;
   if (!confirm("Fetch the hooks repo and go to its REMOTE TIP now, bypassing the CI gate?\n\nThe serving tree switches and hooks reload. Recorded as an operator force.")) return;
   btn.disabled = true;
   resultEl.textContent = "forcing to tip…";
@@ -3229,13 +3229,13 @@ async function reloadForceTip() {
 // exists only to be refused, no second dialog quoting reasons already on
 // screen. The server still records it loudly (reload.forced on the activity
 // feed); what is dropped here is ceremony, not the audit trail.
-async function reloadForceTo(ref, label, why) {
+async function reloadForceTo(ref, label: string, why) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
   const detail = why ? `\n\nThe gate is holding it: ${why}` : "";
   if (!confirm(`Force ${name} live now, OVERRIDING the reload gate?${detail}\n\nThe serving tree switches to it and hooks reload.`)) return;
   reloadSwitchInFlight = true;
-  const resultEl = document.getElementById("reload-check-result");
+  const resultEl = document.getElementById("reload-check-result")!;
   resultEl.textContent = `forcing ${name}…`;
   try {
     const { res, data } = await postJSON("/reload/switch", { ref, override: true });
@@ -3255,12 +3255,12 @@ async function reloadForceTo(ref, label, why) {
   }
 }
 
-async function reloadSwitchTo(ref, label) {
+async function reloadSwitchTo(ref, label: string) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
   if (!confirm(`Make ${name} the live hooks commit?\n\nThe serving tree switches to it and hooks reload.`)) return;
   reloadSwitchInFlight = true;
-  const resultEl = document.getElementById("reload-check-result");
+  const resultEl = document.getElementById("reload-check-result")!;
   try {
     let { res, data } = await postJSON("/reload/switch", { ref, override: false });
     if (res.status === 409 && data && data.requires_override) {
@@ -3292,24 +3292,24 @@ async function reloadSwitchTo(ref, label) {
   }
 }
 
-document.getElementById("reload-check").addEventListener("click", () => void reloadCheckNow());
-document.getElementById("reload-force-tip").addEventListener("click", () => void reloadForceTip());
-document.getElementById("reload-ref-switch").addEventListener("click", () => {
-  const ref = (document.getElementById("reload-ref-input").value || "").trim();
+document.getElementById("reload-check")!.addEventListener("click", () => void reloadCheckNow());
+document.getElementById("reload-force-tip")!.addEventListener("click", () => void reloadForceTip());
+document.getElementById("reload-ref-switch")!.addEventListener("click", () => {
+  const ref = (document.getElementById("reload-ref-input")!.value || "").trim();
   if (!ref) {
     alert("Enter a commit sha or branch/tag name first.");
     return;
   }
   void reloadSwitchTo(ref, ref);
 });
-document.getElementById("reload-ref-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("reload-ref-switch").click();
+document.getElementById("reload-ref-input")!.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("reload-ref-switch")!.click();
 });
 // The wedged-gate escape hatch: one confirm, straight to override:true. It
 // asks the server for nothing first, so it works even when the status read
 // is failing and the panel above it is showing an error.
-document.getElementById("reload-ref-force").addEventListener("click", () => {
-  const ref = (document.getElementById("reload-ref-input").value || "").trim();
+document.getElementById("reload-ref-force")!.addEventListener("click", () => {
+  const ref = (document.getElementById("reload-ref-input")!.value || "").trim();
   if (!ref) {
     alert("Enter a commit sha or branch/tag name first.");
     return;
@@ -3318,6 +3318,6 @@ document.getElementById("reload-ref-force").addEventListener("click", () => {
 });
 // The commits list is fetched lazily: opening the picker is the operator
 // asking for it (it fetches origin and probes CI per commit).
-document.getElementById("reload-picker").addEventListener("toggle", () => {
-  if (document.getElementById("reload-picker").open) void refreshReloadCommits();
+document.getElementById("reload-picker")!.addEventListener("toggle", () => {
+  if (document.getElementById("reload-picker")!.open) void refreshReloadCommits();
 });
