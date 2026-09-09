@@ -350,6 +350,7 @@ interface EventRecord {
 interface AttentionEntry {
 	source?: string;
 	since?: string;
+	hook?: string;
 	[k: string]: unknown;
 }
 
@@ -1401,7 +1402,7 @@ function managerStateChip(st: ManagerStatus) {
 function managerLastEvent(st: ManagerStatus) {
   const stamps: number[] = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s));
   if (!stamps.length) return "—";
-  const latest = new Date(Math.max(...stamps));
+  const latest = new Date(Math.max(...stamps)).getTime();
   return fmtDuration(Date.now() - latest) + " ago";
 }
 
@@ -1474,7 +1475,7 @@ function renderManagers(list: ManagerStatus[]) {
       },
     },
   ];
-  t.rowId = (m) => m.id;
+  t.rowId = (m) => m.id ?? "";
   t.styleText = SHARED_TABLE_CSS;
   // Bound once: the element outlives every render, so re-adding per render
   // would stack a handler per refresh.
@@ -1539,7 +1540,7 @@ async function copyManagerOutput(btn: HTMLButtonElement) {
 }
 
 document.getElementById("manager-output-copy")!.addEventListener("click", (e) => {
-  void copyManagerOutput(e.currentTarget);
+  void copyManagerOutput(e.currentTarget as HTMLButtonElement);
 });
 
 function renderManagerDetail(d: ManagerDetail) {
@@ -1695,7 +1696,7 @@ function renderAttention(payload: AttentionPayload) {
         ? el("a", { href: hookHref(e.hook), class: "hook-link" }, el("code", null, e.hook))
         : "—"),
     },
-    { key: "source", label: "Source", value: (e) => attentionSourceLabel(e.source) },
+    { key: "source", label: "Source", value: (e) => attentionSourceLabel(e.source ?? "") },
     {
       key: "since",
       label: "Active for",
@@ -1845,7 +1846,7 @@ function renderGlobalCap(g: ConcurrencyRow) {
     name: () => el("strong", null, "All runs"),
     declaredOf: (row: ConcurrencyRow) => row.default,
     onOverride: (row: ConcurrencyRow) => overrideGlobalCap(row.default, row.limit),
-    onRevert: (row: ConcurrencyRow) => clearGlobalCapOverride(row.default),
+    onRevert: (row: ConcurrencyRow) => clearGlobalCapOverride(row.default ?? 0),
     revertTitle: (row: ConcurrencyRow) => `Clear the override; the default cap (${row.default}) takes effect`,
     overrideTitle: () => "Override the global run cap live (persists across reloads/restarts until reverted)",
   });
@@ -1911,14 +1912,14 @@ function renderConcurrency(data: ConcurrencyData) {
   // {global, groups} from cap-aware servers; a bare array from older ones
   // (and the test harness) keeps rendering as groups-only.
   const groups = (Array.isArray(data) ? data : (data && data.groups)) || [];
-  renderGlobalCap(Array.isArray(data) ? null : data && data.global);
+  renderGlobalCap(Array.isArray(data) ? null : (data && data.global) || null);
   const t = byId<DataTableElement<ConcurrencyRow>>("concurrency-table");
   if (!t) return;
   t.columns = concurrencyColumns({
     nameLabel: "Group",
     declaredOf: (row: ConcurrencyRow) => row.declared,
     onOverride: (row: ConcurrencyRow) => overrideLimit(row.name, row.declared, row.limit),
-    onRevert: (row: ConcurrencyRow) => clearLimitOverride(row.name, row.declared),
+    onRevert: (row: ConcurrencyRow) => clearLimitOverride(row.name ?? "", row.declared ?? 0),
     revertTitle: (row: ConcurrencyRow) => `Clear the override; the declared limit (${row.declared}) takes effect`,
     overrideTitle: (row: ConcurrencyRow) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
   });
