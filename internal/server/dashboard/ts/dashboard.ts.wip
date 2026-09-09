@@ -421,6 +421,24 @@ interface Commit {
 	is_live?: boolean;
 }
 
+/** The /reload/status payload. */
+interface ReloadStatus {
+	mode?: string;
+	live?: Commit;
+	pending?: Commit & { why?: string };
+	commits?: Commit[];
+	hooks_branch?: string;
+	error?: unknown;
+	gate_context?: string;
+	outcome?: string;
+	overridden?: boolean;
+	reasons?: string[];
+	requires_override?: boolean;
+	status?: string;
+	verified?: boolean;
+	[k: string]: unknown;
+}
+
 /** The running build, as /version reports it. */
 interface VersionInfo {
 	version?: string;
@@ -2920,7 +2938,7 @@ function renderRunDetailUnavailable(id: string, err: unknown) {
     is404
       ? "This run is no longer tracked by the server, so its details and output cannot be shown. " +
         "Runs in flight during a server restart are not persisted, and old runs age out of the run history."
-      : `Failed to load this run: ${(err && err.message) || err}`));
+      : `Failed to load this run: ${(err && errText(err)) || err}`));
   const dlg = byId<HTMLDialogElement>("run-detail");
   if (!dlg.open) dlg.showModal();
 }
@@ -3259,7 +3277,7 @@ function reloadSrcBadge(has: boolean) {
     : el("span", { class: "badge bad", title: "the commit's tree has NO src/hooks directory — reloading from it would load zero hooks" }, "no src/hooks");
 }
 
-function renderReloadStatus(data: Record<string, unknown>, statusErr: unknown) {
+function renderReloadStatus(data: ReloadStatus | null, statusErr: unknown) {
   const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
   reloadMode = usable ? data.mode : null;
   // The panel stays up NO MATTER WHAT. Hiding it on an unreadable status was
@@ -3283,7 +3301,7 @@ function renderReloadStatus(data: Record<string, unknown>, statusErr: unknown) {
 
   const box = document.getElementById("reload-live")!;
   box.innerHTML = "";
-  const live = data.live || {};
+  const live: Commit = data.live || {};
   box.appendChild(el("div", { class: "reload-live-row" },
     el("span", { class: "reload-label" }, "Live commit"),
     el("code", { title: live.sha || "" }, live.short || "(unknown)"),
@@ -3316,7 +3334,7 @@ function renderReloadStatus(data: Record<string, unknown>, statusErr: unknown) {
       class: "toggle-btn",
       title: "Force the serving hooks tree to this held commit NOW, overriding the CI gate",
     }, "Make live");
-    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short, p.short || p.sha, p.why || ""));
+    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short || "", p.short || p.sha, p.why || ""));
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
@@ -3334,7 +3352,7 @@ async function refreshReloadCommits() {
   try {
     renderReloadCommits(await fetchJSON("/reload/commits"));
   } catch (err: unknown) {
-    note.textContent = "Failed to list commits: " + err.message;
+    note.textContent = "Failed to list commits: " + errText(err);
     note.hidden = false;
   }
 }
@@ -3401,9 +3419,9 @@ async function refreshReloadPanel() {
   let data = null;
   let statusErr = "";
   try {
-    data = await fetchJSON("/reload/status");
+    data = await fetchJSON<ReloadStatus>("/reload/status");
   } catch (err: unknown) {
-    statusErr = err && err.message ? err.message : String(err);
+    statusErr = errText(err);
   }
   renderReloadStatus(data, statusErr);
   if (reloadMode === "gated" && byId<HTMLDetailsElement>("reload-picker")!.open) {
@@ -3440,7 +3458,7 @@ async function reloadCheckNow() {
     // Gated mode reports the reconcile outcome; legacy reports status.
     resultEl.textContent = "outcome: " + ((data && (data.outcome || data.status)) || "done");
   } catch (err: unknown) {
-    resultEl.textContent = "check failed: " + err.message;
+    resultEl.textContent = "check failed: " + errText(err);
   } finally {
     btn.disabled = false;
     void refreshReloadPanel();
@@ -3465,7 +3483,7 @@ async function reloadForceTip() {
     if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
     resultEl.textContent = "forced to tip: " + ((data && data.status) || "reloaded");
   } catch (err: unknown) {
-    resultEl.textContent = "force to tip failed: " + err.message;
+    resultEl.textContent = "force to tip failed: " + errText(err);
   } finally {
     btn.disabled = false;
     void refreshReloadPanel();
