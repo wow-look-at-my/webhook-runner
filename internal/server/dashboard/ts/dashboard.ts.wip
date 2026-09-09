@@ -403,6 +403,35 @@ interface HookDetail {
 	[k: string]: unknown;
 }
 
+/** One commit offered by the reload picker. */
+interface Commit {
+	sha?: string;
+	short?: string;
+	subject?: string;
+	date?: string;
+	ci_state?: string;
+	has_src?: boolean;
+	is_live?: boolean;
+}
+
+/** The running build, as /version reports it. */
+interface VersionInfo {
+	version?: string;
+	revision?: string;
+	time?: string;
+	trim?: string;
+	[k: string]: unknown;
+}
+
+/** One key of a KV namespace listing. */
+interface KVEntry {
+	key?: string;
+	size?: number;
+	expires_at?: string;
+	value_utf8?: string | null;
+	[k: string]: unknown;
+}
+
 /** A KV namespace listing. */
 interface KVListing {
 	[k: string]: unknown;
@@ -3120,7 +3149,7 @@ const SELF_REPO_URL = "https://github.com/wow-look-at-my/webhook-runner";
 // The commit the running build was made from. A stamped VCS revision is
 // authoritative; failing that, a Go pseudo-version ends in the commit's
 // 12-hex prefix, which GitHub resolves like any other sha.
-function buildCommit(v: Node | string) {
+function buildCommit(v: VersionInfo) {
   if (v.revision) return v.revision;
   const m = /-([0-9a-f]{12})$/.exec(v.version || "");
   return m ? m[1] : "";
@@ -3131,7 +3160,7 @@ function buildCommit(v: Node | string) {
 // time when the build has them.
 async function loadVersion() {
   try {
-    const v = await fetchJSON<Record<string, unknown>>("/version");
+    const v = await fetchJSON<VersionInfo>("/version");
     const span = document.getElementById("server-version");
     if (!span || !v.version) return;
     const sha = buildCommit(v);
@@ -3298,9 +3327,9 @@ async function refreshReloadCommits() {
 // order deliberately until a header is clicked: the server sends them
 // newest-first, which is the order an operator picking "the last good one"
 // is reading in.
-function renderReloadCommits(data: Record<string, unknown>) {
+function renderReloadCommits(data: { commits?: Commit[]; error?: unknown }) {
   const commits = (data && data.commits) || [];
-  const t = byId<DataTableElement<Record<string, unknown>>>("reload-commits-table");
+  const t = byId<DataTableElement<Commit>>("reload-commits-table");
   if (!t) return;
   // The note is now only for FETCH FAILURES (renderReloadCommits is not
   // called on those); the table owns its own empty state.
