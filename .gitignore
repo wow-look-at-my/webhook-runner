@@ -42,3 +42,6 @@ go.work.sum
 # force-added). Any other generated .mjs is a build artifact — never commit it.
 # A genuinely hand-authored edge-case .mjs can be committed with `git add -f`.
 *.mjs
+
+# Built by generate-timeline.sh (ts0), embedded at build time.
+internal/server/dashboard/assets/timeline.js
