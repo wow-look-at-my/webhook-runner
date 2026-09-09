@@ -75,10 +75,7 @@ func testManager(t *testing.T, id string, doc string) *hooks.Manager {
 	return m
 }
 
-// Every test here wants the short cadences, and they are package-level. Doing
-// it per test meant one t.Cleanup restored the production delay while the other
-// parallel tests were still waiting, so their deadlines expired against a
-// ten-second restart.
+// Shrunk here because the cadences are package-level: per-test cleanup restored the production delay under parallel neighbours.
 func TestMain(m *testing.M) {
 	RestartDelay, ParkPoll = 30*time.Millisecond, 20*time.Millisecond
 	os.Exit(m.Run())

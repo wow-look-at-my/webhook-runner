@@ -58,10 +58,7 @@ func usernsProfile() ([]byte, error) {
 	return usernsProfileFor(usernsSyscalls)
 }
 
-// usernsProfileFor builds the profile from an explicit syscall list. The list
-// is a parameter so a test can ask what a DIFFERENT list would have allowed
-// without assigning to usernsSyscalls: tests here run in parallel, and a test
-// that swapped the package variable made every concurrent reader see its list.
+// usernsProfileFor takes the list as a parameter, so a test can ask about another without assigning to usernsSyscalls.
 func usernsProfileFor(syscalls []string) ([]byte, error) {
 	var profile map[string]any
 	if err := json.Unmarshal(mobyDefaultSeccomp, &profile); err != nil {
