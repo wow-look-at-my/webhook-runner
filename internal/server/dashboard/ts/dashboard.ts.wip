@@ -87,7 +87,11 @@ async function fetchJSON(url: string): Promise<unknown> {
 
 type Attrs = Record<string, unknown>;
 type Kid = string | Node | null | undefined;
-function el(tag: string, attrs?: Attrs | null, ...children: Kid[]): HTMLElement {
+function el<K extends keyof HTMLElementTagNameMap>(
+	tag: K,
+	attrs?: Attrs | null,
+	...children: Kid[]
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (attrs) {
     for (const [k, v] of Object.entries(attrs)) {
@@ -261,6 +265,61 @@ interface Run {
 	[extra: string]: unknown;
 }
 
+
+/** A hook as /hooks serves it. */
+interface Hook {
+	id: string;
+	description?: string;
+	disabled?: boolean;
+	schedule?: string;
+	since?: string;
+	synchronous?: boolean;
+	overhead?: Overhead;
+	stats?: { by_status?: Record<string, number> };
+	[extra: string]: unknown;
+}
+
+/** A manager's status row. */
+interface ManagerStatus {
+	state: string;
+	tracked?: number;
+	max_tracked?: number;
+	completed?: number;
+	skipped?: number;
+	retention?: string;
+	success_rate?: number;
+	avg_duration_ms?: number;
+	max_duration_ms?: number;
+	avg_wait_ms?: number;
+	max_wait_ms?: number;
+	wait_sampled?: number;
+	last_run?: string;
+	last_tick?: string;
+	last_error?: string;
+	last_delivered?: string;
+	overhead?: Overhead;
+	by_status?: Record<string, number>;
+	[extra: string]: unknown;
+}
+
+/** Per-hook image state. */
+interface ImageState {
+	hook_id: string;
+	tag?: string;
+	built?: string;
+	error?: string;
+	images?: unknown[];
+	[extra: string]: unknown;
+}
+
+/** A KV namespace row. */
+interface Namespace {
+	namespace: string;
+	keys?: number;
+	bytes?: number;
+	[extra: string]: unknown;
+}
+
 /** Per-hook container-startup aggregates as /hooks serves them. */
 interface Overhead {
 	boot_sampled?: number;
@@ -402,7 +461,7 @@ function startupDetail(r: Run): string | null {
 // holds it (run + hook). Kind "group" is a queued concurrency-group
 // acquire — it names the group, the run's place in line, and the holders.
 // Unknown future kinds degrade to their reason/kind text, never to silence.
-function waitNote(r) {
+function waitNote(r: Run) {
   const w = r.waiting_on;
   if (!w) return null;
   if (w.kind === "lock") {
@@ -436,7 +495,7 @@ function waitNote(r) {
 // The modal's "Waiting" row: the same facts as waitNote but with the
 // holder run ids as CLICKABLE run links (jumping the modal to the holder),
 // which a table-row note can't safely nest inside its row click handler.
-function waitDetail(r) {
+function waitDetail(r: Run) {
   const w = r.waiting_on;
   if (!w) return null;
   const frag = document.createDocumentFragment();
@@ -476,7 +535,7 @@ function waitDetail(r) {
 // (r.waiters, derived server-side): cooperative locks (key "k") and
 // concurrency-group slots (key "group:g"). The tooltip lists exactly who
 // waits on what.
-function waitersNote(r) {
+function waitersNote(r: Run) {
   const ws = r.waiters;
   if (!ws || !ws.length) return null;
   return el("span", { class: "wait-note", title: ws.map(waiterText).join("\n") },
@@ -485,7 +544,7 @@ function waitersNote(r) {
 
 // The modal's "Held up by this run" row: each waiter a clickable run link
 // with its hook and what it waits for.
-function waitersDetail(r) {
+function waitersDetail(r: Run) {
   const ws = r.waiters;
   if (!ws || !ws.length) return null;
   const frag = document.createDocumentFragment();
@@ -757,8 +816,8 @@ function renderRunOutput(view) {
 // section reads the roster the hooks section last published.
 let lastHookIds = new Set();
 
-function publishHooks(hooks) {
-  lastHookIds = new Set(hooks.map((h) => h.id));
+function publishHooks(hooks: Hook[]) {
+  lastHookIds = new Set(hooks.map((h: Hook) => h.id));
   window.whrHooks = hooks;
   window.dispatchEvent(new CustomEvent("whr:hooks-data", { detail: { hooks } }));
   renderNavHooks(hooks);
@@ -766,7 +825,7 @@ function publishHooks(hooks) {
 
 // The sidebar's dynamic per-hook links — the #hook=<id> app pages, one
 // click from anywhere.
-function renderNavHooks(hooks) {
+function renderNavHooks(hooks: Hook[]) {
   const nav = document.getElementById("nav-hooks");
   if (!nav) return;
   nav.innerHTML = "";
@@ -1060,7 +1119,7 @@ function hookSwitch(id: string, disabled: boolean) {
 // is where a hook says what it is for. No row-click: the row carries a
 // link, a kill switch and a copyable endpoint, so "click anywhere" would
 // fight all three.
-function renderHooks(hooks) {
+function renderHooks(hooks: Hook[]) {
   const t = byId<DataTableElement>("hooks-table");
   if (!t) return;
   t.columns = [
@@ -1156,14 +1215,14 @@ async function restartManager(id: string) {
   refresh();
 }
 
-function managerStateChip(st) {
+function managerStateChip(st: ManagerStatus) {
   const chip = el("span", { class: `state-chip ${st.state}` }, st.state);
   if (st.last_error) chip.title = st.last_error;
   return chip;
 }
 
 // "Last event" = the freshest of delivery/tick, as an age.
-function managerLastEvent(st) {
+function managerLastEvent(st: ManagerStatus) {
   const stamps = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s));
   if (!stamps.length) return "—";
   const latest = new Date(Math.max(...stamps));
@@ -1710,7 +1769,7 @@ function renderConcurrency(data) {
 // table's column count the way a hardcoded colspan did.
 function groupDetailContent(g) {
   const box = el("div", { class: "group-detail" });
-  const runLine = (r, note) => el("div", { class: "group-run" },
+  const runLine = (r: Run, note) => el("div", { class: "group-run" },
     runLink(r.run_id),
     " ",
     r.hook_id ? el("code", null, r.hook_id) : null,
@@ -1733,7 +1792,7 @@ function groupDetailContent(g) {
   }
   if (waiting.length) {
     box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
-    waiting.forEach((r, i: number) => {
+    waiting.forEach((r: Run, i: number) => {
       box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since)) || "0s"}`));
     });
   }
@@ -1749,7 +1808,7 @@ function groupDetailContent(g) {
 // took the component's own td padding and bottom border: a boxed, ragged
 // run-id column that pushed every titled row out of line with its
 // neighbours.
-function runCell(r) {
+function runCell(r: Run) {
   const code = el("code", null, r.id);
   if (!r.title) return code;
   return el("div", null,
@@ -1981,7 +2040,7 @@ function renderRuns(rs) {
 // Per-hook image state, as a <data-table>. Searchable: "which hook is on
 // tag abc123" and "what still needs building" are both text questions, and
 // the fleet is long enough that scrolling for them is the wrong answer.
-function renderImages(images) {
+function renderImages(images: ImageState[]) {
   const t = byId<DataTableElement>("images-table");
   if (!t) return;
   t.columns = [
@@ -2016,7 +2075,7 @@ function renderImages(images) {
 // The other content-hash images still on disk for a hook, newest-tag-first
 // as the server sent them; "*" marks the one the current content resolves
 // to.
-function imagesOnDisk(im) {
+function imagesOnDisk(im: ImageState) {
   return (im.images || [])
     .map((i: number) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
     .join(", ");
@@ -2073,7 +2132,7 @@ function fmtBytes(n: number) {
 // The KV namespace roster, as a <data-table>. The whole row navigates to
 // the namespace's browser — the same destination as its link, so a click on
 // either is correct.
-function renderKV(namespaces, loadedHookIDs) {
+function renderKV(namespaces: Namespace[], loadedHookIDs) {
   const t = byId<DataTableElement>("kv-table");
   if (!t) return;
   t.columns = [
@@ -2189,7 +2248,7 @@ function renderAppMissing(id: string) {
   missing.hidden = false;
   document.getElementById("app-body")!.hidden = true;
   document.getElementById("app-switch")!.hidden = true;
-  document.getElementById("app-diagnostics-link")!.hidden = true;
+  byId<HTMLAnchorElement>("app-diagnostics-link")!.hidden = true;
 }
 
 // The app page for a namespace whose hook is gone (orphaned state): the
@@ -2238,7 +2297,7 @@ function renderApp(detail, runs, events) {
 
   // The server sets Content-Disposition: attachment on this response, so a
   // plain click downloads it — no blob/JS assembly needed.
-  const diagLink = document.getElementById("app-diagnostics-link")!;
+  const diagLink = byId<HTMLAnchorElement>("app-diagnostics-link")!;
   diagLink.hidden = false;
   diagLink.href = "/hooks/" + encodeURIComponent(info.id) + "/diagnostics";
 
@@ -2661,7 +2720,7 @@ function renderRunDetailUnavailable(id: string, err) {
   currentRunTimes = [];
   currentRunTurns = null;
   document.getElementById("run-detail-view-toggle")!.hidden = true;
-  document.getElementById("run-detail-copy")!.disabled = true;
+  byId<HTMLButtonElement>("run-detail-copy")!.disabled = true;
   const out = document.getElementById("run-detail-output")!;
   out.innerHTML = "";
   out.appendChild(el("pre", { class: "raw-log" },
@@ -2669,11 +2728,11 @@ function renderRunDetailUnavailable(id: string, err) {
       ? "This run is no longer tracked by the server, so its details and output cannot be shown. " +
         "Runs in flight during a server restart are not persisted, and old runs age out of the run history."
       : `Failed to load this run: ${(err && err.message) || err}`));
-  const dlg = document.getElementById("run-detail");
+  const dlg = byId<HTMLDialogElement>("run-detail");
   if (!dlg.open) dlg.showModal();
 }
 
-function renderRunDetail(r, openDialog) {
+function renderRunDetail(r: Run, openDialog) {
   currentRunTerminal = TERMINAL_RUN_STATUSES.includes(r.status);
   // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
   // generic "Run" word otherwise; the full id always sits beside it in
@@ -2725,16 +2784,16 @@ function renderRunDetail(r, openDialog) {
   const entries = currentRunLines.map((text: string, i: number) => ({ text, time: currentRunTimes[i] }));
   currentRunTurns = parseConversation(entries);
   document.getElementById("run-detail-view-toggle")!.hidden = !currentRunTurns;
-  document.getElementById("run-detail-copy")!.disabled = currentRunLines.length === 0;
+  byId<HTMLButtonElement>("run-detail-copy")!.disabled = currentRunLines.length === 0;
   let view = currentRunView || (currentRunTurns ? "conversation" : "raw");
   if (view === "conversation" && !currentRunTurns) view = "raw"; // choice kept, content can't honor it
   renderRunOutput(view);
   if (!openDialog) out.scrollTop = atBottom ? out.scrollHeight : prevScroll;
-  const dlg = document.getElementById("run-detail")!;
+  const dlg = byId<HTMLDialogElement>("run-detail")!;
   if (openDialog && !dlg.open) dlg.showModal();
 }
 
-const runDetailDialog = document.getElementById("run-detail")!;
+const runDetailDialog = byId<HTMLDialogElement>("run-detail")!;
 document.getElementById("run-detail-close")!.addEventListener("click", () => {
   runDetailDialog.close();
 });
@@ -2750,7 +2809,7 @@ runDetailDialog.addEventListener("close", () => {
 // Switch between the conversation and raw-log views of the same run output.
 // The choice persists across live refreshes until the modal is reopened.
 document.getElementById("run-detail-view-toggle")!.addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-view]");
+  const btn = (e.target as Element).closest("button[data-view]");
   if (btn) {
     currentRunView = btn.dataset.view;
     renderRunOutput(btn.dataset.view);
@@ -2825,7 +2884,7 @@ async function copyToClipboard(text: string) {
   }
 }
 
-const copyBtn = document.getElementById("run-detail-copy")!;
+const copyBtn = byId<HTMLButtonElement>("run-detail-copy")!;
 copyBtn.addEventListener("click", async () => {
   const text = buildCopyText();
   if (!text) return;
@@ -3026,7 +3085,7 @@ function renderReloadStatus(data, statusErr) {
   }
   // Per-commit switching needs the gate; legacy mode keeps the live view
   // and the Check & reload (pull to tip) but hides the picker.
-  document.getElementById("reload-picker")!.hidden = data && data.mode === "legacy";
+  byId<HTMLDetailsElement>("reload-picker")!.hidden = data && data.mode === "legacy";
   if (!usable) return;
 
   const box = document.getElementById("reload-live")!;
@@ -3154,7 +3213,7 @@ async function refreshReloadPanel() {
     statusErr = err && err.message ? err.message : String(err);
   }
   renderReloadStatus(data, statusErr);
-  if (reloadMode === "gated" && document.getElementById("reload-picker")!.open) {
+  if (reloadMode === "gated" && byId<HTMLDetailsElement>("reload-picker")!.open) {
     await refreshReloadCommits();
   }
 }
@@ -3178,7 +3237,7 @@ async function postJSON(url: string, body) {
 }
 
 async function reloadCheckNow() {
-  const btn = document.getElementById("reload-check")!;
+  const btn = byId<HTMLButtonElement>("reload-check")!;
   const resultEl = document.getElementById("reload-check-result")!;
   btn.disabled = true;
   resultEl.textContent = "checking…";
@@ -3203,7 +3262,7 @@ async function reloadCheckNow() {
 // only on green: this one is the deliberate bypass, for the gate held behind
 // a check that is never going to arrive.
 async function reloadForceTip() {
-  const btn = document.getElementById("reload-force-tip")!;
+  const btn = byId<HTMLButtonElement>("reload-force-tip")!;
   const resultEl = document.getElementById("reload-check-result")!;
   if (!confirm("Fetch the hooks repo and go to its REMOTE TIP now, bypassing the CI gate?\n\nThe serving tree switches and hooks reload. Recorded as an operator force.")) return;
   btn.disabled = true;
@@ -3264,7 +3323,7 @@ async function reloadSwitchTo(ref, label: string) {
   try {
     let { res, data } = await postJSON("/reload/switch", { ref, override: false });
     if (res.status === 409 && data && data.requires_override) {
-      const reasons = (data.reasons || []).map((r) => "  - " + r).join("\n");
+      const reasons = (data.reasons || []).map((r: Run) => "  - " + r).join("\n");
       const msg =
         `Switching to ${name} is BLOCKED by the reload safety gate:\n\n${reasons}\n\n` +
         "Proceed anyway? This OVERRIDES the CI / src-layout safety gate and reloads the hooks " +
@@ -3292,24 +3351,24 @@ async function reloadSwitchTo(ref, label: string) {
   }
 }
 
-document.getElementById("reload-check")!.addEventListener("click", () => void reloadCheckNow());
-document.getElementById("reload-force-tip")!.addEventListener("click", () => void reloadForceTip());
+byId<HTMLButtonElement>("reload-check")!.addEventListener("click", () => void reloadCheckNow());
+byId<HTMLButtonElement>("reload-force-tip")!.addEventListener("click", () => void reloadForceTip());
 document.getElementById("reload-ref-switch")!.addEventListener("click", () => {
-  const ref = (document.getElementById("reload-ref-input")!.value || "").trim();
+  const ref = (byId<HTMLInputElement>("reload-ref-input")!.value || "").trim();
   if (!ref) {
     alert("Enter a commit sha or branch/tag name first.");
     return;
   }
   void reloadSwitchTo(ref, ref);
 });
-document.getElementById("reload-ref-input")!.addEventListener("keydown", (e) => {
+byId<HTMLInputElement>("reload-ref-input")!.addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("reload-ref-switch")!.click();
 });
 // The wedged-gate escape hatch: one confirm, straight to override:true. It
 // asks the server for nothing first, so it works even when the status read
 // is failing and the panel above it is showing an error.
 document.getElementById("reload-ref-force")!.addEventListener("click", () => {
-  const ref = (document.getElementById("reload-ref-input")!.value || "").trim();
+  const ref = (byId<HTMLInputElement>("reload-ref-input")!.value || "").trim();
   if (!ref) {
     alert("Enter a commit sha or branch/tag name first.");
     return;
@@ -3318,6 +3377,6 @@ document.getElementById("reload-ref-force")!.addEventListener("click", () => {
 });
 // The commits list is fetched lazily: opening the picker is the operator
 // asking for it (it fetches origin and probes CI per commit).
-document.getElementById("reload-picker")!.addEventListener("toggle", () => {
-  if (document.getElementById("reload-picker")!.open) void refreshReloadCommits();
+byId<HTMLDetailsElement>("reload-picker")!.addEventListener("toggle", () => {
+  if (byId<HTMLDetailsElement>("reload-picker")!.open) void refreshReloadCommits();
 });
