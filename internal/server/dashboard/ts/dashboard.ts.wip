@@ -624,7 +624,7 @@ function waitNote(r: Run) {
     let text = w.key === "global"
       ? "queued on the global run cap"
       : `queued for a slot in group ${w.key || "?"}`;
-    if (w.position > 0) text += ` — ${ordinal(w.position)} in line`;
+    if ((w.position ?? 0) > 0) text += ` — ${ordinal(w.position ?? 0)} in line`;
     if (holders.length) text += `, held by ${holders.map(shortId).join(", ")}`;
     return el("span", { class: "wait-note", title: holders.join("\n") }, text);
   }
@@ -666,7 +666,7 @@ function waitDetail(r: Run) {
     let lead = w.key === "global"
       ? "on the global run cap"
       : `for a slot in group ${w.key || "?"}`;
-    if (w.position > 0) lead += ` — ${ordinal(w.position)} in line`;
+    if ((w.position ?? 0) > 0) lead += ` — ${ordinal(w.position ?? 0)} in line`;
     const holders = w.holder_run_ids || [];
     frag.appendChild(document.createTextNode(lead + (holders.length ? ", held by " : "")));
     linkList(holders);
@@ -697,7 +697,7 @@ function waitersDetail(r: Run) {
   const frag = document.createDocumentFragment();
   ws.forEach((x: Waiting, i: number) => {
     if (i > 0) frag.appendChild(document.createTextNode("; "));
-    frag.appendChild(runLink(x.run_id));
+    frag.appendChild(runLink(x.run_id ?? ""));
     frag.appendChild(document.createTextNode(` (${x.hook_id}) → ${waiterWants(x)}`));
   });
   return frag;
@@ -731,7 +731,7 @@ function waiterWants(x: Waiting) {
 }
 
 function waiterText(x: Waiting) {
-  return `${shortId(x.run_id)} (${x.hook_id}) → ${waiterWants(x)}`;
+  return `${shortId(x.run_id ?? "")} (${x.hook_id ?? ""}) → ${waiterWants(x)}`;
 }
 
 // --- Views: the global overview vs the per-app (per-hook) drill-down ------
@@ -751,7 +751,7 @@ function currentHookId() {
 
 // The fragment for a hook's app page; kv: true additionally lands it on the
 // State (KV) key/value browser (consumed as a one-shot scroll by renderAppKV).
-function hookHref(id: string, opts?: { tab?: string }) {
+function hookHref(id: string, opts?: { tab?: string; kv?: boolean }) {
   return "#hook=" + encodeURIComponent(id) + (opts && opts.kv ? "&kv=1" : "");
 }
 
@@ -889,7 +889,7 @@ function isLogLine(line: string) {
 // the conversation view can show when each turn began.
 function parseConversation(entries: LogEntry[]) {
   if (!entries.some((e: LogEntry) => classifyMarker(e.text))) return null;
-  const turns = [];
+  const turns: Turn[] = [];
   let cur = null;
   const pushLog = (e: LogEntry) => {
     const last = turns[turns.length - 1];
@@ -1291,7 +1291,7 @@ function renderHooks(hooks: Hook[]) {
       // cell itself is the live switch, which has no sortable text.
       value: (h) => (h.disabled ? 1 : 0),
       text: (h) => (h.disabled ? "disabled" : "enabled"),
-      render: (h) => hookSwitch(h.id, h.disabled),
+      render: (h) => hookSwitch(h.id, !!h.disabled),
     },
     {
       key: "endpoint",
@@ -1370,7 +1370,7 @@ function managerStateChip(st: ManagerStatus) {
 
 // "Last event" = the freshest of delivery/tick, as an age.
 function managerLastEvent(st: ManagerStatus) {
-  const stamps = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s));
+  const stamps: number[] = [st.last_delivered, st.last_tick].filter(tsPresent).map((s) => new Date(s));
   if (!stamps.length) return "—";
   const latest = new Date(Math.max(...stamps));
   return fmtDuration(Date.now() - latest) + " ago";
@@ -1382,7 +1382,7 @@ function renderNavManagers(list: ManagerStatus[]) {
   if (!nav) return;
   nav.innerHTML = "";
   for (const m of list) {
-    nav.appendChild(el("a", { href: managerHref(m.id), "data-manager": m.id, title: m.description || m.id }, m.id));
+    nav.appendChild(el("a", { href: managerHref(m.id ?? ""), "data-manager": m.id, title: m.description || m.id }, m.id));
   }
   updateNav(currentPage());
 }
@@ -1405,7 +1405,7 @@ function renderManagers(list: ManagerStatus[]) {
       // Deliberately NOT linkified: this cell's whole job is the link to
       // the manager's page (an <a> can't nest another). The drill-down's
       // Title row carries the same text with its slugs clickable.
-      render: (m) => el("a", { href: managerHref(m.id), class: "hook-link" },
+      render: (m) => el("a", { href: managerHref(m.id ?? ""), class: "hook-link" },
         el("code", null, m.title || m.id)),
     },
     {
@@ -1414,14 +1414,14 @@ function renderManagers(list: ManagerStatus[]) {
       className: "row-actions",
       value: (m) => (m.disabled ? 1 : 0),
       text: (m) => (m.disabled ? "disabled" : "enabled"),
-      render: (m) => managerSwitch(m.id, m.disabled),
+      render: (m) => managerSwitch(m.id ?? "", !!m.disabled),
     },
     { key: "state", label: "State", render: (m) => managerStateChip(m) },
     {
       key: "instance_id",
       label: "Instance",
       render: (m) => (m.instance_id
-        ? el("code", { title: m.instance_id }, m.instance_id.slice(0, 8))
+        ? el("code", { title: m.instance_id }, (m.instance_id ?? "").slice(0, 8))
         : "—"),
     },
     { key: "restarts", label: "Restarts", align: "end", render: (m) => String(m.restarts) },
@@ -1439,7 +1439,7 @@ function renderManagers(list: ManagerStatus[]) {
           // Without this the click also reaches the row and navigates away
           // from the page the operator is acting on.
           e.stopPropagation();
-          restartManager(m.id);
+          restartManager(m.id ?? "");
         });
         return b;
       },
