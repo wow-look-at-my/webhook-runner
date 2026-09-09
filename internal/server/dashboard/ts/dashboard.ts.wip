@@ -433,6 +433,7 @@ interface KVEntry {
 	size?: number;
 	expires_at?: string;
 	value_utf8?: string | null;
+	value_base64?: string | null;
 	[k: string]: unknown;
 }
 
@@ -2556,8 +2557,8 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
       : "—"],
   ]);
 
-  const im = detail.image;
-  let state;
+  const im: ImageState = detail.image || { hook_id: "" };
+  let state: Node | string | undefined;
   if (im.error) state = el("span", { class: "badge bad" }, linkifyGH("error: " + im.error));
   else if (im.built) state = el("span", { class: "badge ok" }, "built");
   else state = el("span", { class: "badge warn" }, "will build on next run");
@@ -2786,15 +2787,15 @@ async function renderAppKV(info: Hook, listing: KVListing) {
 // operator needs when a key expires between the listing and the click.
 async function kvValueContent(hookId: string, key: string) {
   const box = el("div", { class: "kv-value-box" });
-  const e = await fetchJSON(
+  const e = await fetchJSON<KVEntry>(
     `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
-  const meta = [fmtBytes(e.size)];
+  const meta = [fmtBytes(e.size ?? 0)];
   if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
   let body;
   if (e.value_utf8 != null) {
     body = e.value_utf8;
     try {
-      body = JSON.stringify(JSON.parse(e.value_utf8), null, 2);
+      body = JSON.stringify(JSON.parse(e.value_utf8 as string), null, 2);
       meta.push("JSON");
     } catch {
       meta.push("text"); // valid UTF-8 but not JSON: show it verbatim
