@@ -80,13 +80,13 @@ function errText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
-async function fetchJSON(url: string): Promise<unknown> {
+async function fetchJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  return res.json();
+  return (await res.json()) as T;
 }
 
 type Attrs = Record<string, unknown>;
@@ -327,6 +327,37 @@ interface Namespace {
 	keys?: number;
 	bytes?: number;
 	[extra: string]: unknown;
+}
+
+/** An entry of the activity feed. */
+interface EventRecord {
+	[k: string]: unknown;
+}
+
+/** The /attention payload. */
+interface AttentionPayload {
+	[k: string]: unknown;
+}
+
+/** The /concurrency payload. */
+interface ConcurrencyData {
+	[k: string]: unknown;
+}
+
+/** One manager's detail page payload. */
+interface ManagerDetail {
+	[k: string]: unknown;
+}
+
+/** One hook's detail page payload. */
+interface HookDetail {
+	info: Hook & { state?: unknown };
+	[k: string]: unknown;
+}
+
+/** A KV namespace listing. */
+interface KVListing {
+	[k: string]: unknown;
 }
 
 /** One line of run output: its text and the line's ISO timestamp. */
@@ -767,9 +798,9 @@ function setView(hookId: string) {
 // (and anything outside a model section) become "log" turns. Output with no
 // model markers (a non-conversational hook) returns null -> raw <pre>.
 
-let currentRunLines = [];
-let currentRunTimes = [];
-let currentRunTurns = null;
+let currentRunLines: string[] = [];
+let currentRunTimes: (string | null)[] = [];
+let currentRunTurns: Turn[] | null = null;
 
 function classifyMarker(line: string) {
   let m = line.match(/^--- model input: (.+?) ---$/);
@@ -889,14 +920,14 @@ function renderNavHooks(hooks: Hook[]) {
 
 const sectionFetchers = {
   hooks: async () => {
-    const hooks = await fetchJSON("/hooks");
+    const hooks = await fetchJSON<Hook[]>("/hooks");
     publishHooks(hooks);
     renderHooks(hooks);
   },
   // The needs-attention surface is GLOBAL: the red banner renders on both
   // views (it lives outside <main>), so this section refetches on its
   // signal whichever view is active — see the push reactor below.
-  attention: async () => renderAttention(await fetchJSON("/attention")),
+  attention: async () => renderAttention(await fetchJSON<AttentionPayload>("/attention")),
   runs: async () => {
     const runsSection = document.getElementById("runs-section");
     if (!runsSection || runsSection.hidden) return;
@@ -904,24 +935,24 @@ const sectionFetchers = {
     // hiding a status the fleet is flooded with must not spend the cap on
     // the rows it then removes.
     const exclude = [...runsHiddenStatuses()].sort().join(",");
-    renderRuns(await fetchJSON(`/runs?max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`));
+    renderRuns(await fetchJSON<Run[]>(`/runs?max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`));
   },
-  images: async () => renderImages(await fetchJSON("/images")),
+  images: async () => renderImages(await fetchJSON<ImageState[]>("/images")),
   // exclude=run: run lifecycle is the runs table's job, and it does it
   // better (one row per run with status, timings and output, instead of
   // three log lines). The feed keeps everything that has NO run to show —
   // rejected deliveries, image builds, unresolved env, reload/git activity
   // — which is what makes it worth having beside the table. Excluded
   // server-side, before max, so a run-heavy burst can never crowd those out.
-  events: async () => renderEvents(await fetchJSON("/events?max=100&exclude=run")),
-  kv: async () => renderKV(await fetchJSON("/kv"), lastHookIds),
-  concurrency: async () => renderConcurrency(await fetchJSON("/concurrency")),
+  events: async () => renderEvents(await fetchJSON<EventRecord[]>("/events?max=100&exclude=run")),
+  kv: async () => renderKV(await fetchJSON<Namespace[]>("/kv"), lastHookIds),
+  concurrency: async () => renderConcurrency(await fetchJSON<ConcurrencyData>("/concurrency")),
   // First-class managers: the roster (+ the open detail, when a
   // #manager=<id> drill-down is active).
   managers: async () => {
-    renderManagers(await fetchJSON("/managers"));
+    renderManagers(await fetchJSON<ManagerStatus[]>("/managers"));
     const id = currentManagerId();
-    if (id) renderManagerDetail(await fetchJSON("/managers/" + encodeURIComponent(id)));
+    if (id) renderManagerDetail(await fetchJSON<ManagerDetail>("/managers/" + encodeURIComponent(id)));
   },
   // The hooks-repo reload panel (declared at the bottom of this file;
   // function declarations hoist, so the reference is fine here).
@@ -950,7 +981,7 @@ const FETCHER_SECTIONS = {
 
 async function refresh() {
   try {
-    await fetchJSON("/health");
+    await fetchJSON<unknown>("/health");
     setBadge(true);
   } catch {
     setBadge(false);
@@ -995,7 +1026,7 @@ async function refresh() {
 // the fallback poll and the on-reconnect full refresh own recovery then.
 const dirtySections = new Set();
 const APP_SECTIONS = new Set(["hooks", "events", "kv"]);
-let sectionWorkTimer = null;
+let sectionWorkTimer: ReturnType<typeof setTimeout> | null = null;
 let sectionWorkRunning = false;
 let lastSectionWork = 0;
 
@@ -1373,10 +1404,10 @@ function renderManagers(list: ManagerStatus[]) {
 // retains), never from the DOM's innerText, which can truncate or reflow.
 // The same assembly feeds the <pre>, so the copied text is exactly what is
 // shown, byte for byte.
-let managerDetailOutputLines = [];
+let managerDetailOutputLines: string[] = [];
 // The open drill-down's last payload — kept so derived, time-based fields
 // (instance uptime) can advance locally between pushed refreshes.
-let managerDetailData = null;
+let managerDetailData: ManagerDetail | null = null;
 
 // Pure: the clipboard text for an output-lines array — lines joined with
 // single newlines, no trailing newline; [] and a missing array both → "".
@@ -2230,7 +2261,7 @@ async function refreshApp(id: string) {
   const enc = encodeURIComponent(id);
   let detail;
   try {
-    detail = await fetchJSON(`/hooks/${enc}`);
+    detail = await fetchJSON<HookDetail>(`/hooks/${enc}`);
   } catch {
     // 404: not loaded (deleted, or a stale link). Anything else transient
     // lands here too; the next poll retries. Before giving up, check the
@@ -2238,7 +2269,7 @@ async function refreshApp(id: string) {
     // its keys/values must stay inspectable (the overview's State (KV)
     // table links here for exactly that case).
     try {
-      const listing = await fetchJSON(`/kv/${enc}`);
+      const listing = await fetchJSON<KVListing>(`/kv/${enc}`);
       if (listing && listing.keys && listing.keys.length > 0) {
         await renderAppOrphanKV(id, listing);
         return;
@@ -2277,7 +2308,7 @@ async function refreshApp(id: string) {
 // this page owns the route, so it says WHICH hook and WHEN. Mounted once per
 // hook, never on every poll: the form holds live edit state, and re-mounting
 // under someone mid-edit would throw their typing away.
-let appSettingsHook = null;
+let appSettingsHook: string | null = null;
 function renderAppSettings(id: string) {
   const section = document.getElementById("app-settings-section")!;
   const host = document.getElementById("app-settings")!;
@@ -2486,8 +2517,8 @@ function saveAppRunsHiddenStatuses(hidden: Set<string>) {
   }
 }
 
-let lastAppRuns = [];
-let lastAppStatusCounts = null;
+let lastAppRuns: Run[] = [];
+let lastAppStatusCounts: Record<string, number> | null = null;
 
 // The per-hook runs table, as a <data-table>.
 //
@@ -2710,7 +2741,7 @@ function runLink(id: string) {
 const TERMINAL_RUN_STATUSES = ["success", "failure", "timeout", "error", "cancelled", "skipped"];
 const RUN_DETAIL_POLL_MS = 3000;
 
-let currentRunId = null; // run shown in the open modal, null when closed
+let currentRunId: string | null = null; // run shown in the open modal, null when closed
 let currentRunView = null; // the user's raw/conversation choice, null = auto
 let currentRunTerminal = false; // last rendered status was terminal
 // When the modal's run was last fetched (any source: open, delta, poll) —
@@ -2733,7 +2764,7 @@ async function refreshRunDetail(openDialog: boolean) {
   if (!id) return;
   lastRunDetailFetch = Date.now();
   try {
-    const r = await fetchJSON(`/runs/${id}`);
+    const r = await fetchJSON<Run>(`/runs/${id}`);
     if (currentRunId !== id) return; // modal moved on while fetching
     renderRunDetail(r, openDialog);
   } catch (e: unknown) {
@@ -2957,7 +2988,7 @@ function parseGitHubURL(repoURL) {
 
 async function loadConfig() {
   try {
-    const cfg = await fetchJSON("/config");
+    const cfg = await fetchJSON<Record<string, unknown>>("/config");
     if (!cfg.hooks_repo) return;
 
     const section = document.getElementById("setup-section")!;
@@ -3036,7 +3067,7 @@ function buildCommit(v) {
 // time when the build has them.
 async function loadVersion() {
   try {
-    const v = await fetchJSON("/version");
+    const v = await fetchJSON<Record<string, unknown>>("/version");
     const span = document.getElementById("server-version");
     if (!span || !v.version) return;
     const sha = buildCommit(v);
@@ -3092,7 +3123,7 @@ setInterval(() => {
 // the commits list itself is fetched only while its <details> is open,
 // because listing fetches origin and probes CI.
 
-let reloadMode = null; // "gated" | "legacy" | null (panel hidden)
+let reloadMode: string | null = null; // "gated" | "legacy" | null (panel hidden)
 let reloadSwitchInFlight = false;
 
 function reloadCIBadge(state) {
