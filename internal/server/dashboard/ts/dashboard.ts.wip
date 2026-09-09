@@ -32,6 +32,7 @@ interface TableColumn<T> {
 	render?: (row: T) => Node | string;
 	className?: string;
 	sortable?: boolean;
+	searchable?: boolean;
 }
 
 /** A facet chip group of <data-table>. */
@@ -981,7 +982,7 @@ function renderNavHooks(hooks: Hook[]) {
   updateNav(currentPage());
 }
 
-const sectionFetchers = {
+const sectionFetchers: Record<string, () => Promise<void>> = {
   hooks: async () => {
     const hooks = await fetchJSON<Hook[]>("/hooks");
     publishHooks(hooks);
@@ -1238,7 +1239,7 @@ async function toggleHook(id: string, disable: boolean) {
 // refresh move it, so a cancelled confirm or a failed POST leaves the
 // switch where the server is.
 function hookSwitch(id: string, disabled: boolean) {
-  const input = el("input", {
+  const input: HTMLInputElement = el("input", {
     type: "checkbox",
     role: "switch",
     "aria-label": `Enable hook ${id}`,
@@ -1329,7 +1330,7 @@ async function toggleManager(id: string, disable: boolean) {
 // The hookSwitch pattern verbatim: server state only, the click's visual
 // flip reverts and the refresh moves it.
 function managerSwitch(id: string, disabled: boolean) {
-  const input = el("input", {
+  const input: HTMLInputElement = el("input", {
     type: "checkbox",
     role: "switch",
     "aria-label": `Enable manager ${id}`,
@@ -2147,7 +2148,7 @@ function renderRuns(rs: Run[]) {
   // silently reported 0 for a status the page does contain would be a lie
   // told next to the rows that disprove it. A status excluded server-side
   // is genuinely absent from the page, so its 0 is true of what is loaded.
-  const counts = {};
+  const counts: Record<string, number> = {};
   for (const s of RUN_STATUSES) counts[s] = 0;
   for (const r of rs || []) counts[r.status] = (counts[r.status] || 0) + 1;
   t.facets = [
