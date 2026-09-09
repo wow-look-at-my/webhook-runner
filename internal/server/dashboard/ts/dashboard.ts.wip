@@ -329,6 +329,18 @@ interface Namespace {
 	[extra: string]: unknown;
 }
 
+/** A concurrency row: a named group, or the global cap. */
+interface ConcurrencyRow {
+	name?: string;
+	declared?: number;
+	default?: number;
+	limit?: number;
+	active?: number;
+	waiting?: number;
+	overridden?: boolean;
+	[extra: string]: unknown;
+}
+
 /** One wait a run is in, or was in. */
 interface Waiting {
 	kind?: string;
@@ -1693,10 +1705,10 @@ function renderGlobalCap(g) {
   t.columns = concurrencyColumns({
     nameLabel: "Scope",
     name: () => el("strong", null, "All runs"),
-    declaredOf: (row) => row.default,
-    onOverride: (row) => overrideGlobalCap(row.default, row.limit),
-    onRevert: (row) => clearGlobalCapOverride(row.default),
-    revertTitle: (row) => `Clear the override; the default cap (${row.default}) takes effect`,
+    declaredOf: (row: ConcurrencyRow) => row.default,
+    onOverride: (row: ConcurrencyRow) => overrideGlobalCap(row.default, row.limit),
+    onRevert: (row: ConcurrencyRow) => clearGlobalCapOverride(row.default),
+    revertTitle: (row: ConcurrencyRow) => `Clear the override; the default cap (${row.default}) takes effect`,
     overrideTitle: () => "Override the global run cap live (persists across reloads/restarts until reverted)",
   });
   t.rowId = () => "global";
@@ -1712,28 +1724,28 @@ function renderGlobalCap(g) {
 // they are one declaration parameterised rather than two that drift.
 function concurrencyColumns(o) {
   return [
-    { key: "name", label: o.nameLabel, value: (row) => row.name || "All runs", render: o.name || ((row) => el("code", null, row.name)) },
-    { key: "declared", label: "Declared", align: "end", value: o.declaredOf, render: (row) => String(o.declaredOf(row)) },
+    { key: "name", label: o.nameLabel, value: (row: ConcurrencyRow) => row.name || "All runs", render: o.name || ((row: ConcurrencyRow) => el("code", null, row.name)) },
+    { key: "declared", label: "Declared", align: "end", value: o.declaredOf, render: (row: ConcurrencyRow) => String(o.declaredOf(row)) },
     {
       key: "limit",
       label: "Effective",
       align: "end",
-      value: (row) => row.limit,
-      text: (row) => (row.overridden ? `${row.limit} overridden` : String(row.limit)),
-      render: (row) => el("span", null,
+      value: (row: ConcurrencyRow) => row.limit,
+      text: (row: ConcurrencyRow) => (row.overridden ? `${row.limit} overridden` : String(row.limit)),
+      render: (row: ConcurrencyRow) => el("span", null,
         String(row.limit),
         row.overridden ? el("span", { class: "badge warn" }, "overridden") : null,
       ),
     },
-    { key: "active", label: "Active", align: "end", value: (row) => row.active, render: (row) => String(row.active) },
-    { key: "waiting", label: "Waiting", align: "end", value: (row) => row.waiting, render: (row) => String(row.waiting) },
+    { key: "active", label: "Active", align: "end", value: (row: ConcurrencyRow) => row.active, render: (row: ConcurrencyRow) => String(row.active) },
+    { key: "waiting", label: "Waiting", align: "end", value: (row: ConcurrencyRow) => row.waiting, render: (row: ConcurrencyRow) => String(row.waiting) },
     {
       key: "actions",
       label: "",
       sortable: false,
       searchable: false,
       className: "row-actions",
-      render: (row) => {
+      render: (row: ConcurrencyRow) => {
         const box = el("span", { class: "row-actions" });
         const edit = el("button", { class: "toggle-btn", title: o.overrideTitle(row) }, "Override…");
         // Without stopPropagation the click also toggles the row's
@@ -1766,11 +1778,11 @@ function renderConcurrency(data) {
   if (!t) return;
   t.columns = concurrencyColumns({
     nameLabel: "Group",
-    declaredOf: (row) => row.declared,
-    onOverride: (row) => overrideLimit(row.name, row.declared, row.limit),
-    onRevert: (row) => clearLimitOverride(row.name, row.declared),
-    revertTitle: (row) => `Clear the override; the declared limit (${row.declared}) takes effect`,
-    overrideTitle: (row) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
+    declaredOf: (row: ConcurrencyRow) => row.declared,
+    onOverride: (row: ConcurrencyRow) => overrideLimit(row.name, row.declared, row.limit),
+    onRevert: (row: ConcurrencyRow) => clearLimitOverride(row.name, row.declared),
+    revertTitle: (row: ConcurrencyRow) => `Clear the override; the declared limit (${row.declared}) takes effect`,
+    overrideTitle: (row: ConcurrencyRow) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
   });
   t.rowId = (row) => row.name;
   t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
