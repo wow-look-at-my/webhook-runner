@@ -55,6 +55,14 @@ var usernsSyscalls = []string{
 // rather than string-splicing so a malformed vendored file fails loudly
 // here instead of inside the docker daemon.
 func usernsProfile() ([]byte, error) {
+	return usernsProfileFor(usernsSyscalls)
+}
+
+// usernsProfileFor builds the profile from an explicit syscall list. The list
+// is a parameter so a test can ask what a DIFFERENT list would have allowed
+// without assigning to usernsSyscalls: tests here run in parallel, and a test
+// that swapped the package variable made every concurrent reader see its list.
+func usernsProfileFor(syscalls []string) ([]byte, error) {
 	var profile map[string]any
 	if err := json.Unmarshal(mobyDefaultSeccomp, &profile); err != nil {
 		return nil, fmt.Errorf("parse vendored seccomp profile: %w", err)
@@ -63,8 +71,8 @@ func usernsProfile() ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("vendored seccomp profile has no syscalls array")
 	}
-	names := make([]any, 0, len(usernsSyscalls))
-	for _, n := range usernsSyscalls {
+	names := make([]any, 0, len(syscalls))
+	for _, n := range syscalls {
 		names = append(names, n)
 	}
 	profile["syscalls"] = append(calls, map[string]any{
