@@ -432,6 +432,7 @@ interface KVEntry {
 	key?: string;
 	size?: number;
 	expires_at?: string;
+	ttl_seconds?: number;
 	value_utf8?: string | null;
 	value_base64?: string | null;
 	[k: string]: unknown;
@@ -1591,7 +1592,7 @@ function renderManagerDetail(d: ManagerDetail) {
   row("Restarts since boot", String(d.restarts));
   if (d.consecutive_failures) row("Consecutive failures", String(d.consecutive_failures));
   row("Last error", d.last_error ? linkifyGH(d.last_error) : "");
-  row("Last stop reason", d.last_stop_reason);
+  row("Last stop reason", d.last_stop_reason ?? "");
   row("Inbox depth", String(d.inbox_depth));
   if (tsPresent(d.last_delivered)) row("Last delivery", fmtTime(d.last_delivered));
   if (tsPresent(d.last_tick)) row("Last tick", fmtTime(d.last_tick));
@@ -2266,7 +2267,7 @@ function renderImages(images: ImageState[]) {
 // to.
 function imagesOnDisk(im: ImageState) {
   return (im.images || [])
-    .map((i: ImageState) => `${(i.tag ?? "").split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: ImageState) => `${(i.tag ?? "").split(":").pop()} (${i.size ?? ""}, ${i.created ?? ""})${i.current ? " *" : ""}`)
     .join(", ");
 }
 
@@ -2348,7 +2349,7 @@ function renderKV(namespaces: Namespace[], loadedHookIDs: Set<string>) {
       },
     },
     { key: "keys", label: "Keys", align: "end", render: (ns) => String(ns.keys) },
-    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes, render: (ns) => fmtBytes(ns.bytes) },
+    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes ?? 0, render: (ns) => fmtBytes(ns.bytes) },
   ];
   t.rowId = (ns) => ns.namespace;
   t.styleText = SHARED_TABLE_CSS;
@@ -2509,7 +2510,7 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
       : "none"],
     ["State (KV)", !info.state ? "off"
       : kvSectionLink(detail.kv
-        ? `on — ${detail.kv.keys} key(s), ${fmtBytes(detail.kv.bytes)}`
+        ? `on — ${(detail.kv.keys || []).length} key(s), ${fmtBytes(detail.kv.bytes ?? 0)}`
         : "on — no data yet")],
   ]);
 
@@ -2543,10 +2544,10 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
     // them together would produce a figure that means neither.
     ["Container boot", overheadBoot(st.overhead)],
     ["Runtime start", st.overhead && st.overhead.boot_sampled
-      ? `${fmtMs(st.overhead.runtime_start_avg_ms)} avg · ${fmtMs(st.overhead.runtime_start_max_ms)} max`
+      ? `${fmtMs(st.overhead.runtime_start_avg_ms ?? 0)} avg · ${fmtMs(st.overhead.runtime_start_max_ms ?? 0)} max`
       : "—"],
     ["Argv inspect", st.overhead && st.overhead.inspect_sampled
-      ? `${fmtMs(st.overhead.inspect_avg_ms)} avg · ${fmtMs(st.overhead.inspect_max_ms)} max (${st.overhead.inspect_sampled} runs)`
+      ? `${fmtMs(st.overhead.inspect_avg_ms ?? 0)} avg · ${fmtMs(st.overhead.inspect_max_ms ?? 0)} max (${st.overhead.inspect_sampled} runs)`
       : "—"],
     ["Last run", st.last_run
       ? [
@@ -2563,7 +2564,7 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
   else if (im.built) state = el("span", { class: "badge ok" }, "built");
   else state = el("span", { class: "badge warn" }, "will build on next run");
   const others = (im.images || [])
-    .map((i: ImageState) => `${(i.tag ?? "").split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: ImageState) => `${(i.tag ?? "").split(":").pop()} (${i.size ?? ""}, ${i.created ?? ""})${i.current ? " *" : ""}`)
     .join(", ");
   fillDl(document.getElementById("app-image")!, [
     ["Current tag", el("code", null, im.tag || "-")],
@@ -2574,7 +2575,7 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
   // by_status covers the whole retention window, not the fetched page, so
   // the chips can count statuses the server just filtered out.
   bindAppRunsFilterEvents();
-  renderAppRunsTable(runs, st.by_status);
+  renderAppRunsTable(runs, st.by_status || null);
 
   renderEventsInto("app-events-feed", events);
 }
@@ -2716,7 +2717,7 @@ function bindAppRunsFilterEvents() {
 // rendered via el()'s text nodes, so arbitrary stored bytes can never
 // inject markup.
 
-let appKVHook = null; // which hook the expansion belongs to
+let appKVHook: string | null = null; // which hook the expansion belongs to
 
 function fmtTTL(seconds: number) {
   if (seconds == null) return "—";
@@ -2764,17 +2765,17 @@ async function renderAppKV(info: Hook, listing: KVListing) {
       // No TTL is not "0 seconds left": sort it past every expiring key
       // rather than in front of them.
       value: (k) => (k.ttl_seconds == null ? null : k.ttl_seconds),
-      text: (k) => fmtTTL(k.ttl_seconds),
-      render: (k) => fmtTTL(k.ttl_seconds),
+      text: (k) => fmtTTL(k.ttl_seconds ?? 0),
+      render: (k) => fmtTTL(k.ttl_seconds ?? 0),
     },
   ];
-  t.rowId = (k) => k.key;
+  t.rowId = (k) => k.key ?? "";
   t.styleText = SHARED_TABLE_CSS + KV_TABLE_CSS;
   // The value is FETCHED per key, so the detail is a promise: the component
   // shows a placeholder and paints when it resolves, and renders the error
   // into the row if the key expired between the listing and the click.
   if (componentSupports(t, "detailFor", "Stored-value inspection")) {
-    t.detailFor = (k: string) => kvValueContent(info.id, k.key);
+    t.detailFor = (k: KVEntry) => kvValueContent(info.id, k.key ?? "");
   }
   t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
