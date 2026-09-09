@@ -1171,7 +1171,7 @@ async function runSectionWork() {
   if (sectionWorkRunning) return;
   sectionWorkRunning = true;
   lastSectionWork = Date.now();
-  const secs: string[] = [...dirtySections];
+  const secs: string[] = [...dirtySections] as string[];
   dirtySections.clear();
   try {
     // Stream down: drop the batch — the fallback poll refreshes everything
@@ -1998,13 +1998,13 @@ function groupDetailContent(g: ConcurrencyRow) {
     box.appendChild(el("div", { class: "group-detail-head" },
       `Holding ${holders.length === 1 ? "the slot" : holders.length + " slots"}:`));
     for (const h of holders) {
-      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since).getTime()) || "0s"}`));
+      box.appendChild(runLine(h, ` — holding for ${fmtDuration(Date.now() - new Date(h.since as string).getTime()) || "0s"}`));
     }
   }
   if (waiting.length) {
     box.appendChild(el("div", { class: "group-detail-head" }, `Waiting (${waiting.length}, in queue order):`));
     waiting.forEach((r: Run, i: number) => {
-      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since).getTime()) || "0s"}`));
+      box.appendChild(runLine(r, ` — #${i + 1} in line, waiting ${fmtDuration(Date.now() - new Date(r.since as string).getTime()) || "0s"}`));
     });
   }
   return box;
@@ -2370,7 +2370,7 @@ function renderKV(namespaces: Namespace[], loadedHookIDs: Set<string>) {
       },
     },
     { key: "keys", label: "Keys", align: "end", render: (ns) => String(ns.keys) },
-    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes ?? 0, render: (ns) => fmtBytes(ns.bytes) },
+    { key: "bytes", label: "Size", align: "end", value: (ns) => ns.bytes ?? 0, render: (ns) => fmtBytes(ns.bytes ?? 0) },
   ];
   t.rowId = (ns) => ns.namespace;
   t.styleText = SHARED_TABLE_CSS;
@@ -2428,7 +2428,7 @@ async function refreshApp(id: string) {
     detail.info.state ? fetchJSON<KVListing>(`/kv/${enc}`) : Promise.resolve(null),
   ]);
   renderApp(detail, runs, events);
-  await renderAppKV(detail.info, kvKeys);
+  await renderAppKV(detail.info, kvKeys || {});
   renderAppSettings(detail.info.id);
 }
 
@@ -2487,7 +2487,7 @@ function setAppOrphanMode(orphan: boolean) {
 function fillDl(dl: HTMLElement, rows: [string, unknown][]) {
   dl.innerHTML = "";
   for (const [k, v] of rows) {
-    dl.appendChild(el("dt", null, k));
+    dl.appendChild(el("dt", null, String(k)));
     dl.appendChild(el("dd", null, ...(Array.isArray(v) ? v : [v])));
   }
 }
@@ -2778,7 +2778,7 @@ async function renderAppKV(info: Hook, listing: KVListing) {
   }
   t.columns = [
     { key: "key", label: "Key", render: (k) => el("code", null, k.key) },
-    { key: "size", label: "Size", align: "end", value: (k) => k.size, render: (k) => fmtBytes(k.size) },
+    { key: "size", label: "Size", align: "end", value: (k) => k.size ?? 0, render: (k) => fmtBytes(k.size ?? 0) },
     {
       key: "ttl_seconds",
       label: "TTL remaining",
@@ -2796,7 +2796,7 @@ async function renderAppKV(info: Hook, listing: KVListing) {
   // shows a placeholder and paints when it resolves, and renders the error
   // into the row if the key expired between the listing and the click.
   if (componentSupports(t, "detailFor", "Stored-value inspection")) {
-    t.detailFor = (k: KVEntry) => kvValueContent(info.id, k.key ?? "");
+    t.detailFor = ((k: KVEntry) => kvValueContent(info.id, k.key ?? "")) as unknown as (row: KVEntry) => Node | null;
   }
   t.rows = (listing && listing.keys) || [];
   if (wantScroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2812,7 +2812,7 @@ async function kvValueContent(hookId: string, key: string) {
   const e = await fetchJSON<KVEntry>(
     `/kv/${encodeURIComponent(hookId)}/${encodeURIComponent(key)}`);
   const meta = [fmtBytes(e.size ?? 0)];
-  if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds)})`);
+  if (e.expires_at) meta.push(`expires ${fmtTime(e.expires_at)} (in ${fmtTTL(e.ttl_seconds ?? 0)})`);
   let body;
   if (e.value_utf8 != null) {
     body = e.value_utf8;
@@ -2940,7 +2940,7 @@ function renderRunDetailUnavailable(id: string, err: unknown) {
         "Runs in flight during a server restart are not persisted, and old runs age out of the run history."
       : `Failed to load this run: ${(err && errText(err)) || err}`));
   const dlg = byId<HTMLDialogElement>("run-detail");
-  if (!dlg.open) dlg.showModal();
+  if (dlg && !dlg.open) dlg.showModal();
 }
 
 function renderRunDetail(r: Run, openDialog: boolean) {
@@ -2978,8 +2978,8 @@ function renderRunDetail(r: Run, openDialog: boolean) {
   // The holder-side view: who is blocked on locks or group slots this run
   // holds, each waiter a clickable run link.
   const wds = waitersDetail(r);
-  if (wds) rows.push(["Held up by this run", wds]);
-  if (r.error) rows.push(["Error", linkifyGH(r.error)]);
+  if (wds) rows.push(["Held up by this run", wds as unknown as HTMLElement]);
+  if (r.error) rows.push(["Error", linkifyGH(r.error) as unknown as HTMLElement]);
   for (const [k, v] of rows) {
     dl.appendChild(el("dt", null, k));
     dl.appendChild(el("dd", null, v));
@@ -3020,10 +3020,10 @@ runDetailDialog.addEventListener("close", () => {
 // Switch between the conversation and raw-log views of the same run output.
 // The choice persists across live refreshes until the modal is reopened.
 document.getElementById("run-detail-view-toggle")!.addEventListener("click", (e) => {
-  const btn = (e.target as Element).closest("button[data-view]");
+  const btn = (e.target as Element).closest("button[data-view]") as HTMLElement | null;
   if (btn) {
-    currentRunView = btn.dataset.view;
-    renderRunOutput(btn.dataset.view);
+    currentRunView = btn.dataset.view ?? null;
+    renderRunOutput(btn.dataset.view ?? "");
   }
 });
 // The live refresh loop: one fixed-cadence interval for the page's life,
@@ -3123,7 +3123,7 @@ async function loadConfig() {
     const content = document.getElementById("setup-content")!;
     section.hidden = false;
 
-    const ghPath = parseGitHubURL(cfg.hooks_repo);
+    const ghPath = parseGitHubURL(String(cfg.hooks_repo ?? ""));
     const repoLink = ghPath
       ? `https://github.com/${ghPath}`
       : cfg.hooks_repo;
@@ -3135,13 +3135,13 @@ async function loadConfig() {
     repoP.appendChild(
       ghPath
         ? el("a", { href: repoLink, target: "_blank" }, ghPath)
-        : el("code", null, cfg.hooks_repo)
+        : el("code", null, String(cfg.hooks_repo ?? ""))
     );
 
     const nodes = [];
 
     const reloadURL = cfg.hook_base_url
-      ? cfg.hook_base_url.replace(/\/$/, "") + "/_reload"
+      ? String(cfg.hook_base_url).replace(/\/$/, "") + "/_reload"
       : "/_reload";
 
     const intro = el("p", null,
@@ -3166,8 +3166,8 @@ async function loadConfig() {
       ["Events", "push + status (status is what green-lights a gated reload)"],
     ];
     for (const [k, v] of fields) {
-      dl.appendChild(el("dt", null, k));
-      const dd = el("dd", null, el("code", { class: "copyable" }, v));
+      dl.appendChild(el("dt", null, String(k)));
+      const dd = el("dd", null, el("code", { class: "copyable" }, v as string));
       dl.appendChild(dd);
     }
     nodes.push(dl);
@@ -3260,7 +3260,7 @@ function reloadCIBadge(state: string) {
   if (s === "success") cls += " ok";
   else if (s === "failure" || s === "error") cls += " bad";
   else if (s === "pending") cls += " warn";
-  const titles = {
+  const titles: Record<string, string> = {
     success: "the gating CI context reports green for this commit",
     failure: "the gating CI context reports FAILURE for this commit",
     error: "the gating CI context reports ERROR for this commit",
@@ -3268,7 +3268,7 @@ function reloadCIBadge(state: string) {
     none: "CI has not reported the gating context for this commit yet",
     unknown: "the CI state could not be read (no token / API unreachable) — treated as not green, never guessed",
   };
-  return el("span", { class: cls, title: titles[s] || "" }, "CI: " + s);
+  return el("span", { class: cls, title: titles[s] ?? "" }, "CI: " + s);
 }
 
 function reloadSrcBadge(has: boolean) {
@@ -3279,7 +3279,7 @@ function reloadSrcBadge(has: boolean) {
 
 function renderReloadStatus(data: ReloadStatus | null, statusErr: unknown) {
   const usable = !!data && (data.mode === "gated" || data.mode === "legacy");
-  reloadMode = usable ? data.mode : null;
+  reloadMode = usable ? (data?.mode ?? null) : null;
   // The panel stays up NO MATTER WHAT. Hiding it on an unreadable status was
   // a silent degradation that removed the force controls from the page in
   // the one situation they exist for; a status we cannot read is a loud line
@@ -3296,7 +3296,7 @@ function renderReloadStatus(data: ReloadStatus | null, statusErr: unknown) {
   }
   // Per-commit switching needs the gate; legacy mode keeps the live view
   // and the Check & reload (pull to tip) but hides the picker.
-  byId<HTMLDetailsElement>("reload-picker")!.hidden = data && data.mode === "legacy";
+  byId<HTMLDetailsElement>("reload-picker")!.hidden = !!data && data.mode === "legacy";
   if (!usable) return;
 
   const box = document.getElementById("reload-live")!;
@@ -3306,7 +3306,7 @@ function renderReloadStatus(data: ReloadStatus | null, statusErr: unknown) {
     el("span", { class: "reload-label" }, "Live commit"),
     el("code", { title: live.sha || "" }, live.short || "(unknown)"),
     data.hooks_branch ? el("span", { class: "reload-branch" }, "on " + data.hooks_branch) : null,
-    reloadCIBadge(live.ci_state),
+    reloadCIBadge(live.ci_state ?? ""),
     reloadSrcBadge(!!live.has_src),
     data.mode === "legacy"
       ? el("span", { class: "badge warn", title: "The CI reload gate is disabled (WEBHOOK_RUNNER_HOOKS_GATE_CONTEXT is empty): any signed push reloads, and per-commit switching is unavailable." }, "gate disabled (legacy)")
@@ -3334,13 +3334,13 @@ function renderReloadStatus(data: ReloadStatus | null, statusErr: unknown) {
       class: "toggle-btn",
       title: "Force the serving hooks tree to this held commit NOW, overriding the CI gate",
     }, "Make live");
-    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short || "", p.short || p.sha, p.why || ""));
+    force.addEventListener("click", () => void reloadForceTo(p.sha || p.short || "", (p.short || p.sha) ?? "", p.why || ""));
     box.appendChild(el("div", { class: "reload-pending" },
       el("span", { class: "reload-label" }, "Held"),
       el("code", { title: p.sha || "" }, p.short || ""),
       p.subject ? el("span", { class: "reload-subject-inline" }, linkifyGH(p.subject)) : null,
       el("span", { class: "wait-note" }, p.why || "awaiting CI"),
-      reloadCIBadge(p.ci_state),
+      reloadCIBadge(p.ci_state ?? ""),
       reloadSrcBadge(!!p.has_src),
       force,
     ));
@@ -3378,8 +3378,8 @@ function renderReloadCommits(data: { commits?: Commit[]; error?: unknown }) {
       className: "reload-commit-subject",
       render: (c) => linkifyGH(c.subject || ""),
     },
-    { key: "date", label: "Date", value: (c) => Date.parse(c.date), text: (c) => fmtTime(c.date), render: (c) => fmtTime(c.date) },
-    { key: "ci_state", label: "CI", render: (c) => reloadCIBadge(c.ci_state) },
+    { key: "date", label: "Date", value: (c) => Date.parse(c.date ?? ""), text: (c) => fmtTime(c.date), render: (c) => fmtTime(c.date) },
+    { key: "ci_state", label: "CI", render: (c) => reloadCIBadge(c.ci_state ?? "") },
     {
       key: "has_src",
       label: "src/",
@@ -3396,12 +3396,12 @@ function renderReloadCommits(data: { commits?: Commit[]; error?: unknown }) {
       render: (c) => {
         if (c.is_live) return el("span", { class: "badge ok" }, "live");
         const b = el("button", { class: "toggle-btn", title: "Switch the serving hooks tree to this commit" }, "Make live");
-        b.addEventListener("click", () => reloadSwitchTo(c.sha, c.short));
+        b.addEventListener("click", () => reloadSwitchTo(c.sha ?? "", c.short ?? ""));
         return b;
       },
     },
   ];
-  t.rowId = (c) => c.sha;
+  t.rowId = (c) => c.sha ?? "";
   t.rowClass = (c) => (c.is_live ? "reload-live-commit" : "");
   t.styleText = SHARED_TABLE_CSS + RELOAD_TABLE_CSS;
   t.rows = commits;
