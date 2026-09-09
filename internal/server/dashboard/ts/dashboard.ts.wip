@@ -276,6 +276,7 @@ interface Run {
 	/** Runs queued behind this one. */
 	waiters?: Waiting[];
 	instance_id?: string;
+	run_id?: string;
 	wait_history_truncated?: boolean;
 	[extra: string]: unknown;
 }
@@ -289,6 +290,8 @@ interface Hook {
 	schedule?: string;
 	since?: string;
 	synchronous?: boolean;
+	env_keys?: string[];
+	concurrency_group?: string;
 	overhead?: Overhead;
 	stats?: { by_status?: Record<string, number> };
 	[extra: string]: unknown;
@@ -311,7 +314,7 @@ interface ManagerStatus {
 	avg_wait_ms?: number;
 	max_wait_ms?: number;
 	wait_sampled?: number;
-	last_run?: string;
+	last_run?: Run;
 	last_tick?: string;
 	last_error?: string;
 	last_delivered?: string;
@@ -435,6 +438,8 @@ interface KVEntry {
 
 /** A KV namespace listing. */
 interface KVListing {
+	keys?: KVEntry[];
+	bytes?: number;
 	[k: string]: unknown;
 }
 
@@ -505,6 +510,12 @@ interface Overhead {
 	bound_sampled?: number;
 	bound_avg_ms?: number;
 	bound_max_ms?: number;
+	runtime_start_sampled?: number;
+	runtime_start_avg_ms?: number;
+	runtime_start_max_ms?: number;
+	inspect_sampled?: number;
+	inspect_avg_ms?: number;
+	inspect_max_ms?: number;
 }
 
 function tsPresent(s: string | null | undefined): boolean {
@@ -1845,7 +1856,7 @@ function renderGlobalCap(g: ConcurrencyRow) {
     nameLabel: "Scope",
     name: () => el("strong", null, "All runs"),
     declaredOf: (row: ConcurrencyRow) => row.default,
-    onOverride: (row: ConcurrencyRow) => overrideGlobalCap(row.default, row.limit),
+    onOverride: (row: ConcurrencyRow) => overrideGlobalCap(row.default ?? 0, row.limit ?? 0),
     onRevert: (row: ConcurrencyRow) => clearGlobalCapOverride(row.default ?? 0),
     revertTitle: (row: ConcurrencyRow) => `Clear the override; the default cap (${row.default}) takes effect`,
     overrideTitle: () => "Override the global run cap live (persists across reloads/restarts until reverted)",
@@ -1918,12 +1929,12 @@ function renderConcurrency(data: ConcurrencyData) {
   t.columns = concurrencyColumns({
     nameLabel: "Group",
     declaredOf: (row: ConcurrencyRow) => row.declared,
-    onOverride: (row: ConcurrencyRow) => overrideLimit(row.name, row.declared, row.limit),
+    onOverride: (row: ConcurrencyRow) => overrideLimit(row.name ?? "", row.declared ?? 0, row.limit ?? 0),
     onRevert: (row: ConcurrencyRow) => clearLimitOverride(row.name ?? "", row.declared ?? 0),
     revertTitle: (row: ConcurrencyRow) => `Clear the override; the declared limit (${row.declared}) takes effect`,
     overrideTitle: (row: ConcurrencyRow) => `Override the limit for ${row.name} live (persists across reloads/restarts until reverted)`,
   });
-  t.rowId = (row) => row.name;
+  t.rowId = (row) => row.name ?? "";
   t.styleText = SHARED_TABLE_CSS + CONCURRENCY_TABLE_CSS;
   if (componentSupports(t, "detailFor", "The per-group holders/queue drill-down")) {
     t.detailFor = (row) => groupDetailContent(row);
@@ -1947,7 +1958,7 @@ function renderConcurrency(data: ConcurrencyData) {
 function groupDetailContent(g: ConcurrencyRow) {
   const box = el("div", { class: "group-detail" });
   const runLine = (r: Run, note: string) => el("div", { class: "group-run" },
-    runLink(r.run_id),
+    runLink(r.run_id ?? ""),
     " ",
     r.hook_id ? el("code", null, r.hook_id) : null,
     r.title ? el("span", { class: "group-run-title" }, linkifyTitle(" " + r.title)) : null,
@@ -2254,7 +2265,7 @@ function renderImages(images: ImageState[]) {
 // to.
 function imagesOnDisk(im: ImageState) {
   return (im.images || [])
-    .map((i: ImageState) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: ImageState) => `${(i.tag ?? "").split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
     .join(", ");
 }
 
@@ -2445,7 +2456,7 @@ async function renderAppOrphanKV(id: string, listing: KVListing) {
 // Orphan mode hides every app-body section that needs a loaded hook,
 // leaving only the State (KV) browser; renderApp flips it back off.
 function setAppOrphanMode(orphan: boolean) {
-  document.querySelector<HTMLElement>("#app-body .app-cards").hidden = orphan;
+  document.querySelector<HTMLElement>("#app-body .app-cards")!.hidden = orphan;
   document.getElementById("app-runs-section")!.hidden = orphan;
   document.getElementById("app-events-section")!.hidden = orphan;
 }
@@ -2470,7 +2481,7 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
   // overview's Status column, next to the title.
   const switchSlot = document.getElementById("app-switch")!;
   switchSlot.hidden = false;
-  switchSlot.replaceChildren(hookSwitch(info.id, detail.disabled));
+  switchSlot.replaceChildren(hookSwitch(info.id, !!detail.disabled));
 
   // The server sets Content-Disposition: attachment on this response, so a
   // plain click downloads it — no blob/JS assembly needed.
@@ -2510,7 +2521,7 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
   fillDl(document.getElementById("app-stats")!, [
     ["Runs tracked", String(st.tracked)],
     ["By status", byStatus.length ? el("span", { class: "chips" }, ...byStatus) : "—"],
-    ["Success rate", st.completed ? `${Math.round(st.success_rate * 100)}% of ${st.completed} completed` : "—"],
+    ["Success rate", st.completed ? `${Math.round((st.success_rate ?? 0) * 100)}% of ${st.completed} completed` : "—"],
     // Skips are their own bucket: no container ran, so they are excluded
     // from the completed count, the success rate, and every duration/wait
     // figure — counting non-work would dilute all of them.
@@ -2551,7 +2562,7 @@ function renderApp(detail: HookDetail, runs: Run[], events: EventRecord[]) {
   else if (im.built) state = el("span", { class: "badge ok" }, "built");
   else state = el("span", { class: "badge warn" }, "will build on next run");
   const others = (im.images || [])
-    .map((i: number) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: ImageState) => `${(i.tag ?? "").split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
     .join(", ");
   fillDl(document.getElementById("app-image")!, [
     ["Current tag", el("code", null, im.tag || "-")],
