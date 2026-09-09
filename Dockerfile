@@ -28,7 +28,13 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.description="Executes incoming webhooks inside disposable Docker containers"
 
-COPY --chmod=755 build/webhook-runner /usr/local/bin/webhook-runner
+# HACK, pending the real fix upstream. A bare ENTRYPOINT on the APE
+# go-toolchain builds exits with "exec format error" on this host. The APE
+# therefore sits under /usr/local/lib and a shebang launcher takes its place at
+# the entrypoint path, so a container recreated from an older container's
+# config still names /usr/local/bin/webhook-runner and still starts.
+COPY --chmod=755 build/webhook-runner /usr/local/lib/webhook-runner/webhook-runner
+COPY --chmod=755 scripts/image-launcher.sh /usr/local/bin/webhook-runner
 
 # The KV state store is served on an internal Unix socket (under TMPDIR), not a
 # port: state hooks reach it at a plain http://localhost:9002 via a proxy shim

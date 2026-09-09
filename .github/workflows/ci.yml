@@ -17,31 +17,20 @@ permissions:
 jobs:
   # Fails when the committed dashboard bundle drifts from ts/.
   dashboard-assets:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # A higher ?v= is not a newer master -- docs/internals/shim-and-timeline.md.
-      - name: Install ts0 (prebuilt, from buildhost)
-        run: curl -fSL "https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64" -o /tmp/ts0.cjs
-      # Type-checks ts/ and rebuilds the bundle in place.
-      - name: Regenerate dashboard bundle
-        run: node /tmp/ts0.cjs build
+      # The script owns which entries ts0 builds, and pins the ts0 it fetches.
+      - name: Build the dashboard bundles
+        run: sh generate-timeline.sh
         working-directory: internal/server/dashboard
-      - name: Check the committed bundle is up to date
+      - name: Check the build produced both bundles
         run: |
-          if ! git diff --quiet -- internal/server/dashboard/assets/timeline.js; then
-            echo "::error::assets/timeline.js is stale — it does not match a fresh ts0 build of ts/."
-            echo "Regenerate and commit it:"
-            echo "  curl -fSL 'https://dl.pazer.build/ts0?v=10&os=linux&arch=amd64' -o /tmp/ts0.cjs"
-            echo "  (cd internal/server/dashboard && node /tmp/ts0.cjs build)"
-            echo "Diff:"
-            git --no-pager diff -- internal/server/dashboard/assets/timeline.js
-            exit 1
-          fi
-          echo "assets/timeline.js matches its source."
+          test -s internal/server/dashboard/assets/timeline.js
+          test -s internal/server/dashboard/assets/dashboard.js
 
   # GitHub-hosted, not wow-dind: go-toolchain's dats phase needs a sandbox backend.
   test:
@@ -60,8 +49,21 @@ jobs:
           arch: amd64,arm64
           # The approval hash for dashboard.go's //go:generate.
           generate: 884c0f21fd82
-      - name: Generated assets are fresh
-        run: git diff --exit-code -- internal/server/dashboard/assets/ internal/server/dashboard/ts/js-snippets/
+
+  # Nothing else starts the image, and a bare exec of the binary crash-looped the fleet.
+  image-e2e:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      - run: chmod +x build/webhook-runner
+      - run: docker build -t webhook-runner:ci .
+      - name: The entrypoint starts
+        run: docker run --rm webhook-runner:ci --help
 
   # GitHub-hosted: the suite starts real containers.
   e2e:
@@ -69,10 +71,13 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      # Drives the real committed assets in vm sandboxes.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # The harness reads both bundles, which are built, not committed.
+      - name: Build the dashboard bundles
+        run: sh generate-timeline.sh
+        working-directory: internal/server/dashboard
       - name: Dashboard client harness
         run: node --experimental-strip-types --test internal/server/dashboard/testjs/*.test.ts
       # Restores the test job's go-build hand-off.
@@ -113,7 +118,7 @@ jobs:
 
   # Would deploying THIS binary break the running fleet?
   fleet-compat:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4

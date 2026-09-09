@@ -75,18 +75,16 @@ func testManager(t *testing.T, id string, doc string) *hooks.Manager {
 	return m
 }
 
-func shrinkCadences(t *testing.T) {
-	t.Helper()
-	oldRestart, oldPark := RestartDelay, ParkPoll
+// Shrunk here because the cadences are package-level: per-test cleanup restored the production delay under parallel neighbours.
+func TestMain(m *testing.M) {
 	RestartDelay, ParkPoll = 30*time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { RestartDelay, ParkPoll = oldRestart, oldPark })
+	os.Exit(m.Run())
 }
 
 // The core loop: an ENABLED manager starts an instance (after reaping the
 // deterministic container name), restarts FLAT on exit, and its failures
 // surface on the attention seam until an instance holds.
 func TestSupervisorRestartsFlat(t *testing.T) {
-	shrinkCadences(t)
 	fr := newFakeRunner()
 	var attn []AttentionEntry
 	var attnMu sync.Mutex
@@ -134,7 +132,6 @@ func TestSupervisorRestartsFlat(t *testing.T) {
 // on deploy; the operator's disable gracefully stops it and parks the
 // loop, and re-enabling starts a fresh instance.
 func TestSupervisorDefaultOnAndKillSwitch(t *testing.T) {
-	shrinkCadences(t)
 	fr := newFakeRunner()
 	var disabledMu sync.Mutex
 	disabled := map[string]bool{} // operator overrides; absent = default
@@ -184,7 +181,6 @@ func TestSupervisorDefaultOnAndKillSwitch(t *testing.T) {
 // reload") and the loop starts the new tree's image; removal exits the
 // loop entirely. The finish-seam analog fires per instance end.
 func TestSupervisorReplaceAndRemove(t *testing.T) {
-	shrinkCadences(t)
 	fr := newFakeRunner()
 	var endedMu sync.Mutex
 	var ended []string
@@ -221,7 +217,6 @@ func TestSupervisorReplaceAndRemove(t *testing.T) {
 // Deliveries buffer while no instance is live and drain into the next ;
 // InboxNext refuses stale instances.
 func TestSupervisorDeliveryBuffering(t *testing.T) {
-	shrinkCadences(t)
 	fr := newFakeRunner()
 	s := New(Options{Runner: fr})
 	m := testManager(t, "m1", `{"$schema": "https://sites.pazer.build/webhook-runner/branch/master/manager.schema.json","command":["run"]}`)
@@ -240,7 +235,6 @@ func TestSupervisorDeliveryBuffering(t *testing.T) {
 // The single-instance lease: with a real flock file, a supervisor
 // blocks until the releases (shutdown), then acquires and runs.
 func TestSupervisorLeaseHandover(t *testing.T) {
-	shrinkCadences(t)
 	lease := filepath.Join(t.TempDir(), "managers.lock")
 	frA, frB := newFakeRunner(), newFakeRunner()
 	mkSup := func(fr *fakeRunner) *Supervisor {
@@ -274,7 +268,6 @@ func TestSupervisorLeaseHandover(t *testing.T) {
 // Attention: a failing (enabled) manager surfaces entry naming its
 // consecutive failures; a running instance clears it.
 func TestSupervisorAttention(t *testing.T) {
-	shrinkCadences(t)
 	fr := newFakeRunner()
 	var mu sync.Mutex
 	var current []AttentionEntry

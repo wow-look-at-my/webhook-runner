@@ -86,12 +86,8 @@ func TestUsernsProfileAllowsTheSandboxToBeBuilt(t *testing.T) {
 // removed the mount syscalls from usernsSyscalls AND the assertion's own
 // helper broke: here the disagree on purpose.
 func TestTheOldNamespaceOnlyListWouldNotBuildASandbox(t *testing.T) {
-	saved := usernsSyscalls
-	t.Cleanup(func() { usernsSyscalls = saved })
-
 	// The list exactly as it shipped, and exactly as it failed on a real gha-runner container.
-	usernsSyscalls = []string{"unshare", "clone", "clone3", "setns"}
-	profile, err := usernsProfile()
+	profile, err := usernsProfileFor([]string{"unshare", "clone", "clone3", "setns"})
 	require.Nil(t, err)
 
 	for _, call := range namespaceCalls {
