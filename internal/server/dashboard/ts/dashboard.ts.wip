@@ -274,6 +274,8 @@ interface Run {
 	/** Closed wait segments, ended at their real times by the server. */
 	wait_history?: Waiting[];
 	/** Runs queued behind this one. */
+	output?: string[];
+	output_times?: (string | null)[];
 	waiters?: Waiting[];
 	instance_id?: string;
 	run_id?: string;
@@ -1005,7 +1007,7 @@ function renderRunOutput(view: string) {
 // (hidden by default; the timeline is the primary runs view) and fetches
 // nothing while hidden. renderKV needs the loaded-hook id set, so the kv
 // section reads the roster the hooks section last published.
-let lastHookIds = new Set();
+let lastHookIds = new Set<string>();
 
 function publishHooks(hooks: Hook[]) {
   lastHookIds = new Set(hooks.map((h: Hook) => h.id));
@@ -1151,7 +1153,7 @@ async function runSectionWork() {
   if (sectionWorkRunning) return;
   sectionWorkRunning = true;
   lastSectionWork = Date.now();
-  const secs = [...dirtySections];
+  const secs: string[] = [...dirtySections];
   dirtySections.clear();
   try {
     // Stream down: drop the batch — the fallback poll refreshes everything
@@ -2397,15 +2399,15 @@ async function refreshApp(id: string) {
   // window and unreachable at any limit.
   const exclude = [...appRunsHiddenStatuses()].sort().join(",");
   const [runs, events, kvKeys] = await Promise.all([
-    fetchJSON(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
+    fetchJSON<Run[]>(`/runs?hook=${enc}&max=50${exclude ? `&exclude=${encodeURIComponent(exclude)}` : ""}`),
     // Same exclusion as the overview feed: this page already has a Recent
     // runs table two sections up, so the feed shows only what that table
     // cannot — deliveries that produced no run at all, image builds, and
     // this hook's misconfigurations.
-    fetchJSON(`/events?hook=${enc}&max=100&exclude=run`),
+    fetchJSON<EventRecord[]>(`/events?hook=${enc}&max=100&exclude=run`),
     // The KV namespace listing exists only for state:true hooks
     // (namespace == hook ID); skip the fetch entirely otherwise.
-    detail.info.state ? fetchJSON(`/kv/${enc}`) : Promise.resolve(null),
+    detail.info.state ? fetchJSON<KVListing>(`/kv/${enc}`) : Promise.resolve(null),
   ]);
   renderApp(detail, runs, events);
   await renderAppKV(detail.info, kvKeys);
@@ -2850,7 +2852,7 @@ const TERMINAL_RUN_STATUSES = ["success", "failure", "timeout", "error", "cancel
 const RUN_DETAIL_POLL_MS = 3000;
 
 let currentRunId: string | null = null; // run shown in the open modal, null when closed
-let currentRunView = null; // the user's raw/conversation choice, null = auto
+let currentRunView: string | null = null; // the user's raw/conversation choice, null = auto
 let currentRunTerminal = false; // last rendered status was terminal
 // When the modal's run was last fetched (any source: open, delta, poll) —
 // the poll skips a tick a delta already covered, so a busy run costs at
@@ -2901,7 +2903,7 @@ function renderRunDetailUnavailable(id: string, err: unknown) {
   currentRunTerminal = true; // nothing to live-poll — the run isn't served
   document.getElementById("run-detail-name")!.textContent = "Run";
   document.getElementById("run-detail-id")!.textContent = id;
-  const is404 = /: 404$/.test(String((err && err.message) || ""));
+  const is404 = /: 404$/.test(errText(err));
   const dl = document.getElementById("run-detail-meta")!;
   dl.innerHTML = "";
   dl.appendChild(el("dt", null, "Status"));
@@ -2954,7 +2956,7 @@ function renderRunDetail(r: Run, openDialog: boolean) {
   // blocked lock acquire (holder linked), or a concurrency-group queue
   // wait (position + holders linked).
   const wd = waitDetail(r);
-  if (wd) rows.push(["Waiting", wd]);
+  if (wd) rows.push(["Waiting", wd as unknown as HTMLElement]);
   // The holder-side view: who is blocked on locks or group slots this run
   // holds, each waiter a clickable run link.
   const wds = waitersDetail(r);
@@ -2970,8 +2972,8 @@ function renderRunDetail(r: Run, openDialog: boolean) {
   const out = document.getElementById("run-detail-output")!;
   const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
   const prevScroll = out.scrollTop;
-  currentRunLines = r.output || [];
-  currentRunTimes = r.output_times || [];
+  currentRunLines = (r.output as string[]) || [];
+  currentRunTimes = (r.output_times as (string | null)[]) || [];
   const entries = currentRunLines.map((text: string, i: number) => ({ text, time: currentRunTimes[i] }));
   currentRunTurns = parseConversation(entries);
   document.getElementById("run-detail-view-toggle")!.hidden = !currentRunTurns;
