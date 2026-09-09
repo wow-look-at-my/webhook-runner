@@ -52,6 +52,10 @@ interface DataTableElement<T = Record<string, unknown>> extends HTMLElement {
 	styleText?: string;
 	empty?: string;
 	search?: boolean;
+	rowClass?: (row: T) => string;
+	detailFor?: (row: T) => Node | null;
+	filter?: Record<string, string[]>;
+	expanded?: string[];
 }
 
 /** The <activity-feed> surface this file drives. */
@@ -262,6 +266,11 @@ interface Run {
 	error?: string;
 	/** Lifecycle instrumentation marks (the runner's runs.Phase). */
 	phases?: Record<string, string>;
+	/** Why a live run is paused. */
+	waiting_on?: Waiting;
+	/** Closed wait segments, ended at their real times by the server. */
+	wait_history?: Waiting[];
+	wait_history_truncated?: boolean;
 	[extra: string]: unknown;
 }
 
@@ -318,6 +327,23 @@ interface Namespace {
 	keys?: number;
 	bytes?: number;
 	[extra: string]: unknown;
+}
+
+/** One wait a run is in, or was in. */
+interface Waiting {
+	kind?: string;
+	key?: string;
+	reason?: string;
+	message?: string;
+	position?: number;
+	length?: number;
+	until?: string;
+	start?: string;
+	end?: string;
+	holder_hook_id?: string;
+	holder_run_id?: string;
+	holder_run_ids?: string[];
+	keys?: string[];
 }
 
 /** Per-hook container-startup aggregates as /hooks serves them. */
