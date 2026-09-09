@@ -295,6 +295,9 @@ interface Hook {
 
 /** A manager's status row. */
 interface ManagerStatus {
+	id?: string;
+	title?: string;
+	disabled?: boolean;
 	state: string;
 	tracked?: number;
 	max_tracked?: number;
@@ -319,6 +322,9 @@ interface ManagerStatus {
 /** Per-hook image state. */
 interface ImageState {
 	hook_id: string;
+	size?: string;
+	created?: string;
+	current?: boolean;
 	tag?: string;
 	built?: string;
 	error?: string;
@@ -339,8 +345,16 @@ interface EventRecord {
 	[k: string]: unknown;
 }
 
+/** One attention row: something the fleet wants looked at. */
+interface AttentionEntry {
+	source?: string;
+	since?: string;
+	[k: string]: unknown;
+}
+
 /** The /attention payload. */
 interface AttentionPayload {
+	entries?: AttentionEntry[];
 	[k: string]: unknown;
 }
 
@@ -2209,7 +2223,7 @@ function renderImages(images: ImageState[]) {
 // to.
 function imagesOnDisk(im: ImageState) {
   return (im.images || [])
-    .map((i: number) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
+    .map((i: ImageState) => `${i.tag.split(":").pop()} (${i.size}, ${i.created})${i.current ? " *" : ""}`)
     .join(", ");
 }
 
