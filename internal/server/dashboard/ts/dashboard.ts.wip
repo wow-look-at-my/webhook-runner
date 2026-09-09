@@ -329,6 +329,20 @@ interface Namespace {
 	[extra: string]: unknown;
 }
 
+/** One line of run output: its text and the line's ISO timestamp. */
+interface LogEntry {
+	text: string;
+	time?: string | null;
+}
+
+/** A turn of the conversation view: consecutive lines of one role. */
+interface Turn {
+	role: string;
+	label: string;
+	entries: LogEntry[];
+	time?: string | null;
+}
+
 /** A concurrency row: a named group, or the global cap. */
 interface ConcurrencyRow {
 	name?: string;
@@ -537,7 +551,7 @@ function waitDetail(r: Run) {
   const w = r.waiting_on;
   if (!w) return null;
   const frag = document.createDocumentFragment();
-  const linkList = (ids) => {
+  const linkList = (ids: string[]) => {
     ids.forEach((id: string, i: number) => {
       if (i > 0) frag.appendChild(document.createTextNode(", "));
       frag.appendChild(runLink(id));
@@ -586,7 +600,7 @@ function waitersDetail(r: Run) {
   const ws = r.waiters;
   if (!ws || !ws.length) return null;
   const frag = document.createDocumentFragment();
-  ws.forEach((x, i: number) => {
+  ws.forEach((x: Waiting, i: number) => {
     if (i > 0) frag.appendChild(document.createTextNode("; "));
     frag.appendChild(runLink(x.run_id));
     frag.appendChild(document.createTextNode(` (${x.hook_id}) → ${waiterWants(x)}`));
@@ -614,14 +628,14 @@ function shortId(id: string) {
 // What a waiter entry waits FOR: attachWaiters marks group waits with a
 // "group:" key prefix ("group:global" = the server-wide run cap); anything
 // else is a cooperative lock key.
-function waiterWants(x) {
+function waiterWants(x: Waiting) {
   if (!x.key) return "this run";
   if (x.key === "group:global") return "a global run slot";
   if (x.key.startsWith("group:")) return `a slot in group ${x.key.slice(6)}`;
   return `lock ${x.key}`;
 }
 
-function waiterText(x) {
+function waiterText(x: Waiting) {
   return `${shortId(x.run_id)} (${x.hook_id}) → ${waiterWants(x)}`;
 }
 
@@ -778,11 +792,11 @@ function isLogLine(line: string) {
 // entries is an array of { text, time } (time is the line's ISO timestamp or
 // null). Turns carry their entries plus the timestamp of their first line so
 // the conversation view can show when each turn began.
-function parseConversation(entries) {
-  if (!entries.some((e) => classifyMarker(e.text))) return null;
+function parseConversation(entries: LogEntry[]) {
+  if (!entries.some((e: LogEntry) => classifyMarker(e.text))) return null;
   const turns = [];
   let cur = null;
-  const pushLog = (e) => {
+  const pushLog = (e: LogEntry) => {
     const last = turns[turns.length - 1];
     if (last && last.role === "log") last.entries.push(e);
     else turns.push({ role: "log", label: "log", entries: [e], time: e.time });
@@ -804,12 +818,12 @@ function parseConversation(entries) {
   return turns;
 }
 
-function renderRunOutput(view) {
+function renderRunOutput(view: string) {
   const container = document.getElementById("run-detail-output")!;
   container.innerHTML = "";
   if (view === "conversation" && currentRunTurns) {
     for (const t of currentRunTurns) {
-      const body = t.entries.map((e) => e.text).join("\n").replace(/^\n+|\n+$/g, "");
+      const body = t.entries.map((e: LogEntry) => e.text).join("\n").replace(/^\n+|\n+$/g, "");
       const clock = fmtClock(t.time);
       container.appendChild(
         el("div", { class: "turn turn-" + t.role },
@@ -1268,7 +1282,7 @@ function managerLastEvent(st: ManagerStatus) {
 }
 
 // The sidebar's dynamic per-manager links — renderNavHooks's twin.
-function renderNavManagers(list) {
+function renderNavManagers(list: ManagerStatus[]) {
   const nav = document.getElementById("nav-managers");
   if (!nav) return;
   nav.innerHTML = "";
@@ -1283,7 +1297,7 @@ function renderNavManagers(list) {
 // manager's page — the same destination its title link carries, so a click
 // landing on either is correct — while the switch and the restart button
 // stop their own clicks from reaching the row.
-function renderManagers(list) {
+function renderManagers(list: ManagerStatus[]) {
   list = list || [];
   renderNavManagers(list);
   const t = byId<DataTableElement>("managers-table");
@@ -1366,11 +1380,11 @@ let managerDetailData = null;
 
 // Pure: the clipboard text for an output-lines array — lines joined with
 // single newlines, no trailing newline; [] and a missing array both → "".
-function managerOutputText(lines) {
+function managerOutputText(lines: string[]) {
   return (lines || []).join("\n");
 }
 
-async function copyManagerOutput(btn) {
+async function copyManagerOutput(btn: HTMLButtonElement) {
   const text = managerOutputText(managerDetailOutputLines);
   const flash = (label: string) => {
     const prev = btn.textContent;
@@ -1498,7 +1512,7 @@ setInterval(() => {
 // the reload that fixes it), so a healthy server shows neither.
 
 // Where an entry derives from, for the panel's Source column.
-function attentionSourceLabel(source) {
+function attentionSourceLabel(source: string) {
   switch (source) {
     case "load": return "config (hook dropped)";
     case "zero-hooks": return "config (no hooks)";
@@ -1515,7 +1529,7 @@ function attentionSourceLabel(source) {
 // fields no column renders — an attention entry's `key` above all, which is
 // what identifies the problem across re-derivations and is what you need
 // when reporting one. stopPropagation because these rows navigate on click.
-function copyJSONButton(value, title: string) {
+function copyJSONButton(value: unknown, title: string) {
   const btn = el("button", { class: "toggle-btn", type: "button", title }, "Copy JSON");
   btn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -1607,7 +1621,7 @@ document.getElementById("attention-banner-link")!.addEventListener("click", (e) 
 
 // --- Concurrency groups: declared vs effective + live override -------------
 
-async function overrideLimit(name: string, declared, current) {
+async function overrideLimit(name: string, declared: number, current: number) {
   const v = prompt(
     `Override the concurrency limit for group "${name}" (declared ${declared}).\n` +
     "Must be an integer >= 1 — to stop the group's hooks entirely, disable the hooks instead.",
@@ -1632,7 +1646,7 @@ async function overrideLimit(name: string, declared, current) {
   refresh();
 }
 
-async function clearLimitOverride(name: string, declared) {
+async function clearLimitOverride(name: string, declared: number) {
   if (!confirm(`Revert group "${name}" to its declared limit (${declared})?`)) return;
   try {
     const res = await fetch(`/concurrency/${encodeURIComponent(name)}/limit`, { method: "DELETE" });
@@ -1652,7 +1666,7 @@ async function clearLimitOverride(name: string, declared) {
 // (persisted, survives restarts); Revert DELETEs it (back to the
 // env/built-in default).
 
-async function overrideGlobalCap(def, current) {
+async function overrideGlobalCap(def: number, current: number) {
   const v = prompt(
     `Override the GLOBAL run cap (default ${def}) — the ceiling on hook containers running at once, across all hooks.\n` +
     "Must be an integer >= 1 — a 0 cap would block every run. Per-group limits still apply under it.",
@@ -1677,7 +1691,7 @@ async function overrideGlobalCap(def, current) {
   refresh();
 }
 
-async function clearGlobalCapOverride(def) {
+async function clearGlobalCapOverride(def: number) {
   if (!confirm(`Revert the global run cap to its default (${def})?`)) return;
   try {
     const res = await fetch("/concurrency-global/limit", { method: "DELETE" });
@@ -1695,7 +1709,7 @@ async function clearGlobalCapOverride(def) {
 // The server-wide run cap, as a one-row <data-table>. It is a table and not
 // a definition list because it IS the same shape as a concurrency group —
 // same columns, same drill-down — and the operator reads the two together.
-function renderGlobalCap(g) {
+function renderGlobalCap(g: ConcurrencyRow) {
   const wrap = document.getElementById("concurrency-global-cap");
   if (!wrap) return;
   wrap.hidden = !g;
@@ -1805,9 +1819,9 @@ function renderConcurrency(data) {
 // Returns the CONTENT only: <data-table> owns the row and the
 // column-spanning cell it goes in, so this can never disagree with the
 // table's column count the way a hardcoded colspan did.
-function groupDetailContent(g) {
+function groupDetailContent(g: ConcurrencyRow) {
   const box = el("div", { class: "group-detail" });
-  const runLine = (r: Run, note) => el("div", { class: "group-run" },
+  const runLine = (r: Run, note: string) => el("div", { class: "group-run" },
     runLink(r.run_id),
     " ",
     r.hook_id ? el("code", null, r.hook_id) : null,
@@ -1911,7 +1925,7 @@ a:hover { text-decoration: underline; }
 // do. Detect BEFORE assigning (assigning is what would make a later `in`
 // check pass), and put the reason on screen next to the thing that stopped
 // working.
-function componentSupports(elm, prop, what) {
+function componentSupports(elm: HTMLElement, prop: string, what: string) {
   if (prop in elm) return true;
   const id = `${elm.id}-degraded`;
   if (!document.getElementById(id)!) {
@@ -2005,7 +2019,7 @@ function runsHiddenStatuses() {
   return new Set();
 }
 
-function saveRunsHiddenStatuses(hidden) {
+function saveRunsHiddenStatuses(hidden: Set<string>) {
   try {
     localStorage.setItem(RUNS_FILTER_KEY, [...hidden].sort().join(","));
   } catch {
@@ -2019,7 +2033,7 @@ function saveRunsHiddenStatuses(hidden) {
 // is the wrong way round.
 const RUN_STATUSES = ["success", "failure", "error", "timeout", "running", "pending", "skipped", "cancelled"];
 
-function renderRuns(rs) {
+function renderRuns(rs: Run[]) {
   const t = byId<DataTableElement>("runs-table");
   if (!t) return;
   t.columns = [
@@ -2149,7 +2163,7 @@ function renderEventsInto(elementId: string, events) {
   const feed = document.getElementById(elementId);
   if (!feed) return;
   feed.messageRenderer = (msg: string) => linkifyGH(msg);
-  feed.timeFormatter = (t) => fmtTime(t);
+  feed.timeFormatter = (t: string) => fmtTime(t);
   // The Go side records both "hooks.reloaded" and "hook.enabled"; they are
   // one subsystem, so they get one family (and one dot color).
   feed.familyAliases = { hooks: "hook" };
@@ -2319,7 +2333,7 @@ function fillDl(dl, rows) {
   }
 }
 
-function renderApp(detail, runs, events) {
+function renderApp(detail, runs: Run[], events) {
   const info = detail.info;
   document.getElementById("app-missing")!.hidden = true;
   document.getElementById("app-body")!.hidden = false;
@@ -2464,7 +2478,7 @@ function appRunsHiddenStatuses() {
   return new Set(raw.split(",").filter(Boolean));
 }
 
-function saveAppRunsHiddenStatuses(hidden) {
+function saveAppRunsHiddenStatuses(hidden: Set<string>) {
   try {
     localStorage.setItem(APP_RUNS_FILTER_KEY, [...hidden].sort().join(","));
   } catch {
@@ -2489,7 +2503,7 @@ let lastAppStatusCounts = null;
 // window), not from the page: a hidden status is simply absent from the
 // page, so a derived count would read ×0 on the very chip that needs a
 // number. "skipped ×4213" is the fact worth showing next to the toggle.
-function renderAppRunsTable(runs, statusCounts) {
+function renderAppRunsTable(runs: Run[], statusCounts) {
   lastAppRuns = runs || [];
   if (statusCounts) lastAppStatusCounts = statusCounts;
   const t = byId<DataTableElement>("app-runs-table");
@@ -2714,7 +2728,7 @@ async function showRun(id: string) {
 // Re-fetches the modal's run and re-renders in place. openDialog is true on
 // the initial open only (shows the dialog, resets output scroll); refreshes
 // preserve scroll position and the raw/conversation toggle choice.
-async function refreshRunDetail(openDialog) {
+async function refreshRunDetail(openDialog: boolean) {
   const id = currentRunId;
   if (!id) return;
   lastRunDetailFetch = Date.now();
@@ -2770,7 +2784,7 @@ function renderRunDetailUnavailable(id: string, err) {
   if (!dlg.open) dlg.showModal();
 }
 
-function renderRunDetail(r: Run, openDialog) {
+function renderRunDetail(r: Run, openDialog: boolean) {
   currentRunTerminal = TERMINAL_RUN_STATUSES.includes(r.status);
   // Title primary when present ("wow-look-at-my/go-toolchain#47"), the
   // generic "Run" word otherwise; the full id always sits beside it in
@@ -3326,7 +3340,7 @@ async function reloadForceTip() {
 // exists only to be refused, no second dialog quoting reasons already on
 // screen. The server still records it loudly (reload.forced on the activity
 // feed); what is dropped here is ceremony, not the audit trail.
-async function reloadForceTo(ref, label: string, why) {
+async function reloadForceTo(ref: string, label: string, why) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
   const detail = why ? `\n\nThe gate is holding it: ${why}` : "";
@@ -3352,7 +3366,7 @@ async function reloadForceTo(ref, label: string, why) {
   }
 }
 
-async function reloadSwitchTo(ref, label: string) {
+async function reloadSwitchTo(ref: string, label: string) {
   if (reloadSwitchInFlight) return;
   const name = label || ref;
   if (!confirm(`Make ${name} the live hooks commit?\n\nThe serving tree switches to it and hooks reload.`)) return;
