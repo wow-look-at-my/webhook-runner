@@ -25,6 +25,7 @@ func writeScriptedDocker(t *testing.T, dir, buildBody string) string {
 		"if [ \"$1\" = \"build\" ]; then\n" + buildBody + "\nfi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	waitExecutable(t, bin)
 	return bin
 }
 
