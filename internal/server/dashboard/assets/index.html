@@ -13,7 +13,12 @@
 <body>
 <header>
   <h1>webhook-runner</h1>
+  <!-- Host resource graphs from the simple-stats-api named by /config's
+       stats_url (stats.ts). The note says when there is no source, or the
+       source is unreachable: an empty strip must never read as idle. -->
+  <div id="host-stats" class="host-stats"></div>
   <div class="meta">
+    <span id="stats-note" class="badge warn" hidden></span>
     <span id="health-badge" class="badge">checking...</span>
     <span id="updated"></span>
   </div>
@@ -75,6 +80,17 @@
       <button id="timeline-table-toggle" class="table-toggle" title="Show or hide the runs table below the timeline">Show table</button>
     </div>
     <timeline-view id="runs-timeline"></timeline-view>
+  </section>
+
+  <!-- Per-container resource strips, one row per container the stats
+       source reports (every container on the host, not only the runner's).
+       Names that are this runner's containers link to the run modal or the
+       manager page. Rendered by stats.ts; hidden when no source is set. -->
+  <section id="containers-section">
+    <h2>Containers</h2>
+    <p id="containers-note" class="empty" hidden></p>
+    <p id="containers-empty" class="empty" hidden>No containers running.</p>
+    <div id="containers-list"></div>
   </section>
 
   <!-- Hidden while healthy (the banner above is the alert); every row is

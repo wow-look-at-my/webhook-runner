@@ -840,7 +840,7 @@ let pendingKVScroll = hashWantsKV();
 // section stays in the DOM and keeps refreshing over the same SSE section
 // feed — nothing is lost, only organized.
 const PAGE_SECTIONS: Record<string, string[]> = {
-  overview: ["timeline-section", "runs-section"],
+  overview: ["timeline-section", "containers-section", "runs-section"],
   hooks: ["hooks-section"],
   managers: ["managers-section"],
   runs: ["runs-section"],

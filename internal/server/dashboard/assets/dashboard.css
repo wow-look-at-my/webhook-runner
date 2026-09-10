@@ -961,3 +961,27 @@ data-table { display: block; margin-bottom: 0.5rem; }
   padding: 0.75rem 1rem;
 }
 .setting-orphans h3 { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--running); }
+
+/* -- Resource graphs (stats.ts) ----------------------------------------------
+   <perf-graph> draws on its own canvas; these rules only size the strips and
+   theme the element to the dashboard palette. A strip dims while its source
+   is unreachable, and a gauge the source does not report keeps its empty
+   readout (the element's own dash) behind a tooltip naming the gap. */
+.stat-strip { display: flex; gap: 4px; }
+.stat-strip perf-graph {
+  width: 120px;
+  flex: 0 0 auto;
+  --perf-graph-bg: var(--bg);
+  --perf-graph-line: var(--accent);
+  --perf-graph-fill: rgba(47, 129, 247, 0.12);
+  --perf-graph-grid: rgba(230, 237, 243, 0.06);
+  --perf-graph-text: var(--muted);
+  --perf-graph-value: var(--fg);
+  --perf-graph-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.stat-strip perf-graph.absent { opacity: 0.45; }
+.stat-strip.stale { opacity: 0.35; }
+.host-stats { flex: 1 1 auto; display: flex; justify-content: center; align-self: center; min-width: 0; overflow-x: auto; }
+.container-row { display: flex; align-items: center; gap: 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
+.container-row:last-child { border-bottom: none; }
+.container-name { flex: 0 0 22rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; overflow-wrap: anywhere; }

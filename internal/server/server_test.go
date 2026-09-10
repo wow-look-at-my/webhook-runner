@@ -499,6 +499,7 @@ func TestConfigEndpoint(t *testing.T) {
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		HooksRepo:    "git@github.com:wow-look-at-my/webhooks.git",
 		HookBaseURL:  "https://hooks.example.com",
+		StatsURL:     "http://stats.example.com:3847",
 		ReloadSecret: "my-secret",
 	})
 
@@ -512,6 +513,7 @@ func TestConfigEndpoint(t *testing.T) {
 	assert.Equal(t, "git@github.com:wow-look-at-my/webhooks.git", cfg["hooks_repo"])
 	assert.Equal(t, "https://hooks.example.com", cfg["hook_base_url"])
 	assert.Equal(t, "my-secret", cfg["reload_secret"])
+	assert.Equal(t, "http://stats.example.com:3847", cfg["stats_url"])
 }
 
 func TestConfigEndpointEmpty(t *testing.T) {
