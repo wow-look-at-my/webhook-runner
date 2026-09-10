@@ -56,6 +56,7 @@ done
 exit "$exit_code"
 `
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	waitExecutable(t, path)
 	return path
 }
 
@@ -218,6 +219,7 @@ if [ "$1" = "image" ] || [ "$1" = "build" ]; then exit 0; fi
 for a in "$@"; do echo "arg=$a"; done
 `
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	waitExecutable(t, path)
 	return path
 }
 
@@ -397,6 +399,7 @@ esac
 exit 0
 `
 	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+	waitExecutable(t, docker)
 	return docker, buildLog
 }
 
@@ -452,6 +455,7 @@ esac
 exit 0
 `
 	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+	waitExecutable(t, docker)
 	hook := dockerfileHook(t, dir)
 
 	tracker := runs.NewTracker()
@@ -475,6 +479,7 @@ for a; do f="$a"; done
 cat "$f"
 `
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	waitExecutable(t, path)
 	return path
 }
 

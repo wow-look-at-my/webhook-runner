@@ -1,10 +1,14 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +32,24 @@ fi
 exit 0
 `, counter)
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	waitExecutable(t, path)
 	return path, counter
+}
+
+// waitExecutable blocks until path runs. A fork in a parallel test can
+// inherit the write descriptor from the WriteFile above, and until that
+// child execs, running the script fails with ETXTBSY.
+func waitExecutable(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := exec.Command(path, "probe").Run()
+		if !errors.Is(err, syscall.ETXTBSY) {
+			return // it ran; its exit status is the script's business
+		}
+		require.Less(t, time.Now(), deadline, "the fake docker never became executable")
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func inspectCalls(t *testing.T, counter string) int {
@@ -104,6 +125,7 @@ func TestImageCommandDoesNotCacheFailures(t *testing.T) {
 	// A docker that always fails inspect: a transient daemon condition is not a property of the tag, so it must be retried, never memoized.
 	path := filepath.Join(dir, "docker")
 	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	waitExecutable(t, path)
 
 	tag := "whr-hook/h:" + t.Name()
 	_, err := imageCommand(path, tag, nil)
