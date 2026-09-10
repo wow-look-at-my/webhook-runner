@@ -271,6 +271,7 @@ Read before changing any of these areas:
   the paths docker-updater discovers by itself. The image EXPOSEs both ports (metadata only, publishes nothing), and discovery
   picks a port itself only from an image declaring exactly one -- so deploy with `docker-updater.well-known.port: "9001"`; the
   older `docker-updater.pre-check.url` still wins where set, and marks the container "nonstandard" for as long as it is.
+- [docs/internals/resource-graphs.md](docs/internals/resource-graphs.md) -- the host and per-container cpu/ram/disk/net/gpu graphs (`ts/stats.ts`). A simple-stats-api instance feeds them (`WEBHOOK_RUNNER_STATS_URL`). Nothing is measured here.
 - [docs/internals/settings-editor.md](docs/internals/settings-editor.md) -- operator settings overrides: the sparse per-field shape, the four rules that make one safe, why a rejected override must not refuse the tree, the one-shape API, and the schema-to-control table the dashboard form is generated from.
 - [docs/internals/kv-and-locks.md](docs/internals/kv-and-locks.md) -- the KV store, run-owned locks, try/block/steal, pinning.
 - [docs/internals/backlogs.md](docs/internals/backlogs.md) -- the batch-backlog primitive: push-as-set-union, take-removes, depths, how it differs from internal/queue, and why a hook must never build a cursor instead.
