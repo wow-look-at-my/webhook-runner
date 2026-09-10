@@ -1,5 +1,5 @@
-// Resource graphs: the host in the title bar, one strip per live container on
-// the overview. Every number comes from a simple-stats-api instance named by
+// Resource graphs: the host in the title bar. Per-container graphs live on
+// docker-updater's dashboard, which owns the container list. Every number comes from a simple-stats-api instance named by
 // /config's stats_url. This module measures nothing itself: it polls that
 // API on the API's own sample interval and pushes values into <perf-graph>
 // elements (js-snippets, loaded at runtime from the library site).
@@ -29,14 +29,6 @@ interface Metric {
 	history?: number[];
 }
 
-interface ContainerMetrics {
-	cpu?: { percent?: Metric };
-	ram?: { used?: Metric; percent?: Metric };
-	network?: { rx_rate?: Metric; tx_rate?: Metric };
-	disk?: { io?: { read_rate?: Metric; write_rate?: Metric } };
-	gpu?: { utilization?: Metric; vram?: Metric };
-}
-
 interface StatsResponse {
 	sampling?: { intervalSeconds?: number; maxHistorySize?: number };
 	metrics?: {
@@ -45,8 +37,6 @@ interface StatsResponse {
 		disk?: { percent?: Metric; io?: { read_rate?: Metric; write_rate?: Metric } };
 		network?: { rx_rate?: Metric; tx_rate?: Metric };
 		gpu?: Array<{ utilization?: Metric }>;
-		docker?: { containers?: Metric };
-		containers?: Record<string, ContainerMetrics>;
 	};
 }
 
@@ -104,19 +94,6 @@ const HOST_GAUGES: Gauge[] = [
 		series: (m) => { const n = (m as StatsResponse['metrics'])?.network; return sumSeries(n?.rx_rate, n?.tx_rate, MB); } },
 	{ label: 'gpu', unit: '%', min: 0, max: 100, absent: 'no GPU reported by the stats source',
 		series: (m) => seriesOf((m as StatsResponse['metrics'])?.gpu?.[0]?.utilization) },
-];
-
-const CONTAINER_GAUGES: Gauge[] = [
-	{ label: 'cpu', unit: '%', min: 0, max: 100, absent: 'no cpu figure for this container',
-		series: (m) => percentSeries((m as ContainerMetrics).cpu?.percent) },
-	{ label: 'ram', unit: 'MiB', min: 0, max: null, absent: 'no memory figure for this container',
-		series: (m) => seriesOf((m as ContainerMetrics).ram?.used)?.map((v) => v * MIB) ?? null },
-	{ label: 'disk', unit: 'MB/s', min: 0, max: null, absent: 'no block I/O figure for this container',
-		series: (m) => { const io = (m as ContainerMetrics).disk?.io; return sumSeries(io?.read_rate, io?.write_rate, MB); } },
-	{ label: 'net', unit: 'MB/s', min: 0, max: null, absent: 'no network figure for this container',
-		series: (m) => { const n = (m as ContainerMetrics).network; return sumSeries(n?.rx_rate, n?.tx_rate, MB); } },
-	{ label: 'gpu', unit: '%', min: 0, max: 100, absent: 'no GPU work attributed to this container',
-		series: (m) => seriesOf((m as ContainerMetrics).gpu?.utilization) },
 ];
 
 /** A row of gauges bound to one metrics subtree. */
@@ -193,77 +170,6 @@ async function fetchJSONBounded<T>(url: string): Promise<T> {
 	}
 }
 
-/** Where a container name points: a run's modal, a manager's page, or nowhere. */
-function containerLink(name: string): HTMLElement {
-	const mgr = name.match(/^webhook-runner-mgr-(.+)$/);
-	if (mgr) return el('a', { href: '#manager=' + encodeURIComponent(mgr[1]), class: 'container-name' }, name);
-	const run = name.match(/^webhook-runner-([a-z2-7]{26})$/);
-	if (run) {
-		const a = el('a', { href: '#', class: 'container-name' }, name);
-		a.addEventListener('click', (ev) => {
-			ev.preventDefault();
-			void showRun(run[1]);
-		});
-		return a;
-	}
-	return el('span', { class: 'container-name' }, name);
-}
-
-class Containers {
-	private rows = new Map<string, { row: HTMLElement; strip: Strip }>();
-	private section: HTMLElement;
-	private list: HTMLElement;
-	private note: HTMLElement;
-
-	constructor(private history: number) {
-		this.section = document.getElementById('containers-section')!;
-		this.list = document.getElementById('containers-list')!;
-		this.note = document.getElementById('containers-note')!;
-	}
-
-	update(metrics: StatsResponse['metrics'], seed: boolean): void {
-		const docker = metrics?.docker?.containers;
-		const all = metrics?.containers ?? {};
-		if (!docker) {
-			// The API is reachable but has no daemon socket: say so, list nothing.
-			this.note.textContent = 'The stats source reports no Docker containers (no daemon socket mounted).';
-			this.note.hidden = false;
-		} else {
-			this.note.hidden = true;
-		}
-		const names = Object.keys(all).sort();
-		for (const [name, r] of this.rows) {
-			if (!(name in all)) {
-				r.row.remove();
-				this.rows.delete(name);
-			}
-		}
-		let prev: HTMLElement | null = null;
-		for (const name of names) {
-			let r = this.rows.get(name);
-			if (!r) {
-				const strip = new Strip(CONTAINER_GAUGES, this.history);
-				const row = el('div', { class: 'container-row' }, containerLink(name), strip.el);
-				r = { row, strip };
-				this.rows.set(name, r);
-			}
-			// Keep DOM order sorted without rebuilding rows that exist.
-			if (prev ? prev.nextElementSibling !== r.row : this.list.firstElementChild !== r.row) {
-				if (prev) prev.after(r.row);
-				else this.list.prepend(r.row);
-			}
-			r.strip.update(all[name], seed);
-			prev = r.row;
-		}
-		const empty = document.getElementById('containers-empty')!;
-		empty.hidden = !docker || names.length > 0;
-	}
-
-	setStale(stale: boolean, why: string): void {
-		for (const r of this.rows.values()) r.strip.setStale(stale, why);
-	}
-}
-
 /** Show the title-bar note (no source, unreachable) or clear it. */
 function setNote(text: string, cls: string): void {
 	const n = document.getElementById('stats-note');
@@ -273,7 +179,7 @@ function setNote(text: string, cls: string): void {
 	n.hidden = text === '';
 }
 
-async function pollForever(base: string, host: Strip, containers: Containers): Promise<void> {
+async function pollForever(base: string, host: Strip): Promise<void> {
 	let seed = true;
 	let intervalMs = MIN_POLL_MS;
 	for (;;) {
@@ -281,9 +187,7 @@ async function pollForever(base: string, host: Strip, containers: Containers): P
 		try {
 			const r = await fetchJSONBounded<StatsResponse>(url);
 			host.update(r.metrics, seed);
-			containers.update(r.metrics, seed);
 			host.setStale(false, '');
-			containers.setStale(false, '');
 			setNote('', '');
 			const iv = r.sampling?.intervalSeconds;
 			if (typeof iv === 'number' && iv > 0) intervalMs = Math.max(MIN_POLL_MS, iv * 1000);
@@ -292,7 +196,6 @@ async function pollForever(base: string, host: Strip, containers: Containers): P
 			const why = `stats source unreachable: ${base} (${e instanceof Error ? e.message : String(e)})`;
 			console.error(why);
 			host.setStale(true, why);
-			containers.setStale(true, why);
 			setNote('stats unreachable', 'bad');
 			seed = true; // resync the history once it is back
 			await new Promise((r) => setTimeout(r, RETRY_MS));
@@ -309,8 +212,8 @@ async function pollForever(base: string, host: Strip, containers: Containers): P
 export async function bootStats(load: (url: string, name: string) => Promise<void>): Promise<void> {
 	// A page without the mount points (an older index, a test harness) has
 	// nothing to draw into. Say so once and leave the feed alone.
-	if (!document.getElementById('host-stats') || !document.getElementById('containers-section')) {
-		console.error('stats: no #host-stats / #containers-section on this page, graphs disabled');
+	if (!document.getElementById('host-stats')) {
+		console.error('stats: no #host-stats on this page, graphs disabled');
 		return;
 	}
 	let cfg: { stats_url?: string };
@@ -324,13 +227,11 @@ export async function bootStats(load: (url: string, name: string) => Promise<voi
 	const base = (cfg.stats_url ?? '').replace(/\/$/, '');
 	if (base === '') {
 		setNote('no stats source (WEBHOOK_RUNNER_STATS_URL unset)', 'warn');
-		document.getElementById('containers-section')!.hidden = true;
 		return;
 	}
 	setNote('stats loading…', 'warn');
 	await load(PERF_GRAPH_URL, 'perf-graph');
 	const host = new Strip(HOST_GAUGES, SEED_HISTORY);
 	document.getElementById('host-stats')!.replaceChildren(host.el);
-	const containers = new Containers(SEED_HISTORY);
-	void pollForever(base, host, containers);
+	void pollForever(base, host);
 }

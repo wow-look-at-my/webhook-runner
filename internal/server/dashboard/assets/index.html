@@ -82,17 +82,6 @@
     <timeline-view id="runs-timeline"></timeline-view>
   </section>
 
-  <!-- Per-container resource strips, one row per container the stats
-       source reports (every container on the host, not only the runner's).
-       Names that are this runner's containers link to the run modal or the
-       manager page. Rendered by stats.ts; hidden when no source is set. -->
-  <section id="containers-section">
-    <h2>Containers</h2>
-    <p id="containers-note" class="empty" hidden></p>
-    <p id="containers-empty" class="empty" hidden>No containers running.</p>
-    <div id="containers-list"></div>
-  </section>
-
   <!-- Hidden while healthy (the banner above is the alert); every row is
        one active problem with what's wrong, which hook (linked), where the
        entry derives from, and how long it has been active. Rows disappear

@@ -982,9 +982,6 @@ data-table { display: block; margin-bottom: 0.5rem; }
 .stat-strip perf-graph.absent { opacity: 0.45; }
 .stat-strip.stale { opacity: 0.35; }
 .host-stats { flex: 1 1 auto; display: flex; justify-content: center; align-self: center; min-width: 0; overflow-x: auto; }
-.container-row { display: flex; align-items: center; gap: 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
-.container-row:last-child { border-bottom: none; }
-.container-name { flex: 0 0 22rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; overflow-wrap: anywhere; }
 /* One stable hue per gauge, so a strip reads by color before by label. */
 .stat-strip perf-graph[label="cpu"]  { --perf-graph-line: #2f81f7; --perf-graph-fill: rgba(47, 129, 247, 0.12); }
 .stat-strip perf-graph[label="ram"]  { --perf-graph-line: #a371f7; --perf-graph-fill: rgba(163, 113, 247, 0.12); }

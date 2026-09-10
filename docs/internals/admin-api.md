@@ -174,8 +174,8 @@ Moved VERBATIM out of `CLAUDE.md` when that file went over the
   `/runs?before=` history
   down to retention (`/config`'s `run_retention` labels the boundary).
   `/config` also carries `stats_url` when `WEBHOOK_RUNNER_STATS_URL` is set:
-  the simple-stats-api the browser polls for the title-bar host graphs and
-  the per-container strips (docs/internals/resource-graphs.md).
+  the simple-stats-api the browser polls for the title-bar host graphs
+  (docs/internals/resource-graphs.md).
   COVERAGE'S TRAILING EDGE IS THE ADAPTER'S JOB: the component hatches
   every uncovered range up to now as unknown history, so on a live
   stream the adapter must keep vouching [last claim, now] — run deltas
