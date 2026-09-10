@@ -225,6 +225,7 @@ interface TimelineViewElement extends HTMLElement {
 }
 
 import { mountSettings } from './settingsform.ts';
+import { bootStats } from './stats.ts';
 
 // -- Runner API shapes (the fields this adapter consumes) --------------------
 
@@ -2000,6 +2001,8 @@ async function boot(): Promise<void> {
 	// chart must not wait on a component it does not use.
 	void loadActivityFeedForever();
 	void loadDataTableForever();
+	// The resource graphs: independent of the chart for the same reason.
+	void bootStats(loadComponentModuleForever);
 	await loadComponentForever();
 	document.getElementById('timeline-loading')?.remove();
 	initTimeline();

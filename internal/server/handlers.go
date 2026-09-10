@@ -490,6 +490,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	if s.hookBaseURL != "" {
 		cfg["hook_base_url"] = s.hookBaseURL
 	}
+	if s.statsURL != "" {
+		cfg["stats_url"] = s.statsURL
+	}
 	if s.reloadSecret != "" {
 		cfg["reload_secret"] = s.reloadSecret
 	}

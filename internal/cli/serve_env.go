@@ -30,6 +30,7 @@ type serveOptions struct {
 	hooksBranch     string
 	hooksRepoSecret string
 	hookBaseURL     string
+	statsURL        string
 	stateSocket     string
 	stateSecret     string
 	runRetention    time.Duration
@@ -116,6 +117,9 @@ func applyServeEnv(o *serveOptions) error {
 	}
 	if o.hookBaseURL == "" {
 		o.hookBaseURL = os.Getenv("WEBHOOK_RUNNER_HOOK_BASE_URL")
+	}
+	if o.statsURL == "" {
+		o.statsURL = os.Getenv("WEBHOOK_RUNNER_STATS_URL")
 	}
 	if !o.gateContextSet {
 		// LookupEnv, not Getenv: set-to-EMPTY deliberately disables the reload CI gate (legacy behavior), while unset means the default gating context.
