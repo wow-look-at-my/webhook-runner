@@ -182,14 +182,14 @@ function el(tag: string, attrs: Record<string, string> | null, ...children: Arra
 }
 
 async function fetchJSONBounded<T>(url: string): Promise<T> {
-	const ctl = new AbortController();
-	const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+	const ctl = typeof AbortController === 'undefined' ? null : new AbortController();
+	const timer = ctl ? setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS) : null;
 	try {
-		const res = await fetch(url, { signal: ctl.signal, headers: { Accept: 'application/json' } });
+		const res = await fetch(url, { signal: ctl?.signal, headers: { Accept: 'application/json' } });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		return (await res.json()) as T;
 	} finally {
-		clearTimeout(timer);
+		if (timer) clearTimeout(timer);
 	}
 }
 
@@ -266,7 +266,8 @@ class Containers {
 
 /** Show the title-bar note (no source, unreachable) or clear it. */
 function setNote(text: string, cls: string): void {
-	const n = document.getElementById('stats-note')!;
+	const n = document.getElementById('stats-note');
+	if (!n) return;
 	n.textContent = text;
 	n.className = 'badge ' + cls;
 	n.hidden = text === '';
@@ -306,6 +307,12 @@ async function pollForever(base: string, host: Strip, containers: Containers): P
  * so this file shares its retry policy instead of owning a second one.
  */
 export async function bootStats(load: (url: string, name: string) => Promise<void>): Promise<void> {
+	// A page without the mount points (an older index, a test harness) has
+	// nothing to draw into. Say so once and leave the feed alone.
+	if (!document.getElementById('host-stats') || !document.getElementById('containers-section')) {
+		console.error('stats: no #host-stats / #containers-section on this page, graphs disabled');
+		return;
+	}
 	let cfg: { stats_url?: string };
 	try {
 		cfg = await fetchJSONBounded<{ stats_url?: string }>('/config');
