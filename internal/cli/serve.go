@@ -274,6 +274,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		HooksRepo:       o.hooksRepo,
 		HooksBranch:     o.hooksBranch,
 		HookBaseURL:     o.hookBaseURL,
+		StatsURL:        o.statsURL,
 		KV:              kvStore,
 		Backlogs:        backlogStore,
 		RunStore:        runStore,

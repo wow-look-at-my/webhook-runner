@@ -36,7 +36,7 @@ func TestApplyServeEnvDefaults(t *testing.T) {
 		"WEBHOOK_RUNNER_DATA_DIR", "WEBHOOK_RUNNER_STATE_SOCKET", "WEBHOOK_RUNNER_STATE_SECRET",
 		"WEBHOOK_RUNNER_RUN_RETENTION", "WEBHOOK_RUNNER_RUN_RETENTION_MAX",
 		"WEBHOOK_RUNNER_LOG_FORMAT", "WEBHOOK_RUNNER_GITHUB_TOKEN", "WEBHOOK_RUNNER_HOOKS_REPO",
-		"WEBHOOK_RUNNER_HOOKS_BRANCH", "WEBHOOK_RUNNER_HOOKS_REPO_SECRET", "WEBHOOK_RUNNER_HOOK_BASE_URL",
+		"WEBHOOK_RUNNER_HOOKS_BRANCH", "WEBHOOK_RUNNER_HOOKS_REPO_SECRET", "WEBHOOK_RUNNER_HOOK_BASE_URL", "WEBHOOK_RUNNER_STATS_URL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -66,6 +66,7 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	t.Setenv("WEBHOOK_RUNNER_HOOKS_BRANCH", "main")
 	t.Setenv("WEBHOOK_RUNNER_HOOKS_REPO_SECRET", "hmac")
 	t.Setenv("WEBHOOK_RUNNER_HOOK_BASE_URL", "https://hooks.example.com")
+	t.Setenv("WEBHOOK_RUNNER_STATS_URL", "http://stats:3847")
 
 	o := &serveOptions{}
 	require.NoError(t, applyServeEnv(o))
@@ -83,6 +84,7 @@ func TestApplyServeEnvReadsEnvironment(t *testing.T) {
 	assert.Equal(t, "main", o.hooksBranch)
 	assert.Equal(t, "hmac", o.hooksRepoSecret)
 	assert.Equal(t, "https://hooks.example.com", o.hookBaseURL)
+	assert.Equal(t, "http://stats:3847", o.statsURL)
 
 	// Invalid numeric/duration values fall back to the built-in defaults.
 	t.Setenv("WEBHOOK_RUNNER_RUN_RETENTION", "soon")

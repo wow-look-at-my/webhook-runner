@@ -56,6 +56,7 @@ type Server struct {
 	hooksRepo    string
 	hooksBranch  string
 	hookBaseURL  string
+	statsURL     string
 	kv           *kv.Store
 	backlogs     *backlog.Store
 	runstore     *runstore.Store
@@ -131,6 +132,9 @@ type Options struct {
 	// HookBaseURL is the public base URL of the hook port (e.g. "https://hooks.example.com").
 	HookBaseURL string
 
+	// StatsURL is the base URL of the simple-stats-api instance the dashboard graphs host and container resource use from. Empty = no graphs.
+	StatsURL string
+
 	// KV is the persistent state store backing the state port and the admin /kv view. nil disables both (the routes report no namespaces).
 	KV *kv.Store
 
@@ -183,6 +187,7 @@ func New(opts Options) *Server {
 		hooksRepo:    opts.HooksRepo,
 		hooksBranch:  opts.HooksBranch,
 		hookBaseURL:  opts.HookBaseURL,
+		statsURL:     opts.StatsURL,
 		kv:           opts.KV,
 		backlogs:     opts.Backlogs,
 		runstore:     opts.RunStore,
