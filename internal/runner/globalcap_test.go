@@ -190,6 +190,7 @@ func writeSweepDocker(t *testing.T, dir string, psIDs []string) (docker, rmLog s
 		"if [ \"$1\" = \"rm\" ]; then echo \"$2 $3\" >> " + rmLog + "; exit 0; fi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(docker, []byte(script), 0o755))
+	waitExecutable(t, docker)
 	return docker, rmLog
 }
 

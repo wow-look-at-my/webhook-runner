@@ -83,14 +83,17 @@ const (
 	streamSnapshotMax = 200
 )
 
-// streamHeartbeat is the heartbeat cadence.
-var streamHeartbeat = 10 * time.Second
+// defaultStreamHeartbeat is the heartbeat cadence a hub starts with.
+const defaultStreamHeartbeat = 10 * time.Second
 
 // streamHub fans runs.RunState updates out to the connected SSE clients.
 type streamHub struct {
 	mu     sync.Mutex
 	subs   set.Set[*streamSub]
 	closed bool
+	// heartbeat is per hub, never a package global: two tests that each set
+	// a global cadence and restore it race each other's streams.
+	heartbeat time.Duration
 }
 
 type streamSub struct {
@@ -117,7 +120,7 @@ func (sub *streamSub) drainSections() []string {
 }
 
 func newStreamHub() *streamHub {
-	return &streamHub{subs: set.New[*streamSub]()}
+	return &streamHub{subs: set.New[*streamSub](), heartbeat: defaultStreamHeartbeat}
 }
 
 // subscribe registers a new client. On a hub that has been closed (server
@@ -262,7 +265,7 @@ func (s *Server) handleRunsStream(w http.ResponseWriter, r *http.Request) {
 		return // no streaming support (or a dead client): nothing to tail
 	}
 
-	hb := time.NewTicker(streamHeartbeat)
+	hb := time.NewTicker(s.stream.heartbeat)
 	defer hb.Stop()
 	for {
 		select {

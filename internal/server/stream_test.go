@@ -102,11 +102,8 @@ func openStream(t *testing.T, baseURL string) (<-chan sseEvent, *http.Response, 
 }
 
 func TestRunsStreamEndToEnd(t *testing.T) {
-	old := streamHeartbeat
-	streamHeartbeat = 150 * time.Millisecond
-	defer func() { streamHeartbeat = old }()
-
 	s, _, tr, _ := newTestServer(t)
+	s.stream.heartbeat = 150 * time.Millisecond
 	// pre-existing run so the connect snapshot has content.
 	prior := tr.New("seed-hook")
 	prior.Finish(runs.StatusSuccess, 0, "")
@@ -188,11 +185,8 @@ func TestRunsStreamEndToEnd(t *testing.T) {
 // active. This is the client's reconcile beat (drop local runs absent from
 // the set, fetch unknown ones), purely additive to hb's liveness role.
 func TestRunsStreamHeartbeatCarriesActiveSet(t *testing.T) {
-	old := streamHeartbeat
-	streamHeartbeat = 100 * time.Millisecond
-	defer func() { streamHeartbeat = old }()
-
 	s, _, tr, _ := newTestServer(t)
+	s.stream.heartbeat = 100 * time.Millisecond
 	act := tr.New("h")
 	fin := tr.New("h")
 	fin.Finish(runs.StatusSuccess, 0, "")

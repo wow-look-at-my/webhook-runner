@@ -28,6 +28,7 @@ func writeRecordingDocker(t *testing.T, dir string) (bin, logPath string) {
 		"if [ \"$1\" = \"build\" ]; then echo \"$@\" >> " + logPath + "; exit 0; fi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	waitExecutable(t, bin)
 	return bin, logPath
 }
 
