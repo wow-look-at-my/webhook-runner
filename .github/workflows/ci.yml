@@ -1,7 +1,9 @@
 name: CI
 
 on:
+  # Branch filters alone exclude tag pushes, which is what keeps required-builds' lkgb tag write from re-triggering this workflow and tripping its per-repo block.
   push:
+    branches: ['**']
 
 permissions:
   id-token: write
