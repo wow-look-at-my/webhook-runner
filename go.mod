@@ -7,12 +7,12 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	github.com/wow-look-at-my/json-validator v0.0.0-20260809004204-f4e81fd4055c // go-toolchain:auto-branch
-	github.com/wow-look-at-my/secret-server v0.0.0-20260823201713-3e181d7e6e71 // go-toolchain:auto-branch
+	github.com/wow-look-at-my/json-validator v0.0.0
+	github.com/wow-look-at-my/secret-server v0.0.0
 	go.etcd.io/bbolt v1.5.0
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260826161058-40a3d1ef3d41 // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
